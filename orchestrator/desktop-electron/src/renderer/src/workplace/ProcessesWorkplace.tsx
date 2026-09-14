@@ -10,6 +10,7 @@ import { type ProcessStatus } from './labels'
 import { humanResponseDelayColor } from './humanResponseColor'
 import { liveTotals } from './runTiming'
 import { useWorkplaceData, type WorkplaceAgent } from './WorkplaceBoard'
+import { stageProgressTone } from './specV04Shell'
 
 const STATUS_BADGE: Record<ProcessStatus, string> = {
   READY: 'Готов',
@@ -266,6 +267,7 @@ function ProcessCard({
   const stageCurrent = Math.min(agent.stageIndex + 1, agent.stages.length)
   const stageTotal = agent.stages.length
   const progress = stageTotal ? Math.round((stageCurrent / stageTotal) * 100) : 0
+  const stageRatio = stageTotal ? stageCurrent / stageTotal : 0
   const agentLive =
     agent.status === 'ERROR' ? 'Ошибка' : agent.paused || board?.paused ? 'Пауза' : 'Активен'
   const agentLiveTone = agent.status === 'ERROR' ? 'err' : agent.paused || board?.paused ? 'pause' : 'live'
@@ -327,7 +329,7 @@ function ProcessCard({
           <strong>
             {stageCurrent} / {stageTotal || '—'}
           </strong>
-          <div className="proc-bar" aria-hidden>
+          <div className={`proc-bar proc-bar-${stageProgressTone(stageRatio)}`} aria-hidden>
             <i style={{ width: `${progress}%` }} />
           </div>
         </div>

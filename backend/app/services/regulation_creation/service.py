@@ -147,6 +147,55 @@ def get_creation_session(db: Session, *, user_id: str, draft_id: str) -> Regulat
     return _session(db, _get_draft(db, user_id=user_id, draft_id=draft_id))
 
 
+def advance_creation_question(
+    db: Session,
+    *,
+    user_id: str,
+    draft_id: str,
+) -> RegulationCreationSession:
+    """Return the current interview state for the legacy advance endpoint."""
+    return get_creation_session(db, user_id=user_id, draft_id=draft_id)
+
+
+def select_creation_processes(
+    db: Session,
+    *,
+    user_id: str,
+    draft_id: str,
+    process_ids: list[str],
+) -> RegulationCreationSession:
+    """Keep selected process ids in the interview state for the newer API route."""
+    draft = _get_draft(db, user_id=user_id, draft_id=draft_id)
+    state = dict(draft.interview_json or {})
+    state["selectedProcessIds"] = [str(item).strip() for item in process_ids if str(item).strip()]
+    draft.interview_json = state
+    db.add(draft)
+    db.commit()
+    db.refresh(draft)
+    return _session(db, draft)
+
+
+def submit_creation_round_answers(
+    db: Session,
+    *,
+    user_id: str,
+    draft_id: str,
+    answers: list[dict],
+    message: str = "",
+) -> RegulationCreationSession:
+    """Bridge structured round answers to the existing message-based flow."""
+    parts = [str(item.get("answer") or item.get("value") or "").strip() for item in answers]
+    text = message.strip() or "\n".join(item for item in parts if item)
+    if not text:
+        return get_creation_session(db, user_id=user_id, draft_id=draft_id)
+    return send_creation_message(
+        db,
+        user_id=user_id,
+        draft_id=draft_id,
+        request=RegulationCreationSendRequest(message=text),
+    )
+
+
 def list_creation_sessions(db: Session, *, user_id: str, limit: int = 50) -> RegulationCreationHistoryResult:
     drafts = (
         db.query(RegulationCreationDraft)

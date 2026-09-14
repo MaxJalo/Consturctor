@@ -18,7 +18,13 @@ import {
 import { AgentRunPage } from './pages/AgentRunPage'
 import { AgentHistoryPage } from './pages/AgentHistoryPage'
 import { AgentSchedulePage } from './pages/AgentSchedulePage'
-import { AgentsPage } from './pages/AgentsPage'
+import {
+  KnowledgeTabWorkplace,
+  MailTabWorkplace,
+  MeetingsTabWorkplace,
+  ProjectsTabWorkplace,
+  TasksTabWorkplace
+} from './workplace/SpecTabWorkplaces'
 import { AgentPassportPage, type PassportTab } from './pages/AgentPassportPage'
 import { ProcessesWorkplace } from './workplace/ProcessesWorkplace'
 import { FilesPage } from './pages/FilesPage'
@@ -400,6 +406,18 @@ export function App(): React.JSX.Element {
   }
   const activeUser = user
 
+  function askOrchestratorFromTab(message: string, appContext: string): void {
+    const workflowId = personalAgentWorkflowId(activeUser.id || '')
+    setView({
+      kind: 'agentrun',
+      workflowId,
+      title: 'Оркестратор',
+      autoStart: false,
+      initialMessage: message,
+      appContext
+    })
+  }
+
   const activeKey: PageKey | null =
     view.kind === 'tab'
       ? view.key
@@ -558,12 +576,18 @@ export function App(): React.JSX.Element {
             }
           />
         )
-      case 'calendar':
+      case 'tasks':
+        return <TasksTabWorkplace onAskOrchestrator={askOrchestratorFromTab} />
+      case 'projects':
+        return <ProjectsTabWorkplace onAskOrchestrator={askOrchestratorFromTab} />
+      case 'mail':
+        return <MailTabWorkplace onAskOrchestrator={askOrchestratorFromTab} />
+      case 'meetings':
         return (
-          <AgentsPage
-            variant="calendar"
+          <MeetingsTabWorkplace
+            onAskOrchestrator={askOrchestratorFromTab}
             onOpenRun={(workflowId, runId, autoStart) =>
-              void openAgentRun(workflowId, runId, Boolean(autoStart))
+              void openAgentRun(workflowId, runId || '', Boolean(autoStart))
             }
             onOpenSchedule={(workflowId, title) =>
               setView({ kind: 'schedule', workflowId, title, published: true })
@@ -577,8 +601,10 @@ export function App(): React.JSX.Element {
             onOpenRun={(workflowId, title, runId) => void openAgentRun(workflowId, runId || '', Boolean(!runId), title)}
           />
         )
-      case 'metrics':
+      case 'kpi':
         return <KpiPage onOpenProcesses={() => setView({ kind: 'tab', key: 'processes' })} onOpenDecisions={() => setView({ kind: 'tab', key: 'decisions' })} />
+      case 'knowledge':
+        return <KnowledgeTabWorkplace onAskOrchestrator={askOrchestratorFromTab} />
       case 'history':
         return (
           <HistoryTab
@@ -600,7 +626,7 @@ export function App(): React.JSX.Element {
           <TodayTab
             user={activeUser}
             onOpenDecisions={() => setView({ kind: 'tab', key: 'decisions' })}
-            onOpenMetrics={() => setView({ kind: 'tab', key: 'metrics' })}
+            onOpenMetrics={() => setView({ kind: 'tab', key: 'kpi' })}
             onOpenPassport={(workflowId, title, tab) => setView({ kind: 'passport', workflowId, title, tab })}
             onRun={(workflowId, title) => void openAgentRun(workflowId, '', true, title)}
             onOpenRun={(workflowId, title, runId) => void openAgentRun(workflowId, runId || '', false, title)}
@@ -639,7 +665,7 @@ export function App(): React.JSX.Element {
   }
 
   return (
-    <div className={view.kind === 'tab' && view.key === 'today' ? 'app-root shell-today' : 'app-root'}>
+    <div className="app-root">
       <Sidebar
         active={activeKey}
         light={view.kind === 'tab' && view.key === 'today'}
@@ -656,6 +682,10 @@ export function App(): React.JSX.Element {
       <main className="content">
         <div className={view.kind === 'chat' ? 'content-inner messenger-mode' : 'content-inner'}>
           <div className="app-page-header">
+            <div className="global-search" role="search">
+              <span className="global-search-icon" aria-hidden />
+              <input placeholder="Поиск по процессам, документам, задачам, проектам..." aria-label="Поиск" />
+            </div>
             <UserMenu
               user={user}
               avatarUrl={avatarUrl}
@@ -664,6 +694,7 @@ export function App(): React.JSX.Element {
               onLogout={onLogout}
               showLogout={showLogout}
               onOpenAgent={(workflowId, runId) => void openAgentRun(workflowId, runId)}
+              onOpenSettings={() => setView({ kind: 'tab', key: 'settings' })}
             />
           </div>
           {toast && <div className="wp-toast">{toast}</div>}

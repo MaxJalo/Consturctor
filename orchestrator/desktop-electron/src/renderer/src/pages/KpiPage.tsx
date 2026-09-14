@@ -1228,8 +1228,8 @@ export function KpiPage({
     <div className="kpi-page">
       <div className="kpi-head">
         <div>
-          <h1 className="page-title">Показатели</h1>
-          <p className="page-subtitle">Сводка и детализация по процессам</p>
+          <h1 className="page-title">KPI</h1>
+          <p className="page-subtitle">Эффективность сотрудника и ИИ-агентов по процессам должности</p>
         </div>
       </div>
 

@@ -12,6 +12,7 @@ interface UserMenuProps {
   onLogout: () => void
   showLogout: boolean
   onOpenAgent?: (workflowId: string, runId: string) => void
+  onOpenSettings?: () => void
 }
 
 export function UserMenu({
@@ -21,7 +22,8 @@ export function UserMenu({
   onUnreadChange,
   onLogout,
   showLogout,
-  onOpenAgent
+  onOpenAgent,
+  onOpenSettings
 }: UserMenuProps): React.JSX.Element {
   const [menuOpen, setMenuOpen] = useState(false)
   const [inboxOpen, setInboxOpen] = useState(false)
@@ -163,6 +165,18 @@ export function UserMenu({
         {menuOpen && (
           <div className="user-dropdown">
             <div className="user-dropdown-dept">{user.department || 'Без подразделения'}</div>
+            {onOpenSettings ? (
+              <button
+                type="button"
+                className="user-dropdown-logout"
+                onClick={() => {
+                  setMenuOpen(false)
+                  onOpenSettings()
+                }}
+              >
+                Настройки
+              </button>
+            ) : null}
             {showLogout && (
               <button className="user-dropdown-logout" onClick={onLogout}>
                 Выйти
