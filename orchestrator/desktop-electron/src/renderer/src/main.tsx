@@ -4,6 +4,8 @@ import { createRoot } from 'react-dom/client'
 import { App } from './App'
 import { RunProvider } from './store/runs'
 import './styles.css'
+import './admin/admin-pages.css'
+import './admin/admin-overview.css'
 
 function preventWindowFileOpen(event: DragEvent): void {
   event.preventDefault()

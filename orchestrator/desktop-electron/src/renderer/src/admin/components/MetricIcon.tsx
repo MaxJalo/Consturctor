@@ -1,0 +1,81 @@
+import type { MetricIconVariant } from '../../mocks/adminMocks'
+
+interface MetricIconProps {
+  variant: MetricIconVariant
+}
+
+export function MetricIcon({ variant }: MetricIconProps): React.JSX.Element {
+  const stroke = 'currentColor'
+  const sw = 1.8
+
+  if (variant === 'agents_total') {
+    return (
+      <svg viewBox="0 0 24 24" aria-hidden fill="none">
+        <circle cx="9" cy="9" r="2.2" fill={stroke} stroke="none" />
+        <circle cx="15" cy="9" r="2.2" fill={stroke} stroke="none" />
+        <path d="M5.5 17c.7-1.9 2.1-2.8 3.5-2.8s2.8.9 3.5 2.8" stroke={stroke} strokeWidth={sw} strokeLinecap="round" />
+        <circle cx="17.5" cy="10.5" r="1.6" fill={stroke} stroke="none" />
+        <path d="M15.5 16.2c.5-1.2 1.4-1.7 2.3-1.7" stroke={stroke} strokeWidth={sw} strokeLinecap="round" />
+      </svg>
+    )
+  }
+  if (variant === 'agents_used') {
+    return (
+      <svg viewBox="0 0 24 24" aria-hidden fill="none">
+        <circle cx="12" cy="12" r="7" stroke={stroke} strokeWidth={sw} />
+        <circle cx="12" cy="12" r="3.5" stroke={stroke} strokeWidth={sw} />
+        <circle cx="12" cy="12" r="1.2" fill={stroke} stroke="none" />
+      </svg>
+    )
+  }
+  if (variant === 'active_runs') {
+    return (
+      <svg viewBox="0 0 24 24" aria-hidden fill="none">
+        <circle cx="6" cy="8" r="2" stroke={stroke} strokeWidth={sw} />
+        <circle cx="18" cy="6" r="2" stroke={stroke} strokeWidth={sw} />
+        <circle cx="12" cy="18" r="2" stroke={stroke} strokeWidth={sw} />
+        <path d="M7.8 9.2l3.2 6M16.2 7.8l-3.2 8.2M8 8l8-1.5" stroke={stroke} strokeWidth={sw} strokeLinecap="round" />
+      </svg>
+    )
+  }
+  if (variant === 'users') {
+    return (
+      <svg viewBox="0 0 24 24" aria-hidden fill="none">
+        <circle cx="12" cy="8.5" r="3" stroke={stroke} strokeWidth={sw} />
+        <path d="M6 18.5c0-3 2.7-5 6-5s6 2 6 5" stroke={stroke} strokeWidth={sw} strokeLinecap="round" />
+      </svg>
+    )
+  }
+  if (variant === 'success_rate') {
+    return (
+      <svg viewBox="0 0 24 24" aria-hidden fill="none">
+        <circle cx="12" cy="12" r="7" stroke={stroke} strokeWidth={sw} />
+        <path d="M8.5 12l2.2 2.2 4.8-5" stroke={stroke} strokeWidth={sw} strokeLinecap="round" strokeLinejoin="round" />
+      </svg>
+    )
+  }
+  if (variant === 'errors') {
+    return (
+      <svg viewBox="0 0 24 24" aria-hidden fill="none">
+        <circle cx="12" cy="12" r="7" stroke={stroke} strokeWidth={sw} />
+        <path d="M12 8.5v4.5" stroke={stroke} strokeWidth={sw} strokeLinecap="round" />
+        <circle cx="12" cy="16.5" r="0.9" fill={stroke} stroke="none" />
+      </svg>
+    )
+  }
+  if (variant === 'queue') {
+    return (
+      <svg viewBox="0 0 24 24" aria-hidden fill="none">
+        <circle cx="12" cy="12" r="7" stroke={stroke} strokeWidth={sw} />
+        <path d="M12 8v4.2l2.8 1.6" stroke={stroke} strokeWidth={sw} strokeLinecap="round" strokeLinejoin="round" />
+      </svg>
+    )
+  }
+  return (
+    <svg viewBox="0 0 24 24" aria-hidden fill="none">
+      <circle cx="12" cy="12" r="7" stroke={stroke} strokeWidth={sw} />
+      <circle cx="12" cy="12" r="4" stroke={stroke} strokeWidth={sw} />
+      <path d="M12 5.5v2M12 16.5v2M5.5 12h2M16.5 12h2" stroke={stroke} strokeWidth={sw} strokeLinecap="round" />
+    </svg>
+  )
+}

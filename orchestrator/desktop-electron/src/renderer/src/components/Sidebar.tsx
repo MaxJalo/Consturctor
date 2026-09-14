@@ -8,6 +8,17 @@ import logoUrl from '../assets/logo.png'
 import iconSearch from '../assets/search.png'
 
 export type PageKey =
+  | 'overview'
+  | 'history'
+  | 'launch_calendar'
+  | 'kpi'
+  | 'users'
+  | 'ai_agents'
+  | 'knowledge_base'
+  | 'settings'
+
+/*
+export type LegacyPageKey =
   | 'today'
   | 'processes'
   | 'calendar'
@@ -16,9 +27,7 @@ export type PageKey =
   | 'history'
   | 'settings'
 
-export const APP_TITLE = 'Оркестратор'
-
-export const PAGE_LABELS: Record<PageKey, string> = {
+export const LEGACY_PAGE_LABELS: Record<LegacyPageKey, string> = {
   today: 'Рабочее место',
   processes: 'Процессы',
   calendar: 'Календарь',
@@ -28,67 +37,103 @@ export const PAGE_LABELS: Record<PageKey, string> = {
   settings: 'Настройки'
 }
 
+const LEGACY_ITEMS: { key: LegacyPageKey; label: string }[] = (
+  Object.entries(LEGACY_PAGE_LABELS) as [LegacyPageKey, string][]
+).map(([key, label]) => ({ key, label }))
+*/
+
+export const APP_TITLE = 'Оркестратор'
+
+export const PAGE_LABELS: Record<PageKey, string> = {
+  overview: 'Обзор',
+  history: 'История',
+  launch_calendar: 'Календарь запуска',
+  kpi: 'KPI',
+  users: 'Пользователи',
+  ai_agents: 'ИИ-агенты',
+  knowledge_base: 'База знаний',
+  settings: 'Настройки'
+}
+
 const ITEMS: { key: PageKey; label: string }[] = (
   Object.entries(PAGE_LABELS) as [PageKey, string][]
 ).map(([key, label]) => ({ key, label }))
 
 function NavIcon({ page }: { page: PageKey }): React.JSX.Element {
-  if (page === 'today') {
+  if (page === 'overview') {
     return (
       <svg viewBox="0 0 24 24" className="nav-icon-svg" fill="none" stroke="currentColor" strokeWidth="1.8">
         <rect x="4" y="5" width="16" height="15" rx="3" />
         <path d="M8 3v4M16 3v4M4 10h16" strokeLinecap="round" />
-      </svg>
-    )
-  }
-  if (page === 'processes') {
-    return (
-      <svg viewBox="0 0 24 24" className="nav-icon-svg" fill="none" stroke="currentColor" strokeWidth="1.8">
-        <circle cx="12" cy="12" r="3.2" />
-        <path d="M12 3.5v2.2M12 18.3v2.2M3.5 12h2.2M18.3 12h2.2M5.9 5.9l1.5 1.5M16.6 16.6l1.5 1.5M18.1 5.9l-1.5 1.5M7.4 16.6l-1.5 1.5" strokeLinecap="round" />
-      </svg>
-    )
-  }
-  if (page === 'decisions') {
-    return (
-      <svg viewBox="0 0 24 24" className="nav-icon-svg" fill="none" stroke="currentColor" strokeWidth="1.8">
-        <path d="M7 7h10M7 12h10M7 17h6" strokeLinecap="round" />
-        <rect x="4" y="4" width="16" height="16" rx="3" />
-      </svg>
-    )
-  }
-  if (page === 'metrics') {
-    return (
-      <svg viewBox="0 0 24 24" className="nav-icon-svg" fill="none" stroke="currentColor" strokeWidth="1.8">
-        <path d="M5 19V9M12 19V5M19 19v-7" strokeLinecap="round" />
-        <path d="M4 19.5h16" strokeLinecap="round" />
-      </svg>
-    )
-  }
-  if (page === 'calendar') {
-    return (
-      <svg viewBox="0 0 24 24" className="nav-icon-svg" fill="none" stroke="currentColor" strokeWidth="1.8">
-        <rect x="4" y="5" width="16" height="15" rx="3" />
-        <path d="M8 3v4M16 3v4M4 10h16" strokeLinecap="round" />
-        <path d="M8 14h2M12 14h2M16 14h2M8 17h2M12 17h2" strokeLinecap="round" />
+        <path d="M8 14h8M8 17h5" strokeLinecap="round" />
       </svg>
     )
   }
   if (page === 'history') {
     return (
       <svg viewBox="0 0 24 24" className="nav-icon-svg" fill="none" stroke="currentColor" strokeWidth="1.8">
-        <path d="M4 12a8 8 0 1 0 2.3-5.7" strokeLinecap="round" />
-        <path d="M4 5v4h4M12 8v4l3 2" strokeLinecap="round" />
+        <rect x="4" y="5" width="16" height="15" rx="3" />
+        <path d="M8 3v4M16 3v4M4 10h16" strokeLinecap="round" />
+        <path d="M12 13v3l2 1.5" strokeLinecap="round" />
+      </svg>
+    )
+  }
+  if (page === 'launch_calendar') {
+    return (
+      <svg viewBox="0 0 24 24" className="nav-icon-svg" fill="none" stroke="currentColor" strokeWidth="1.8">
+        <rect x="4" y="5" width="16" height="15" rx="3" />
+        <path d="M8 3v4M16 3v4M4 10h16" strokeLinecap="round" />
+        <path d="M9 15l-2 2 2 2M15 15l2 2-2 2" strokeLinecap="round" strokeLinejoin="round" />
+      </svg>
+    )
+  }
+  if (page === 'kpi') {
+    return (
+      <svg viewBox="0 0 24 24" className="nav-icon-svg" fill="none" stroke="currentColor" strokeWidth="1.8">
+        <rect x="5" y="5" width="14" height="14" rx="2" />
+        <path d="M8 16l4-5 4 5" strokeLinecap="round" strokeLinejoin="round" />
+      </svg>
+    )
+  }
+  if (page === 'users') {
+    return (
+      <svg viewBox="0 0 24 24" className="nav-icon-svg" fill="none" stroke="currentColor" strokeWidth="1.8">
+        <circle cx="9" cy="9" r="3" />
+        <circle cx="17" cy="10" r="2.5" />
+        <path d="M4 19c0-2.2 2.2-4 5-4M14 19c0-1.6 1.4-3 3.5-3" strokeLinecap="round" />
+      </svg>
+    )
+  }
+  if (page === 'ai_agents') {
+    return (
+      <svg viewBox="0 0 24 24" className="nav-icon-svg" fill="none" stroke="currentColor" strokeWidth="1.8">
+        <path d="M12 3l7 4v6c0 4.4-3.1 7.4-7 8-3.9-.6-7-3.6-7-8V7l7-4z" strokeLinejoin="round" />
+        <circle cx="12" cy="11" r="2" />
+      </svg>
+    )
+  }
+  if (page === 'knowledge_base') {
+    return (
+      <svg viewBox="0 0 24 24" className="nav-icon-svg" fill="none" stroke="currentColor" strokeWidth="1.8">
+        <rect x="5" y="4" width="14" height="16" rx="2" />
+        <path d="M9 8h6M9 12h6M9 16h4" strokeLinecap="round" />
       </svg>
     )
   }
   return (
     <svg viewBox="0 0 24 24" className="nav-icon-svg" fill="none" stroke="currentColor" strokeWidth="1.8">
-      <circle cx="12" cy="12" r="3" />
-      <path d="M12 3.6v2.1M12 18.3v2.1M3.6 12h2.1M18.3 12h2.1M5.9 5.9l1.5 1.5M16.6 16.6l1.5 1.5M18.1 5.9l-1.5 1.5M7.4 16.6l-1.5 1.5" strokeLinecap="round" />
+      <path d="M12 3l7 4v6c0 4.4-3.1 7.4-7 8-3.9-.6-7-3.6-7-8V7l7-4z" strokeLinejoin="round" />
+      <circle cx="12" cy="11" r="2.5" />
+      <path d="M12 13.5v3" strokeLinecap="round" />
     </svg>
   )
 }
+
+/*
+function LegacyNavIcon({ page }: { page: LegacyPageKey }): React.JSX.Element {
+  ...
+}
+*/
 
 function initials(fio: string): string {
   const parts = (fio || '').replace(/\./g, ' ').split(/\s+/).filter(Boolean)
@@ -196,8 +241,6 @@ export function Sidebar({
       }
     }
     void load()
-    // Live updates come from onChatEvent below; this is only a slow safety net
-    // for a dropped websocket.
     const timer = window.setInterval(() => {
       void load()
     }, 120_000)
@@ -236,8 +279,6 @@ export function Sidebar({
     return () => unsubscribe?.()
   }, [currentUserId])
 
-  // Unread/preview pushes rebuild the peers array; avatars must not refetch
-  // unless a peer or its avatar actually changed.
   const peerAvatarKey = peers
     .map((peer) => `${peer.id}\u0000${peer.peerId || peer.id}\u0000${peer.avatarUrl || ''}`)
     .join('\u0001')
@@ -271,7 +312,12 @@ export function Sidebar({
     <aside className={collapsed ? 'sidebar collapsed' : 'sidebar'}>
       <div className="sidebar-brand">
         <img className="sidebar-logo" src={logoUrl} alt={APP_TITLE} />
-        {!collapsed && <div className="sidebar-title">{APP_TITLE.toUpperCase()}</div>}
+        {!collapsed && (
+          <div className="sidebar-brand-text">
+            <div className="sidebar-title">{APP_TITLE}</div>
+            <div className="sidebar-subtitle">Администрирование</div>
+          </div>
+        )}
       </div>
 
       <div className="sidebar-search" onClick={expandForSearch} title={collapsed ? 'ФИО' : undefined}>

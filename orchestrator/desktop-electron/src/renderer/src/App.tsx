@@ -18,24 +18,35 @@ import {
 import { AgentRunPage } from './pages/AgentRunPage'
 import { AgentHistoryPage } from './pages/AgentHistoryPage'
 import { AgentSchedulePage } from './pages/AgentSchedulePage'
-import { AgentsPage } from './pages/AgentsPage'
+// import { AgentsPage } from './pages/AgentsPage'
 import { AgentPassportPage, type PassportTab } from './pages/AgentPassportPage'
-import { ProcessesWorkplace } from './workplace/ProcessesWorkplace'
 import { FilesPage } from './pages/FilesPage'
+/*
+import { ProcessesWorkplace } from './workplace/ProcessesWorkplace'
 import { KpiPage } from './pages/KpiPage'
+*/
 import { RunBannerCarousel, type BannerEntry } from './components/RunBannerCarousel'
 import { useRuns, deriveLatestOutput } from './store/runs'
 import { isInFlightRunStatus, isLiveRunState } from './store/liveRun'
 import { ChatDock } from './workplace/ChatDock'
 import { isPersonalAgentWorkflowId, personalAgentWorkflowId } from './workplace/personalAgent'
+import { OverviewPage } from './admin/pages/OverviewPage'
+import { HistoryPage } from './admin/pages/HistoryPage'
+import { LaunchCalendarPage } from './admin/pages/LaunchCalendarPage'
+import { KpiAdminPage } from './admin/pages/KpiAdminPage'
+import { UsersPage } from './admin/pages/UsersPage'
+import { AiAgentsPage } from './admin/pages/AiAgentsPage'
+import { KnowledgeBasePage } from './admin/pages/KnowledgeBasePage'
+import { InDevelopmentPage } from './pages/InDevelopmentPage'
+import { DiagnosticsPage, TicketsPage } from './workplace/WorkplaceTabs'
+/*
 import {
   DecisionsTab,
-  DiagnosticsPage,
   HistoryTab,
   SettingsTab,
-  TicketsPage,
   TodayTab
 } from './workplace/WorkplaceTabs'
+*/
 
 function decodeJwtPart(part: string): string {
   const normalized = part.replace(/-/g, '+').replace(/_/g, '/')
@@ -65,6 +76,17 @@ function isOrchestratorToken(token: string): boolean {
     return false
   }
 }
+
+const ADMIN_TAB_KEYS: PageKey[] = [
+  'overview',
+  'history',
+  'launch_calendar',
+  'kpi',
+  'users',
+  'ai_agents',
+  'knowledge_base',
+  'settings'
+]
 
 type View =
   | { kind: 'tab'; key: PageKey }
@@ -113,8 +135,8 @@ export function App(): React.JSX.Element {
   const [booting, setBooting] = useState(true)
   const [user, setUser] = useState<UserProfile | null>(null)
   const [showLogout, setShowLogout] = useState(true)
-  const [view, setView] = useState<View>({ kind: 'tab', key: 'today' })
-  const [lastTab, setLastTab] = useState<PageKey>('today')
+  const [view, setView] = useState<View>({ kind: 'tab', key: 'overview' })
+  const [lastTab, setLastTab] = useState<PageKey>('overview')
   const [unread, setUnread] = useState(0)
   const [avatarUrl, setAvatarUrl] = useState<string | null>(null)
   const [toast, setToast] = useState('')
@@ -246,7 +268,7 @@ export function App(): React.JSX.Element {
       clearSession(true)
     }
     setUser(result.user)
-    setView({ kind: 'tab', key: 'today' })
+    setView({ kind: 'tab', key: 'overview' })
     if (result.accessToken) {
       void api.me().then(setUser).catch(() => undefined)
     }
@@ -260,7 +282,7 @@ export function App(): React.JSX.Element {
     api.setToken(null)
     clearAvatarCache()
     setAvatarUrl(null)
-    setView({ kind: 'tab', key: 'today' })
+    setView({ kind: 'tab', key: 'overview' })
     setUser(null)
   }
 
@@ -406,7 +428,7 @@ export function App(): React.JSX.Element {
       : view.kind === 'chat'
         ? null
         : view.kind === 'agentrun' || view.kind === 'history' || view.kind === 'schedule' || view.kind === 'passport'
-          ? 'processes'
+          ? 'ai_agents'
           : 'settings'
 
   async function openAgentRun(workflowId: string, runId = '', _autoStart = false, title = ''): Promise<void> {
@@ -463,7 +485,7 @@ export function App(): React.JSX.Element {
           thread={view.thread}
           me={user!}
           onThreadChange={(thread) => setView({ kind: 'chat', thread })}
-          onOpenAgent={() => setView({ kind: 'tab', key: 'processes' })}
+          onOpenAgent={() => setView({ kind: 'tab', key: 'ai_agents' })}
         />
       )
     }
@@ -513,7 +535,7 @@ export function App(): React.JSX.Element {
           workflowId={view.workflowId}
           title={view.title}
           initialTab={view.tab || 'info'}
-          onBack={() => setView({ kind: 'tab', key: 'today' })}
+          onBack={() => setView({ kind: 'tab', key: 'overview' })}
           onRun={(workflowId, title) => void openAgentRun(workflowId, '', true, title)}
           onOpenRun={(workflowId, title, runId) => void openAgentRun(workflowId, runId || '', false, title)}
         />
@@ -544,6 +566,23 @@ export function App(): React.JSX.Element {
       )
     }
     switch (view.key) {
+      case 'overview':
+        return <OverviewPage />
+      case 'history':
+        return <HistoryPage />
+      case 'launch_calendar':
+        return <LaunchCalendarPage />
+      case 'kpi':
+        return <KpiAdminPage />
+      case 'users':
+        return <UsersPage />
+      case 'ai_agents':
+        return <AiAgentsPage />
+      case 'knowledge_base':
+        return <KnowledgeBasePage />
+      case 'settings':
+        return <InDevelopmentPage title={PAGE_LABELS[view.key]} />
+      /*
       case 'processes':
         return (
           <ProcessesWorkplace
@@ -617,6 +656,9 @@ export function App(): React.JSX.Element {
             }}
           />
         )
+      */
+      default:
+        return <InDevelopmentPage title={PAGE_LABELS.overview} />
     }
   }
 
@@ -639,10 +681,10 @@ export function App(): React.JSX.Element {
   }
 
   return (
-    <div className={view.kind === 'tab' && view.key === 'today' ? 'app-root shell-today' : 'app-root'}>
+    <div className="app-root">
       <Sidebar
         active={activeKey}
-        light={view.kind === 'tab' && view.key === 'today'}
+        light={false}
         activeThreadId={view.kind === 'chat' ? view.thread.id : ''}
         currentUserId={user.id || ''}
         onNavigate={(key) => {
@@ -664,6 +706,7 @@ export function App(): React.JSX.Element {
               onLogout={onLogout}
               showLogout={showLogout}
               onOpenAgent={(workflowId, runId) => void openAgentRun(workflowId, runId)}
+              variant={view.kind === 'tab' && ADMIN_TAB_KEYS.includes(view.key) ? 'admin' : 'default'}
             />
           </div>
           {toast && <div className="wp-toast">{toast}</div>}
