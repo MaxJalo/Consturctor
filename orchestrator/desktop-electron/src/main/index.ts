@@ -11,6 +11,7 @@ import { readFileSync, existsSync, mkdirSync, writeFileSync } from 'node:fs'
 import { NotificationGuard, showToast, type ToastPayload } from './notifications'
 import { AgentSidecar, type AgentSidecarMessage } from './agentSidecar'
 import { ensureLocalBackend } from './ensureBackend'
+import { loadExternalOdataEnv } from './odataExternalEnv'
 import { getUpdateStatus, installAvailableUpdate, startUpdater, stopUpdater } from './updater'
 
 interface RequestOptions {
@@ -784,6 +785,40 @@ function registerMainIpcHandlers(): void {
   })
   ipcHandle('updater:getStatus', () => getUpdateStatus())
   ipcHandle('updater:install', () => installAvailableUpdate())
+  ipcHandle('orch:load-odata-external-env', () => {
+    const loaded = loadExternalOdataEnv()
+    return {
+      ok: loaded.ok,
+      path: loaded.path,
+      missing: loaded.missing,
+      invokeArgs: loaded.invokeArgs
+    }
+  })
+  ipcHandle(
+    'orch:fetch-erp-odata-tasks',
+    async (
+      _evt,
+      opts: { token?: string | null; fio?: string; limit?: number; fallbackSql?: boolean }
+    ) => {
+      const loaded = loadExternalOdataEnv()
+      const body = {
+        tool: 'onec.erp_tasks_odata',
+        arguments: {
+          limit: opts?.limit ?? 80,
+          fallback_sql: opts?.fallbackSql ?? true,
+          ...(opts?.fio ? { fio: opts.fio } : {}),
+          ...loaded.invokeArgs
+        }
+      }
+      return handleRequest(_evt, {
+        method: 'POST',
+        path: '/api/v1/tools/invoke',
+        body,
+        token: opts?.token ?? null,
+        timeoutMs: 120_000
+      })
+    }
+  )
 }
 
 // Register before app.whenReady and on every electron-vite main HMR reload (whenReady does not re-run).

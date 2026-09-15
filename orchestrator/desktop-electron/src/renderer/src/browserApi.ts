@@ -77,7 +77,18 @@ function installBrowserApi(): void {
       error: ''
     }),
     installUpdate: async () => ({ ok: false, error: 'Только в Electron' }),
-    onUpdateStatus: noopUnsub
+    onUpdateStatus: noopUnsub,
+    loadOdataExternalEnv: async () => ({
+      ok: false,
+      path: '',
+      missing: ['electron'],
+      invokeArgs: {}
+    }),
+    fetchErpOdataTasks: async () => ({
+      ok: false,
+      status: 501,
+      error: 'Только в Electron'
+    })
   } as Window['api']
 
   const agentDefaults = {

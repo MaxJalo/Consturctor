@@ -162,6 +162,23 @@ const api = {
     error: string
   }> => ipcRenderer.invoke('updater:getStatus'),
   installUpdate: (): Promise<{ ok: boolean; error?: string }> => ipcRenderer.invoke('updater:install'),
+  loadOdataExternalEnv: (): Promise<{
+    ok: boolean
+    path: string
+    missing: string[]
+    invokeArgs: Record<string, string>
+  }> => ipcRenderer.invoke('orch:load-odata-external-env'),
+  fetchErpOdataTasks: (opts: {
+    token?: string | null
+    fio?: string
+    limit?: number
+    fallbackSql?: boolean
+  }): Promise<{
+    ok: boolean
+    status: number
+    data?: unknown
+    error?: string
+  }> => ipcRenderer.invoke('orch:fetch-erp-odata-tasks', opts),
   onUpdateStatus: (
     callback: (payload: {
       state: 'idle' | 'available' | 'downloading' | 'installing' | 'error'

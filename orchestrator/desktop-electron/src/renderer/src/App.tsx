@@ -19,6 +19,8 @@ import {
   syncComProfileFromUser
 } from './store/session'
 import { formatGatewayToolError, shouldForceReLogin } from './workplace/onecSessionHints'
+import { fetchMyErpTasksOData } from './workplace/fetchMyErpTasksOData'
+import { erpActorFio } from './workplace/userContext'
 import { AgentRunPage } from './pages/AgentRunPage'
 import { AgentHistoryPage } from './pages/AgentHistoryPage'
 import { AgentSchedulePage } from './pages/AgentSchedulePage'
@@ -301,6 +303,20 @@ function AppShell(): React.JSX.Element {
       })
       .catch(() => undefined)
   }, [user?.id ?? '', user?.nameMail ?? '', user?.fio ?? '', comCredsRevision])
+
+  useEffect(() => {
+    if (!import.meta.env.DEV || !user) {
+      delete window.__ORCH_DEV__
+      return
+    }
+    window.__ORCH_DEV__ = {
+      fetchMyErpTasksOData: (limit?: number) =>
+        fetchMyErpTasksOData(user, erpActorFio(user), { limit })
+    }
+    return () => {
+      delete window.__ORCH_DEV__
+    }
+  }, [user])
 
   useEffect(() => {
     if (!user) return

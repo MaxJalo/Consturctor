@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
+import { RefreshCw } from 'lucide-react'
 import type { UserProfile } from '../../api/types'
 import { OrchSlotFilters, OrchSlotMetrics, OrchSlotTodayCanvas } from '../../layout/GridSlots'
 import { TodayWidgetGrid, useTodayWidgetLayout } from './TodayWidgetGrid'
@@ -15,6 +16,7 @@ import { sameDay } from '../../utils/calendar'
 import { useTodayPreparedDecisions } from '../../workplace/useTodayPreparedDecisions'
 import { TodayFiltersBar, TodayPlanPanel } from './todayTzComponents'
 import { TodayResultsPanel } from './TodayResultsPanel'
+import { useGridDataRefreshContext } from '../../workplace/GridDataRefreshContext'
 
 function TodayCellText({ text }: { text: string }): React.JSX.Element {
   return (
@@ -36,7 +38,8 @@ function MiniTableCard({
   error,
   emptyText,
   hint,
-  emptyExtra
+  emptyExtra,
+  headerAction
 }: {
   title: string
   columns: string[]
@@ -47,6 +50,7 @@ function MiniTableCard({
   emptyText?: string
   hint?: string
   emptyExtra?: React.ReactNode
+  headerAction?: React.ReactNode
 }): React.JSX.Element {
   const body = ((): React.ReactNode => {
     if (loading) {
@@ -76,11 +80,15 @@ function MiniTableCard({
     ))
   })()
 
+  const titleExtra = (
+    <span className="today-mini-table-head">
+      {headerAction}
+      {hint ? <span className="spec-v04-muted today-table-hint">{hint}</span> : null}
+    </span>
+  )
+
   return (
-    <SpecPanel
-      title={title}
-      extra={hint ? <span className="spec-v04-muted today-table-hint">{hint}</span> : undefined}
-    >
+    <SpecPanel title={title} extra={headerAction || hint ? titleExtra : undefined}>
       {error && !loading ? (
         <p className="today-table-status today-table-error today-table-banner">{error}</p>
       ) : null}
@@ -119,6 +127,7 @@ export function TodayGridTab({
   onOpenRun: (workflowId: string, title: string, runId?: string) => void
   onAskOrchestrator: (message: string, appContext: string) => void
 }): React.JSX.Element {
+  const { forceRefresh } = useGridDataRefreshContext()
   const { data, tiles } = useTodayKpiData(user)
   const [periodDay, setPeriodDay] = useState(startOfToday)
   const [onecDialogOpen, setOnecDialogOpen] = useState(false)
@@ -226,6 +235,17 @@ export function TodayGridTab({
         <TodayWindow>
         <MiniTableCard
           title="Задачи из 1С"
+          headerAction={
+            <button
+              type="button"
+              className="today-refresh-btn"
+              title="Обновить задачи 1С (OData + agent-pochta .env)"
+              disabled={data.sourcesLoading}
+              onClick={() => forceRefresh()}
+            >
+              <RefreshCw size={14} aria-hidden />
+            </button>
+          }
           loading={data.sourcesLoading}
           error={
             taskRows.length

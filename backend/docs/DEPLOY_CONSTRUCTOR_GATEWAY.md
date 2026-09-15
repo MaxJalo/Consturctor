@@ -77,7 +77,14 @@ python scripts\_probe_http_erp_once.py
 - После смены backend — **повторный вход** (JWT привязан к инстансу).
 - VPN на ПК пользователя **не требуется** для задач 1С через gateway.
 
-## 5. Связанные файлы
+## 5. Локальная разработка (без деплоя gateway)
+
+Пока образ на 157 не обновлён, задачи проверяйте на **локальном** backend и VPN до `ii1`:
+
+- `backend/docs/LOCAL_ERP_TASKS_ODATA.md`
+- `orchestrator/scripts/test_erp_tasks_local_odata.py`
+
+## 6. Связанные файлы
 
 - `RegAgent/README.md` — первичный docker compose
 - `orchestrator/backend/README.md` — ERP_SQL, auth

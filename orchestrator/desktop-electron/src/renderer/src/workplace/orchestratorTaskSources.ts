@@ -33,8 +33,31 @@ export const ORCH_SOURCE_ID = {
 
 /**
  * 1C grid default: gateway SQL via onec.erp_tasks_current (_query_tasks in erp_tasks.py).
+ * Local dev (127.0.0.1) or VITE_ERP_TASKS_SOURCE=odata → onec.erp_tasks_odata (+ SQL merge on backend).
  * COM onec.search_tasks runs only when VITE_ONEC_COM_TASKS_FALLBACK=1 and SQL merge is empty.
  */
+export function erpTasksSourceMode(): 'sql' | 'odata' | 'auto' {
+  const flag = String(import.meta.env.VITE_ERP_TASKS_SOURCE ?? '').trim().toLowerCase()
+  if (flag === 'odata') return 'odata'
+  if (flag === 'sql') return 'sql'
+  return 'auto'
+}
+
+export function isLocalBackendUrl(backendUrl: string): boolean {
+  const url = (backendUrl || '').trim()
+  if (!url) return true
+  return /127\.0\.0\.1|localhost/i.test(url)
+}
+
+/** Today / grid ERP tasks: OData tool on local backend; LAN gateway stays SQL-only. */
+export function preferErpTasksOdata(): boolean {
+  const mode = erpTasksSourceMode()
+  if (mode === 'sql') return false
+  if (mode === 'odata') return true
+  const backendUrl = String(import.meta.env.VITE_BACKEND_URL ?? '').trim()
+  return isLocalBackendUrl(backendUrl)
+}
+
 export function onecComTasksFallbackEnabled(): boolean {
   const flag = String(import.meta.env.VITE_ONEC_COM_TASKS_FALLBACK ?? '').trim().toLowerCase()
   return flag === '1' || flag === 'true' || flag === 'yes'
@@ -142,12 +165,13 @@ export function turboProjectFetchCandidates(projects: SpecProjectRow[], max = 5)
 export function normalizeErpGatewaySource(source: string): string {
   const key = (source || '').trim().toLowerCase()
   if (!key || key === 'stub') return key || ''
+  if (key.includes('erp_pm') && key.includes('odata')) return ORCH_SOURCE_ID.erpPm
   if (key.includes('erp_pm')) return ORCH_SOURCE_ID.erpPm
   if (key.includes('документооборот') || key.includes('docflow')) return 'docflow'
   return source
 }
 
-function parseErpToolTasks(
+export function parseErpToolTasks(
   res: { ok: boolean; result?: unknown; error?: string },
   erpFio: string
 ): { rows: SpecTaskRow[]; source: string; warning: string; error: string } {
@@ -240,22 +264,61 @@ export type OrchestratorErpLoad = {
   oneCAuthFailure: boolean
 }
 
+async function externalOdataInvokeExtras(): Promise<Record<string, unknown>> {
+  if (!preferErpTasksOdata()) return {}
+  const loader = window.api?.loadOdataExternalEnv
+  if (typeof loader !== 'function') return {}
+  try {
+    const loaded = await loader()
+    if (!loaded.invokeArgs || typeof loaded.invokeArgs !== 'object') return {}
+    return loaded.invokeArgs as Record<string, unknown>
+  } catch {
+    return {}
+  }
+}
+
 export async function loadOrchestratorErpTasks(
   user: UserProfile,
   erpFio: string
 ): Promise<OrchestratorErpLoad> {
-  const onecArgs = onecGatewayInvokeArgs(user, { limit: 80 })
-  const erpRes = await api.invokeServerTool('onec.erp_tasks_current', onecArgs)
-  const erpParsed = parseErpToolTasks(erpRes, erpFio)
+  const useOdataTool = preferErpTasksOdata()
+  const odataExtras = useOdataTool ? await externalOdataInvokeExtras() : {}
+  const onecArgs = onecGatewayInvokeArgs(user, { limit: 80, ...odataExtras })
+  const primaryTool = useOdataTool ? 'onec.erp_tasks_odata' : 'onec.erp_tasks_current'
+  let erpRes = await api.invokeServerTool(primaryTool, {
+    ...onecArgs,
+    ...(useOdataTool ? { fallback_sql: true } : {})
+  })
+  let erpParsed = parseErpToolTasks(erpRes, erpFio)
+
+  if (
+    useOdataTool &&
+    erpParsed.rows.length === 0 &&
+    (erpParsed.source === 'stub' || !erpRes.ok)
+  ) {
+    const sqlRes = await api.invokeServerTool('onec.erp_tasks_current', onecArgs)
+    const sqlParsed = parseErpToolTasks(sqlRes, erpFio)
+    if (sqlParsed.rows.length || sqlRes.ok) {
+      erpRes = sqlRes
+      erpParsed = sqlParsed
+    }
+  }
 
   let tasks = erpParsed.rows
   let sourceLabel = erpParsed.source || ORCH_SOURCE_ID.erpPm
-  const docflowWarning = erpParsed.warning
+  const payloadObj =
+    erpRes.ok && erpRes.result && typeof erpRes.result === 'object'
+      ? (erpRes.result as Record<string, unknown>)
+      : null
+  const odataWarning = String(payloadObj?.odata_warning || '').trim()
+  const docflowWarning = uniqueErrorJoin(erpParsed.warning, odataWarning)
   let mergedError = uniqueErrorJoin(
     erpRes.error || '',
     erpParsed.error,
-    !erpRes.ok && !erpParsed.rows.length ? 'onec.erp_tasks_current недоступен' : '',
-    erpParsed.source === 'stub' ? 'erp_pm stub (нет SQL gateway)' : ''
+    !erpRes.ok && !erpParsed.rows.length
+      ? `${primaryTool} недоступен`
+      : '',
+    erpParsed.source === 'stub' ? 'erp_pm stub (нет SQL/OData на backend)' : ''
   )
 
   if (tasks.length === 0 && onecComTasksFallbackEnabled()) {

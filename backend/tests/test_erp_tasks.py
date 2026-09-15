@@ -102,6 +102,7 @@ def test_resolve_actor_uses_fio_when_jwt_id_is_constructor(monkeypatch) -> None:
 
 def test_tools_registered() -> None:
     assert "onec.erp_tasks_current" in ONEC_TOOLS
+    assert "onec.erp_tasks_odata" in ONEC_TOOLS
     assert "onec.erp_tasks_period" in ONEC_TOOLS
     assert "onec.erp_subordinate_tasks" in ONEC_TOOLS
     assert "onec.docflow_tasks" in ONEC_TOOLS
@@ -117,6 +118,7 @@ def test_tools_registered() -> None:
     assert search.get("runtime") == "com32"
     assert "users.subordinates" in names
     assert "onec.erp_tasks_current" in names
+    assert "onec.erp_tasks_odata" in names
     assert "onec.erp_tasks_period" in names
     assert "onec.erp_subordinate_tasks" in names
     assert "onec.docflow_tasks" in names
@@ -125,6 +127,7 @@ def test_tools_registered() -> None:
     for item in list_tools():
         if item["name"] in {
             "onec.erp_tasks_current",
+            "onec.erp_tasks_odata",
             "onec.erp_tasks_period",
             "onec.erp_subordinate_tasks",
             "onec.docflow_tasks",
@@ -160,6 +163,50 @@ def test_list_org_subordinates_from_erp_without_constructor(monkeypatch) -> None
     assert result["users"][0]["fio"] == "Незарегистрированный Иванов"
     assert result["users"][0]["source"] == "erp_pm"
     assert "id" not in result["users"][0]
+
+
+def test_map_odata_task_row_open() -> None:
+    from app.services.erp_tasks_odata import _map_odata_task_row
+
+    row = _map_odata_task_row(
+        {
+            "Number": "00-Л-000040259",
+            "Description": "Проверить отчёт",
+            "Executed": False,
+            "Date": "2026-09-10T12:00:00",
+            "СрокИсполнения": "2026-09-15T18:00:00",
+            "Исполнитель_Name": "Жалыбин И.И.",
+        }
+    )
+    assert row["number"] == "00-Л-000040259"
+    assert row["done"] is False
+    assert row["source"] == "erp_pm+odata"
+    assert row["performer"] == "Жалыбин И.И."
+
+
+def test_odata_configured_accepts_invoke_overrides() -> None:
+    from app.services.onec_tools import odata_configured
+
+    assert odata_configured(
+        {
+            "odata_base_url": "http://192.168.2.229:81/erp_pm/odata/standard.odata",
+            "odata_username": "odata.user",
+            "odata_password": "secret",
+        }
+    )
+
+
+def test_invoke_erp_tasks_odata_stub_without_odata(monkeypatch) -> None:
+    monkeypatch.setattr("app.services.onec_tools._erp_sql_ready", lambda: False)
+    monkeypatch.setattr("app.services.onec_tools.odata_configured", lambda: False)
+    result = invoke_onec(
+        "onec.erp_tasks_odata",
+        {"limit": 5},
+        actor_fio="Сидоров С.С.",
+    )
+    assert result["source"] == "stub"
+    assert result["count"] == 0
+    assert "OData" in str(result.get("odata_warning") or "")
 
 
 def test_invoke_current_uses_jwt_actor(monkeypatch) -> None:
