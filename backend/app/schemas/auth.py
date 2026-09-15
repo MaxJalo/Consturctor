@@ -14,6 +14,8 @@ class UserOut(BaseModel):
     fio: str
     department: str = ""
     position: str = ""
+    role: str = "user"
+    is_admin: bool = False
     avatar_url: str | None = None
     can_change_department: bool = True
     department_change_available_at: datetime | None = None

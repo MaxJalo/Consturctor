@@ -293,6 +293,16 @@ export interface AdminKpiSummaryMock {
   icon?: 'target' | 'none'
 }
 
+export interface AdminKpiAgentCardMock {
+  id: string
+  name: string
+  process: string
+  status: string
+  statusTone: AdminBadgeTone
+  efficiency: number
+  summaries: AdminKpiSummaryMock[]
+}
+
 export interface AdminKpiMock extends AdminPeriodMock {
   breadcrumb: string
   title: string
@@ -300,6 +310,7 @@ export interface AdminKpiMock extends AdminPeriodMock {
   tabs: Array<{ id: string; label: string }>
   activeTab: string
   summaries: AdminKpiSummaryMock[]
+  agentCards: AdminKpiAgentCardMock[]
   dynamics: AdminLaunchDynamicsMock
   topAgents: Array<{ label: string; value: number }>
   gauges: Array<{ id: string; label: string; value: string; tone: 'green' | 'orange' | 'cyan' }>
@@ -497,6 +508,93 @@ export const adminKpiMock: AdminKpiMock = {
     { id: 's5', label: 'Доступность системы', value: '99,7%', tint: 'green' },
     { id: 's6', label: 'Статус системы', value: '', icon: 'target', tint: 'green' },
     { id: 's7', label: 'Критические ошибки', value: '3', trend: '(-2)', trendTone: 'negative', tint: 'red' }
+  ],
+  agentCards: [
+    {
+      id: 'meet',
+      name: 'Агент_Совещания',
+      process: 'Подготовка совещания',
+      status: 'Активен',
+      statusTone: 'success',
+      efficiency: 96,
+      summaries: [
+        { id: 's1', label: 'Успешность задач', value: '96%', trend: '(+2%)', trendTone: 'positive', tint: 'none' },
+        { id: 's2', label: 'Среднее время', value: '1,4 мин', trend: '(-8%)', trendTone: 'positive', tint: 'none' },
+        { id: 's3', label: 'Загрузка агента', value: '74%', tint: 'orange' },
+        { id: 's4', label: 'Запусков', value: '1 245', tint: 'none' },
+        { id: 's5', label: 'Пользователей', value: '28', tint: 'none' },
+        { id: 's6', label: 'Статус', value: '', icon: 'target', tint: 'green' },
+        { id: 's7', label: 'Ошибки', value: '1', trend: '(-1)', trendTone: 'negative', tint: 'red' }
+      ]
+    },
+    {
+      id: 'kp',
+      name: 'Агент_КП',
+      process: 'Формирование КП',
+      status: 'Активен',
+      statusTone: 'success',
+      efficiency: 92,
+      summaries: [
+        { id: 's1', label: 'Успешность задач', value: '93%', trend: '(+1%)', trendTone: 'positive', tint: 'none' },
+        { id: 's2', label: 'Среднее время', value: '2,1 мин', trend: '(-5%)', trendTone: 'positive', tint: 'none' },
+        { id: 's3', label: 'Загрузка агента', value: '61%', tint: 'orange' },
+        { id: 's4', label: 'Запусков', value: '678', tint: 'none' },
+        { id: 's5', label: 'Пользователей', value: '19', tint: 'none' },
+        { id: 's6', label: 'Статус', value: '', icon: 'target', tint: 'green' },
+        { id: 's7', label: 'Ошибки', value: '2', trend: '(0)', trendTone: 'negative', tint: 'red' }
+      ]
+    },
+    {
+      id: 'proc',
+      name: 'Агент_Закупки',
+      process: 'Отчет по закупкам',
+      status: 'Активен',
+      statusTone: 'success',
+      efficiency: 88,
+      summaries: [
+        { id: 's1', label: 'Успешность задач', value: '90%', trend: '(+4%)', trendTone: 'positive', tint: 'none' },
+        { id: 's2', label: 'Среднее время', value: '2,6 мин', trend: '(-9%)', trendTone: 'positive', tint: 'none' },
+        { id: 's3', label: 'Загрузка агента', value: '55%', tint: 'orange' },
+        { id: 's4', label: 'Запусков', value: '412', tint: 'none' },
+        { id: 's5', label: 'Пользователей', value: '14', tint: 'none' },
+        { id: 's6', label: 'Статус', value: '', icon: 'target', tint: 'green' },
+        { id: 's7', label: 'Ошибки', value: '4', trend: '(+1)', trendTone: 'negative', tint: 'red' }
+      ]
+    },
+    {
+      id: 'analytics',
+      name: 'Агент_Аналитика',
+      process: 'Анализ рынка',
+      status: 'На настройке',
+      statusTone: 'warning',
+      efficiency: 85,
+      summaries: [
+        { id: 's1', label: 'Успешность задач', value: '87%', trend: '(-2%)', trendTone: 'negative', tint: 'none' },
+        { id: 's2', label: 'Среднее время', value: '3,2 мин', trend: '(+6%)', trendTone: 'negative', tint: 'none' },
+        { id: 's3', label: 'Загрузка агента', value: '42%', tint: 'orange' },
+        { id: 's4', label: 'Запусков', value: '456', tint: 'none' },
+        { id: 's5', label: 'Пользователей', value: '11', tint: 'none' },
+        { id: 's6', label: 'Статус', value: '', icon: 'target', tint: 'green' },
+        { id: 's7', label: 'Ошибки', value: '6', trend: '(+2)', trendTone: 'negative', tint: 'red' }
+      ]
+    },
+    {
+      id: 'fin',
+      name: 'Агент_Финансы',
+      process: 'Финансовый анализ',
+      status: 'Активен',
+      statusTone: 'success',
+      efficiency: 82,
+      summaries: [
+        { id: 's1', label: 'Успешность задач', value: '89%', trend: '(0%)', trendTone: 'positive', tint: 'none' },
+        { id: 's2', label: 'Среднее время', value: '2,9 мин', trend: '(-3%)', trendTone: 'positive', tint: 'none' },
+        { id: 's3', label: 'Загрузка агента', value: '48%', tint: 'orange' },
+        { id: 's4', label: 'Запусков', value: '534', tint: 'none' },
+        { id: 's5', label: 'Пользователей', value: '16', tint: 'none' },
+        { id: 's6', label: 'Статус', value: '', icon: 'target', tint: 'green' },
+        { id: 's7', label: 'Ошибки', value: '5', trend: '(+1)', trendTone: 'negative', tint: 'red' }
+      ]
+    }
   ],
   dynamics: {
     title: 'Динамика KPI',

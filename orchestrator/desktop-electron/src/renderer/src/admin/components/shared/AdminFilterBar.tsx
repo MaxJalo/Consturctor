@@ -76,9 +76,9 @@ export function AdminFilterBar({
             onChange={(event) => updateSearch(event.target.value)}
           />
         </label>
+        {extra ? <div className="admin-filter-bar__extra">{extra}</div> : null}
       </div>
       <div className="admin-filter-bar__actions">
-        {extra}
         {exportLabel ? (
           <div ref={exportRef} className={`admin-export-split ${exportOpen ? 'is-open' : ''}`}>
             <button type="button" className="admin-export-btn admin-export-btn--main" onClick={() => triggerExport(exportFormat)}>

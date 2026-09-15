@@ -15,6 +15,8 @@ function testLoginResult(): LoginResult {
       fio: TEST_USER_FIO,
       department: 'Тест',
       position: 'Тестовый пользователь',
+      role: 'user',
+      isAdmin: false,
       avatarUrl: null,
       canChangeDepartment: true,
       activityStatus: 'online',

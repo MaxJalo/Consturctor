@@ -192,6 +192,7 @@ const IDLE_UPDATE: UpdateStatus = {
 interface SidebarProps {
   active: PageKey | null
   light?: boolean
+  showAdminNav?: boolean
   activeThreadId?: string
   currentUserId?: string
   onNavigate: (key: PageKey) => void
@@ -203,6 +204,7 @@ interface SidebarProps {
 export function Sidebar({
   active,
   light = false,
+  showAdminNav = true,
   activeThreadId = '',
   currentUserId = '',
   onNavigate,
@@ -315,48 +317,52 @@ export function Sidebar({
         {!collapsed && (
           <div className="sidebar-brand-text">
             <div className="sidebar-title">{APP_TITLE}</div>
-            <div className="sidebar-subtitle">Администрирование</div>
+            <div className="sidebar-subtitle">{showAdminNav ? 'Администрирование' : 'Пользователь'}</div>
           </div>
         )}
       </div>
 
-      <div className="sidebar-search" onClick={expandForSearch} title={collapsed ? 'ФИО' : undefined}>
-        <img className="sidebar-search-icon" src={iconSearch} alt="" />
-        {!collapsed && (
-          <FioSuggest
-            value={fio}
-            onChange={setFio}
-            onSelect={(value, user) => {
-              setFio('')
-              onOpenFio(value, user)
-            }}
-            placeholder="ФИО"
-            inputClassName="sidebar-search-input"
-            variant={light ? 'light' : 'dark'}
-          />
-        )}
-      </div>
+      {showAdminNav ? (
+        <div className="sidebar-search" onClick={expandForSearch} title={collapsed ? 'ФИО' : undefined}>
+          <img className="sidebar-search-icon" src={iconSearch} alt="" />
+          {!collapsed && (
+            <FioSuggest
+              value={fio}
+              onChange={setFio}
+              onSelect={(value, user) => {
+                setFio('')
+                onOpenFio(value, user)
+              }}
+              placeholder="ФИО"
+              inputClassName="sidebar-search-input"
+              variant={light ? 'light' : 'dark'}
+            />
+          )}
+        </div>
+      ) : null}
 
-      <nav className="nav">
-        {ITEMS.map((item) => {
-          const isActive = item.key === active
-          return (
-            <button
-              key={item.key}
-              className={isActive ? 'nav-item active' : 'nav-item'}
-              onClick={() => onNavigate(item.key)}
-              title={item.label}
-            >
-              <span className="nav-icon" aria-hidden>
-                <NavIcon page={item.key} />
-              </span>
-              {!collapsed && <span className="nav-label">{item.label}</span>}
-            </button>
-          )
-        })}
-      </nav>
+      {showAdminNav ? (
+        <nav className="nav">
+          {ITEMS.map((item) => {
+            const isActive = item.key === active
+            return (
+              <button
+                key={item.key}
+                className={isActive ? 'nav-item active' : 'nav-item'}
+                onClick={() => onNavigate(item.key)}
+                title={item.label}
+              >
+                <span className="nav-icon" aria-hidden>
+                  <NavIcon page={item.key} />
+                </span>
+                {!collapsed && <span className="nav-label">{item.label}</span>}
+              </button>
+            )
+          })}
+        </nav>
+      ) : null}
 
-      {(update.state === 'available' ||
+      {showAdminNav && (update.state === 'available' ||
         update.state === 'downloading' ||
         update.state === 'installing') && (
         <div className="sidebar-update">
@@ -401,40 +407,44 @@ export function Sidebar({
         </div>
       )}
 
-      <div className="sidebar-divider" />
+      {showAdminNav ? (
+        <>
+          <div className="sidebar-divider" />
 
-      <div className="sidebar-peers">
-        {peers.map((peer) => {
-          const isActive = peer.id === activeThreadId || (peer.peerId !== '' && peer.peerId === activeThreadId)
-          const preview = lastMessagePreview(peer.preview)
-          const unread = peer.unread > 0 && !isActive
-          return (
-            <button
-              key={peer.id}
-              className={isActive ? 'sidebar-peer active' : 'sidebar-peer'}
-              title={preview ? `${peer.title}\n${preview}` : peer.title}
-              onClick={() => {
-                if (collapsed) setCollapsed(false)
-                setPeers((current) =>
-                  current.map((item) => (item.id === peer.id ? { ...item, unread: 0 } : item))
-                )
-                onOpenThread({ ...peer, unread: 0 })
-              }}
-            >
-              <span className="sidebar-peer-avatar">
-                {peerAvatars[peer.id] ? <img src={peerAvatars[peer.id]} alt="" /> : initials(peer.title)}
-              </span>
-              {!collapsed && (
-                <span className="sidebar-peer-meta">
-                  <span className="sidebar-peer-name">{shortFio(peer.title)}</span>
-                  <span className="sidebar-peer-preview">{preview}</span>
-                </span>
-              )}
-              {unread && <i className="sidebar-peer-dot" aria-hidden />}
-            </button>
-          )
-        })}
-      </div>
+          <div className="sidebar-peers">
+            {peers.map((peer) => {
+              const isActive = peer.id === activeThreadId || (peer.peerId !== '' && peer.peerId === activeThreadId)
+              const preview = lastMessagePreview(peer.preview)
+              const unread = peer.unread > 0 && !isActive
+              return (
+                <button
+                  key={peer.id}
+                  className={isActive ? 'sidebar-peer active' : 'sidebar-peer'}
+                  title={preview ? `${peer.title}\n${preview}` : peer.title}
+                  onClick={() => {
+                    if (collapsed) setCollapsed(false)
+                    setPeers((current) =>
+                      current.map((item) => (item.id === peer.id ? { ...item, unread: 0 } : item))
+                    )
+                    onOpenThread({ ...peer, unread: 0 })
+                  }}
+                >
+                  <span className="sidebar-peer-avatar">
+                    {peerAvatars[peer.id] ? <img src={peerAvatars[peer.id]} alt="" /> : initials(peer.title)}
+                  </span>
+                  {!collapsed && (
+                    <span className="sidebar-peer-meta">
+                      <span className="sidebar-peer-name">{shortFio(peer.title)}</span>
+                      <span className="sidebar-peer-preview">{preview}</span>
+                    </span>
+                  )}
+                  {unread && <i className="sidebar-peer-dot" aria-hidden />}
+                </button>
+              )
+            })}
+          </div>
+        </>
+      ) : null}
 
       <button
         className="collapse-btn"

@@ -110,6 +110,10 @@ function normalizeFioKey(value: string): string {
   return (value || '').toLowerCase().replace(/[ьъ\u0301]/g, '')
 }
 
+function isLocalAdminFio(value: string): boolean {
+  return normalizeFioKey(value).replace(/ё/g, 'е').replace(/\s+/g, ' ').trim() === 'уставицкий андрей алексеевич'
+}
+
 const PROFILE_OVERRIDES: Array<{ needle: string; position: string; department: string }> = [
   {
     needle: 'мангасарян',
@@ -129,11 +133,17 @@ function applyProfileOverrides(user: UserProfile): UserProfile {
 }
 
 function parseUser(data: Record<string, unknown>): UserProfile {
+  const fio = String(data.fio ?? '')
+  const role = String(data.role ?? '')
+  const adminFlag = data.is_admin ?? data.isAdmin
+  const isAdmin = adminFlag === true || role === 'admin' || isLocalAdminFio(fio)
   return applyProfileOverrides({
     id: String(data.id ?? ''),
-    fio: String(data.fio ?? ''),
+    fio,
     department: String(data.department ?? ''),
     position: String(data.position ?? ''),
+    role: isAdmin ? 'admin' : role || 'user',
+    isAdmin,
     avatarUrl: optionalUrl(data.avatarUrl) ?? optionalUrl(data.avatar_url),
     canChangeDepartment:
       (data.canChangeDepartment as boolean) ?? (data.can_change_department as boolean) ?? true,

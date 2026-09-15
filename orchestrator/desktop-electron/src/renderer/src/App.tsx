@@ -37,6 +37,7 @@ import { KpiAdminPage } from './admin/pages/KpiAdminPage'
 import { UsersPage } from './admin/pages/UsersPage'
 import { AiAgentsPage } from './admin/pages/AiAgentsPage'
 import { KnowledgeBasePage } from './admin/pages/KnowledgeBasePage'
+import { SettingsPage } from './admin/pages/SettingsPage'
 import { InDevelopmentPage } from './pages/InDevelopmentPage'
 import { DiagnosticsPage, TicketsPage } from './workplace/WorkplaceTabs'
 /*
@@ -137,6 +138,7 @@ export function App(): React.JSX.Element {
   const [showLogout, setShowLogout] = useState(true)
   const [view, setView] = useState<View>({ kind: 'tab', key: 'overview' })
   const [lastTab, setLastTab] = useState<PageKey>('overview')
+  const [adminViewMode, setAdminViewMode] = useState<'admin' | 'user'>('user')
   const [unread, setUnread] = useState(0)
   const [avatarUrl, setAvatarUrl] = useState<string | null>(null)
   const [toast, setToast] = useState('')
@@ -169,6 +171,7 @@ export function App(): React.JSX.Element {
             try {
               const profile = await api.me(8_000)
               setUser(profile)
+              setAdminViewMode(profile.isAdmin ? 'admin' : 'user')
             } catch {
               clearSession(true)
               api.setToken(null)
@@ -268,9 +271,13 @@ export function App(): React.JSX.Element {
       clearSession(true)
     }
     setUser(result.user)
+    setAdminViewMode(result.user.isAdmin ? 'admin' : 'user')
     setView({ kind: 'tab', key: 'overview' })
     if (result.accessToken) {
-      void api.me().then(setUser).catch(() => undefined)
+      void api.me().then((profile) => {
+        setUser(profile)
+        setAdminViewMode(profile.isAdmin ? 'admin' : 'user')
+      }).catch(() => undefined)
     }
   }
 
@@ -283,6 +290,7 @@ export function App(): React.JSX.Element {
     clearAvatarCache()
     setAvatarUrl(null)
     setView({ kind: 'tab', key: 'overview' })
+    setAdminViewMode('user')
     setUser(null)
   }
 
@@ -421,9 +429,12 @@ export function App(): React.JSX.Element {
     return <LoginPage onLoggedIn={onLoggedIn} />
   }
   const activeUser = user
+  const isAdminMode = Boolean(activeUser.isAdmin && adminViewMode === 'admin')
 
   const activeKey: PageKey | null =
-    view.kind === 'tab'
+    !isAdminMode
+      ? null
+      : view.kind === 'tab'
       ? view.key
       : view.kind === 'chat'
         ? null
@@ -488,6 +499,9 @@ export function App(): React.JSX.Element {
           onOpenAgent={() => setView({ kind: 'tab', key: 'ai_agents' })}
         />
       )
+    }
+    if (!isAdminMode) {
+      return <InDevelopmentPage title="Рабочее место" />
     }
     if (view.kind === 'tickets') {
       return (
@@ -581,7 +595,7 @@ export function App(): React.JSX.Element {
       case 'knowledge_base':
         return <KnowledgeBasePage />
       case 'settings':
-        return <InDevelopmentPage title={PAGE_LABELS[view.key]} />
+        return <SettingsPage />
       /*
       case 'processes':
         return (
@@ -685,9 +699,11 @@ export function App(): React.JSX.Element {
       <Sidebar
         active={activeKey}
         light={false}
+        showAdminNav={isAdminMode}
         activeThreadId={view.kind === 'chat' ? view.thread.id : ''}
         currentUserId={user.id || ''}
         onNavigate={(key) => {
+          if (!isAdminMode) return
           setLastTab(key)
           setView({ kind: 'tab', key })
         }}
@@ -707,7 +723,12 @@ export function App(): React.JSX.Element {
               showLogout={showLogout}
               onOpenAgent={(workflowId, runId) => void openAgentRun(workflowId, runId)}
               onGoToSettings={() => setView({ kind: 'tab', key: 'settings' })}
-              variant={view.kind === 'tab' && ADMIN_TAB_KEYS.includes(view.key) ? 'admin' : 'default'}
+              canSwitchAdminView={Boolean(user.isAdmin)}
+              onSwitchAdminView={(mode) => {
+                setAdminViewMode(mode)
+                setView({ kind: 'tab', key: 'overview' })
+              }}
+              variant={isAdminMode && view.kind === 'tab' && ADMIN_TAB_KEYS.includes(view.key) ? 'admin' : 'default'}
             />
           </div>
           {toast && <div className="wp-toast">{toast}</div>}
@@ -715,7 +736,7 @@ export function App(): React.JSX.Element {
           {renderContent()}
         </div>
       </main>
-      <ChatDock onOpenThread={openChat} onOpenSupport={openSupport} />
+      {isAdminMode ? <ChatDock onOpenThread={openChat} onOpenSupport={openSupport} /> : null}
     </div>
   )
 }

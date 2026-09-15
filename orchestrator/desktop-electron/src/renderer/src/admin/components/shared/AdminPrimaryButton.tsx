@@ -1,17 +1,22 @@
+import { Download, Eye, Plus } from 'lucide-react'
+
 interface AdminPrimaryButtonProps {
   label: string
-  icon?: 'plus' | 'download'
+  icon?: 'plus' | 'download' | 'eye'
   onClick?: () => void
 }
 
+const ICONS = {
+  plus: Plus,
+  download: Download,
+  eye: Eye
+} as const
+
 export function AdminPrimaryButton({ label, icon, onClick }: AdminPrimaryButtonProps): React.JSX.Element {
+  const Icon = icon ? ICONS[icon] : null
   return (
     <button type="button" className="admin-primary-btn" onClick={onClick}>
-      {icon === 'plus' ? (
-        <svg viewBox="0 0 16 16" aria-hidden>
-          <path d="M8 3.5v9M3.5 8h9" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
-        </svg>
-      ) : null}
+      {Icon ? <Icon size={14} strokeWidth={2} aria-hidden /> : null}
       {label}
     </button>
   )

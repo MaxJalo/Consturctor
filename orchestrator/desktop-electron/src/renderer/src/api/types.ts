@@ -3,6 +3,8 @@ export interface UserProfile {
   fio: string
   department: string
   position: string
+  role: string
+  isAdmin: boolean
   avatarUrl: string | null
   canChangeDepartment: boolean
   activityStatus: string

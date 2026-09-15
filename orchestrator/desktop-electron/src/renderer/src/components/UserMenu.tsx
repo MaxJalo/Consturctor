@@ -13,6 +13,8 @@ interface UserMenuProps {
   showLogout: boolean
   onOpenAgent?: (workflowId: string, runId: string) => void
   onGoToSettings?: () => void
+  canSwitchAdminView?: boolean
+  onSwitchAdminView?: (mode: 'admin' | 'user') => void
   variant?: 'default' | 'admin'
 }
 
@@ -25,6 +27,8 @@ export function UserMenu({
   showLogout,
   onOpenAgent,
   onGoToSettings,
+  canSwitchAdminView = false,
+  onSwitchAdminView,
   variant = 'default'
 }: UserMenuProps): React.JSX.Element {
   const [menuOpen, setMenuOpen] = useState(false)
@@ -134,6 +138,11 @@ export function UserMenu({
     onGoToSettings?.()
   }
 
+  function switchAdminView(mode: 'admin' | 'user'): void {
+    setMenuOpen(false)
+    onSwitchAdminView?.(mode)
+  }
+
   return (
     <div className={adminLayout ? 'user-menu user-menu--admin' : 'user-menu'} ref={ref}>
       <div className="notify-wrap">
@@ -180,6 +189,11 @@ export function UserMenu({
               <button type="button" className="user-dropdown-item" onClick={goToSettings}>
                 Перейти в настройки
               </button>
+              {canSwitchAdminView ? (
+                <button type="button" className="user-dropdown-item" onClick={() => switchAdminView('user')}>
+                  Войти как пользователь
+                </button>
+              ) : null}
               {showLogout ? (
                 <button type="button" className="user-dropdown-logout" onClick={onLogout}>
                   Выйти
@@ -206,6 +220,11 @@ export function UserMenu({
             {menuOpen && (
               <div className="user-dropdown">
                 <div className="user-dropdown-dept">{user.department || 'Без подразделения'}</div>
+                {canSwitchAdminView ? (
+                  <button type="button" className="user-dropdown-item" onClick={() => switchAdminView('admin')}>
+                    Войти как администратор
+                  </button>
+                ) : null}
                 {showLogout && (
                   <button className="user-dropdown-logout" onClick={onLogout}>
                     Выйти

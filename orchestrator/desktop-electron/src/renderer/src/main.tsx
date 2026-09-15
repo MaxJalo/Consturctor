@@ -6,6 +6,10 @@ import { RunProvider } from './store/runs'
 import './styles.css'
 import './admin/admin-pages.css'
 import './admin/admin-overview.css'
+import './admin/admin-themes.css'
+import { initAdminTheme } from './admin/theme/adminThemes'
+
+initAdminTheme()
 
 function preventWindowFileOpen(event: DragEvent): void {
   event.preventDefault()

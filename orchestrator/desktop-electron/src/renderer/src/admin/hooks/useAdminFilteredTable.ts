@@ -37,6 +37,11 @@ export function useAdminFilteredTable<T>({
 
   const paged = useMemo(() => paginateRows(filtered, page, pageSize), [filtered, page, pageSize])
 
+  useEffect(() => {
+    const totalPages = Math.max(1, Math.ceil(filtered.length / pageSize))
+    if (page > totalPages) setPage(totalPages)
+  }, [filtered.length, page, pageSize])
+
   return {
     filtered,
     paged,

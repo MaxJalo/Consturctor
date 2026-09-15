@@ -8,11 +8,15 @@ export interface AdminTableColumn {
 interface AdminDataTableProps {
   columns: AdminTableColumn[]
   rows: React.ReactNode[][]
+  stretchRows?: boolean
 }
 
-export function AdminDataTable({ columns, rows }: AdminDataTableProps): React.JSX.Element {
+export function AdminDataTable({ columns, rows, stretchRows = false }: AdminDataTableProps): React.JSX.Element {
   return (
-    <div className="admin-table-wrap">
+    <div
+      className={stretchRows ? 'admin-table-wrap admin-table-wrap--stretch' : 'admin-table-wrap'}
+      style={stretchRows ? ({ '--admin-table-rows': Math.max(rows.length, 1) } as React.CSSProperties) : undefined}
+    >
       <table className="admin-table">
         <thead>
           <tr>
