@@ -1,5 +1,24 @@
+.orch-grid-kpi .orch-slot-filters {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
 .orch-kpi-tiles .spec-v04-tiles-rich {
   grid-template-columns: repeat(6, minmax(0, 1fr));
+}
+
+.kpi-dash-table-toolbar {
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 12px;
+}
+
+.kpi-dash-table-title {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 650;
+  color: var(--main-text);
 }
 
 @media (max-width: 1400px) {

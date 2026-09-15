@@ -95,7 +95,7 @@ export function KpiGridTab(_props: {
 }): React.JSX.Element {
   const [from, setFrom] = useState(DEFAULT_FROM)
   const [to, setTo] = useState(DEFAULT_TO)
-  const { data, loading, error } = useWorkplaceKpiDashboard(from, to)
+  const { data, loading, error, notice } = useWorkplaceKpiDashboard(from, to)
 
   const tiles = useMemo(() => {
     if (data?.cards.length) return cardsToTiles(data.cards)
@@ -114,10 +114,6 @@ export function KpiGridTab(_props: {
         <div className="orch-kpi-tiles">
           <SpecSummaryTiles tiles={tiles} />
         </div>
-        {!tiles.length && loading ? (
-          <p className="kpi-dash-status-banner">Загружаем показатели…</p>
-        ) : null}
-        {error ? <p className="kpi-dash-status-banner error">{error}</p> : null}
       </OrchSlotMetrics>
 
       <OrchSlotFilters>
@@ -125,11 +121,19 @@ export function KpiGridTab(_props: {
           <KpiRangePicker from={from} to={to} shortcut={null} onApply={applyRange} onShortcut={() => undefined} />
           <StandardGridFilters searchPlaceholder="Поиск по KPI…" />
         </SpecFilters>
+        {!tiles.length && loading ? (
+          <p className="kpi-dash-status-banner">Загружаем показатели…</p>
+        ) : null}
+        {notice ? <p className="kpi-dash-status-banner">{notice}</p> : null}
+        {error ? <p className="kpi-dash-status-banner error">{error}</p> : null}
       </OrchSlotFilters>
 
-      <OrchSlotMain>
-        <SpecPanel title="KPI ИИ-агентов" extra={data?.periodLabel ? <span className="spec-v04-muted">{data.periodLabel}</span> : null}>
-          <div className="spec-v04-table-wrap wp-card kpi-dash-main-table">
+      <OrchSlotMain spanAll>
+        <div className="spec-table-toolbar kpi-dash-table-toolbar">
+          <h3 className="kpi-dash-table-title">KPI ИИ-агентов</h3>
+          {data?.periodLabel ? <span className="spec-v04-muted">{data.periodLabel}</span> : null}
+        </div>
+        <div className="spec-v04-table-wrap wp-card kpi-dash-main-table">
             <table className="spec-v04-table">
               <thead>
                 <tr>
@@ -179,8 +183,7 @@ export function KpiGridTab(_props: {
                 ))}
               </tbody>
             </table>
-          </div>
-        </SpecPanel>
+        </div>
       </OrchSlotMain>
 
       <OrchSlotBotA>

@@ -41,3 +41,23 @@ python -c "import importlib.util,pathlib; p=pathlib.Path('desktop-electron/pybri
 
 Send `{"type":"check_ready"}` on stdin to get a `ready_state` reply telling you
 whether the local Cursor SDK is available.
+
+## Stale Python sidecar after desktop code changes
+
+The sidecar is a long-lived Python process. It loads `app.tools.ac.dispatch`
+once and keeps the tool registry in memory. If you change Outlook/mail tools in
+`desktop/` but only reload the Electron window, **`invoke_ac_tool` can still
+use the old registry** (for example missing `outlook.save_attachment`).
+
+Fix:
+
+1. Fully quit Orchestrator Electron (tray + all windows), then start again via
+   `run_dev.bat`.
+2. Or kill orphaned sidecar processes: Task Manager → end **python.exe** whose
+   command line contains `agent_sidecar.py` (one per Electron instance).
+3. Check stderr on first mail tool call: lines `desktop root: ...` and
+   `ac_tools outlook.* (...): outlook.fetch_message, outlook.save_attachment, ...`.
+
+`CONSTRUCTOR_DESKTOP_ROOT` must point at **orchestrator/desktop** for Orchestrator
+(see `run_dev.bat`). If it points at `Consturctor/desktop`, mail panel tools must
+exist there too (same `register_outlook_com_tools` as orchestrator).

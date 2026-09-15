@@ -254,12 +254,19 @@
 
 .orch-slot-main > .spec-v04-table-wrap,
 .orch-slot-main > .wp-card.spec-v04-table-wrap,
-.orch-slot-main > .wp-card.wp-decisions-col {
+.orch-slot-main > .wp-card.wp-decisions-col,
+.orch-slot-main > .wp-card.spec-v04-panel {
   flex: 1 1 auto;
   min-height: 0;
   overflow: auto;
   display: flex;
   flex-direction: column;
+}
+
+.orch-slot-main > .wp-card.spec-v04-panel .spec-v04-table-wrap {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
 }
 
 .orch-slot-bot-c > .wp-card.wp-decisions-col {

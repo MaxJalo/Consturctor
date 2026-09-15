@@ -75,7 +75,10 @@ function preferLocalBackend(env: Record<string, string>): boolean {
   )
     .trim()
     .toLowerCase()
-  return flag === '1' || flag === 'true' || flag === 'yes'
+  if (flag === '0' || flag === 'false' || flag === 'no') return false
+  if (flag === '1' || flag === 'true' || flag === 'yes') return true
+  // Dev: default to loopback so new API routes work before LAN gateway redeploy.
+  return !app.isPackaged
 }
 
 /** Profile .env often keeps stale 127.0.0.1; in dev prefer cwd `.env` and ORCH_PREFER_LOCAL. */
@@ -450,6 +453,76 @@ function extractDetail(status: number, data: unknown): string {
   return `Ошибка backend (${status})`
 }
 
+/** Routes that may exist on local backend before LAN gateway is redeployed. */
+function pathUsesLocalBackendFallback(path: string): boolean {
+  const p = path || ''
+  return p.includes('/api/v1/admin/') || p.includes('/api/v1/workplace/kpi')
+}
+
+function localBackendFallbackFailureMessage(path: string, localUp: boolean): string {
+  if (!localUp) {
+    return 'Не удалось подключиться к локальному backend. Проверьте orchestrator\\backend (run_dev.bat) и порт 7812.'
+  }
+  if ((path || '').includes('/api/v1/workplace/kpi')) {
+    return 'Не удалось загрузить KPI рабочего места. Перелогиньтесь или обновите вкладку.'
+  }
+  return 'Не удалось загрузить админ-данные. Перелогиньтесь или обновите страницу.'
+}
+
+async function tryLocalBackendFallback(
+  opts: RequestOptions,
+  headers: Record<string, string>,
+  bodyInit: string | undefined,
+  signal: AbortSignal
+): Promise<{ ok: true; status: number; data: unknown } | { ok: false; status: number; error: string } | null> {
+  await ensureLocalBackend(LOCAL_BACKEND)
+  try {
+    const localPath = `${LOCAL_BACKEND}${opts.path}`
+    const usp = new URLSearchParams()
+    for (const [key, value] of Object.entries(opts.params || {})) {
+      if (value === undefined || value === null) continue
+      usp.append(key, String(value))
+    }
+    const query = usp.toString()
+    const localResponse = await fetch(query ? `${localPath}?${query}` : localPath, {
+      method: opts.method || 'GET',
+      headers,
+      body: bodyInit,
+      signal
+    })
+    const localText = await localResponse.text()
+    let localData: unknown = null
+    if (localText) {
+      try {
+        localData = JSON.parse(localText)
+      } catch {
+        localData = localText
+      }
+    }
+    if (localResponse.ok) {
+      console.log(
+        `Backend API fallback: ${opts.path} — ${CONFIG.backendUrl} → ${LOCAL_BACKEND}`
+      )
+      return { ok: true, status: localResponse.status, data: localData }
+    }
+    if (localResponse.status !== 404 && localResponse.status !== 405) {
+      return {
+        ok: false,
+        status: localResponse.status,
+        error: extractDetail(localResponse.status, localData)
+      }
+    }
+  } catch {
+    // keep original error from CONFIG.backendUrl
+  }
+  const localUp = await pingBackendHealth(LOCAL_BACKEND)
+  return {
+    ok: false,
+    status: 404,
+    error: localBackendFallbackFailureMessage(opts.path, localUp)
+  }
+}
+
 async function handleRequest(_evt: unknown, opts: RequestOptions) {
   const controller = new AbortController()
   const timer = setTimeout(() => controller.abort(), opts.timeoutMs ?? DEFAULT_TIMEOUT)
@@ -477,58 +550,18 @@ async function handleRequest(_evt: unknown, opts: RequestOptions) {
       }
     }
     if (!response.ok) {
-      const adminPath = (opts.path || '').includes('/api/v1/admin/')
       const primaryBase = CONFIG.backendUrl.replace(/\/+$/, '')
       const usingLan = primaryBase !== LOCAL_BACKEND
-      const adminMissing = response.status === 404 || response.status === 405
-      if (adminPath && adminMissing && (usingLan || isLoopback(primaryBase))) {
-        await ensureLocalBackend(LOCAL_BACKEND)
-        try {
-          const localPath = `${LOCAL_BACKEND}${opts.path}`
-          const usp = new URLSearchParams()
-          for (const [key, value] of Object.entries(opts.params || {})) {
-            if (value === undefined || value === null) continue
-            usp.append(key, String(value))
-          }
-          const query = usp.toString()
-          const localResponse = await fetch(query ? `${localPath}?${query}` : localPath, {
-            method: opts.method || 'GET',
-            headers,
-            body: bodyInit,
-            signal: controller.signal
-          })
-          const localText = await localResponse.text()
-          let localData: unknown = null
-          if (localText) {
-            try {
-              localData = JSON.parse(localText)
-            } catch {
-              localData = localText
-            }
-          }
-          if (localResponse.ok) {
-            console.log(
-              `Admin API fallback: ${opts.path} — LAN ${CONFIG.backendUrl} → ${LOCAL_BACKEND}`
-            )
-            return { ok: true, status: localResponse.status, data: localData }
-          }
-          if (localResponse.status !== 404 && localResponse.status !== 405) {
-            return {
-              ok: false,
-              status: localResponse.status,
-              error: extractDetail(localResponse.status, localData)
-            }
-          }
-        } catch {
-          // keep original error from CONFIG.backendUrl
-        }
-        const localUp = await pingBackendHealth(LOCAL_BACKEND)
-        return {
-          ok: false,
-          status: response.status,
-          error: localUp
-            ? 'Не удалось загрузить админ-данные. Перелогиньтесь или обновите страницу.'
-            : 'Не удалось подключиться к локальному backend. Проверьте orchestrator\\backend (run_dev.bat) и порт 7812.'
+      const routeMissing = response.status === 404 || response.status === 405
+      if (
+        pathUsesLocalBackendFallback(opts.path) &&
+        routeMissing &&
+        (usingLan || isLoopback(primaryBase))
+      ) {
+        const fallback = await tryLocalBackendFallback(opts, headers, bodyInit, controller.signal)
+        if (fallback) {
+          if (fallback.ok) return fallback
+          return { ok: false, status: fallback.status, error: fallback.error }
         }
       }
       return { ok: false, status: response.status, error: extractDetail(response.status, data) }

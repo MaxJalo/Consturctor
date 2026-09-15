@@ -119,6 +119,7 @@ def _bootstrap_desktop_path() -> Path:
 
 
 DESKTOP_ROOT = _bootstrap_desktop_path()
+_AC_REGISTRY_LOGGED = False
 
 # Importing app.config loads desktop/.env (CURSOR_API_KEY, BACKEND_URL, ...).
 from app.api_client import ApiClient, ApiError  # noqa: E402
@@ -274,6 +275,28 @@ def log(message: str) -> None:
         else:
             sys.stderr.write(line)
             sys.stderr.flush()
+
+
+def _log_ac_registry_once() -> None:
+    """Log registered outlook.* AC tools on first invoke (helps debug wrong desktop root)."""
+    global _AC_REGISTRY_LOGGED
+    if _AC_REGISTRY_LOGGED:
+        return
+    _AC_REGISTRY_LOGGED = True
+    try:
+        from app.tools.ac.dispatch import get_registry
+
+        names = sorted(
+            name
+            for name in get_registry().list_tool_names()
+            if name.startswith("outlook.")
+        )
+        log(f"ac_tools outlook.* ({len(names)}): " + ", ".join(names))
+    except Exception as exc:  # noqa: BLE001
+        log("ac_tools registry log failed: " + repr(exc))
+
+
+log(f"desktop root: {DESKTOP_ROOT}")
 
 
 def _json_default(value: Any) -> Any:
@@ -3652,6 +3675,7 @@ class Sidecar:
             try:
                 from app.tools.ac.dispatch import invoke_ac_tool
 
+                _log_ac_registry_once()
                 if not tool_name:
                     raise ValueError("tool name required")
                 if tool_name.startswith("onec."):

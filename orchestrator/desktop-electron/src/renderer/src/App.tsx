@@ -739,7 +739,9 @@ function AppShell(): React.JSX.Element {
           <div className="app-root orch-app-root">
             <OrchGridShell
               activeKey={tabKey}
-              gridClassName={tabKey === 'today' ? 'orch-grid-today' : ''}
+              gridClassName={
+                tabKey === 'today' ? 'orch-grid-today' : tabKey === 'kpi' ? 'orch-grid-kpi' : ''
+              }
               user={activeUser}
               avatarUrl={avatarUrl}
               unread={unread}
