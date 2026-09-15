@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import GridLayout, { WidthProvider, type Layout, type LayoutItem } from 'react-grid-layout/legacy'
+import GridLayout, { type Layout, type LayoutItem } from 'react-grid-layout/legacy'
 import 'react-grid-layout/css/styles.css'
 import {
   TODAY_GRID_COLS,
@@ -12,8 +12,6 @@ import {
   type TodayWidgetId,
   useTodayWidgetLayout
 } from './useTodayWidgetLayout'
-
-const GridWithWidth = WidthProvider(GridLayout)
 
 const GRID_MIN_CANVAS_HEIGHT = todayGridMinCanvasHeight()
 
@@ -129,7 +127,7 @@ export function TodayWidgetGrid({
     return () => observer.disconnect()
   }, [])
 
-  const { rowHeight, canvasHeight, colWidth, marginX, marginY } = gridMetrics
+  const { rowHeight, canvasHeight, containerWidth, colWidth, marginX, marginY } = gridMetrics
 
   const canvasStyle = useMemo(
     () =>
@@ -173,9 +171,10 @@ export function TodayWidgetGrid({
       style={canvasStyle}
       data-user-id={userId || 'default'}
     >
-      <GridWithWidth
+      <GridLayout
         className="today-widget-grid"
         style={{ height: canvasHeight, minHeight: canvasHeight }}
+        width={Math.max(containerWidth, 1)}
         cols={TODAY_GRID_COLS}
         maxRows={TODAY_GRID_MAX_ROWS}
         rowHeight={rowHeight}
@@ -195,7 +194,7 @@ export function TodayWidgetGrid({
         resizeHandles={[...TODAY_RESIZE_HANDLES]}
       >
         {children}
-      </GridWithWidth>
+      </GridLayout>
     </div>
   )
 }

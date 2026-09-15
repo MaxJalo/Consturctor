@@ -6,9 +6,16 @@ import { loadUserAvatar } from '../api/avatars'
 import type { ChatMessage, ChatThread, DirectoryUser } from '../api/types'
 import logoUrl from '../assets/logo.png'
 import iconSearch from '../assets/search.png'
-import { NavIcon } from '../layout/navIcons'
+import { NavIcon as UserNavIcon } from '../layout/navIcons'
 
-export type PageKey =
+export type AdminPageKey =
+  | 'overview'
+  | 'launch_calendar'
+  | 'users'
+  | 'ai_agents'
+  | 'knowledge_base'
+
+export type UserPageKey =
   | 'today'
   | 'processes'
   | 'tasks'
@@ -16,14 +23,19 @@ export type PageKey =
   | 'mail'
   | 'meetings'
   | 'decisions'
-  | 'kpi'
-  | 'history'
   | 'knowledge'
-  | 'settings'
+
+export type SharedPageKey = 'kpi' | 'history' | 'settings'
+export type PageKey = AdminPageKey | UserPageKey | SharedPageKey
 
 export const APP_TITLE = 'Оркестратор'
 
 export const PAGE_LABELS: Record<PageKey, string> = {
+  overview: 'Обзор',
+  launch_calendar: 'Календарь запуска',
+  users: 'Пользователи',
+  ai_agents: 'ИИ-агенты',
+  knowledge_base: 'База знаний',
   today: 'Сегодня',
   processes: 'Процессы',
   tasks: 'Задачи',
@@ -31,14 +43,24 @@ export const PAGE_LABELS: Record<PageKey, string> = {
   mail: 'Письма',
   meetings: 'Совещания',
   decisions: 'Решения',
+  knowledge: 'База знаний',
   kpi: 'KPI',
   history: 'История',
-  knowledge: 'База знаний',
   settings: 'Настройки'
 }
 
-/** FR-043 v0.4: единая левая панель (без «Настройки» — только из профиля). */
-const ITEMS: { key: PageKey; label: string }[] = [
+const ADMIN_ITEMS: { key: PageKey; label: string }[] = [
+  { key: 'overview', label: PAGE_LABELS.overview },
+  { key: 'history', label: PAGE_LABELS.history },
+  { key: 'launch_calendar', label: PAGE_LABELS.launch_calendar },
+  { key: 'kpi', label: PAGE_LABELS.kpi },
+  { key: 'users', label: PAGE_LABELS.users },
+  { key: 'ai_agents', label: PAGE_LABELS.ai_agents },
+  { key: 'knowledge_base', label: PAGE_LABELS.knowledge_base },
+  { key: 'settings', label: PAGE_LABELS.settings }
+]
+
+const USER_ITEMS: { key: PageKey; label: string }[] = [
   { key: 'today', label: PAGE_LABELS.today },
   { key: 'processes', label: PAGE_LABELS.processes },
   { key: 'tasks', label: PAGE_LABELS.tasks },
@@ -50,6 +72,51 @@ const ITEMS: { key: PageKey; label: string }[] = [
   { key: 'history', label: PAGE_LABELS.history },
   { key: 'knowledge', label: PAGE_LABELS.knowledge }
 ]
+
+function AdminNavIcon({ page }: { page: PageKey }): React.JSX.Element {
+  if (page === 'overview' || page === 'history' || page === 'launch_calendar') {
+    return (
+      <svg viewBox="0 0 24 24" className="nav-icon-svg" fill="none" stroke="currentColor" strokeWidth="1.8">
+        <rect x="4" y="5" width="16" height="15" rx="3" />
+        <path d="M8 3v4M16 3v4M4 10h16" strokeLinecap="round" />
+        {page === 'history' ? <path d="M12 13v3l2 1.5" strokeLinecap="round" /> : null}
+        {page === 'launch_calendar' ? <path d="M9 15l-2 2 2 2M15 15l2 2-2 2" strokeLinecap="round" strokeLinejoin="round" /> : null}
+        {page === 'overview' ? <path d="M8 14h8M8 17h5" strokeLinecap="round" /> : null}
+      </svg>
+    )
+  }
+  if (page === 'kpi') {
+    return (
+      <svg viewBox="0 0 24 24" className="nav-icon-svg" fill="none" stroke="currentColor" strokeWidth="1.8">
+        <rect x="5" y="5" width="14" height="14" rx="2" />
+        <path d="M8 16l4-5 4 5" strokeLinecap="round" strokeLinejoin="round" />
+      </svg>
+    )
+  }
+  if (page === 'users') {
+    return (
+      <svg viewBox="0 0 24 24" className="nav-icon-svg" fill="none" stroke="currentColor" strokeWidth="1.8">
+        <circle cx="9" cy="9" r="3" />
+        <circle cx="17" cy="10" r="2.5" />
+        <path d="M4 19c0-2.2 2.2-4 5-4M14 19c0-1.6 1.4-3 3.5-3" strokeLinecap="round" />
+      </svg>
+    )
+  }
+  if (page === 'knowledge_base') {
+    return (
+      <svg viewBox="0 0 24 24" className="nav-icon-svg" fill="none" stroke="currentColor" strokeWidth="1.8">
+        <rect x="5" y="4" width="14" height="16" rx="2" />
+        <path d="M9 8h6M9 12h6M9 16h4" strokeLinecap="round" />
+      </svg>
+    )
+  }
+  return (
+    <svg viewBox="0 0 24 24" className="nav-icon-svg" fill="none" stroke="currentColor" strokeWidth="1.8">
+      <path d="M12 3l7 4v6c0 4.4-3.1 7.4-7 8-3.9-.6-7-3.6-7-8V7l7-4z" strokeLinejoin="round" />
+      <circle cx="12" cy="11" r="2" />
+    </svg>
+  )
+}
 
 function initials(fio: string): string {
   const parts = (fio || '').replace(/\./g, ' ').split(/\s+/).filter(Boolean)
@@ -81,10 +148,7 @@ function lastMessagePreview(value: string | ChatMessage): string {
 function sameThread(peer: ChatThread, threadId: string, senderId = ''): boolean {
   if (threadId && peer.id === threadId) return true
   if (peer.kind === 'support' && (peer.id === 'support' || peer.id === threadId)) return true
-  if (peer.id.startsWith('dm:') && peer.peerId && (peer.peerId === senderId || peer.peerId === threadId)) {
-    return true
-  }
-  return false
+  return Boolean(peer.id.startsWith('dm:') && peer.peerId && (peer.peerId === senderId || peer.peerId === threadId))
 }
 
 type UpdateState = 'idle' | 'available' | 'downloading' | 'installing' | 'error'
@@ -108,6 +172,7 @@ const IDLE_UPDATE: UpdateStatus = {
 interface SidebarProps {
   active: PageKey | null
   light?: boolean
+  showAdminNav?: boolean
   activeThreadId?: string
   currentUserId?: string
   onNavigate: (key: PageKey) => void
@@ -119,6 +184,7 @@ interface SidebarProps {
 export function Sidebar({
   active,
   light = false,
+  showAdminNav = false,
   activeThreadId = '',
   currentUserId = '',
   onNavigate,
@@ -131,6 +197,7 @@ export function Sidebar({
   const [peers, setPeers] = useState<ChatThread[]>([])
   const [peerAvatars, setPeerAvatars] = useState<Record<string, string>>({})
   const [update, setUpdate] = useState<UpdateStatus>(IDLE_UPDATE)
+  const items = showAdminNav ? ADMIN_ITEMS : USER_ITEMS
 
   useEffect(() => {
     let alive = true
@@ -150,15 +217,13 @@ export function Sidebar({
     let alive = true
     const load = async (): Promise<void> => {
       try {
-        const items = await api.listChatThreads()
-        if (alive) setPeers(items)
+        const loaded = await api.listChatThreads()
+        if (alive) setPeers(loaded)
       } catch {
         if (alive) setPeers([])
       }
     }
     void load()
-    // Live updates come from onChatEvent below; this is only a slow safety net
-    // for a dropped websocket.
     const timer = window.setInterval(() => {
       void load()
     }, 120_000)
@@ -175,30 +240,28 @@ export function Sidebar({
         const threadId = String(payload.thread_id ?? '')
         const readerId = String(payload.reader_id ?? '')
         if (!threadId || (currentUserId && readerId && readerId !== currentUserId)) return
-        setPeers((current) =>
-          current.map((peer) => (sameThread(peer, threadId) ? { ...peer, unread: 0 } : peer))
-        )
+        setPeers((current) => current.map((peer) => (sameThread(peer, threadId) ? { ...peer, unread: 0 } : peer)))
         return
       }
       if (kind !== 'chat_message') return
-      const raw = payload.message
-      const parsed = parseChatMessage(raw)
+      const parsed = parseChatMessage(payload.message)
       const threadId = String(payload.thread_id ?? parsed?.id ?? '')
       if (!threadId) return
       setPeers((current) => {
         const idx = current.findIndex((peer) => sameThread(peer, threadId, String(payload.sender_id ?? '')))
         if (idx < 0) return current
         const next = [...current]
-        const preview = parsed ? lastMessagePreview(parsed) : lastMessagePreview(String(raw || ''))
-        next[idx] = { ...next[idx], preview, unread: next[idx].unread + 1 }
+        next[idx] = {
+          ...next[idx],
+          preview: parsed ? lastMessagePreview(parsed) : lastMessagePreview(String(payload.message || '')),
+          unread: next[idx].unread + 1
+        }
         return next
       })
     })
     return () => unsubscribe?.()
   }, [currentUserId])
 
-  // Unread/preview pushes rebuild the peers array; avatars must not refetch
-  // unless a peer or its avatar actually changed.
   const peerAvatarKey = peers
     .map((peer) => `${peer.id}\u0000${peer.peerId || peer.id}\u0000${peer.avatarUrl || ''}`)
     .join('\u0001')
@@ -232,12 +295,18 @@ export function Sidebar({
     <aside className={collapsed ? 'sidebar collapsed' : 'sidebar'}>
       <div className="sidebar-brand">
         <img className="sidebar-logo" src={logoUrl} alt={APP_TITLE} />
-        {!collapsed && (
+        {!collapsed && showAdminNav ? (
+          <div className="sidebar-brand-text">
+            <div className="sidebar-title">{APP_TITLE}</div>
+            <div className="sidebar-subtitle">Администрирование</div>
+          </div>
+        ) : null}
+        {!collapsed && !showAdminNav ? (
           <div className="sidebar-title">
             <strong>Оркестратор</strong>
             <span>должности</span>
           </div>
-        )}
+        ) : null}
       </div>
 
       <div className="sidebar-search" onClick={expandForSearch} title={collapsed ? 'ФИО' : undefined}>
@@ -257,10 +326,10 @@ export function Sidebar({
         )}
       </div>
 
-      {!collapsed && <div className="pilot-badge">Пилот · 2 агента</div>}
+      {!collapsed && !showAdminNav ? <div className="pilot-badge">Пилот · 2 агента</div> : null}
 
       <nav className="nav">
-        {ITEMS.map((item) => {
+        {items.map((item) => {
           const isActive = item.key === active
           return (
             <button
@@ -270,7 +339,7 @@ export function Sidebar({
               title={item.label}
             >
               <span className="nav-icon" aria-hidden>
-                <NavIcon page={item.key} />
+                {showAdminNav ? <AdminNavIcon page={item.key} /> : <UserNavIcon page={item.key} />}
               </span>
               {!collapsed && <span className="nav-label">{item.label}</span>}
             </button>
@@ -278,44 +347,25 @@ export function Sidebar({
         })}
       </nav>
 
-      {(update.state === 'available' ||
-        update.state === 'downloading' ||
-        update.state === 'installing') && (
+      {(update.state === 'available' || update.state === 'downloading' || update.state === 'installing') && (
         <div className="sidebar-update">
           {update.state === 'downloading' || update.state === 'installing' ? (
             <div
-              className={
-                update.percent > 0
-                  ? 'sidebar-update-progress'
-                  : 'sidebar-update-progress indeterminate'
-              }
+              className={update.percent > 0 ? 'sidebar-update-progress' : 'sidebar-update-progress indeterminate'}
               role="progressbar"
               aria-valuemin={0}
               aria-valuemax={100}
               aria-valuenow={update.percent}
             >
-              <i
-                className="sidebar-update-progress-bar"
-                style={update.percent > 0 ? { width: `${update.percent}%` } : undefined}
-              />
+              <i className="sidebar-update-progress-bar" style={update.percent > 0 ? { width: `${update.percent}%` } : undefined} />
               {!collapsed && (
                 <span className="sidebar-update-progress-label">
-                  {update.state === 'installing'
-                    ? 'Установка...'
-                    : update.percent > 0
-                      ? `${update.percent}%`
-                      : 'Загрузка...'}
+                  {update.state === 'installing' ? 'Установка...' : update.percent > 0 ? `${update.percent}%` : 'Загрузка...'}
                 </span>
               )}
             </div>
           ) : (
-            <button
-              className="sidebar-update-btn"
-              title={update.error || 'Установить обновление Конструктора и Оркестратора'}
-              onClick={() => {
-                void window.api.installUpdate?.()
-              }}
-            >
+            <button className="sidebar-update-btn" title={update.error || 'Установить обновление Конструктора и Оркестратора'} onClick={() => void window.api.installUpdate?.()}>
               {!collapsed && <span>Обновить обе программы</span>}
               {collapsed && <span className="sidebar-update-mark">!</span>}
             </button>
@@ -324,7 +374,6 @@ export function Sidebar({
       )}
 
       <div className="sidebar-divider" />
-
       <div className="sidebar-peers">
         {peers.map((peer) => {
           const isActive = peer.id === activeThreadId || (peer.peerId !== '' && peer.peerId === activeThreadId)
@@ -337,9 +386,7 @@ export function Sidebar({
               title={preview ? `${peer.title}\n${preview}` : peer.title}
               onClick={() => {
                 if (collapsed) setCollapsed(false)
-                setPeers((current) =>
-                  current.map((item) => (item.id === peer.id ? { ...item, unread: 0 } : item))
-                )
+                setPeers((current) => current.map((item) => (item.id === peer.id ? { ...item, unread: 0 } : item)))
                 onOpenThread({ ...peer, unread: 0 })
               }}
             >
@@ -358,11 +405,7 @@ export function Sidebar({
         })}
       </div>
 
-      <button
-        className="collapse-btn"
-        onClick={() => setCollapsed((v) => !v)}
-        title={collapsed ? 'Развернуть меню' : 'Свернуть меню'}
-      >
+      <button className="collapse-btn" onClick={() => setCollapsed((value) => !value)} title={collapsed ? 'Развернуть меню' : 'Свернуть меню'}>
         {collapsed ? '\u203A' : '\u2039'}
       </button>
     </aside>

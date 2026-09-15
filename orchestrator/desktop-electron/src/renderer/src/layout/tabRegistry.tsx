@@ -1,5 +1,4 @@
 import type { ReactNode } from 'react'
-import type { PageKey } from '../components/Sidebar'
 import { PAGE_LABELS } from '../components/Sidebar'
 import {
   SpecProcessMapButton,
@@ -7,7 +6,17 @@ import {
   SpecTodayQuickLaunchButton
 } from '../workplace/specV04Components'
 
-export type WorkplaceTabKey = Exclude<PageKey, 'settings'>
+export type WorkplaceTabKey =
+  | 'today'
+  | 'processes'
+  | 'tasks'
+  | 'projects'
+  | 'mail'
+  | 'meetings'
+  | 'decisions'
+  | 'kpi'
+  | 'history'
+  | 'knowledge'
 
 export interface TabRegistryEntry {
   title: string

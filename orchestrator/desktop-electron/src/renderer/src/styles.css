@@ -125,11 +125,23 @@ input {
   font-size: 18px;
   flex-shrink: 0;
 }
+.sidebar-brand-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
 .sidebar-title {
   color: var(--text-light);
   font-size: 12px;
   font-weight: 700;
   line-height: 1.05;
+  white-space: nowrap;
+}
+.sidebar-subtitle {
+  color: rgba(234, 247, 243, 0.72);
+  font-size: 12px;
+  font-weight: 500;
   white-space: nowrap;
 }
 .sidebar-title strong,
@@ -251,7 +263,8 @@ input {
   padding: 0;
 }
 .sidebar.collapsed .nav-label,
-.sidebar.collapsed .sidebar-title {
+.sidebar.collapsed .sidebar-title,
+.sidebar.collapsed .sidebar-subtitle {
   display: none;
 }
 .sidebar-update {

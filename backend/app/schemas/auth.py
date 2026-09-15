@@ -14,6 +14,8 @@ class UserOut(BaseModel):
     fio: str
     department: str = ""
     position: str = ""
+    role: str = "user"
+    is_admin: bool = False
     """Логин 1С (v8users.Name) для почты Outlook: {name_mail}@turbo-don.ru"""
     name_mail: str = ""
     avatar_url: str | None = None

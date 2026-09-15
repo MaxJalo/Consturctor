@@ -15,6 +15,7 @@ export function computeTodayGridMetrics(
 ): {
   rowHeight: number
   canvasHeight: number
+  containerWidth: number
   colWidth: number
   marginX: number
   marginY: number
@@ -30,7 +31,7 @@ export function computeTodayGridMetrics(
   const canvasHeight = rows * rowHeight + (rows - 1) * marginY
   const innerW = Math.max(0, containerWidth)
   const colWidth = Math.max(0, (innerW - marginX * (cols - 1)) / cols)
-  return { rowHeight, canvasHeight, colWidth, marginX, marginY }
+  return { rowHeight, canvasHeight, containerWidth: innerW, colWidth, marginX, marginY }
 }
 
 export function todayGridMinCanvasHeight(): number {

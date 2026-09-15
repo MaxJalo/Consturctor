@@ -30,6 +30,8 @@ interface OrchGridShellProps {
   onOpenFio: (fio: string, user?: DirectoryUser) => void
   onOpenSettings: () => void
   onOpenAgent?: (workflowId: string, runId: string) => void
+  canSwitchAdminView?: boolean
+  onSwitchAdminView?: (mode: 'admin' | 'user') => void
   toast?: ReactNode
   gridClassName?: string
   children: ReactNode
@@ -51,6 +53,8 @@ export function OrchGridShell({
   onOpenFio,
   onOpenSettings,
   onOpenAgent,
+  canSwitchAdminView = false,
+  onSwitchAdminView,
   toast,
   gridClassName = '',
   children
@@ -116,6 +120,8 @@ export function OrchGridShell({
           showLogout={showLogout}
           onOpenAgent={onOpenAgent}
           onOpenSettings={onOpenSettings}
+          canSwitchAdminView={canSwitchAdminView}
+          onSwitchAdminView={onSwitchAdminView}
           profileAfterAvatar
         />
       </div>
