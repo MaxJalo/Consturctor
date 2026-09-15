@@ -899,6 +899,41 @@ def _odata_patch(args: dict[str, Any]) -> dict[str, Any]:
     return {"summary": "odata patch ok", "updated": True, "ref_key": ref_key, "source": "odata"}
 
 
+def _odata_delete(args: dict[str, Any]) -> dict[str, Any]:
+    entity = validate_odata_entity(
+        str(args.get("entity", "")),
+        allowlist=_odata_allowlist(),
+        extra_allowed=_odata_extra_entities(),
+    )
+    ref_key = str(args.get("ref_key", "")).strip()
+    if not ref_key:
+        raise OnecToolError("ref_key required")
+    url = _odata_url(f"{entity}(guid'{ref_key}')")
+    auth = _odata_auth(args)
+    if not auth:
+        raise OnecToolError("OData credentials not configured")
+    with httpx.Client(timeout=settings.odata_timeout_sec, auth=auth) as client:
+        response = client.delete(
+            url,
+            headers={"Accept": "application/json", "If-Match": "*"},
+        )
+        if response.status_code == 404:
+            return {
+                "summary": "odata delete already gone",
+                "deleted": True,
+                "ref_key": ref_key,
+                "source": "odata",
+            }
+        if response.status_code >= 400:
+            raise OnecToolError(_parse_onec_http_error(response))
+    return {
+        "summary": "odata delete ok",
+        "deleted": True,
+        "ref_key": ref_key,
+        "source": "odata",
+    }
+
+
 def _attach_file(_args: dict[str, Any]) -> dict[str, Any]:
     raise OnecToolError(
         "NOT_IMPLEMENTED: onec.attach_file требует OData file upload — пока недоступно. "

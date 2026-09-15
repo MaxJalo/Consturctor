@@ -71,13 +71,17 @@ def test_generic_odata_probe_creates_updates_and_deletes(monkeypatch) -> None:
         body = args.get("body") or {}
         if body.get("Тема"):
             field_value["Тема"] = body["Тема"]
-        if body.get("DeletionMark"):
-            deleted.append(str(args.get("ref_key") or ""))
         return {"updated": True, "ref_key": args.get("ref_key")}
+
+    def fake_delete(args: dict) -> dict:
+        deleted.append(str(args.get("ref_key") or ""))
+        return {"deleted": True, "ref_key": args.get("ref_key")}
 
     monkeypatch.setattr("app.services.onec_write_probe._odata_get", fake_get)
     monkeypatch.setattr("app.services.onec_write_probe._odata_post", fake_post)
     monkeypatch.setattr("app.services.onec_write_probe._odata_patch", fake_patch)
+    monkeypatch.setattr("app.services.erp_assignments._odata_patch", fake_patch)
+    monkeypatch.setattr("app.services.erp_assignments._odata_delete", fake_delete)
     monkeypatch.setattr(
         "app.services.onec_write_probe.resolve_odata_entity",
         lambda intent: entity,
