@@ -112,3 +112,18 @@ export function formatWeekDayLabel(date: Date): string {
   const month = String(date.getMonth() + 1).padStart(2, '0')
   return `${weekdays[date.getDay()]} ${day}.${month}`
 }
+
+export const MONTH_SHORT = [
+  'янв', 'фев', 'мар', 'апр', 'май', 'июн',
+  'июл', 'авг', 'сен', 'окт', 'ноя', 'дек'
+]
+
+export function formatMonthDayLabel(date: Date): string {
+  const day = date.getDate()
+  if (day === 1) return `${day} ${MONTH_SHORT[date.getMonth()]}`
+  return String(day)
+}
+
+export function dayIsoKey(date: Date): string {
+  return `${date.getFullYear()}-${date.getMonth()}-${date.getDate()}`
+}

@@ -462,7 +462,13 @@ export const adminLaunchCalendarMock: AdminLaunchCalendarMock = {
     { id: 'e5', dayIndex: 2, startHour: 13, endHour: 14, title: 'Финансовый анализ', tone: 'red', agentId: 'fin' },
     { id: 'e6', dayIndex: 4, startHour: 13, endHour: 14, title: 'Отчет по закупкам', tone: 'blue', agentId: 'proc' },
     { id: 'e7', dayIndex: 4, startHour: 15, endHour: 16, title: 'Анализ Базы знаний', tone: 'green', agentId: 'analytics' },
-    { id: 'e8', dayIndex: 4, startHour: 16, endHour: 17, title: 'Сверка данных', tone: 'yellow', agentId: 'fin' }
+    { id: 'e8', dayIndex: 4, startHour: 16, endHour: 17, title: 'Сверка данных', tone: 'yellow', agentId: 'fin' },
+    { id: 'e9', dayIndex: 8, startHour: 9, endHour: 10, title: 'HR-анализ кандидатов', tone: 'yellow', agentId: 'hr' },
+    { id: 'e10', dayIndex: 13, startHour: 8, endHour: 9, title: 'Планерное совещание', tone: 'blue', agentId: 'meet' },
+    { id: 'e11', dayIndex: 13, startHour: 10, endHour: 11, title: 'Сводка KPI', tone: 'green', agentId: 'analytics' },
+    { id: 'e12', dayIndex: 13, startHour: 14, endHour: 15, title: 'Обработка входящих', tone: 'purple', agentId: 'mail' },
+    { id: 'e13', dayIndex: 20, startHour: 11, endHour: 12, title: 'Контроль закупок', tone: 'blue', agentId: 'proc' },
+    { id: 'e14', dayIndex: 24, startHour: 15, endHour: 16, title: 'Квартальный отчёт', tone: 'red', agentId: 'fin' }
   ],
   agentFilters: [
     { id: 'all', label: 'Все агенты', color: '#1a73e8', checked: true },

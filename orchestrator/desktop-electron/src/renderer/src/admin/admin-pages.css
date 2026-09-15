@@ -806,6 +806,22 @@
   grid-template-columns: minmax(0, 1fr) 260px;
   gap: 14px;
   align-items: start;
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+.admin-calendar-col {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  min-width: 0;
+}
+
+.admin-calendar-main {
+  display: flex;
+  flex-direction: column;
+  flex-shrink: 0;
 }
 
 .admin-calendar-toolbar {
@@ -955,6 +971,169 @@
   border-left-color: #e55353;
 }
 
+.admin-month-grid {
+  display: flex;
+  flex-direction: column;
+  border: 1px solid #eef3f8;
+  border-radius: 12px;
+  overflow: hidden;
+  background: #fff;
+  flex-shrink: 0;
+}
+
+.admin-month-grid__head {
+  display: grid;
+  grid-template-columns: repeat(7, minmax(0, 1fr));
+  border-bottom: 1px solid #eef3f8;
+  background: #f8fafc;
+}
+
+.admin-month-grid__weekday {
+  padding: 10px 6px;
+  text-align: center;
+  font-size: 11px;
+  font-weight: 600;
+  color: #6b7f93;
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
+  border-right: 1px solid #eef3f8;
+}
+
+.admin-month-grid__weekday:last-child {
+  border-right: none;
+}
+
+.admin-month-grid__body {
+  display: grid;
+  grid-template-columns: repeat(7, minmax(0, 1fr));
+  grid-template-rows: repeat(6, 96px);
+}
+
+.admin-month-cell {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 2px;
+  min-height: 0;
+  padding: 6px 8px;
+  border: none;
+  border-right: 1px solid #eef3f8;
+  border-bottom: 1px solid #eef3f8;
+  background: #fff;
+  text-align: left;
+  cursor: pointer;
+  overflow: hidden;
+}
+
+.admin-month-cell:nth-child(7n) {
+  border-right: none;
+}
+
+.admin-month-cell.muted {
+  background: #fafbfc;
+}
+
+.admin-month-cell.muted .admin-month-cell__day {
+  color: #b8c4d0;
+}
+
+.admin-month-cell.today:not(.selected) {
+  background: #e8f1fd;
+}
+
+.admin-month-cell.selected {
+  background: #1a73e8;
+}
+
+.admin-month-cell.selected .admin-month-cell__day {
+  color: #fff;
+}
+
+.admin-month-cell.selected .admin-month-event {
+  background: rgba(255, 255, 255, 0.16);
+  color: #fff;
+}
+
+.admin-month-cell.selected .admin-month-event__time {
+  color: rgba(255, 255, 255, 0.88);
+}
+
+.admin-month-cell__day {
+  flex-shrink: 0;
+  font-size: 12px;
+  font-weight: 600;
+  color: #0b2744;
+  margin-bottom: 2px;
+}
+
+.admin-month-cell__events {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.admin-month-event {
+  display: flex;
+  align-items: baseline;
+  gap: 4px;
+  min-width: 0;
+  padding: 2px 4px;
+  border-radius: 4px;
+  font-size: 11px;
+  line-height: 1.25;
+  background: rgba(26, 115, 232, 0.08);
+}
+
+.admin-month-event__time {
+  flex-shrink: 0;
+  color: #6b7f93;
+  font-size: 10px;
+  font-weight: 600;
+}
+
+.admin-month-event__title {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: #0b2744;
+  font-weight: 500;
+}
+
+.admin-month-event.admin-cal-event--green {
+  background: #e7f7ee;
+}
+
+.admin-month-event.admin-cal-event--blue {
+  background: #e8f1fd;
+}
+
+.admin-month-event.admin-cal-event--purple {
+  background: #f0ebfa;
+}
+
+.admin-month-event.admin-cal-event--yellow {
+  background: #fff8e6;
+}
+
+.admin-month-event.admin-cal-event--red {
+  background: #fdecec;
+}
+
+.admin-month-cell__more {
+  margin-top: auto;
+  align-self: center;
+  color: #8a9bb0;
+  font-size: 10px;
+  line-height: 1;
+}
+
+.admin-month-cell.selected .admin-month-cell__more {
+  color: rgba(255, 255, 255, 0.82);
+}
+
 .admin-calendar-side {
   display: flex;
   flex-direction: column;
@@ -1078,9 +1257,7 @@
 }
 
 .admin-unscheduled {
-  margin-top: 18px;
-  padding-top: 18px;
-  border-top: 1px solid #eef3f8;
+  flex-shrink: 0;
 }
 
 .admin-unscheduled__head {
