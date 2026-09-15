@@ -1,6 +1,6 @@
 import { Calendar } from 'lucide-react'
 import { useCallback, useMemo, useRef, useState } from 'react'
-import { adminAiAgentsMock } from '../../mocks/adminMocks'
+import { emptyAdminAiAgents } from '../adminEmpty'
 import { fetchAdminAiAgents } from '../adminApi'
 import { useAdminTabLoad } from '../hooks/useAdminTabLoad'
 import { AdminDataTable } from '../components/shared/AdminDataTable'
@@ -18,7 +18,7 @@ import { downloadTableExport } from '../utils/exportTable'
 import { matchesFilter, matchesSearch } from '../utils/tableFilters'
 
 export function AiAgentsPage(): React.JSX.Element {
-  const { data, loading, error } = useAdminTabLoad(adminAiAgentsMock, fetchAdminAiAgents)
+  const { data, loading, error } = useAdminTabLoad(emptyAdminAiAgents, fetchAdminAiAgents)
   const detail = data.detail
   const tableAreaRef = useRef<HTMLDivElement>(null)
   const pageSize = useAutoTablePageSize(tableAreaRef, { minRows: 3, rowHeight: 48 })

@@ -47,6 +47,7 @@ const EMPTY: SpecV04SourcesState = {
   meetingCountToday: 0,
   meetings: [],
   erpError: '',
+  erpSecondaryHint: '',
   sources: { erp: '—', turbo: '—', mail: '—' },
   turboNoSession: false,
   comPasswordInSession: false,
@@ -80,6 +81,7 @@ export function SpecV04SourcesProvider({
   const [erpTasks, setErpTasks] = useState<SpecTaskRow[]>([])
   const [erpSource, setErpSource] = useState('—')
   const [erpError, setErpError] = useState('')
+  const [erpSecondaryHint, setErpSecondaryHint] = useState('')
   const [projects, setProjects] = useState<SpecProjectRow[]>([])
   const [turboSource, setTurboSource] = useState('—')
   const [mailRows, setMailRows] = useState<SpecMailRow[]>([])
@@ -105,11 +107,11 @@ export function SpecV04SourcesProvider({
         setErpTasks(bundle.erp.tasks)
         setErpSource(bundle.erp.tasks.length ? bundle.erp.sourceLabel : bundle.erp.sourceLabel)
         setErpError(bundle.erp.error)
+        setErpSecondaryHint(bundle.erp.erpSecondaryHint || '')
         setOneCAuthFailure(bundle.erp.oneCAuthFailure)
-        if (bundle.erp.error?.trim()) {
-          setError((prev) =>
-            prev && prev.includes(bundle.erp.error.trim()) ? prev : bundle.erp.error.trim()
-          )
+        const blockingErp = bundle.erp.error?.trim() || ''
+        if (blockingErp) {
+          setError((prev) => (prev && prev.includes(blockingErp) ? prev : blockingErp))
         }
 
         setProjects(bundle.turbo.projects)
@@ -172,6 +174,7 @@ export function SpecV04SourcesProvider({
       outlookMailbox,
       erpFio,
       erpError,
+      erpSecondaryHint,
       erpTasks,
       erpTaskCount: erpTasks.length,
       projects,
@@ -200,6 +203,7 @@ export function SpecV04SourcesProvider({
       outlookMailbox,
       erpFio,
       erpError,
+      erpSecondaryHint,
       erpTasks,
       projects,
       mailRows,

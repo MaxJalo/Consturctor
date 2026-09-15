@@ -511,6 +511,51 @@ def test_get_project_tasks_filters_overdue_status_assignee_and_paginates(monkeyp
     assert result["next_cursor"] == ""
 
 
+def test_get_project_tasks_filters_by_session_employee_fio(monkeypatch) -> None:
+    yesterday = (datetime.now() - timedelta(days=3)).date().isoformat()
+
+    def fake_api_get(path: str, _token: str, **_: object) -> dict:
+        assert path == "/api/projects/files/363"
+        return {
+            "tasks": [
+                {
+                    "id": 1,
+                    "name": "Чужая",
+                    "is_summary": False,
+                    "finish_date": yesterday,
+                    "percent_complete": 0,
+                    "assignments": [{"resource_name": "Мангасарян А. А."}],
+                },
+                {
+                    "id": 2,
+                    "name": "Моя",
+                    "is_summary": False,
+                    "finish_date": yesterday,
+                    "percent_complete": 0,
+                    "assignments": [{"resource_name": "Жалыбин М.Д."}],
+                },
+            ]
+        }
+
+    monkeypatch.setattr(
+        "app.services.turboproject._login_for_args",
+        lambda args=None, force=False: ("token", ("test@turbo-don.ru", "secret")),
+    )
+    monkeypatch.setattr("app.services.turboproject._api_get", fake_api_get)
+    monkeypatch.setattr("app.services.turboproject._card_cache", {})
+
+    result = get_project_tasks(
+        {
+            "project_id": 363,
+            "status": "open",
+            "employee": "Жалыбин Максим Дмитриевич",
+            "fio": "Жалыбин Максим Дмитриевич",
+        }
+    )
+
+    assert [item["id"] for item in result["tasks"]] == [2]
+
+
 def test_get_overdue_projects_sorts_by_delay_days(monkeypatch) -> None:
     old_date = (datetime.now() - timedelta(days=20)).date().isoformat()
     recent_date = (datetime.now() - timedelta(days=5)).date().isoformat()

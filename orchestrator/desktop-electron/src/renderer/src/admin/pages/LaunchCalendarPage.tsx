@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
-import { adminLaunchCalendarMock } from '../../mocks/adminMocks'
+import { emptyAdminCalendar } from '../adminEmpty'
 import { fetchAdminLaunchCalendar } from '../adminApi'
 import { useAdminTabLoad } from '../hooks/useAdminTabLoad'
 import {
@@ -138,7 +138,7 @@ function LaunchMonthGrid({ anchor, selectedDay, events, onSelectDay }: LaunchMon
 }
 
 export function LaunchCalendarPage(): React.JSX.Element {
-  const { data, loading, error } = useAdminTabLoad(adminLaunchCalendarMock, fetchAdminLaunchCalendar)
+  const { data, loading, error } = useAdminTabLoad(emptyAdminCalendar, fetchAdminLaunchCalendar)
   const rowHeight = 56
   const [activeView, setActiveView] = useState(data.activeView)
   const [selectedDay, setSelectedDay] = useState(ADMIN_MOCK_TODAY)

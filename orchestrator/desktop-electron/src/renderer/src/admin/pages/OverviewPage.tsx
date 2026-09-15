@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react'
-import { adminOverviewMock, type AdminOverviewMock } from '../../mocks/adminMocks'
+import { emptyAdminOverview, type AdminOverviewMock } from '../adminEmpty'
 import { fetchAdminOverview } from '../adminApi'
+import { formatAdminLoadError } from '../adminLoadError'
 import { AdminBreadcrumb } from '../components/AdminBreadcrumb'
 import { DashboardToolbar } from '../components/DashboardToolbar'
 import { DonutChartCard } from '../components/DonutChartCard'
@@ -9,7 +10,7 @@ import { LineChartCard } from '../components/LineChartCard'
 import { MetricGrid } from '../components/MetricGrid'
 
 export function OverviewPage(): React.JSX.Element {
-  const [data, setData] = useState<AdminOverviewMock>(adminOverviewMock)
+  const [data, setData] = useState<AdminOverviewMock>(emptyAdminOverview)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
 
@@ -20,8 +21,8 @@ export function OverviewPage(): React.JSX.Element {
       const overview = await fetchAdminOverview()
       setData(overview)
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Не удалось загрузить обзор')
-      setData(adminOverviewMock)
+      setError(formatAdminLoadError(err, 'Не удалось загрузить обзор'))
+      setData(emptyAdminOverview)
     } finally {
       setLoading(false)
     }

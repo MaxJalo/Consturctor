@@ -898,6 +898,121 @@ def _field_list(args: dict[str, Any], *, default: list[str] | None = None) -> li
     return list(default or [])
 
 
+def _normalize_person_key(value: str) -> str:
+    text = (value or "").casefold().replace("ё", "е")
+    for ch in ("ь", "ъ", "\u0301"):
+        text = text.replace(ch, "")
+    return " ".join(text.split())
+
+
+def _surname_and_initials(key: str) -> tuple[str, list[str]] | None:
+    parts = key.split()
+    if len(parts) < 2:
+        return None
+    surname = parts[0]
+    tail = " ".join(parts[1:])
+    if "." not in tail:
+        return None
+    initials: list[str] = []
+    for chunk in tail.replace(".", " ").split():
+        letter = chunk.strip()
+        if letter:
+            initials.append(letter[0])
+    if not initials:
+        return None
+    return surname, initials
+
+
+def _initials_match_name_parts(initials: list[str], name_parts: list[str]) -> bool:
+    if not initials or not name_parts:
+        return False
+    if len(initials) == 1:
+        return initials[0] == name_parts[0][0]
+    needed = min(len(initials), len(name_parts))
+    return all(initials[index] == name_parts[index][0] for index in range(needed))
+
+
+def _person_name_matches(actor: str, candidate: str) -> bool:
+    actor_key = _normalize_person_key(actor)
+    cand_key = _normalize_person_key(candidate)
+    if not actor_key or not cand_key:
+        return False
+    if actor_key == cand_key:
+        return True
+    if actor_key in cand_key or cand_key in actor_key:
+        return True
+    actor_parts = actor_key.split()
+    cand_parts = cand_key.split()
+    if len(actor_parts) >= 2 and len(cand_parts) >= 2:
+        if actor_parts[0] == cand_parts[0] and actor_parts[1] == cand_parts[1]:
+            return True
+    actor_init = _surname_and_initials(actor_key)
+    cand_init = _surname_and_initials(cand_key)
+    if actor_init and len(cand_parts) >= 2:
+        surname, initials = actor_init
+        if surname == cand_parts[0] and _initials_match_name_parts(initials, cand_parts[1:]):
+            return True
+    if cand_init and len(actor_parts) >= 2:
+        surname, initials = cand_init
+        if surname == actor_parts[0] and _initials_match_name_parts(initials, actor_parts[1:]):
+            return True
+    return bool(actor_parts and cand_parts and actor_parts[0] == cand_parts[0])
+
+
+def _resource_id_values(payload: dict[str, Any]) -> set[str]:
+    ids: set[str] = set()
+    raw = payload.get("resource_id") or payload.get("resource_ids") or payload.get("assignee_resource_ids")
+    if isinstance(raw, str):
+        for part in raw.split(","):
+            text = part.strip()
+            if text:
+                ids.add(text)
+    elif isinstance(raw, (list, tuple)):
+        for item in raw:
+            text = str(item).strip()
+            if text:
+                ids.add(text)
+    elif raw not in (None, ""):
+        ids.add(str(raw).strip())
+    return ids
+
+
+def _resolve_task_assignee_filter(payload: dict[str, Any]) -> tuple[str, set[str], bool]:
+    """FIO and/or Turbo resource ids; active unless all_assignees is set."""
+    if bool(payload.get("all_assignees") or payload.get("allAssignees")):
+        return "", set(), False
+    assignee = _string_filter(
+        payload, "assignee", "assignee_id", "employee_id", "resource", "resource_name"
+    )
+    resource_ids = _resource_id_values(payload)
+    if not assignee:
+        assignee = _string_filter(payload, "employee", "fio", "user")
+    if not assignee and not resource_ids:
+        return "", set(), False
+    return assignee, resource_ids, True
+
+
+def _task_assigned_to(
+    raw_task: dict[str, Any],
+    assignee_fio: str,
+    resource_ids: set[str],
+) -> bool:
+    assignments = raw_task.get("assignments") or []
+    if not assignments:
+        return False
+    for assignment in assignments:
+        if not isinstance(assignment, dict):
+            continue
+        if resource_ids:
+            rid = assignment.get("resource_id")
+            if rid is not None and str(rid).strip() in resource_ids:
+                return True
+        name = str(assignment.get("resource_name") or "").strip()
+        if assignee_fio and name and _person_name_matches(assignee_fio, name):
+            return True
+    return False
+
+
 def _task_rows(details: dict[str, Any]) -> list[dict[str, Any]]:
     rows = []
     for task in details.get("tasks") or []:
@@ -1147,20 +1262,21 @@ def get_project_tasks(args: dict[str, Any] | None = None) -> dict[str, Any]:
     if project_id in (None, ""):
         raise TurboProjectError("turboproject.get_project_tasks требует project_id или file_id")
     status = _string_filter(payload, "status")
-    assignee = _string_filter(payload, "assignee_id", "assignee", "employee_id")
+    assignee_fio, resource_ids, filter_assignees = _resolve_task_assignee_filter(payload)
     overdue_only = bool(payload.get("overdue_only") or payload.get("overdueOnly"))
     limit = _int_filter(payload, "limit", 50, 100)
     cursor = _cursor_offset(payload)
     token, creds = _login_for_args(payload)
     details = _get_card(project_id, token, creds=creds)
+    raw_tasks = details.get("tasks") or []
     tasks = _task_rows(details)
     filtered = []
-    for task in tasks:
+    for raw_task, task in zip(raw_tasks, tasks, strict=False):
         if task.get("is_summary"):
             continue
         if not _matches_task_status(task, status):
             continue
-        if assignee and not any(_matches_text(executor, assignee) for executor in task.get("executors") or []):
+        if filter_assignees and not _task_assigned_to(raw_task, assignee_fio, resource_ids):
             continue
         if overdue_only and int(task.get("delay_days") or 0) <= 0:
             continue

@@ -58,6 +58,8 @@ export function TasksGridTab({
             <p className="today-table-status today-table-error today-table-banner">
               {data.erpError || data.error}
             </p>
+          ) : data.erpSecondaryHint ? (
+            <p className="today-table-status today-table-banner">{data.erpSecondaryHint}</p>
           ) : null}
           <table className="spec-v04-table">
             <thead>

@@ -268,11 +268,20 @@ function buildUrl(path: string, params?: RequestOptions['params']): string {
   return query ? `${base}?${query}` : base
 }
 
+function isLanBackendHost(url: string): boolean {
+  if (/127\.0\.0\.1|localhost/i.test(url)) return false
+  return /:\/\/192\.168\.|:\/\/10\.|:\/\/172\.(1[6-9]|2\d|3[01])\./.test(url)
+}
+
 function backendUnreachableMessage(): string {
   const profileHint = join(app.getPath('userData'), '.env')
+  const base = CONFIG.backendUrl
+  const networkHint = isLanBackendHost(base)
+    ? `Проверьте LAN до gateway ${base} (constructor-gateway на :7812). VPN на ПК для 1С не нужен — SQL выполняется на сервере gateway.`
+    : `Проверьте VPN до erp_pm (локальный backend) или переключите BACKEND_URL на LAN gateway (например http://192.168.1.157:7812).`
   return (
-    `Не удалось подключиться к backend (${CONFIG.backendUrl}). ` +
-    `Проверьте VPN/сеть до сервера и BACKEND_URL в ${profileHint} или в .env рядом с exe.`
+    `Не удалось подключиться к backend (${base}). ${networkHint} ` +
+    `BACKEND_URL: ${profileHint} или .env рядом с exe.`
   )
 }
 
@@ -318,6 +327,39 @@ async function handleRequest(_evt: unknown, opts: RequestOptions) {
       }
     }
     if (!response.ok) {
+      const adminPath = (opts.path || '').includes('/api/v1/admin/')
+      const usingLan = CONFIG.backendUrl.replace(/\/+$/, '') !== LOCAL_BACKEND
+      if (adminPath && usingLan && (response.status === 404 || response.status === 405)) {
+        try {
+          const localPath = `${LOCAL_BACKEND}${opts.path}`
+          const usp = new URLSearchParams()
+          for (const [key, value] of Object.entries(opts.params || {})) {
+            if (value === undefined || value === null) continue
+            usp.append(key, String(value))
+          }
+          const query = usp.toString()
+          const localResponse = await fetch(query ? `${localPath}?${query}` : localPath, {
+            method: opts.method || 'GET',
+            headers,
+            body: bodyInit,
+            signal: controller.signal
+          })
+          const localText = await localResponse.text()
+          let localData: unknown = null
+          if (localText) {
+            try {
+              localData = JSON.parse(localText)
+            } catch {
+              localData = localText
+            }
+          }
+          if (localResponse.ok) {
+            return { ok: true, status: localResponse.status, data: localData }
+          }
+        } catch {
+          // keep original error from CONFIG.backendUrl
+        }
+      }
       return { ok: false, status: response.status, error: extractDetail(response.status, data) }
     }
     return { ok: true, status: response.status, data }

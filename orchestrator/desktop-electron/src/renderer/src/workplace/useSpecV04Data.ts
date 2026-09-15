@@ -27,8 +27,10 @@ export interface SpecV04SourcesState {
   /** Совещания с датой начала = сегодня (локальный календарь). */
   meetingCountToday: number
   meetings: MeetingEvent[]
-  /** Ошибка загрузки 1С (erp_pm / документооборот), если задач нет. */
+  /** Ошибка загрузки 1С (erp_pm), блокирующая при 0 задач. */
   erpError: string
+  /** Документооборот /doc — подсказка, когда задачи erp_pm уже загружены. */
+  erpSecondaryHint: string
   sources: {
     erp: string
     turbo: string
@@ -151,7 +153,7 @@ export function buildTaskTiles(data: SpecV04SourcesState): SpecSummaryTile[] {
   const onecHint = loading
     ? 'загрузка…'
     : data.erpTaskCount
-      ? [data.erpError || data.error, data.sources.erp].filter(Boolean).join(' · ')
+      ? [data.erpSecondaryHint, data.sources.erp].filter(Boolean).join(' · ')
       : data.erpError || data.error || data.sources.erp
   return [
     {

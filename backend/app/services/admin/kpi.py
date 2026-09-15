@@ -12,11 +12,13 @@ from app.schemas.admin import AdminKpiAgentCardOut, AdminKpiOut, AdminKpiSummary
 from app.services.admin import stub_payloads
 from app.services.admin.common import (
     ACTIVE_STATUSES,
+    PENDING_STATUSES,
     build_launch_dynamics,
     count_runs_by_workflow,
     process_title,
     success_rate_label,
     month_period_label,
+    month_start,
     week_bounds,
     workflow_alive,
     workflow_paused,
@@ -31,10 +33,29 @@ def build_admin_kpi() -> AdminKpiOut:
     with SessionLocal() as db:
         stats = count_runs_by_workflow(db)
         workflows = [row for row in db.execute(select(Workflow)).scalars().all() if workflow_alive(row)]
-        users = int(db.scalar(select(func.count()).select_from(AppUser)) or 0)
+        users = len(
+            {
+                str(item)
+                for item in db.execute(
+                    select(AgentRun.user_id).where(AgentRun.started_at >= month_start()).distinct()
+                ).scalars().all()
+                if item
+            }
+            | {
+                str(item)
+                for item in db.execute(select(AppUser.id).where(AppUser.updated_at >= month_start())).scalars().all()
+                if item
+            }
+        )
         active = int(
             db.scalar(
                 select(func.count()).select_from(AgentRun).where(AgentRun.status.in_(tuple(ACTIVE_STATUSES)))
+            )
+            or 0
+        )
+        queued = int(
+            db.scalar(
+                select(func.count()).select_from(AgentRun).where(AgentRun.status.in_(tuple(PENDING_STATUSES)))
             )
             or 0
         )
@@ -56,7 +77,8 @@ def build_admin_kpi() -> AdminKpiOut:
         cards = _agent_cards(workflows, stats)
         top = sorted(cards, key=lambda item: item.efficiency, reverse=True)[:5]
         published = sum(1 for row in workflows if workflow_published(row) and not workflow_paused(row))
-        load_pct = min(100, 12 + active * 8)
+        used_now = sum(1 for row in workflows if stats.get(row.id, (0, 0, 0))[0] > 0)
+        load_pct = round(100 * used_now / published) if published else 0
 
     summaries = [
         AdminKpiSummaryOut(
@@ -75,7 +97,7 @@ def build_admin_kpi() -> AdminKpiOut:
             icon="target",
             tint="orange",
         ),
-        AdminKpiSummaryOut(id="users", label="Пользователей", value=str(users), tint="none"),
+        AdminKpiSummaryOut(id="users", label="Пользователей за месяц", value=str(users), tint="none"),
     ]
     gauges = [
         {"id": "cpu", "label": "Активные запуски", "value": str(active), "tone": "cyan" if active else "green"},
@@ -85,7 +107,7 @@ def build_admin_kpi() -> AdminKpiOut:
             "value": f"{load_pct}%",
             "tone": "orange" if load_pct >= 70 else "green",
         },
-        {"id": "queue", "label": "В очереди", "value": str(active), "tone": "orange" if active else "green"},
+        {"id": "queue", "label": "В очереди", "value": str(queued), "tone": "orange" if queued else "green"},
         {
             "id": "avail",
             "label": "Успешность",

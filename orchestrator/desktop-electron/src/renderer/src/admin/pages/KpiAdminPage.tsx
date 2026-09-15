@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
-import { adminKpiMock } from '../../mocks/adminMocks'
+import { emptyAdminKpi } from '../adminEmpty'
 import { fetchAdminKpi } from '../adminApi'
 import { useAdminTabLoad } from '../hooks/useAdminTabLoad'
 import { LineChartCard } from '../components/LineChartCard'
@@ -11,7 +11,7 @@ import { AdminSegmentTabs } from '../components/shared/AdminSegmentTabs'
 import { AdminStatusBadge } from '../components/shared/AdminStatusBadge'
 
 export function KpiAdminPage(): React.JSX.Element {
-  const { data, loading, error } = useAdminTabLoad(adminKpiMock, fetchAdminKpi)
+  const { data, loading, error } = useAdminTabLoad(emptyAdminKpi, fetchAdminKpi)
   const [activeTab, setActiveTab] = useState(data.activeTab)
   const [selectedAgentId, setSelectedAgentId] = useState<string | null>(null)
   const [hoverAgent, setHoverAgent] = useState<string | null>(null)

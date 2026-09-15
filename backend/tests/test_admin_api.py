@@ -35,7 +35,7 @@ def test_build_admin_overview_has_metrics(monkeypatch):
     )
     monkeypatch.setattr(
         "app.services.admin.overview._count_metrics",
-        lambda: (5, 10, 2, 8, 1, 3, 4, (empty_launch_dynamics(), statuses)),
+        lambda: (5, 10, 2, 8, 1, 3, 4, (empty_launch_dynamics(), statuses, 4)),
     )
     monkeypatch.setattr(
         "app.services.admin.overview._integration_items",
@@ -45,6 +45,7 @@ def test_build_admin_overview_has_metrics(monkeypatch):
     assert overview.dashboard_title == "Сводная панель"
     assert len(overview.metrics) == 8
     assert overview.metrics[0].value == "5"
+    assert overview.metrics[3].label == "Пользователей за месяц"
     assert overview.metrics[3].value == "10"
 
 
@@ -60,7 +61,7 @@ def test_admin_overview_route_requires_admin(monkeypatch):
     monkeypatch.setattr(sessions, "is_current_session", lambda *_a, **_k: True)
     monkeypatch.setattr(
         "app.services.admin.overview._count_metrics",
-        lambda: (0, 0, 0, 0, 0, 0, 0, (empty_launch_dynamics(), empty_statuses)),
+        lambda: (0, 0, 0, 0, 0, 0, 0, (empty_launch_dynamics(), empty_statuses, 0)),
     )
     monkeypatch.setattr("app.services.admin.overview._integration_items", lambda **_kwargs: [])
 

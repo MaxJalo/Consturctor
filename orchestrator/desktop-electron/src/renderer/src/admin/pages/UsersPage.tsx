@@ -1,5 +1,5 @@
 import { useCallback, useMemo, useRef, useState } from 'react'
-import { adminUsersMock } from '../../mocks/adminMocks'
+import { emptyAdminUsers } from '../adminEmpty'
 import { fetchAdminUsers } from '../adminApi'
 import { useAdminTabLoad } from '../hooks/useAdminTabLoad'
 import { AdminDataTable } from '../components/shared/AdminDataTable'
@@ -18,7 +18,7 @@ import { matchesFilter, matchesSearch } from '../utils/tableFilters'
 const ROLE_OPTIONS = ['Администратор', 'Пользователь', 'Аудитор', 'Оператор']
 
 export function UsersPage(): React.JSX.Element {
-  const { data, loading, error } = useAdminTabLoad(adminUsersMock, fetchAdminUsers)
+  const { data, loading, error } = useAdminTabLoad(emptyAdminUsers, fetchAdminUsers)
   const tableAreaRef = useRef<HTMLDivElement>(null)
   const pageSize = useAutoTablePageSize(tableAreaRef, { minRows: data.pagination.pageSize })
   const allRows = useMemo(() => data.rows, [data.rows])

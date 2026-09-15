@@ -11,6 +11,7 @@ import { parseIso, sameDay } from '../utils/calendar'
 import { useGridRefreshGeneration } from './GridDataRefreshContext'
 import { readGridCache, shouldRunGridFetch, writeGridCache } from './gridDataCache'
 import { turboProjectInvokeArgs } from './userContext'
+import { turboTaskAssignedToActor } from './turboAssigneeMatch'
 
 export type TodayProjectTaskRow = {
   id: string
@@ -135,6 +136,7 @@ export function useTodayProjectTasks(
         const merged = batches
           .flatMap((batch) =>
             batch.tasks
+              .filter((task) => turboTaskAssignedToActor(task, spec.erpFio))
               .filter((task) => taskVisibleForToday(task, periodDay, batch.projectId))
               .map((task) => ({ task, projectId: batch.projectId }))
           )

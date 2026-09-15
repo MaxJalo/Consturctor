@@ -1,5 +1,5 @@
 import { useCallback, useMemo, useState } from 'react'
-import { adminHistoryMock } from '../../mocks/adminMocks'
+import { emptyAdminHistory } from '../adminEmpty'
 import { fetchAdminHistory } from '../adminApi'
 import { useAdminTabLoad } from '../hooks/useAdminTabLoad'
 import { AdminDataTable } from '../components/shared/AdminDataTable'
@@ -16,7 +16,7 @@ import { downloadTableExport } from '../utils/exportTable'
 import { matchesFilter, matchesSearch } from '../utils/tableFilters'
 
 export function HistoryPage(): React.JSX.Element {
-  const { data, loading, error } = useAdminTabLoad(adminHistoryMock, fetchAdminHistory)
+  const { data, loading, error } = useAdminTabLoad(emptyAdminHistory, fetchAdminHistory)
   const [activeTab, setActiveTab] = useState(data.activeTab)
   const allRows = useMemo(() => data.rows, [data.rows])
 

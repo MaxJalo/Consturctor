@@ -139,7 +139,11 @@ export function isErpMetaHintRecord(task: Record<string, unknown>): boolean {
   if (/^\d{2}-[\wА-Яа-яЁё.-]+-\d{3,}$/i.test(number)) return false
   const title = String(task.title || number || '').trim()
   if (!title) return true
-  if (/BACKEND_URL|127\.0\.0\.1:7812|192\.168\.\d+\.\d+:7812|LAN gateway|run_dev\.bat/i.test(title)) {
+  if (
+    /BACKEND_URL|127\.0\.0\.1:7812|192\.168\.\d+\.\d+:7812|LAN gateway|run_dev\.bat|erp_reachable|constructor-gateway устарел|VPN на вашем ПК/i.test(
+      title
+    )
+  ) {
     return true
   }
   if (/Документооборот\s*\(\/doc\)|отклонил учётку OData|OData документооборота/i.test(title)) {
@@ -152,6 +156,44 @@ export function isErpMetaHintRecord(task: Record<string, unknown>): boolean {
   }
   if (/Войдите с паролем 1С|Пароль 1С в сессии/i.test(title)) return true
   return false
+}
+
+/** Docflow /doc OData rejection or missing DOCFLOW_* (not erp_pm SQL). */
+export function isDocflowOdataWarning(text: string): boolean {
+  const t = (text || '').trim()
+  if (!t) return false
+  return /документооборот|\/doc\)|OData документооборота|DOCFLOW_ODATA|docflow/i.test(t)
+}
+
+export function formatDocflowSecondaryHint(warning: string): string {
+  const w = (warning || '').trim()
+  if (!w) return ''
+  if (/^Документооборот \(доп\./i.test(w)) return w
+  return `Документооборот (доп.): ${w}`
+}
+
+/** Desktop uses a private-LAN gateway (:7812); ERP SQL runs on that server, not on the PC. */
+export function isLanBackendUrl(backendUrl: string): boolean {
+  const url = (backendUrl || '').trim()
+  if (!url) return false
+  if (/127\.0\.0\.1|localhost/i.test(url)) return false
+  return /:\/\/192\.168\.|:\/\/10\.|:\/\/172\.(1[6-9]|2\d|3[01])\./.test(url)
+}
+
+/** erp_reachable on gateway but onec.erp_tasks_current returns 0 — stale gateway image. */
+export function lanGatewayZeroTasksHint(backendUrl: string): string {
+  const host = (() => {
+    try {
+      return new URL(backendUrl).host
+    } catch {
+      return backendUrl.replace(/^https?:\/\//i, '').replace(/\/+$/, '') || '192.168.1.157:7812'
+    }
+  })()
+  return (
+    `1С на gateway (${host}) доступна (erp_reachable), но задач 0 — образ constructor-gateway устарел. ` +
+    `Админу на сервере: пересоберите и задеплойте gateway из orchestrator/backend (коммит ≥ 6d0e958, fix _query_tasks в erp_tasks.py). ` +
+    `VPN на вашем ПК для SQL не нужен. После деплоя — перезапуск контейнера и повторный вход в Orchestrator (JWT).`
+  )
 }
 
 export function stubSourceMessage(source: string): string {

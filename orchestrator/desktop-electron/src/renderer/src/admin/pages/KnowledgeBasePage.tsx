@@ -1,6 +1,6 @@
 import { BarChart3, ExternalLink, FileText, Link2 } from 'lucide-react'
 import { useCallback, useMemo, useRef, useState } from 'react'
-import { adminKnowledgeBaseMock } from '../../mocks/adminMocks'
+import { emptyAdminKnowledge } from '../adminEmpty'
 import { fetchAdminKnowledgeBase } from '../adminApi'
 import { useAdminTabLoad } from '../hooks/useAdminTabLoad'
 import { AdminDataTable } from '../components/shared/AdminDataTable'
@@ -17,7 +17,7 @@ import { downloadTableExport } from '../utils/exportTable'
 import { matchesFilter, matchesSearch } from '../utils/tableFilters'
 
 export function KnowledgeBasePage(): React.JSX.Element {
-  const { data, loading, error } = useAdminTabLoad(adminKnowledgeBaseMock, fetchAdminKnowledgeBase)
+  const { data, loading, error } = useAdminTabLoad(emptyAdminKnowledge, fetchAdminKnowledgeBase)
   const doc = data.document
   const tableAreaRef = useRef<HTMLDivElement>(null)
   const pageSize = useAutoTablePageSize(tableAreaRef, { minRows: 3, rowHeight: 48 })

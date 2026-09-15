@@ -9,7 +9,11 @@ import { hasComPassword } from '../store/session'
 import {
   enrichEmptyOneCErrors,
   formatComToolError,
+  formatDocflowSecondaryHint,
+  isDocflowOdataWarning,
+  isLanBackendUrl,
   isOneCAuthFailure,
+  lanGatewayZeroTasksHint,
   missingComPasswordMessage,
   stubSourceMessage,
   isErpMetaHintRecord
@@ -231,6 +235,8 @@ export type OrchestratorErpLoad = {
   tasks: SpecTaskRow[]
   sourceLabel: string
   error: string
+  /** Non-blocking docflow hint when erp_pm tasks loaded. */
+  erpSecondaryHint: string
   oneCAuthFailure: boolean
 }
 
@@ -244,9 +250,9 @@ export async function loadOrchestratorErpTasks(
 
   let tasks = erpParsed.rows
   let sourceLabel = erpParsed.source || ORCH_SOURCE_ID.erpPm
+  const docflowWarning = erpParsed.warning
   let mergedError = uniqueErrorJoin(
     erpRes.error || '',
-    erpParsed.warning,
     erpParsed.error,
     !erpRes.ok && !erpParsed.rows.length ? 'onec.erp_tasks_current недоступен' : '',
     erpParsed.source === 'stub' ? 'erp_pm stub (нет SQL gateway)' : ''
@@ -263,15 +269,19 @@ export async function loadOrchestratorErpTasks(
     }
   }
 
+  const backendUrl = String(import.meta.env.VITE_BACKEND_URL ?? '').trim()
+  const lanGateway = isLanBackendUrl(backendUrl)
   const staleGatewayHint =
     tasks.length === 0 &&
     erpParsed.source !== 'stub' &&
     erpRes.ok &&
     !mergedError.toLowerCase().includes('stub')
-      ? 'Если на LAN gateway (:7812) задач нет, а локальный backend их видит — переключите BACKEND_URL на http://127.0.0.1:7812 и запустите orchestrator/backend/run_dev.bat.'
+      ? lanGateway
+        ? lanGatewayZeroTasksHint(backendUrl)
+        : 'Если на LAN gateway (:7812) задач нет, а локальный backend их видит — переключите BACKEND_URL на http://127.0.0.1:7812 и запустите orchestrator/backend/run_dev.bat (нужен VPN до erp_pm на ПК разработчика).'
       : ''
 
-  const erpErrorJoined = enrichEmptyOneCErrors(
+  const erpCoreError = enrichEmptyOneCErrors(
     uniqueErrorJoin(mergedError, staleGatewayHint),
     {
       erpSource: erpParsed.source,
@@ -279,6 +289,18 @@ export async function loadOrchestratorErpTasks(
       mergedCount: tasks.length
     }
   )
+
+  const docflowBlocksErp =
+    tasks.length === 0 ||
+    !docflowWarning.trim() ||
+    !isDocflowOdataWarning(docflowWarning)
+  const erpSecondaryHint =
+    !docflowBlocksErp && docflowWarning.trim()
+      ? formatDocflowSecondaryHint(docflowWarning)
+      : ''
+  const erpErrorJoined = docflowBlocksErp
+    ? uniqueErrorJoin(erpCoreError, docflowWarning)
+    : erpCoreError
 
   const oneCAuthFailure =
     tasks.length === 0 &&
@@ -289,6 +311,7 @@ export async function loadOrchestratorErpTasks(
     tasks,
     sourceLabel: tasks.length ? sourceLabel : sourceLabel || erpRes.error || '—',
     error: erpErrorJoined,
+    erpSecondaryHint,
     oneCAuthFailure
   }
 }

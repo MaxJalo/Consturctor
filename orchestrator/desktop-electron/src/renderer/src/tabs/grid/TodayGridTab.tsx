@@ -228,16 +228,18 @@ export function TodayGridTab({
           title="Задачи из 1С"
           loading={data.sourcesLoading}
           error={
-            data.erpError || data.error
-              ? [data.erpError || data.error, !taskRows.length ? comPasswordSessionHint() : '']
-                  .filter(Boolean)
-                  .join(' · ')
-              : !taskRows.length
-                ? comPasswordSessionHint()
-                : undefined
+            taskRows.length
+              ? data.erpError || data.error || undefined
+              : data.erpError || data.error
+                ? [data.erpError || data.error, comPasswordSessionHint()].filter(Boolean).join(' · ')
+                : comPasswordSessionHint()
           }
           emptyText="Нет задач 1С для отображения"
-          hint={data.sources.erp !== '—' ? data.sources.erp : undefined}
+          hint={
+            [data.erpSecondaryHint, data.sources.erp !== '—' ? data.sources.erp : '']
+              .filter(Boolean)
+              .join(' · ') || undefined
+          }
           emptyExtra={onecReconnectBlock}
           columns={['Задача', 'Срок', 'Статус', 'Исполнитель']}
           rows={taskRows.map((row) => [

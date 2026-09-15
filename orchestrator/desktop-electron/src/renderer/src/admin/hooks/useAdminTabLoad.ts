@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from 'react'
+import { formatAdminLoadError } from '../adminLoadError'
 
 export function useAdminTabLoad<T>(
   fallback: T,
@@ -20,8 +21,7 @@ export function useAdminTabLoad<T>(
       const next = await fetcher()
       setData(next)
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Не удалось загрузить данные')
-      setData(fallback)
+      setError(formatAdminLoadError(err))
     } finally {
       setLoading(false)
     }

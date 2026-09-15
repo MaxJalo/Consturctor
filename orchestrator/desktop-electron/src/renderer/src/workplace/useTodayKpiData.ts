@@ -60,7 +60,7 @@ export function buildTodayKpiTiles(data: SpecV04SourcesState): SpecSummaryTile[]
       hint: loading
         ? 'загрузка…'
         : onecTotal
-          ? [data.erpError || data.error, `${onecDone} выполнено`].filter(Boolean).join(' · ')
+          ? [data.erpSecondaryHint, `${onecDone} выполнено`].filter(Boolean).join(' · ')
           : data.erpError || data.error || data.sources.erp,
       tone: 'blue',
       progress: loading ? undefined : pct(onecDone, onecTotal || 1),

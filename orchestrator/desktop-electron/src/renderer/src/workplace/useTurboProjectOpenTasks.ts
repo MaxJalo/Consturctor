@@ -4,6 +4,7 @@ import type { UserProfile } from '../api/types'
 import { turboProjectTaskToTodayRow } from './specV04Mappers'
 import type { TodayProjectTaskRow } from './useTodayProjectTasks'
 import { turboProjectInvokeArgs } from './userContext'
+import { turboTaskAssignedToActor } from './turboAssigneeMatch'
 
 export type TurboProjectOpenTaskRow = TodayProjectTaskRow
 
@@ -47,6 +48,7 @@ export function useTurboProjectOpenTasks(
         const raw = Array.isArray(payload.tasks) ? payload.tasks : []
         const open = raw
           .filter((item): item is Record<string, unknown> => Boolean(item) && typeof item === 'object')
+          .filter((task) => turboTaskAssignedToActor(task, erpFio))
           .filter((task) => {
             const percent = Number(task.percent_complete ?? 0)
             return !Number.isFinite(percent) || percent < 1
