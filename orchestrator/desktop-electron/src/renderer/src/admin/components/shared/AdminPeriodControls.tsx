@@ -1,43 +1,40 @@
+import { useState } from 'react'
+import { ADMIN_PERIOD_OPTIONS } from '../../../mocks/adminMocks'
+import { formatAdminDateRange, getPeriodRange, type AdminDateRange } from '../../utils/dateRange'
+import { AdminDateRangePicker } from './AdminDateRangePicker'
+import { AdminDropdown } from './AdminDropdown'
+import { AdminRefreshIcon } from './AdminRefreshIcon'
+
 interface AdminPeriodControlsProps {
-  periodLabel: string
-  dateRange: string
+  periodLabel?: string
+  dateRange?: string
   actionLabel?: string
   onAction?: () => void
 }
 
 export function AdminPeriodControls({
-  periodLabel,
-  dateRange,
   actionLabel,
   onAction
 }: AdminPeriodControlsProps): React.JSX.Element {
+  const [periodId, setPeriodId] = useState('week')
+  const [range, setRange] = useState<AdminDateRange>(() => getPeriodRange('week'))
+
+  function handlePeriodChange(nextPeriodId: string): void {
+    setPeriodId(nextPeriodId)
+    setRange(getPeriodRange(nextPeriodId))
+  }
+
   return (
     <div className="admin-period-controls">
-      <button type="button" className="admin-filter-pill">
-        {periodLabel}
-        <svg viewBox="0 0 16 16" aria-hidden>
-          <path d="M4 6l4 4 4-4" stroke="currentColor" strokeWidth="1.5" fill="none" strokeLinecap="round" />
-        </svg>
-      </button>
-      <button type="button" className="admin-filter-pill admin-filter-pill--date">
-        <svg viewBox="0 0 16 16" aria-hidden>
-          <rect x="2.5" y="3" width="11" height="10" rx="1.5" stroke="currentColor" strokeWidth="1.2" fill="none" />
-          <path d="M5 2v2M11 2v2M2.5 6h11" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" />
-        </svg>
-        {dateRange}
-      </button>
+      <AdminDropdown
+        value={periodId}
+        options={ADMIN_PERIOD_OPTIONS.map((item) => ({ value: item.id, label: item.label }))}
+        onChange={handlePeriodChange}
+      />
+      <AdminDateRangePicker value={range} onChange={setRange} />
       {actionLabel ? (
-        <button type="button" className="admin-refresh-btn" onClick={onAction}>
-          <svg viewBox="0 0 16 16" aria-hidden>
-            <path
-              d="M13.5 8a5.5 5.5 0 11-1.6-3.9M13.5 3.5V7h-3.5"
-              stroke="currentColor"
-              strokeWidth="1.4"
-              fill="none"
-              strokeLinecap="round"
-              strokeLinejoin="round"
-            />
-          </svg>
+        <button type="button" className="admin-refresh-btn" onClick={onAction} title={formatAdminDateRange(range)}>
+          <AdminRefreshIcon />
           {actionLabel}
         </button>
       ) : null}

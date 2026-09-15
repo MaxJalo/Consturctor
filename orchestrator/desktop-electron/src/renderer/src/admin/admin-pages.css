@@ -30,6 +30,10 @@
 
 .content-inner:has(.admin-page) .user-menu--admin .who,
 .content-inner:has(.admin-overview-page) .user-menu--admin .who {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
   text-align: left;
 }
 
@@ -43,9 +47,54 @@
 
 .content-inner:has(.admin-page) .user-menu--admin .pos,
 .content-inner:has(.admin-overview-page) .user-menu--admin .pos {
+  display: block;
   font-size: 12px;
+  font-weight: 400;
   color: #6b7f93;
   line-height: 1.2;
+}
+
+.user-menu__profile-wrap {
+  position: relative;
+}
+
+.user-menu__profile-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  padding: 0;
+}
+
+.user-menu__profile-btn .avatar {
+  position: relative;
+}
+
+.user-dropdown--admin {
+  top: calc(100% + 8px);
+  right: 0;
+  min-width: 220px;
+}
+
+.user-dropdown-item {
+  width: 100%;
+  text-align: left;
+  padding: 11px 16px;
+  border: none;
+  background: transparent;
+  color: #0b2744;
+  font-size: 14px;
+  cursor: pointer;
+}
+
+.user-dropdown-item:hover {
+  background: #eef3f8;
+}
+
+.user-dropdown--admin .user-dropdown-logout {
+  border-top: 1px solid #eef3f8;
 }
 
 .admin-page {
@@ -287,7 +336,22 @@
 
 .admin-table-wrap {
   overflow-x: auto;
-  margin: 0 -2px;
+  margin: 0;
+  border: 1px solid #dde6ef;
+  border-radius: 10px;
+  background: #fff;
+}
+
+.admin-table-person {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.admin-table-person__sub {
+  font-size: 12px;
+  color: #6b7f93;
+  line-height: 1.25;
 }
 
 .admin-table {
@@ -304,7 +368,12 @@
   color: #0b2744;
   background: #edf4fb;
   border-bottom: 1px solid #dde6ef;
+  border-right: 1px solid #dde6ef;
   white-space: nowrap;
+}
+
+.admin-table thead th:last-child {
+  border-right: none;
 }
 
 .admin-table thead th.is-center,
@@ -316,11 +385,12 @@
   padding: 14px;
   color: #42586f;
   border-bottom: 1px solid #eef3f8;
+  border-right: 1px solid #eef3f8;
   vertical-align: middle;
 }
 
-.admin-table tbody tr:last-child td {
-  border-bottom: none;
+.admin-table tbody td:last-child {
+  border-right: none;
 }
 
 .admin-link {
@@ -438,6 +508,263 @@
   cursor: pointer;
 }
 
+.admin-pagination__nav:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.admin-dropdown {
+  position: relative;
+}
+
+.admin-dropdown__menu {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  z-index: 30;
+  min-width: 100%;
+  padding: 6px;
+  border-radius: 12px;
+  border: 1px solid #dde6ef;
+  background: #fff;
+  box-shadow: 0 10px 28px rgba(15, 35, 62, 0.12);
+}
+
+.admin-dropdown__menu button {
+  display: block;
+  width: 100%;
+  padding: 8px 10px;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: #42586f;
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.admin-dropdown__menu button:hover,
+.admin-dropdown__menu button.active {
+  background: #eef3f8;
+  color: #1a73e8;
+}
+
+.admin-date-range__popup {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  z-index: 40;
+  width: 280px;
+  padding: 12px;
+  border-radius: 14px;
+  border: 1px solid #dde6ef;
+  background: #fff;
+  box-shadow: 0 12px 32px rgba(15, 35, 62, 0.14);
+}
+
+.admin-date-range__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 10px;
+}
+
+.admin-date-range__head strong {
+  font-size: 14px;
+  color: #0b2744;
+}
+
+.admin-date-range__weekdays,
+.admin-date-range__grid {
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+  gap: 4px;
+}
+
+.admin-date-range__weekdays span {
+  text-align: center;
+  font-size: 11px;
+  color: #8a9bb0;
+  font-weight: 600;
+}
+
+.admin-date-range__grid button {
+  height: 32px;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: #42586f;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.admin-date-range__grid button.muted {
+  color: #c0cad6;
+}
+
+.admin-date-range__grid button.in-range {
+  background: #e8f1fd;
+}
+
+.admin-date-range__grid button.edge {
+  background: #1a73e8;
+  color: #fff;
+  font-weight: 600;
+}
+
+.admin-date-range__grid button.today:not(.edge) {
+  box-shadow: inset 0 0 0 1px #1a73e8;
+}
+
+.admin-date-range__hint {
+  margin-top: 10px;
+  font-size: 11px;
+  color: #8a9bb0;
+  text-align: center;
+}
+
+.admin-panel--overflow-visible {
+  overflow: visible;
+}
+
+.admin-filter-bar {
+  overflow: visible;
+}
+
+.admin-filter-bar__actions {
+  overflow: visible;
+}
+
+.admin-export-split {
+  position: relative;
+  display: inline-flex;
+  align-items: stretch;
+  border-radius: 10px;
+  background: #1a73e8;
+  overflow: visible;
+}
+
+.admin-export-split .admin-export-btn {
+  border: none;
+  background: transparent;
+  color: #fff;
+}
+
+.admin-export-btn--main {
+  border-radius: 10px 0 0 10px;
+  border-right: 1px solid rgba(255, 255, 255, 0.25) !important;
+}
+
+.admin-export-btn--toggle {
+  border-radius: 0 10px 10px 0;
+  min-width: 36px;
+  padding: 0 10px;
+  justify-content: center;
+}
+
+.admin-export-menu {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  z-index: 40;
+  min-width: 180px;
+  padding: 6px;
+  border-radius: 12px;
+  border: 1px solid #dde6ef;
+  background: #fff;
+  box-shadow: 0 10px 28px rgba(15, 35, 62, 0.12);
+}
+
+.admin-export-menu button {
+  display: block;
+  width: 100%;
+  padding: 8px 10px;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: #42586f;
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.admin-export-menu button:hover,
+.admin-export-menu button.active {
+  background: #eef3f8;
+  color: #1a73e8;
+}
+
+.admin-filter-pill--compact {
+  min-width: 36px;
+  justify-content: center;
+  padding: 0 10px;
+}
+
+.admin-progress-list li.active {
+  background: #f4f8fc;
+  border-radius: 8px;
+}
+
+.admin-gauge {
+  position: relative;
+}
+
+.admin-gauge.active .admin-gauge__value {
+  filter: brightness(1.05);
+}
+
+.admin-gauge__tip {
+  position: absolute;
+  bottom: -4px;
+  left: 50%;
+  transform: translateX(-50%);
+  padding: 4px 8px;
+  border-radius: 8px;
+  background: #0b2744;
+  color: #fff;
+  font-size: 10px;
+  font-style: normal;
+  white-space: nowrap;
+}
+
+.admin-kb-bars__item {
+  position: relative;
+  flex: 1;
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  min-width: 0;
+}
+
+.admin-kb-bars__item i {
+  width: 100%;
+  border-radius: 3px 3px 0 0;
+  background: #1a73e8;
+  opacity: 0.75;
+  transition: opacity 0.15s ease, transform 0.15s ease;
+}
+
+.admin-kb-bars__item.active i {
+  opacity: 1;
+  transform: scaleY(1.04);
+  transform-origin: bottom;
+}
+
+.admin-kb-bars__tip {
+  position: absolute;
+  top: -28px;
+  left: 50%;
+  transform: translateX(-50%);
+  padding: 4px 8px;
+  border-radius: 8px;
+  background: #0b2744;
+  color: #fff;
+  font-size: 10px;
+  white-space: nowrap;
+}
+
 .admin-pagination__page.active {
   border-color: #1a73e8;
   color: #1a73e8;
@@ -521,9 +848,12 @@
   overflow: hidden;
 }
 
+.admin-calendar-grid--scroll {
+  overflow-x: auto;
+}
+
 .admin-calendar-grid__head {
   display: grid;
-  grid-template-columns: 56px repeat(7, minmax(0, 1fr));
   background: #f8fafc;
   border-bottom: 1px solid #eef3f8;
 }
@@ -539,7 +869,6 @@
 
 .admin-calendar-grid__row {
   display: grid;
-  grid-template-columns: 56px repeat(7, minmax(0, 1fr));
   min-height: 56px;
   border-bottom: 1px solid #eef3f8;
 }
@@ -672,30 +1001,72 @@
   color: #0b2744;
 }
 
+.admin-mini-calendar {
+  overflow: visible;
+}
+
+.admin-mini-calendar__weekdays {
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+  gap: 4px;
+  margin-bottom: 4px;
+}
+
+.admin-mini-calendar__weekdays span {
+  text-align: center;
+  font-size: 10px;
+  color: #8a9bb0;
+  font-weight: 600;
+}
+
 .admin-mini-calendar__grid {
   display: grid;
   grid-template-columns: repeat(7, 1fr);
   gap: 4px;
 }
 
-.admin-mini-calendar__grid span {
+.admin-mini-calendar__grid button {
   display: flex;
   align-items: center;
   justify-content: center;
   height: 28px;
+  border: none;
+  background: transparent;
   font-size: 12px;
   color: #42586f;
   border-radius: 6px;
+  cursor: pointer;
 }
 
-.admin-mini-calendar__grid span.muted {
+.admin-mini-calendar__grid button.muted {
   color: #c0cad6;
 }
 
-.admin-mini-calendar__grid span.active {
+.admin-mini-calendar__grid button.active {
   background: #1a73e8;
   color: #fff;
   font-weight: 600;
+}
+
+.admin-mini-calendar__grid button.today:not(.active):not(.edge) {
+  box-shadow: inset 0 0 0 1px #1a73e8;
+}
+
+.admin-mini-calendar__grid button.in-range {
+  background: #e8f1fd;
+}
+
+.admin-mini-calendar__grid button.edge {
+  background: #1a73e8;
+  color: #fff;
+  font-weight: 600;
+}
+
+.admin-mini-calendar__range {
+  margin-top: 10px;
+  font-size: 11px;
+  color: #8a9bb0;
+  text-align: center;
 }
 
 .admin-unscheduled {
@@ -1230,13 +1601,6 @@
   border-bottom: 1px solid #eef3f8;
 }
 
-.admin-kb-bars i {
-  flex: 1;
-  min-width: 0;
-  border-radius: 3px 3px 0 0;
-  background: #1a73e8;
-  opacity: 0.75;
-}
 
 .admin-related-list {
   list-style: none;

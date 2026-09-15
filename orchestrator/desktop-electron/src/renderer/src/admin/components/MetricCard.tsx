@@ -9,11 +9,11 @@ const ICON_TONE: Record<MetricIconVariant, string> = {
   agents_total: 'blue',
   agents_used: 'green',
   active_runs: 'teal',
-  users: 'purple',
-  success_rate: 'mint',
+  users: 'royal',
+  success_rate: 'green',
   errors: 'red',
   queue: 'orange',
-  system_load: 'blue'
+  system_load: 'sky'
 }
 
 export function MetricCard({ metric }: MetricCardProps): React.JSX.Element {

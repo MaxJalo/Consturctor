@@ -12,6 +12,7 @@ interface UserMenuProps {
   onLogout: () => void
   showLogout: boolean
   onOpenAgent?: (workflowId: string, runId: string) => void
+  onGoToSettings?: () => void
   variant?: 'default' | 'admin'
 }
 
@@ -23,6 +24,7 @@ export function UserMenu({
   onLogout,
   showLogout,
   onOpenAgent,
+  onGoToSettings,
   variant = 'default'
 }: UserMenuProps): React.JSX.Element {
   const [menuOpen, setMenuOpen] = useState(false)
@@ -122,6 +124,16 @@ export function UserMenu({
 
   const adminLayout = variant === 'admin'
 
+  function toggleProfileMenu(): void {
+    setMenuOpen((value) => !value)
+    setInboxOpen(false)
+  }
+
+  function goToSettings(): void {
+    setMenuOpen(false)
+    onGoToSettings?.()
+  }
+
   return (
     <div className={adminLayout ? 'user-menu user-menu--admin' : 'user-menu'} ref={ref}>
       <div className="notify-wrap">
@@ -149,37 +161,33 @@ export function UserMenu({
       </div>
 
       {adminLayout ? (
-        <>
-          <div style={{ position: 'relative' }}>
-            <button
-              className="avatar"
-              onClick={() => {
-                setMenuOpen((value) => !value)
-                setInboxOpen(false)
-              }}
-            >
+        <div className="user-menu__profile-wrap">
+          <button type="button" className="user-menu__profile-btn" onClick={toggleProfileMenu}>
+            <span className="avatar">
               <img className="avatar-img" src={avatarUrl || logoUrl} alt={user.fio} />
               <span className={`avatar-status ${user.activityStatus || 'online'}`} />
-            </button>
-            {menuOpen && (
-              <div className="user-dropdown">
-                <div className="user-dropdown-dept">{user.department || 'Без подразделения'}</div>
-                {showLogout && (
-                  <button className="user-dropdown-logout" onClick={onLogout}>
-                    Выйти
-                  </button>
-                )}
-              </div>
-            )}
-          </div>
-          <div className="who">
-            <div className="name">{user.fio}</div>
-            <div className="pos">{user.position || 'Системный администратор'}</div>
-          </div>
-          <svg className="user-menu__chevron" viewBox="0 0 16 16" aria-hidden>
-            <path d="M4 6l4 4 4-4" stroke="currentColor" strokeWidth="1.5" fill="none" strokeLinecap="round" />
-          </svg>
-        </>
+            </span>
+            <span className="who">
+              <span className="name">{user.fio}</span>
+              <span className="pos">{user.position || 'Системный администратор'}</span>
+            </span>
+            <svg className="user-menu__chevron" viewBox="0 0 16 16" aria-hidden>
+              <path d="M4 6l4 4 4-4" stroke="currentColor" strokeWidth="1.5" fill="none" strokeLinecap="round" />
+            </svg>
+          </button>
+          {menuOpen && (
+            <div className="user-dropdown user-dropdown--admin">
+              <button type="button" className="user-dropdown-item" onClick={goToSettings}>
+                Перейти в настройки
+              </button>
+              {showLogout ? (
+                <button type="button" className="user-dropdown-logout" onClick={onLogout}>
+                  Выйти
+                </button>
+              ) : null}
+            </div>
+          )}
+        </div>
       ) : (
         <>
           <div className="who">
@@ -190,10 +198,7 @@ export function UserMenu({
           <div style={{ position: 'relative' }}>
             <button
               className="avatar"
-              onClick={() => {
-                setMenuOpen((value) => !value)
-                setInboxOpen(false)
-              }}
+              onClick={toggleProfileMenu}
             >
               <img className="avatar-img" src={avatarUrl || logoUrl} alt={user.fio} />
               <span className={`avatar-status ${user.activityStatus || 'online'}`} />

@@ -706,6 +706,7 @@ export function App(): React.JSX.Element {
               onLogout={onLogout}
               showLogout={showLogout}
               onOpenAgent={(workflowId, runId) => void openAgentRun(workflowId, runId)}
+              onGoToSettings={() => setView({ kind: 'tab', key: 'settings' })}
               variant={view.kind === 'tab' && ADMIN_TAB_KEYS.includes(view.key) ? 'admin' : 'default'}
             />
           </div>

@@ -19,18 +19,18 @@ export function LineChartCard({ data }: LineChartCardProps): React.JSX.Element {
   const padTop = 8
   const padBottom = 8
   const plotHeight = chartHeight - padTop - padBottom
+  const stepX = chartWidth / Math.max(data.xLabels.length - 1, 1)
 
   const coords = useMemo(() => {
-    const stepX = chartWidth / Math.max(data.xLabels.length - 1, 1)
     return data.series.map((series) =>
       series.points.map((value, index) => ({
         x: index * stepX,
         y: padTop + plotHeight - (value / data.yMax) * plotHeight
       }))
     )
-  }, [data, plotHeight])
+  }, [data, plotHeight, stepX])
 
-  const hoverX = hoverIndex === null ? null : (hoverIndex / Math.max(data.xLabels.length - 1, 1)) * chartWidth
+  const hoverX = hoverIndex === null ? null : hoverIndex * stepX
 
   function handlePointer(clientX: number): void {
     const rect = plotRef.current?.getBoundingClientRect()
@@ -61,14 +61,24 @@ export function LineChartCard({ data }: LineChartCardProps): React.JSX.Element {
             {data.yTicks.map((tick) => {
               const y = padTop + plotHeight - (tick / data.yMax) * plotHeight
               return (
-                <line key={tick} x1={0} y1={y} x2={chartWidth} y2={y} className="admin-line-chart__grid-line" />
+                <line key={`h-${tick}`} x1={0} y1={y} x2={chartWidth} y2={y} className="admin-line-chart__grid-line" />
               )
             })}
+            {data.xLabels.map((label, index) => (
+              <line
+                key={`v-${label}`}
+                x1={index * stepX}
+                y1={padTop}
+                x2={index * stepX}
+                y2={padTop + plotHeight}
+                className="admin-line-chart__grid-line admin-line-chart__grid-line--vertical"
+              />
+            ))}
             {hoverX !== null ? (
               <rect
-                x={Math.max(0, hoverX - chartWidth / data.xLabels.length / 2)}
+                x={Math.max(0, hoverX - stepX / 2)}
                 y={0}
-                width={chartWidth / data.xLabels.length}
+                width={stepX}
                 height={chartHeight}
                 className="admin-line-chart__hover-band"
               />
@@ -95,9 +105,9 @@ export function LineChartCard({ data }: LineChartCardProps): React.JSX.Element {
                   cx={point.x}
                   cy={point.y}
                   r={hoverIndex === pointIndex ? 5 : 3.5}
-                  fill="#fff"
-                  stroke={series.color}
-                  strokeWidth={hoverIndex === pointIndex ? 2.4 : 2}
+                  fill={series.color}
+                  stroke="#fff"
+                  strokeWidth={hoverIndex === pointIndex ? 2 : 1.5}
                   className="admin-line-chart__dot"
                 />
               ))

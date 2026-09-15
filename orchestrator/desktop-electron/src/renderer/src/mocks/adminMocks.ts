@@ -183,6 +183,50 @@ export const adminOverviewMock: AdminOverviewMock = {
 export type AdminBadgeTone = 'success' | 'warning' | 'error' | 'info' | 'neutral'
 export type AdminSlaTone = 'ok' | 'warn' | 'fail'
 
+export interface AdminFilterMock {
+  id: string
+  options: string[]
+  defaultValue?: string
+}
+
+export interface AdminPeriodOptionMock {
+  id: string
+  label: string
+}
+
+export const ADMIN_PERIOD_OPTIONS: AdminPeriodOptionMock[] = [
+  { id: 'day', label: 'Период: День' },
+  { id: 'week', label: 'Период: Неделя' },
+  { id: 'month', label: 'Период: Месяц' },
+  { id: 'quarter', label: 'Период: Квартал' },
+  { id: 'year', label: 'Период: Год' }
+]
+
+export const HISTORY_FILTERS: AdminFilterMock[] = [
+  { id: 'status', options: ['Все статусы', 'Завершен', 'В работе', 'Ошибка', 'Отменен'] },
+  { id: 'agent', options: ['Все агенты', 'Агент_Совещания', 'Агент_Аналитика', 'Агент_Корреспонденция', 'Агент_КП', 'Агент_Финансы', 'Агент_Закупки'] },
+  { id: 'process', options: ['Все процессы', 'Подготовка совещания', 'Анализ рынка', 'Обработка корреспонденции', 'Формирование КП', 'Финансовый анализ'] },
+  { id: 'user', options: ['Все пользователи', 'Иванов И.И.', 'Петров А.А.', 'Сидоров В.В.', 'Кузнецова Е.Е.', 'Михайлов Д.Д.'] }
+]
+
+export const USERS_FILTERS: AdminFilterMock[] = [
+  { id: 'department', options: ['Все подразделения', 'IT', 'Продажи', 'Аналитика', 'Документооборот', 'Финансы', 'HR', 'Закупки'] },
+  { id: 'role', options: ['Все роли', 'Администратор', 'Пользователь', 'Аудитор', 'Оператор'] },
+  { id: 'status', options: ['Все статусы', 'Активен', 'Заблокирован', 'Приглашен', 'Неактивен'] }
+]
+
+export const AI_AGENTS_FILTERS: AdminFilterMock[] = [
+  { id: 'status', options: ['Все статусы', 'Активен', 'На настройке', 'Остановлен', 'Ошибка'] },
+  { id: 'process', options: ['Все процессы', 'Подготовка совещания', 'Обработка корреспонденции', 'Анализ рынка', 'Формирование КП', 'Финансовый анализ'] },
+  { id: 'owner', options: ['Все владельцы', 'Иванов И.И.', 'Кузнецова Е.Е.', 'Сидоров В.В.', 'Петров А.А.', 'Михайлов Д.Д.'] }
+]
+
+export const KNOWLEDGE_FILTERS: AdminFilterMock[] = [
+  { id: 'type', options: ['Все типы', 'Регламент', 'Шаблон', 'Справочник', 'FAQ', 'Инструкция'] },
+  { id: 'agent', options: ['Все агенты', 'Агент_Закупки', 'Агент_КП', 'Агент_Совещания', 'Агент_Аналитика', 'Агент_Финансы'] },
+  { id: 'status', options: ['Все статусы', 'Актуален', 'Требует обновления', 'Архив', 'На проверке'] }
+]
+
 export interface AdminPeriodMock {
   periodLabel: string
   dateRange: string
@@ -206,9 +250,9 @@ export interface AdminHistoryMock extends AdminPeriodMock {
   subtitle: string
   tabs: Array<{ id: string; label: string }>
   activeTab: string
-  filters: string[]
+  filters: AdminFilterMock[]
   rows: AdminHistoryRowMock[]
-  pagination: { from: number; to: number; total: number }
+  pagination: { pageSize: number; total: number }
 }
 
 export interface AdminCalendarEventMock {
@@ -218,6 +262,7 @@ export interface AdminCalendarEventMock {
   endHour: number
   title: string
   tone: 'green' | 'blue' | 'purple' | 'yellow' | 'red'
+  agentId: string
 }
 
 export interface AdminLaunchCalendarMock extends AdminPeriodMock {
@@ -276,9 +321,9 @@ export interface AdminUsersMock {
   title: string
   subtitle: string
   addLabel: string
-  filters: string[]
+  filters: AdminFilterMock[]
   rows: AdminUserRowMock[]
-  pagination: { from: number; to: number; total: number }
+  pagination: { pageSize: number; total: number }
 }
 
 export interface AdminAgentRowMock {
@@ -311,9 +356,9 @@ export interface AdminAiAgentsMock {
   subtitle: string
   createLabel: string
   importLabel: string
-  filters: string[]
+  filters: AdminFilterMock[]
   rows: AdminAgentRowMock[]
-  pagination: { from: number; to: number; total: number }
+  pagination: { pageSize: number; total: number }
   detail: AdminAgentDetailMock
 }
 
@@ -332,9 +377,9 @@ export interface AdminKnowledgeBaseMock {
   title: string
   subtitle: string
   addLabel: string
-  filters: string[]
+  filters: AdminFilterMock[]
   rows: AdminKnowledgeRowMock[]
-  pagination: { from: number; to: number; total: number }
+  pagination: { pageSize: number; total: number }
   document: {
     title: string
     status: string
@@ -371,7 +416,7 @@ export const adminHistoryMock: AdminHistoryMock = {
     { id: 'project_tasks', label: 'Задачи по проектам' }
   ],
   activeTab: 'processes',
-  filters: ['Все статусы', 'Все агенты', 'Все процессы', 'Все пользователи'],
+  filters: HISTORY_FILTERS,
   rows: [
     { id: 'P-458', process: 'Подготовка совещания', agent: 'Агент_Совещания', user: 'Петров А.А.', status: 'Завершен', statusTone: 'success', launchedAt: '14.09.2026 10:15', duration: '12 мин', sla: 'ok' },
     { id: 'P-459', process: 'Анализ рынка', agent: 'Агент_Аналитика', user: 'Сидоров В.В.', status: 'В работе', statusTone: 'warning', launchedAt: '14.09.2026 09:30', duration: '25 мин', sla: 'warn' },
@@ -384,7 +429,7 @@ export const adminHistoryMock: AdminHistoryMock = {
     { id: 'P-466', process: 'Подготовка материалов', agent: 'Агент_Совещания', user: 'Лебедев А.А.', status: 'Завершен', statusTone: 'success', launchedAt: '11.09.2026 09:15', duration: '9 мин', sla: 'ok' },
     { id: 'P-467', process: 'Экспорт отчетов', agent: 'Агент_Финансы', user: 'Смирнова К.К.', status: 'Завершен', statusTone: 'success', launchedAt: '10.09.2026 17:30', duration: '6 мин', sla: 'ok' }
   ],
-  pagination: { from: 1, to: 10, total: 248 }
+  pagination: { pageSize: 10, total: 248 }
 }
 
 export const adminLaunchCalendarMock: AdminLaunchCalendarMock = {
@@ -399,14 +444,14 @@ export const adminLaunchCalendarMock: AdminLaunchCalendarMock = {
   days: ['Пн 08.09', 'Вт 09.09', 'Ср 10.09', 'Чт 11.09', 'Пт 12.09', 'Сб 13.09', 'Вс 14.09'],
   hours: ['08:00', '09:00', '10:00', '11:00', '12:00', '13:00', '14:00', '15:00', '16:00', '17:00', '18:00'],
   events: [
-    { id: 'e1', dayIndex: 0, startHour: 9, endHour: 10, title: 'Подготовка совещаний', tone: 'green' },
-    { id: 'e2', dayIndex: 0, startHour: 11, endHour: 12, title: 'Анализ рынка', tone: 'blue' },
-    { id: 'e3', dayIndex: 0, startHour: 15, endHour: 16, title: 'Обработка корреспонденции', tone: 'purple' },
-    { id: 'e4', dayIndex: 2, startHour: 11, endHour: 12, title: 'Подготовка КП', tone: 'yellow' },
-    { id: 'e5', dayIndex: 2, startHour: 13, endHour: 14, title: 'Финансовый анализ', tone: 'red' },
-    { id: 'e6', dayIndex: 4, startHour: 13, endHour: 14, title: 'Отчет по закупкам', tone: 'blue' },
-    { id: 'e7', dayIndex: 4, startHour: 15, endHour: 16, title: 'Анализ Базы знаний', tone: 'green' },
-    { id: 'e8', dayIndex: 4, startHour: 16, endHour: 17, title: 'Сверка данных', tone: 'yellow' }
+    { id: 'e1', dayIndex: 0, startHour: 9, endHour: 10, title: 'Подготовка совещаний', tone: 'green', agentId: 'meet' },
+    { id: 'e2', dayIndex: 0, startHour: 11, endHour: 12, title: 'Анализ рынка', tone: 'blue', agentId: 'analytics' },
+    { id: 'e3', dayIndex: 0, startHour: 15, endHour: 16, title: 'Обработка корреспонденции', tone: 'purple', agentId: 'mail' },
+    { id: 'e4', dayIndex: 2, startHour: 11, endHour: 12, title: 'Подготовка КП', tone: 'yellow', agentId: 'sales' },
+    { id: 'e5', dayIndex: 2, startHour: 13, endHour: 14, title: 'Финансовый анализ', tone: 'red', agentId: 'fin' },
+    { id: 'e6', dayIndex: 4, startHour: 13, endHour: 14, title: 'Отчет по закупкам', tone: 'blue', agentId: 'proc' },
+    { id: 'e7', dayIndex: 4, startHour: 15, endHour: 16, title: 'Анализ Базы знаний', tone: 'green', agentId: 'analytics' },
+    { id: 'e8', dayIndex: 4, startHour: 16, endHour: 17, title: 'Сверка данных', tone: 'yellow', agentId: 'fin' }
   ],
   agentFilters: [
     { id: 'all', label: 'Все агенты', color: '#1a73e8', checked: true },
@@ -489,7 +534,7 @@ export const adminUsersMock: AdminUsersMock = {
   title: 'Пользователи',
   subtitle: 'Управление учетными записями, ролями и использованием ИИ-агентов',
   addLabel: 'Добавить пользователя',
-  filters: ['Все подразделения', 'Все роли', 'Все статусы'],
+  filters: USERS_FILTERS,
   rows: [
     { fio: 'Иванов И.И.', position: 'Системный администратор', department: 'IT', role: 'Администратор', status: 'Активен', agentsAccess: 37, agentsUsed: 12, lastActivity: '14.09.2026 12:45' },
     { fio: 'Петров А.А.', position: 'Руководитель отдела', department: 'Продажи', role: 'Пользователь', status: 'Активен', agentsAccess: 8, agentsUsed: 5, lastActivity: '14.09.2026 11:20' },
@@ -497,7 +542,7 @@ export const adminUsersMock: AdminUsersMock = {
     { fio: 'Кузнецова Е.Е.', position: 'Специалист', department: 'Документооборот', role: 'Пользователь', status: 'Активен', agentsAccess: 5, agentsUsed: 3, lastActivity: '13.09.2026 18:10' },
     { fio: 'Михайлов Д.Д.', position: 'Финансовый контролер', department: 'Финансы', role: 'Пользователь', status: 'Активен', agentsAccess: 7, agentsUsed: 6, lastActivity: '13.09.2026 16:40' }
   ],
-  pagination: { from: 1, to: 5, total: 142 }
+  pagination: { pageSize: 5, total: 142 }
 }
 
 export const adminAiAgentsMock: AdminAiAgentsMock = {
@@ -506,7 +551,7 @@ export const adminAiAgentsMock: AdminAiAgentsMock = {
   subtitle: 'Создание, настройка, версии и мониторинг всех ИИ-агентов',
   createLabel: 'Создать агента',
   importLabel: 'Импорт',
-  filters: ['Все статусы', 'Все процессы', 'Все владельцы'],
+  filters: AI_AGENTS_FILTERS,
   rows: [
     { name: 'Агент_Совещания', process: 'Подготовка совещания', owner: 'Иванов И.И.', version: '1.3.2', status: 'Активен', statusTone: 'success', runs: 1245, successRate: '94%', used: true },
     { name: 'Агент_Корреспонденция', process: 'Обработка корреспонденции', owner: 'Кузнецова Е.Е.', version: '1.1.0', status: 'Активен', statusTone: 'success', runs: 892, successRate: '91%', used: true },
@@ -514,7 +559,7 @@ export const adminAiAgentsMock: AdminAiAgentsMock = {
     { name: 'Агент_КП', process: 'Формирование КП', owner: 'Петров А.А.', version: '1.0.5', status: 'Активен', statusTone: 'success', runs: 678, successRate: '93%', used: true },
     { name: 'Агент_Финансы', process: 'Финансовый анализ', owner: 'Михайлов Д.Д.', version: '1.2.0', status: 'Активен', statusTone: 'success', runs: 534, successRate: '89%', used: true }
   ],
-  pagination: { from: 1, to: 5, total: 37 },
+  pagination: { pageSize: 5, total: 37 },
   detail: {
     name: 'Агент_Совещания',
     status: 'Активен',
@@ -551,7 +596,7 @@ export const adminKnowledgeBaseMock: AdminKnowledgeBaseMock = {
   title: 'База знаний',
   subtitle: 'Документы, справочники и источники знаний для ИИ-агентов',
   addLabel: 'Добавить документ',
-  filters: ['Все типы', 'Все агенты', 'Все статусы'],
+  filters: KNOWLEDGE_FILTERS,
   rows: [
     { name: 'Регламент по закупкам', type: 'Регламент', agents: 'Агент_Закупки', version: '2.1', status: 'Актуален', statusTone: 'success', updatedAt: '12.09.2026' },
     { name: 'Шаблоны КП', type: 'Шаблон', agents: 'Агент_КП', version: '1.3', status: 'Актуален', statusTone: 'success', updatedAt: '11.09.2026' },
@@ -559,7 +604,7 @@ export const adminKnowledgeBaseMock: AdminKnowledgeBaseMock = {
     { name: 'Частые вопросы (FAQ)', type: 'FAQ', agents: 'Агент_Совещания', version: '1.2', status: 'Актуален', statusTone: 'success', updatedAt: '05.09.2026' },
     { name: 'Инструкции по 1С', type: 'Инструкция', agents: 'Агент_Аналитика', version: '1.1', status: 'Требует обновления', statusTone: 'error', updatedAt: '01.09.2026' }
   ],
-  pagination: { from: 1, to: 5, total: 257 },
+  pagination: { pageSize: 5, total: 257 },
   document: {
     title: 'Регламент по закупкам',
     status: 'Актуален',
@@ -588,4 +633,141 @@ export const adminKnowledgeBaseMock: AdminKnowledgeBaseMock = {
     ],
     relatedCount: 12
   }
+}
+
+const HISTORY_TEMPLATES = adminHistoryMock.rows
+const USERS_TEMPLATES = adminUsersMock.rows
+const AGENTS_TEMPLATES = adminAiAgentsMock.rows
+const KNOWLEDGE_TEMPLATES = adminKnowledgeBaseMock.rows
+
+const EXTRA_USERS = [
+  { fio: 'Орлова М.М.', position: 'Менеджер проектов', department: 'Аналитика', role: 'Пользователь', status: 'Активен', agentsAccess: 9, agentsUsed: 4, lastActivity: '12.09.2026 09:20' },
+  { fio: 'Николаев С.С.', position: 'Специалист по закупкам', department: 'Закупки', role: 'Пользователь', status: 'Активен', agentsAccess: 4, agentsUsed: 3, lastActivity: '12.09.2026 08:55' },
+  { fio: 'Волков П.П.', position: 'Бухгалтер', department: 'Финансы', role: 'Пользователь', status: 'Активен', agentsAccess: 3, agentsUsed: 2, lastActivity: '11.09.2026 17:10' },
+  { fio: 'Лебедев А.А.', position: 'HR-менеджер', department: 'HR', role: 'Пользователь', status: 'Приглашен', agentsAccess: 2, agentsUsed: 0, lastActivity: '11.09.2026 15:30' },
+  { fio: 'Смирнова К.К.', position: 'Юрист', department: 'Юридический', role: 'Аудитор', status: 'Активен', agentsAccess: 5, agentsUsed: 1, lastActivity: '10.09.2026 14:05' }
+]
+
+const EXTRA_AGENTS = [
+  { name: 'Агент_Закупки', process: 'Отчет по закупкам', owner: 'Николаев С.С.', version: '1.4.0', status: 'Активен', statusTone: 'success' as AdminBadgeTone, runs: 412, successRate: '90%', used: true },
+  { name: 'Агент_HR', process: 'Подбор кандидатов', owner: 'Лебедев А.А.', version: '0.9.2', status: 'На настройке', statusTone: 'warning' as AdminBadgeTone, runs: 98, successRate: '81%', used: false },
+  { name: 'Агент_Отчетность', process: 'Сверка данных', owner: 'Волков П.П.', version: '1.1.3', status: 'Активен', statusTone: 'success' as AdminBadgeTone, runs: 267, successRate: '88%', used: true },
+  { name: 'Агент_Юрист', process: 'Проверка договоров', owner: 'Смирнова К.К.', version: '1.0.1', status: 'Остановлен', statusTone: 'error' as AdminBadgeTone, runs: 54, successRate: '76%', used: false },
+  { name: 'Агент_Кадры', process: 'Кадровый аудит', owner: 'Орлова М.М.', version: '2.2.0', status: 'Активен', statusTone: 'success' as AdminBadgeTone, runs: 189, successRate: '91%', used: true }
+]
+
+const EXTRA_KNOWLEDGE = [
+  { name: 'Политика безопасности', type: 'Регламент', agents: 'Агент_HR', version: '1.0', status: 'Актуален', statusTone: 'success' as AdminBadgeTone, updatedAt: '09.09.2026' },
+  { name: 'Матрица компетенций', type: 'Справочник', agents: 'Агент_Кадры', version: '3.2', status: 'Актуален', statusTone: 'success' as AdminBadgeTone, updatedAt: '08.09.2026' },
+  { name: 'Шаблон договора поставки', type: 'Шаблон', agents: 'Агент_Юрист', version: '2.0', status: 'На проверке', statusTone: 'warning' as AdminBadgeTone, updatedAt: '07.09.2026' },
+  { name: 'Глоссарий терминов', type: 'FAQ', agents: 'Агент_Аналитика', version: '1.4', status: 'Актуален', statusTone: 'success' as AdminBadgeTone, updatedAt: '06.09.2026' },
+  { name: 'Инструкция по Outlook', type: 'Инструкция', agents: 'Агент_Корреспонденция', version: '1.2', status: 'Архив', statusTone: 'neutral' as AdminBadgeTone, updatedAt: '01.09.2026' }
+]
+
+function clonePageRows<T>(templates: T[], page: number, pageSize: number, mapper: (item: T, index: number, offset: number) => T): T[] {
+  const offset = (page - 1) * pageSize
+  return Array.from({ length: pageSize }, (_, index) => mapper(templates[(offset + index) % templates.length], index, offset))
+}
+
+const HISTORY_TAB_TEMPLATES: Record<string, AdminHistoryRowMock[]> = {
+  processes: HISTORY_TEMPLATES,
+  tasks: [
+    { id: 'T-101', process: 'Согласовать бюджет', agent: 'Агент_Финансы', user: 'Михайлов Д.Д.', status: 'Завершен', statusTone: 'success', launchedAt: '14.09.2026 11:00', duration: '18 мин', sla: 'ok' },
+    { id: 'T-102', process: 'Подготовить отчет', agent: 'Агент_Аналитика', user: 'Сидоров В.В.', status: 'В работе', statusTone: 'warning', launchedAt: '14.09.2026 10:20', duration: '22 мин', sla: 'warn' },
+    { id: 'T-103', process: 'Проверить входящие', agent: 'Агент_Корреспонденция', user: 'Кузнецова Е.Е.', status: 'Завершен', statusTone: 'success', launchedAt: '13.09.2026 16:40', duration: '9 мин', sla: 'ok' },
+    { id: 'T-104', process: 'Обновить KPI', agent: 'Агент_Аналитика', user: 'Орлова М.М.', status: 'Ошибка', statusTone: 'error', launchedAt: '13.09.2026 14:05', duration: '4 мин', sla: 'fail' },
+    { id: 'T-105', process: 'Сформировать повестку', agent: 'Агент_Совещания', user: 'Петров А.А.', status: 'Завершен', statusTone: 'success', launchedAt: '12.09.2026 09:30', duration: '11 мин', sla: 'ok' }
+  ],
+  letters: [
+    { id: 'L-201', process: 'Ответ клиенту', agent: 'Агент_Корреспонденция', user: 'Кузнецова Е.Е.', status: 'Завершен', statusTone: 'success', launchedAt: '14.09.2026 08:50', duration: '6 мин', sla: 'ok' },
+    { id: 'L-202', process: 'Рассылка уведомлений', agent: 'Агент_Совещания', user: 'Петров А.А.', status: 'Завершен', statusTone: 'success', launchedAt: '13.09.2026 17:10', duration: '7 мин', sla: 'ok' },
+    { id: 'L-203', process: 'Обработка претензии', agent: 'Агент_Корреспонденция', user: 'Смирнова К.К.', status: 'В работе', statusTone: 'warning', launchedAt: '13.09.2026 12:15', duration: '15 мин', sla: 'warn' },
+    { id: 'L-204', process: 'Архивация переписки', agent: 'Агент_Корреспонденция', user: 'Иванов И.И.', status: 'Завершен', statusTone: 'success', launchedAt: '12.09.2026 15:00', duration: '5 мин', sla: 'ok' },
+    { id: 'L-205', process: 'Подготовка шаблона', agent: 'Агент_КП', user: 'Петров А.А.', status: 'Завершен', statusTone: 'success', launchedAt: '11.09.2026 10:45', duration: '8 мин', sla: 'ok' }
+  ],
+  project_tasks: [
+    { id: 'PT-301', process: 'Этап: анализ требований', agent: 'Агент_Аналитика', user: 'Орлова М.М.', status: 'Завершен', statusTone: 'success', launchedAt: '14.09.2026 09:10', duration: '26 мин', sla: 'ok' },
+    { id: 'PT-302', process: 'Этап: согласование', agent: 'Агент_Совещания', user: 'Петров А.А.', status: 'В работе', statusTone: 'warning', launchedAt: '13.09.2026 13:20', duration: '19 мин', sla: 'warn' },
+    { id: 'PT-303', process: 'Этап: закупки', agent: 'Агент_Закупки', user: 'Николаев С.С.', status: 'Завершен', statusTone: 'success', launchedAt: '12.09.2026 11:40', duration: '21 мин', sla: 'ok' },
+    { id: 'PT-304', process: 'Этап: финансы', agent: 'Агент_Финансы', user: 'Михайлов Д.Д.', status: 'Ошибка', statusTone: 'error', launchedAt: '11.09.2026 16:05', duration: '7 мин', sla: 'fail' },
+    { id: 'PT-305', process: 'Этап: документооборот', agent: 'Агент_Корреспонденция', user: 'Кузнецова Е.Е.', status: 'Завершен', statusTone: 'success', launchedAt: '10.09.2026 14:30', duration: '13 мин', sla: 'ok' }
+  ]
+}
+
+export const HISTORY_TAB_TOTALS: Record<string, number> = {
+  processes: 248,
+  tasks: 186,
+  letters: 92,
+  project_tasks: 64
+}
+
+export function getHistoryPageRows(
+  tabId: string,
+  page: number,
+  pageSize = adminHistoryMock.pagination.pageSize
+): AdminHistoryRowMock[] {
+  const templates = HISTORY_TAB_TEMPLATES[tabId] || HISTORY_TEMPLATES
+  const prefix = tabId === 'tasks' ? 'T' : tabId === 'letters' ? 'L' : tabId === 'project_tasks' ? 'PT' : 'P'
+  return clonePageRows(templates, page, pageSize, (item, index, offset) => ({
+    ...item,
+    id: `${prefix}-${100 + offset + index}`,
+    duration: `${6 + ((offset + index) % 27)} мин`,
+    launchedAt: `${String(14 - ((offset + index) % 5)).padStart(2, '0')}.09.2026 ${String(8 + ((offset + index) % 10)).padStart(2, '0')}:${String((index * 7) % 60).padStart(2, '0')}`
+  }))
+}
+
+export function getUsersPageRows(page: number, pageSize = adminUsersMock.pagination.pageSize): AdminUserRowMock[] {
+  const pool = [...USERS_TEMPLATES, ...EXTRA_USERS]
+  return clonePageRows(pool, page, pageSize, (item, index, offset) => ({
+    ...item,
+    lastActivity: `${String(14 - ((offset + index) % 6)).padStart(2, '0')}.09.2026 ${String(8 + ((offset + index) % 11)).padStart(2, '0')}:${String((index * 5) % 60).padStart(2, '0')}`
+  }))
+}
+
+export function getAiAgentsPageRows(page: number, pageSize = adminAiAgentsMock.pagination.pageSize): AdminAgentRowMock[] {
+  const pool = [...AGENTS_TEMPLATES, ...EXTRA_AGENTS]
+  return clonePageRows(pool, page, pageSize, (item, index, offset) => ({
+    ...item,
+    runs: item.runs + offset * 3 + index,
+    successRate: `${Math.max(75, 94 - ((offset + index) % 8))}%`
+  }))
+}
+
+export function getKnowledgePageRows(page: number, pageSize = adminKnowledgeBaseMock.pagination.pageSize): AdminKnowledgeRowMock[] {
+  const pool = [...KNOWLEDGE_TEMPLATES, ...EXTRA_KNOWLEDGE]
+  return clonePageRows(pool, page, pageSize, (item, index, offset) => ({
+    ...item,
+    version: `${Number(item.version.split('.')[0])}.${(offset + index) % 9}`,
+    updatedAt: `${String(14 - ((offset + index) % 10)).padStart(2, '0')}.09.2026`
+  }))
+}
+
+function getAllPagedRows<T>(
+  total: number,
+  pageSize: number,
+  loader: (page: number, size: number) => T[]
+): T[] {
+  const pageCount = Math.ceil(total / pageSize)
+  return Array.from({ length: pageCount }, (_, index) => loader(index + 1, pageSize)).flat()
+}
+
+export function getAllHistoryRows(tabId: string): AdminHistoryRowMock[] {
+  const total = HISTORY_TAB_TOTALS[tabId] || adminHistoryMock.pagination.total
+  const pageSize = adminHistoryMock.pagination.pageSize
+  return getAllPagedRows(total, pageSize, (page, size) => getHistoryPageRows(tabId, page, size))
+}
+
+export function getAllUsersRows(): AdminUserRowMock[] {
+  const { total, pageSize } = adminUsersMock.pagination
+  return getAllPagedRows(total, pageSize, getUsersPageRows)
+}
+
+export function getAllAiAgentsRows(): AdminAgentRowMock[] {
+  const { total, pageSize } = adminAiAgentsMock.pagination
+  return getAllPagedRows(total, pageSize, getAiAgentsPageRows)
+}
+
+export function getAllKnowledgeRows(): AdminKnowledgeRowMock[] {
+  const { total, pageSize } = adminKnowledgeBaseMock.pagination
+  return getAllPagedRows(total, pageSize, getKnowledgePageRows)
 }

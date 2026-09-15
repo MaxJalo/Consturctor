@@ -1,4 +1,5 @@
-import { adminAiAgentsMock } from '../../mocks/adminMocks'
+import { useCallback, useMemo } from 'react'
+import { adminAiAgentsMock, getAllAiAgentsRows } from '../../mocks/adminMocks'
 import { AdminDataTable } from '../components/shared/AdminDataTable'
 import { AdminFilterBar } from '../components/shared/AdminFilterBar'
 import { AdminOutlineButton } from '../components/shared/AdminOutlineButton'
@@ -8,10 +9,50 @@ import { AdminPagination } from '../components/shared/AdminPagination'
 import { AdminPrimaryButton } from '../components/shared/AdminPrimaryButton'
 import { AdminSegmentTabs } from '../components/shared/AdminSegmentTabs'
 import { AdminStatusBadge } from '../components/shared/AdminStatusBadge'
+import { useAdminFilteredTable } from '../hooks/useAdminFilteredTable'
+import { downloadTableExport } from '../utils/exportTable'
+import { matchesFilter, matchesSearch } from '../utils/tableFilters'
 
 export function AiAgentsPage(): React.JSX.Element {
   const mock = adminAiAgentsMock
   const detail = mock.detail
+  const allRows = useMemo(() => getAllAiAgentsRows(), [])
+
+  const filterFn = useCallback(
+    (row: (typeof allRows)[number], filters: Record<string, string>, search: string) => {
+      if (!matchesFilter(row.status, filters.status || '')) return false
+      if (!matchesFilter(row.process, filters.process || '')) return false
+      if (!matchesFilter(row.owner, filters.owner || '')) return false
+      return matchesSearch(
+        [row.name, row.process, row.owner, row.version, row.status, String(row.runs), row.successRate, row.used ? 'Да' : 'Нет'],
+        search
+      )
+    },
+    []
+  )
+
+  const { filtered, paged, page, setPage, handleFiltersChange, total } = useAdminFilteredTable({
+    rows: allRows,
+    pageSize: mock.pagination.pageSize,
+    filterFn
+  })
+
+  function handleExport(format: string): void {
+    void downloadTableExport(format, {
+      filename: 'ai-agents',
+      headers: ['Название', 'Процесс', 'Владелец', 'Версия', 'Статус', 'Запусков', 'Успешность', 'Используется'],
+      rows: filtered.map((row) => [
+        row.name,
+        row.process,
+        row.owner,
+        row.version,
+        row.status,
+        String(row.runs),
+        row.successRate,
+        row.used ? 'Да' : 'Нет'
+      ])
+    })
+  }
 
   return (
     <AdminPageShell breadcrumb={mock.breadcrumb}>
@@ -26,7 +67,7 @@ export function AiAgentsPage(): React.JSX.Element {
         }
       />
       <div className="admin-panel">
-        <AdminFilterBar filters={mock.filters} />
+        <AdminFilterBar filters={mock.filters} onFiltersChange={handleFiltersChange} onExport={handleExport} />
         <AdminDataTable
           columns={[
             { id: 'name', label: 'Название' },
@@ -38,7 +79,7 @@ export function AiAgentsPage(): React.JSX.Element {
             { id: 'success', label: 'Успешность', align: 'center', width: '110px' },
             { id: 'used', label: 'Используется', align: 'center', width: '120px' }
           ]}
-          rows={mock.rows.map((row) => [
+          rows={paged.map((row) => [
             <span className="admin-link">{row.name}</span>,
             row.process,
             row.owner,
@@ -49,7 +90,12 @@ export function AiAgentsPage(): React.JSX.Element {
             <span className={row.used ? 'admin-lock admin-lock--yes' : 'admin-lock admin-lock--no'}>{row.used ? 'Да' : 'Нет'}</span>
           ])}
         />
-        <AdminPagination from={mock.pagination.from} to={mock.pagination.to} total={mock.pagination.total} pages={[1, 2, 3, 'ellipsis', 8]} />
+        <AdminPagination
+          page={page}
+          pageSize={mock.pagination.pageSize}
+          total={total}
+          onPageChange={setPage}
+        />
       </div>
       <section className="admin-panel admin-agent-detail">
         <div className="admin-agent-detail__head">

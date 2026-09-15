@@ -1,40 +1,53 @@
+import { buildPageList, paginateRange } from '../../utils/pagination'
+
 interface AdminPaginationProps {
-  from: number
-  to: number
+  page: number
+  pageSize: number
   total: number
-  pages?: Array<number | 'ellipsis'>
-  activePage?: number
+  onPageChange: (page: number) => void
 }
 
-export function AdminPagination({
-  from,
-  to,
-  total,
-  pages = [1, 2, 3, 'ellipsis', 50],
-  activePage = 1
-}: AdminPaginationProps): React.JSX.Element {
+export function AdminPagination({ page, pageSize, total, onPageChange }: AdminPaginationProps): React.JSX.Element {
+  const totalPages = Math.max(1, Math.ceil(total / pageSize))
+  const safePage = Math.min(Math.max(page, 1), totalPages)
+  const pages = buildPageList(totalPages, safePage)
+  const { from, to } = paginateRange(safePage, pageSize, total)
+
   return (
     <div className="admin-pagination">
       <div className="admin-pagination__pages">
-        <button type="button" className="admin-pagination__nav" aria-label="Назад">
+        <button
+          type="button"
+          className="admin-pagination__nav"
+          aria-label="Назад"
+          disabled={safePage <= 1}
+          onClick={() => onPageChange(safePage - 1)}
+        >
           ‹
         </button>
-        {pages.map((page, index) =>
-          page === 'ellipsis' ? (
+        {pages.map((item, index) =>
+          item === 'ellipsis' ? (
             <span key={`e-${index}`} className="admin-pagination__ellipsis">
               …
             </span>
           ) : (
             <button
-              key={page}
+              key={item}
               type="button"
-              className={page === activePage ? 'admin-pagination__page active' : 'admin-pagination__page'}
+              className={item === safePage ? 'admin-pagination__page active' : 'admin-pagination__page'}
+              onClick={() => onPageChange(item)}
             >
-              {page}
+              {item}
             </button>
           )
         )}
-        <button type="button" className="admin-pagination__nav" aria-label="Вперёд">
+        <button
+          type="button"
+          className="admin-pagination__nav"
+          aria-label="Вперёд"
+          disabled={safePage >= totalPages}
+          onClick={() => onPageChange(safePage + 1)}
+        >
           ›
         </button>
       </div>

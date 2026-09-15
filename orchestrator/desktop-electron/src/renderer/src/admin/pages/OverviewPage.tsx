@@ -15,8 +15,6 @@ export function OverviewPage(): React.JSX.Element {
       <DashboardToolbar
         title={mock.dashboardTitle}
         subtitle={mock.dashboardSubtitle}
-        periodLabel={mock.periodLabel}
-        dateRange={mock.dateRange}
         refreshLabel={mock.refreshLabel}
       />
       <MetricGrid metrics={mock.metrics} />

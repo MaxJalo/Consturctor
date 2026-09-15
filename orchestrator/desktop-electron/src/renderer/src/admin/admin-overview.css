@@ -114,10 +114,49 @@
   box-shadow: 0 1px 2px rgba(15, 35, 62, 0.04);
 }
 
+.admin-metric-card__icon {
+  flex-shrink: 0;
+  width: 44px;
+  height: 44px;
+  border-radius: 12px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #fff;
+}
+
 .admin-metric-card__icon svg {
-  width: 42px;
-  height: 42px;
+  width: 22px;
+  height: 22px;
   display: block;
+}
+
+.admin-metric-card__icon--blue {
+  background: #1a73e8;
+}
+
+.admin-metric-card__icon--green {
+  background: #22c55e;
+}
+
+.admin-metric-card__icon--teal {
+  background: #14b8a6;
+}
+
+.admin-metric-card__icon--royal {
+  background: #2563eb;
+}
+
+.admin-metric-card__icon--red {
+  background: #ef4444;
+}
+
+.admin-metric-card__icon--orange {
+  background: #f59e0b;
+}
+
+.admin-metric-card__icon--sky {
+  background: #3b82f6;
 }
 
 .admin-metric-card__body {
@@ -223,6 +262,10 @@
 .admin-line-chart__grid-line {
   stroke: #e4ebf3;
   stroke-width: 1;
+}
+
+.admin-line-chart__grid-line--vertical {
+  stroke: #eef3f8;
 }
 
 .admin-line-chart__hover-band {
@@ -394,6 +437,7 @@
   font-size: 34px;
   font-weight: 700;
   color: #0b2744;
+  pointer-events: none;
 }
 
 .admin-donut-chart__legend {

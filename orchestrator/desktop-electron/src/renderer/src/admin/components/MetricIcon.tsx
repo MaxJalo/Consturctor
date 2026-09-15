@@ -1,3 +1,4 @@
+import { Bot } from 'lucide-react'
 import type { MetricIconVariant } from '../../mocks/adminMocks'
 
 interface MetricIconProps {
@@ -9,17 +10,9 @@ export function MetricIcon({ variant }: MetricIconProps): React.JSX.Element {
   const sw = 1.8
 
   if (variant === 'agents_total') {
-    return (
-      <svg viewBox="0 0 24 24" aria-hidden fill="none">
-        <circle cx="9" cy="9" r="2.2" fill={stroke} stroke="none" />
-        <circle cx="15" cy="9" r="2.2" fill={stroke} stroke="none" />
-        <path d="M5.5 17c.7-1.9 2.1-2.8 3.5-2.8s2.8.9 3.5 2.8" stroke={stroke} strokeWidth={sw} strokeLinecap="round" />
-        <circle cx="17.5" cy="10.5" r="1.6" fill={stroke} stroke="none" />
-        <path d="M15.5 16.2c.5-1.2 1.4-1.7 2.3-1.7" stroke={stroke} strokeWidth={sw} strokeLinecap="round" />
-      </svg>
-    )
+    return <Bot size={22} strokeWidth={2} aria-hidden />
   }
-  if (variant === 'agents_used') {
+  if (variant === 'agents_used' || variant === 'success_rate' || variant === 'system_load') {
     return (
       <svg viewBox="0 0 24 24" aria-hidden fill="none">
         <circle cx="12" cy="12" r="7" stroke={stroke} strokeWidth={sw} />
@@ -41,16 +34,10 @@ export function MetricIcon({ variant }: MetricIconProps): React.JSX.Element {
   if (variant === 'users') {
     return (
       <svg viewBox="0 0 24 24" aria-hidden fill="none">
-        <circle cx="12" cy="8.5" r="3" stroke={stroke} strokeWidth={sw} />
-        <path d="M6 18.5c0-3 2.7-5 6-5s6 2 6 5" stroke={stroke} strokeWidth={sw} strokeLinecap="round" />
-      </svg>
-    )
-  }
-  if (variant === 'success_rate') {
-    return (
-      <svg viewBox="0 0 24 24" aria-hidden fill="none">
-        <circle cx="12" cy="12" r="7" stroke={stroke} strokeWidth={sw} />
-        <path d="M8.5 12l2.2 2.2 4.8-5" stroke={stroke} strokeWidth={sw} strokeLinecap="round" strokeLinejoin="round" />
+        <circle cx="9" cy="9" r="2.4" stroke={stroke} strokeWidth={sw} />
+        <path d="M4.5 17.5c.8-2 2.4-3 4.5-3s3.7 1 4.5 3" stroke={stroke} strokeWidth={sw} strokeLinecap="round" />
+        <circle cx="16.5" cy="10" r="2" stroke={stroke} strokeWidth={sw} />
+        <path d="M14.5 17.5c.4-1.3 1.5-2 2.8-2" stroke={stroke} strokeWidth={sw} strokeLinecap="round" />
       </svg>
     )
   }
@@ -63,19 +50,10 @@ export function MetricIcon({ variant }: MetricIconProps): React.JSX.Element {
       </svg>
     )
   }
-  if (variant === 'queue') {
-    return (
-      <svg viewBox="0 0 24 24" aria-hidden fill="none">
-        <circle cx="12" cy="12" r="7" stroke={stroke} strokeWidth={sw} />
-        <path d="M12 8v4.2l2.8 1.6" stroke={stroke} strokeWidth={sw} strokeLinecap="round" strokeLinejoin="round" />
-      </svg>
-    )
-  }
   return (
     <svg viewBox="0 0 24 24" aria-hidden fill="none">
       <circle cx="12" cy="12" r="7" stroke={stroke} strokeWidth={sw} />
-      <circle cx="12" cy="12" r="4" stroke={stroke} strokeWidth={sw} />
-      <path d="M12 5.5v2M12 16.5v2M5.5 12h2M16.5 12h2" stroke={stroke} strokeWidth={sw} strokeLinecap="round" />
+      <path d="M12 8v4.2l2.8 1.6" stroke={stroke} strokeWidth={sw} strokeLinecap="round" strokeLinejoin="round" />
     </svg>
   )
 }

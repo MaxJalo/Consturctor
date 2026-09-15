@@ -22,6 +22,7 @@ export function DonutChartCard({ data }: DonutChartCardProps): React.JSX.Element
         <div className="admin-donut-chart__ring">
           <svg viewBox="0 0 140 140" aria-hidden>
             <g transform="translate(70 70) rotate(-90)">
+              <circle r={radius - stroke / 2 - 2} fill="#fff" pointerEvents="none" />
               {data.slices.map((slice) => {
                 const length = (slice.value / total) * circumference
                 const dash = `${length} ${circumference - length}`
@@ -45,7 +46,6 @@ export function DonutChartCard({ data }: DonutChartCardProps): React.JSX.Element
                   />
                 )
               })}
-              <circle r={radius - stroke / 2 - 2} fill="#fff" pointerEvents="none" />
             </g>
           </svg>
           <div className="admin-donut-chart__center">{hovered ? hovered.value : data.total}</div>
