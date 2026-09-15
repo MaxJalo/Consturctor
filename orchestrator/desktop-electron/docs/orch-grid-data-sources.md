@@ -37,19 +37,21 @@
 | Decisions comparison table | mock | payload агента — TBD |
 | Project calendar (bottom) | mock | TurboProject events tool — TBD |
 
-### Обновление данных (`useGridDataRefresh`)
+### Обновление данных (`GridDataRefreshProvider` + `gridDataCache`)
 
-| Область | Mount / смена user | Focus / visibility | Interval | События |
-|---------|-------------------|--------------------|----------|---------|
-| `useSpecV04Sources` (KPI, 1С, Turbo портфель, Outlook mail, календарь недели) | да | да | — | — |
-| `useWorkplaceData` (доска агентов) | да (`userId`) | да | — | `onBoardUpdated` |
-| `useTodayOutlookMail` | да (`periodDay`) | да | — | — |
-| `useTodayAgentResults` | да | да | 60 с | `files_updated` (agent SSE) |
-| `useTodayPreparedDecisions` | да (`periodDay`, user) | да | 60 с | `files_updated`, `useRuns` / доска |
-| `useTodayProjectTasks` | да (портфель + `periodDay`) | да | — | — |
-| `useTodayPlanTimeline` (встречи дня) | да | да | — | — |
+TTL кэша: **10 мин** (`GRID_DATA_TTL_MS = 600_000`). Смена вкладки **не** поднимает `generation` — повторный fetch только если кэш протух или изменились локальные deps (день, портфель, runs).
 
-Повторный вход в приложение (окно в фокусе) поднимает `refreshTick` и перезапрашивает live-источники без пересборки exe.
+| Область | Где живёт | Смена user | Focus после blur / visibility | Interval 10 мин | События |
+|---------|-----------|------------|-------------------------------|-----------------|---------|
+| `SpecV04SourcesProvider` (1С, Turbo, Outlook mail week, календарь) | App | да | да | да | — |
+| `useWorkplaceData` (доска) | hook + module cache | да | да | да | `onBoardUpdated` (всегда reload) |
+| `useTodayOutlookMail` | hook + cache | — (`periodDay` в deps) | да | да | — |
+| `useTodayAgentResults` | hook + cache | — | да | да | `files_updated`, poll 60 с |
+| `useTodayPreparedDecisions` | hook + cache | — | да | да | `files_updated`, `useRuns`, poll 60 с |
+| `useTodayProjectTasks` | hook + cache | — | да | да | — |
+| `useTodayPlanTimeline` | hook + cache | — | да | да | — |
+
+Повторный вход в приложение поднимает `generation` и перезапрашивает live-источники без пересборки exe.
 
 ### Запуск для вкладки «Сегодня» (Outlook COM + 1С COM)
 

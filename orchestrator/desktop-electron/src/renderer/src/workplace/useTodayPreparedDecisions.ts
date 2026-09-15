@@ -368,7 +368,8 @@ export function useTodayPreparedDecisions(periodDay: Date, userId?: string): Tod
 
   useEffect(() => {
     let alive = true
-    if (!shouldRunGridFetch(cacheKey, generation)) {
+    const policyKey = `${cacheKey}:${runActivityKey}|${agentKey}`
+    if (!shouldRunGridFetch(policyKey, generation)) {
       const cached = readGridCache<{
         toolRows: TodayPreparedDecisionRow[]
         fileRows: TodayPreparedDecisionRow[]
@@ -393,7 +394,7 @@ export function useTodayPreparedDecisions(periodDay: Date, userId?: string): Tod
     return () => {
       alive = false
     }
-  }, [load, agentKey, cacheKey, generation])
+  }, [load, agentKey, cacheKey, generation, runActivityKey])
 
   useEffect(() => {
     return agentClient.onEvent((event) => {
@@ -423,4 +424,5 @@ export function useTodayPreparedDecisions(periodDay: Date, userId?: string): Tod
   const loading = agentsLoading || loadingDetails
   const combinedError = agentsError || error
 
-  return { loading, error: com
+  return { loading, error: combinedError, items }
+}
