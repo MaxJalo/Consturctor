@@ -87,6 +87,26 @@ export function meetingInvolvesPerson(meeting: MeetingEvent, person: string): bo
   return last ? hay.includes(last) : false
 }
 
+function meetingDedupeKey(meeting: MeetingEvent): string {
+  const id = (meeting.id || '').trim()
+  const start = (meeting.start || '').trim()
+  if (id) return `${id}\0${start}`
+  return `${start}\0${(meeting.subject || '').trim()}`
+}
+
+/** Outlook COM may return the same appointment twice (shared calendars / merged folders). */
+export function dedupeMeetingEvents(meetings: MeetingEvent[]): MeetingEvent[] {
+  const seen = new Set<string>()
+  const out: MeetingEvent[] = []
+  for (const meeting of meetings) {
+    const key = meetingDedupeKey(meeting)
+    if (seen.has(key)) continue
+    seen.add(key)
+    out.push(meeting)
+  }
+  return out
+}
+
 function normalizeMeeting(raw: OutlookMeetingRaw, index: number): MeetingEvent {
   const attendees = [raw.required_attendees, raw.optional_attendees]
     .map((item) => (item || '').trim())
@@ -174,11 +194,14 @@ function requestOutlookMeetings(range: {
       if (String(payload.requestId || '') !== requestId) return
       if (payload.ok) {
         const raw = Array.isArray(payload.events) ? (payload.events as OutlookMeetingRaw[]) : []
+        const meetings = dedupeMeetingEvents(
+          raw
+            .map((item, index) => normalizeMeeting(item, index))
+            .filter((item) => meetingInvolvesPerson(item, range.forUser || ''))
+        )
         finish({
           ok: true,
-          meetings: raw
-            .map(normalizeMeeting)
-            .filter((item) => meetingInvolvesPerson(item, range.forUser || ''))
+          meetings
         })
       } else {
         finish({
@@ -205,6 +228,17 @@ function requestOutlookMeetings(range: {
  * cached window does not cover what is requested. Subsequent same-day reads for a
  * covered window are served from localStorage without touching Outlook COM.
  */
+export function countMeetingsOnDay(meetings: MeetingEvent[], anchor = new Date()): number {
+  const y = anchor.getFullYear()
+  const m = anchor.getMonth()
+  const d = anchor.getDate()
+  return meetings.filter((item) => {
+    const start = parseMeetingTime(item.start)
+    if (!start) return false
+    return start.getFullYear() === y && start.getMonth() === m && start.getDate() === d
+  }).length
+}
+
 export async function ensureOutlookMeetings(
   view: CalendarView,
   anchor: Date,
@@ -227,7 +261,9 @@ export async function ensureOutlookMeetings(
     ) {
       return {
         ok: true,
-        meetings: cache.meetings.filter((item) => meetingInvolvesPerson(item, owner)),
+        meetings: dedupeMeetingEvents(
+          cache.meetings.filter((item) => meetingInvolvesPerson(item, owner))
+        ),
         error: '',
         cached: true
       }

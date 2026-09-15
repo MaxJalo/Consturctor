@@ -360,6 +360,7 @@ _RK_TIPS = (
 
 RK_RUN_HINT = (
     "This is RK meeting prep (ПЛ-01-001), not calendar control. "
+    "1C is read-only: never call onec.odata_post, onec.odata_patch, or onec.attach_file. "
     "One data pass only: do not restart outlook/1C/excel/network reads or say data is stale. "
     "Exclude Constructor test probes from 1C (title/comment/number contains Constructor or "
     "проба Constructor). "
@@ -451,7 +452,8 @@ _RK_MEETING_TOOLS = {
 
 SD_MEETING_HINT = (
     "This is board-meeting completeness (SD / PL-34-242), not mail search and not "
-    "a meeting-series job. Find the meeting with ONE outlook.read_calendar "
+    "a meeting-series job. 1C is read-only: never call onec.odata_post, onec.odata_patch, "
+    "or onec.attach_file. Find the meeting with ONE outlook.read_calendar "
     "(or read the dumped calendar JSON once if COM already wrote it). "
     "Then onec.meeting_service_notes (OData), onec.meeting_protocols (meeting_kind=sd, OData; "
     "numbers ПСД_001_О_*, not manual odata_get with startswith СД/СПГ), "
@@ -465,6 +467,7 @@ SD_MEETING_HINT = (
 
 RK_MEETING_HINT = (
     "This is revision-commission prep (RK / PL-01-001), not mail search. "
+    "1C is read-only: never call onec.odata_post, onec.odata_patch, or onec.attach_file. "
     "Use Outlook calendar, onec.meeting_protocols (meeting_kind=rk), 1C tasks/documents, "
     "and the RK share folders. "
     "Do not call outlook.search_mail or imap.*. "
@@ -3536,6 +3539,108 @@ class Sidecar:
             daemon=True,
         ).start()
 
+    def search_mail(self, command: dict[str, Any]) -> None:
+        """Read Outlook inbox/sent for a day via outlook.search_mail (local COM)."""
+        request_id = str(command.get("requestId") or command.get("id") or "")
+        input_data: dict[str, Any] = {
+            "folder": str(command.get("folder") or "Inbox"),
+            "max_results": int(command.get("maxResults") or 50),
+        }
+        date_value = str(command.get("date") or "").strip()
+        date_from = str(command.get("dateFrom") or "").strip()
+        date_to = str(command.get("dateTo") or "").strip()
+        if date_value:
+            input_data["date"] = date_value
+        if date_from:
+            input_data["date_from"] = date_from
+        if date_to:
+            input_data["date_to"] = date_to
+        query = command.get("query")
+        if query is not None and str(query).strip():
+            input_data["query"] = str(query).strip()
+
+        def _work() -> None:
+            try:
+                from app.tools.ac.dispatch import invoke_ac_tool
+
+                output = invoke_ac_tool("outlook.search_mail", input_data)
+                messages = output.get("messages") or []
+                log(
+                    "search_mail ok count="
+                    + str(len(messages) if isinstance(messages, list) else 0)
+                    + " date="
+                    + date_value
+                )
+                emit(
+                    {
+                        "type": "mail_result",
+                        "requestId": request_id,
+                        "ok": True,
+                        "messages": messages if isinstance(messages, list) else [],
+                        "source": output.get("source") or "outlook_com",
+                        "rangeStart": output.get("range_start") or "",
+                        "rangeEnd": output.get("range_end") or "",
+                    }
+                )
+            except Exception as exc:  # noqa: BLE001
+                log("search_mail failed: " + repr(exc))
+                emit(
+                    {
+                        "type": "mail_result",
+                        "requestId": request_id,
+                        "ok": False,
+                        "error": _exc_text(exc, "Не удалось прочитать почту Outlook"),
+                    }
+                )
+
+        threading.Thread(
+            target=_work,
+            name=f"search_mail-{request_id[:8]}",
+            daemon=True,
+        ).start()
+
+    def invoke_ac_tool_cmd(self, command: dict[str, Any]) -> None:
+        """Run any COM-backed AC tool locally (e.g. onec.search_tasks)."""
+        request_id = str(command.get("requestId") or command.get("id") or "")
+        tool_name = str(command.get("tool") or "").strip()
+        raw_input = command.get("input")
+        input_data = raw_input if isinstance(raw_input, dict) else {}
+
+        def _work() -> None:
+            try:
+                from app.tools.ac.dispatch import invoke_ac_tool
+
+                if not tool_name:
+                    raise ValueError("tool name required")
+                output = invoke_ac_tool(tool_name, input_data)
+                log("invoke_ac_tool ok tool=" + tool_name)
+                emit(
+                    {
+                        "type": "ac_tool_result",
+                        "requestId": request_id,
+                        "ok": True,
+                        "tool": tool_name,
+                        "result": output if isinstance(output, dict) else {"value": output},
+                    }
+                )
+            except Exception as exc:  # noqa: BLE001
+                log("invoke_ac_tool failed tool=" + tool_name + ": " + repr(exc))
+                emit(
+                    {
+                        "type": "ac_tool_result",
+                        "requestId": request_id,
+                        "ok": False,
+                        "tool": tool_name,
+                        "error": _exc_text(exc, "Не удалось выполнить локальный инструмент"),
+                    }
+                )
+
+        threading.Thread(
+            target=_work,
+            name=f"invoke_ac-{request_id[:8]}",
+            daemon=True,
+        ).start()
+
     def cancel(self, command: dict[str, Any]) -> None:
         run_id = str(command.get("id") or "")
         workflow_id = str(command.get("workflowId") or "").strip()
@@ -3684,6 +3789,10 @@ def main() -> None:
                 sidecar.skip(command)
             elif ctype == "read_calendar":
                 sidecar.read_calendar(command)
+            elif ctype == "search_mail":
+                sidecar.search_mail(command)
+            elif ctype == "invoke_ac_tool":
+                sidecar.invoke_ac_tool_cmd(command)
             elif ctype == "cancel":
                 sidecar.cancel(command)
             elif ctype == "shutdown":

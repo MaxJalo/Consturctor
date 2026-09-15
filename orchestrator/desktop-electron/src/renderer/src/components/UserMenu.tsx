@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { api } from '../api/client'
 import type { InboxNotification, UserProfile } from '../api/types'
 import logoUrl from '../assets/logo.png'
+import { userGivenName } from '../workplace/userContext'
 import { NotificationInbox } from './NotificationInbox'
 
 interface UserMenuProps {
@@ -12,9 +13,11 @@ interface UserMenuProps {
   onLogout: () => void
   showLogout: boolean
   onOpenAgent?: (workflowId: string, runId: string) => void
+  onOpenSettings?: () => void
   onGoToSettings?: () => void
   canSwitchAdminView?: boolean
   onSwitchAdminView?: (mode: 'admin' | 'user') => void
+  profileAfterAvatar?: boolean
   variant?: 'default' | 'admin'
 }
 
@@ -26,9 +29,11 @@ export function UserMenu({
   onLogout,
   showLogout,
   onOpenAgent,
+  onOpenSettings,
   onGoToSettings,
   canSwitchAdminView = false,
   onSwitchAdminView,
+  profileAfterAvatar = false,
   variant = 'default'
 }: UserMenuProps): React.JSX.Element {
   const [menuOpen, setMenuOpen] = useState(false)
@@ -36,6 +41,7 @@ export function UserMenu({
   const [items, setItems] = useState<InboxNotification[]>([])
   const [loading, setLoading] = useState(false)
   const ref = useRef<HTMLDivElement>(null)
+  const adminLayout = variant === 'admin'
 
   useEffect(() => {
     function onDocClick(e: MouseEvent): void {
@@ -107,9 +113,7 @@ export function UserMenu({
 
   function openItem(item: InboxNotification): void {
     setInboxOpen(false)
-    setItems((current) =>
-      current.map((entry) => (entry.id === item.id ? { ...entry, unread: false } : entry))
-    )
+    setItems((current) => current.map((entry) => (entry.id === item.id ? { ...entry, unread: false } : entry)))
     void api.markNotificationRead(item.id).catch(() => undefined)
     if (item.workflowId && onOpenAgent) {
       onOpenAgent(item.workflowId, item.runId || '')
@@ -126,16 +130,14 @@ export function UserMenu({
     }
   }
 
-  const adminLayout = variant === 'admin'
-
   function toggleProfileMenu(): void {
     setMenuOpen((value) => !value)
     setInboxOpen(false)
   }
 
-  function goToSettings(): void {
+  function openSettings(): void {
     setMenuOpen(false)
-    onGoToSettings?.()
+    ;(onOpenSettings || onGoToSettings)?.()
   }
 
   function switchAdminView(mode: 'admin' | 'user'): void {
@@ -143,33 +145,50 @@ export function UserMenu({
     onSwitchAdminView?.(mode)
   }
 
-  return (
-    <div className={adminLayout ? 'user-menu user-menu--admin' : 'user-menu'} ref={ref}>
-      <div className="notify-wrap">
-        <button className="icon-btn" title="Уведомления" onClick={() => void openInbox()}>
-          <svg width="18" height="18" viewBox="0 0 24 24" fill="none">
-            <path
-              d="M6 9a6 6 0 1112 0c0 4.5 1.2 6 2 6.8.3.3.1.9-.4.9H4.4c-.5 0-.7-.6-.4-.9C4.8 15 6 13.5 6 9z"
-              stroke="currentColor"
-              strokeWidth="1.7"
-              strokeLinejoin="round"
-            />
-            <path d="M9.5 19a2.5 2.5 0 005 0" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" />
-          </svg>
-          {unread > 0 && <span className="badge">{unread > 99 ? '99+' : unread}</span>}
-        </button>
-        {inboxOpen && (
-          <NotificationInbox
-            items={items}
-            loading={loading}
-            onClearAll={() => void clearAll()}
-            onClearOne={(id) => void clearOne(id)}
-            onOpen={openItem}
-          />
-        )}
+  const positionLine = user.position.trim()
+  const whoBlock = (
+    <div className="who">
+      <div className="name" title={user.fio}>
+        {profileAfterAvatar ? userGivenName(user.fio) : user.fio}
       </div>
+      {positionLine ? (
+        <div className="pos" title={positionLine}>
+          {positionLine}
+        </div>
+      ) : null}
+    </div>
+  )
 
-      {adminLayout ? (
+  const notifyBlock = (
+    <div className="notify-wrap">
+      <button className="icon-btn" title="Уведомления" onClick={() => void openInbox()}>
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none">
+          <path
+            d="M6 9a6 6 0 1112 0c0 4.5 1.2 6 2 6.8.3.3.1.9-.4.9H4.4c-.5 0-.7-.6-.4-.9C4.8 15 6 13.5 6 9z"
+            stroke="currentColor"
+            strokeWidth="1.7"
+            strokeLinejoin="round"
+          />
+          <path d="M9.5 19a2.5 2.5 0 005 0" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" />
+        </svg>
+        {unread > 0 && <span className="badge">{unread > 99 ? '99+' : unread}</span>}
+      </button>
+      {inboxOpen && (
+        <NotificationInbox
+          items={items}
+          loading={loading}
+          onClearAll={() => void clearAll()}
+          onClearOne={(id) => void clearOne(id)}
+          onOpen={openItem}
+        />
+      )}
+    </div>
+  )
+
+  if (adminLayout) {
+    return (
+      <div className="user-menu user-menu--admin" ref={ref}>
+        {notifyBlock}
         <div className="user-menu__profile-wrap">
           <button type="button" className="user-menu__profile-btn" onClick={toggleProfileMenu}>
             <span className="avatar">
@@ -184,9 +203,9 @@ export function UserMenu({
               <path d="M4 6l4 4 4-4" stroke="currentColor" strokeWidth="1.5" fill="none" strokeLinecap="round" />
             </svg>
           </button>
-          {menuOpen && (
+          {menuOpen ? (
             <div className="user-dropdown user-dropdown--admin">
-              <button type="button" className="user-dropdown-item" onClick={goToSettings}>
+              <button type="button" className="user-dropdown-item" onClick={openSettings}>
                 Перейти в настройки
               </button>
               {canSwitchAdminView ? (
@@ -200,41 +219,47 @@ export function UserMenu({
                 </button>
               ) : null}
             </div>
-          )}
+          ) : null}
         </div>
-      ) : (
-        <>
-          <div className="who">
-            <div className="name">{user.fio}</div>
-            {user.position && <div className="pos">{user.position}</div>}
-          </div>
+      </div>
+    )
+  }
 
-          <div style={{ position: 'relative' }}>
-            <button
-              className="avatar"
-              onClick={toggleProfileMenu}
-            >
-              <img className="avatar-img" src={avatarUrl || logoUrl} alt={user.fio} />
-              <span className={`avatar-status ${user.activityStatus || 'online'}`} />
+  const avatarBlock = (
+    <div style={{ position: 'relative' }}>
+      <button className="avatar" onClick={toggleProfileMenu}>
+        <img className="avatar-img" src={avatarUrl || logoUrl} alt={user.fio} />
+        <span className={`avatar-status ${user.activityStatus || 'online'}`} />
+      </button>
+      {menuOpen ? (
+        <div className="user-dropdown">
+          <div className="user-dropdown-dept">{user.department || 'Без подразделения'}</div>
+          {onOpenSettings || onGoToSettings ? (
+            <button type="button" className="user-dropdown-item" onClick={openSettings}>
+              Настройки
             </button>
-            {menuOpen && (
-              <div className="user-dropdown">
-                <div className="user-dropdown-dept">{user.department || 'Без подразделения'}</div>
-                {canSwitchAdminView ? (
-                  <button type="button" className="user-dropdown-item" onClick={() => switchAdminView('admin')}>
-                    Войти как администратор
-                  </button>
-                ) : null}
-                {showLogout && (
-                  <button className="user-dropdown-logout" onClick={onLogout}>
-                    Выйти
-                  </button>
-                )}
-              </div>
-            )}
-          </div>
-        </>
-      )}
+          ) : null}
+          {canSwitchAdminView ? (
+            <button type="button" className="user-dropdown-item" onClick={() => switchAdminView('admin')}>
+              Войти как администратор
+            </button>
+          ) : null}
+          {showLogout ? (
+            <button className="user-dropdown-logout" onClick={onLogout}>
+              Выйти
+            </button>
+          ) : null}
+        </div>
+      ) : null}
+    </div>
+  )
+
+  return (
+    <div className={`user-menu${profileAfterAvatar ? ' user-menu-profile-after-avatar' : ''}`} ref={ref}>
+      {notifyBlock}
+      {!profileAfterAvatar ? whoBlock : null}
+      {avatarBlock}
+      {profileAfterAvatar ? whoBlock : null}
     </div>
   )
 }

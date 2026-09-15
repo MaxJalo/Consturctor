@@ -80,16 +80,26 @@ function installBrowserApi(): void {
     onUpdateStatus: noopUnsub
   } as Window['api']
 
+  const agentDefaults = {
+    ready: async () => ({ ok: true }),
+    start: async () => ({ ok: true }),
+    answer: async () => ({ ok: true }),
+    hitl: async () => ({ ok: true }),
+    skip: async () => ({ ok: true }),
+    cancel: async () => ({ ok: true }),
+    readCalendar: async () => ({ ok: false }),
+    searchOutlookMail: async () => ({ ok: false }),
+    invokeAcTool: async () => ({ ok: false }),
+    onEvent: noopUnsub
+  } as Window['agent']
+
   if (!window.agent) {
-    window.agent = {
-      ready: async () => ({ ok: true }),
-      start: async () => ({ ok: true }),
-      answer: async () => ({ ok: true }),
-      hitl: async () => ({ ok: true }),
-      skip: async () => ({ ok: true }),
-      cancel: async () => ({ ok: true }),
-      onEvent: noopUnsub
-    } as Window['agent']
+    window.agent = agentDefaults
+  } else {
+    window.agent = { ...agentDefaults, ...window.agent }
+    if (typeof window.agent.onEvent !== 'function') {
+      window.agent.onEvent = noopUnsub
+    }
   }
 }
 

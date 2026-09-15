@@ -55,6 +55,23 @@ function parseEnvFile(path: string): Record<string, string> {
   return out
 }
 
+/** Profile .env often keeps stale 127.0.0.1; in dev prefer cwd `.env` and process env. */
+function resolveBackendUrl(env: Record<string, string>): string {
+  const fromProcess = (process.env.BACKEND_URL || '').trim()
+  if (fromProcess) return fromProcess.replace(/\/+$/, '')
+
+  const cwdEnvPath = join(process.cwd(), '.env')
+  if (!app.isPackaged && existsSync(cwdEnvPath)) {
+    const fromCwd = (parseEnvFile(cwdEnvPath).BACKEND_URL || '').trim()
+    if (fromCwd) return fromCwd.replace(/\/+$/, '')
+  }
+
+  const fromProfile = (env.BACKEND_URL || '').trim()
+  if (fromProfile) return fromProfile.replace(/\/+$/, '')
+
+  return 'http://192.168.1.157:7812'
+}
+
 function loadConfig(): {
   backendUrl: string
   testUser: boolean
@@ -90,11 +107,7 @@ function loadConfig(): {
       env = { ...parseEnvFile(candidate), ...env }
     }
   }
-  const backendUrl = (
-    process.env.BACKEND_URL ||
-    env.BACKEND_URL ||
-    'http://192.168.1.157:7812'
-  ).replace(/\/+$/, '')
+  const backendUrl = resolveBackendUrl(env)
   const flag = (process.env.CONSTRUCTOR_TEST_USER || env.CONSTRUCTOR_TEST_USER || '')
     .trim()
     .toLowerCase()
@@ -213,7 +226,11 @@ function buildUrl(path: string, params?: RequestOptions['params']): string {
 }
 
 function backendUnreachableMessage(): string {
-  return `Не удалось подключиться к backend (${CONFIG.backendUrl}). В установленной версии адрес сервера задаётся в .env рядом с exe (BACKEND_URL).`
+  const profileHint = join(app.getPath('userData'), '.env')
+  return (
+    `Не удалось подключиться к backend (${CONFIG.backendUrl}). ` +
+    `Проверьте VPN/сеть до сервера и BACKEND_URL в ${profileHint} или в .env рядом с exe.`
+  )
 }
 
 function extractDetail(status: number, data: unknown): string {
@@ -320,7 +337,7 @@ async function handleUpload(_evt: unknown, opts: UploadOptions) {
   }
 }
 
-function resolveBackendUrl(pathOrUrl: string): string {
+function absoluteBackendUrl(pathOrUrl: string): string {
   if (pathOrUrl.startsWith('http://') || pathOrUrl.startsWith('https://')) {
     return pathOrUrl
   }
@@ -360,7 +377,7 @@ async function handleFetchDataUrl(
   _evt: unknown,
   opts: { url: string; token?: string | null }
 ) {
-  const url = resolveBackendUrl(opts.url)
+  const url = absoluteBackendUrl(opts.url)
   const headers: Record<string, string> = {}
   if (opts.token) headers.Authorization = `Bearer ${opts.token}`
   try {
@@ -382,7 +399,7 @@ async function handleDownload(
   const win = BrowserWindow.getFocusedWindow()
   const result = await dialog.showSaveDialog(win!, { defaultPath: opts.defaultName || 'file' })
   if (result.canceled || !result.filePath) return { ok: false, canceled: true }
-  const url = resolveBackendUrl(opts.url)
+  const url = absoluteBackendUrl(opts.url)
   const headers: Record<string, string> = {}
   if (opts.token) headers.Authorization = `Bearer ${opts.token}`
   try {
@@ -598,6 +615,82 @@ async function handleStream(
   }
 }
 
+type IpcHandler = (...args: Parameters<Parameters<typeof ipcMain.handle>[1]>) => unknown
+
+/** Re-register safely on electron-vite main HMR (avoid partial handler sets). */
+function ipcHandle(channel: string, handler: IpcHandler): void {
+  ipcMain.removeHandler(channel)
+  ipcMain.handle(channel, handler)
+}
+
+function registerMainIpcHandlers(): void {
+  ipcHandle('app:getConfig', () => ({
+    backendUrl: CONFIG.backendUrl,
+    testUser: CONFIG.testUser
+  }))
+  ipcHandle('api:request', handleRequest)
+  ipcHandle('api:upload', handleUpload)
+  ipcHandle('api:fetchDataUrl', handleFetchDataUrl)
+  ipcHandle('api:download', handleDownload)
+  ipcHandle('api:saveLocalFile', handleSaveLocalFile)
+  ipcHandle('api:exportPdf', handleExportPdf)
+  ipcHandle('api:createWorkflow', handleCreateWorkflow)
+  ipcHandle('api:stream', handleStream)
+  ipcHandle(
+    'agent:ready',
+    (_evt, token: string | null, credentials?: { login?: string; password?: string }) => {
+      agentSidecar.ready(token ?? null, credentials)
+      return { ok: true }
+    }
+  )
+  ipcHandle('agent:start', (_evt, command: AgentSidecarMessage) => {
+    const ok = agentSidecar.send(command)
+    return { ok }
+  })
+  ipcHandle('agent:answer', (_evt, command: AgentSidecarMessage) => {
+    return { ok: agentSidecar.send({ ...command, type: 'answer' }) }
+  })
+  ipcHandle('agent:hitl', (_evt, command: AgentSidecarMessage) => {
+    return { ok: agentSidecar.send({ ...command, type: 'hitl' }) }
+  })
+  ipcHandle('agent:skip', (_evt, command: AgentSidecarMessage) => {
+    return { ok: agentSidecar.send({ ...command, type: 'skip' }) }
+  })
+  ipcHandle('agent:cancel', (_evt, command: AgentSidecarMessage) => {
+    return { ok: agentSidecar.send({ ...command, type: 'cancel' }) }
+  })
+  ipcHandle('agent:read-calendar', (_evt, command: AgentSidecarMessage) => {
+    return { ok: agentSidecar.send({ ...command, type: 'read_calendar' }) }
+  })
+  ipcHandle('agent:search-mail', (_evt, command: AgentSidecarMessage) => {
+    return { ok: agentSidecar.send({ ...command, type: 'search_mail' }) }
+  })
+  ipcHandle('agent:invoke-ac-tool', (_evt, command: AgentSidecarMessage) => {
+    return { ok: agentSidecar.send({ ...command, type: 'invoke_ac_tool' }) }
+  })
+  ipcHandle('notifications:start', (_evt, token: string) => {
+    if (typeof token === 'string' && token.trim()) {
+      notifyGuard.start(token.trim())
+    }
+    return { ok: true }
+  })
+  ipcHandle('notifications:stop', () => {
+    notifyGuard.stop()
+    return { ok: true }
+  })
+  ipcHandle('notify:show', (_evt, payload: ToastPayload) => {
+    showToast(payload || { title: '' })
+    return { ok: true }
+  })
+  ipcHandle('dialog:openFile', async (_evt, options: Electron.OpenDialogOptions) => {
+    const win = BrowserWindow.getFocusedWindow()
+    const result = await dialog.showOpenDialog(win!, options)
+    return result.canceled ? [] : result.filePaths
+  })
+  ipcHandle('updater:getStatus', () => getUpdateStatus())
+  ipcHandle('updater:install', () => installAvailableUpdate())
+}
+
 function createWindow(): void {
   const mainWindow = new BrowserWindow({
     width: 1480,
@@ -647,67 +740,9 @@ function createWindow(): void {
 }
 
 app.whenReady().then(async () => {
+  registerMainIpcHandlers()
   const up = await ensureLocalBackend(CONFIG.backendUrl)
   console.log(`Orchestrator backend: ${CONFIG.backendUrl}${up ? '' : ' (недоступен)'}`)
-  ipcMain.handle('app:getConfig', () => ({
-    backendUrl: CONFIG.backendUrl,
-    testUser: CONFIG.testUser
-  }))
-  ipcMain.handle('api:request', handleRequest)
-  ipcMain.handle('api:upload', handleUpload)
-  ipcMain.handle('api:fetchDataUrl', handleFetchDataUrl)
-  ipcMain.handle('api:download', handleDownload)
-  ipcMain.handle('api:saveLocalFile', handleSaveLocalFile)
-  ipcMain.handle('api:exportPdf', handleExportPdf)
-  ipcMain.handle('api:createWorkflow', handleCreateWorkflow)
-  ipcMain.handle('api:stream', handleStream)
-  ipcMain.handle(
-    'agent:ready',
-    (_evt, token: string | null, credentials?: { login?: string; password?: string }) => {
-      agentSidecar.ready(token ?? null, credentials)
-      return { ok: true }
-    }
-  )
-  ipcMain.handle('agent:start', (_evt, command: AgentSidecarMessage) => {
-    const ok = agentSidecar.send(command)
-    return { ok }
-  })
-  ipcMain.handle('agent:answer', (_evt, command: AgentSidecarMessage) => {
-    return { ok: agentSidecar.send({ ...command, type: 'answer' }) }
-  })
-  ipcMain.handle('agent:hitl', (_evt, command: AgentSidecarMessage) => {
-    return { ok: agentSidecar.send({ ...command, type: 'hitl' }) }
-  })
-  ipcMain.handle('agent:skip', (_evt, command: AgentSidecarMessage) => {
-    return { ok: agentSidecar.send({ ...command, type: 'skip' }) }
-  })
-  ipcMain.handle('agent:cancel', (_evt, command: AgentSidecarMessage) => {
-    return { ok: agentSidecar.send({ ...command, type: 'cancel' }) }
-  })
-  ipcMain.handle('agent:read-calendar', (_evt, command: AgentSidecarMessage) => {
-    return { ok: agentSidecar.send({ ...command, type: 'read_calendar' }) }
-  })
-  ipcMain.handle('notifications:start', (_evt, token: string) => {
-    if (typeof token === 'string' && token.trim()) {
-      notifyGuard.start(token.trim())
-    }
-    return { ok: true }
-  })
-  ipcMain.handle('notifications:stop', () => {
-    notifyGuard.stop()
-    return { ok: true }
-  })
-  ipcMain.handle('notify:show', (_evt, payload: ToastPayload) => {
-    showToast(payload || { title: '' })
-    return { ok: true }
-  })
-  ipcMain.handle('dialog:openFile', async (_evt, options: Electron.OpenDialogOptions) => {
-    const win = BrowserWindow.getFocusedWindow()
-    const result = await dialog.showOpenDialog(win!, options)
-    return result.canceled ? [] : result.filePaths
-  })
-  ipcMain.handle('updater:getStatus', () => getUpdateStatus())
-  ipcMain.handle('updater:install', () => installAvailableUpdate())
   startUpdater({
     owner: CONFIG.updateOwner,
     repo: CONFIG.updateRepo,

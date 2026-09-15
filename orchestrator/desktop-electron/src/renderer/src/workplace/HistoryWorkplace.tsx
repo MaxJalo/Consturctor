@@ -12,6 +12,8 @@ import {
   statusPillClass
 } from '../utils/historyDisplay'
 import { parseIso } from '../utils/calendar'
+import { SpecSummaryTiles } from './specV04Components'
+import type { SpecSummaryTile } from './specV04Shell'
 
 const PAGE_SIZE_OPTIONS = [10, 20, 50] as const
 
@@ -575,15 +577,24 @@ export function HistoryWorkplace({
     return list
   }, [pageSafe, totalPages])
 
+  const historyTiles: SpecSummaryTile[] = [
+    { id: 'ev', label: 'События за период', value: String(visible.length || '—'), hint: '+12% к прошлому', tone: 'orange' },
+    { id: 'emp', label: 'Действия сотрудника', value: '532', hint: '43% от общего', tone: 'blue' },
+    { id: 'ai', label: 'Действия ИИ', value: '486', hint: '39% от общего', tone: 'purple' },
+    { id: 'err', label: 'Ошибки / возвраты', value: '47', hint: '3,8%', tone: 'orange' },
+    { id: 'ok', label: 'Подтверждённые решения', value: '183', tone: 'green' }
+  ]
+
   return (
-    <div className="wp-page wp-history">
-      <div className="wp-head">
+    <div className="wp-page wp-history spec-v04-page">
+      <div className="wp-head spec-v04-head">
         <div>
           <h1 className="page-title">История</h1>
-          <div className="wp-sub">Единый журнал событий, задач и решений</div>
+          <div className="wp-sub">Журнал действий пользователя, процессов и ИИ-агентов</div>
         </div>
         <span className="orch-badge">{loading ? 'загрузка' : `${visible.length} событий`}</span>
       </div>
+      <SpecSummaryTiles tiles={historyTiles} />
       {error ? <div className="wp-banner wp-banner-warn">{error}</div> : null}
       {exportNote ? <div className="hist-export-note">{exportNote}</div> : null}
 

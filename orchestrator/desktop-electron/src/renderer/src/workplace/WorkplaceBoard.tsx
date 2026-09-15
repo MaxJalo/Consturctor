@@ -1,4 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
+import { useGridRefreshGeneration } from './GridDataRefreshContext'
+import { readGridCache, shouldRunGridFetch, writeGridCache } from './gridDataCache'
 import { api } from '../api/client'
 import type {
   AgentKpi,
@@ -1088,9 +1090,11 @@ export function useWorkplaceData(personal?: PersonalAgentSeed | null): {
   const [error, setError] = useState('')
   const [flash, setFlash] = useState('')
   const reloadRef = useRef<() => Promise<void>>(async () => undefined)
+  const generation = useGridRefreshGeneration(personal?.userId)
 
   const reload = async (): Promise<void> => {
     const win = windowFor('week', new Date())
+    const userId = personal?.userId || ''
     try {
       const [nextBoard, nextOrch] = await Promise.all([
         api.getWorkflowBoard({ window_from: win.from, window_to: win.to }),
@@ -1099,6 +1103,9 @@ export function useWorkplaceData(personal?: PersonalAgentSeed | null): {
       setBoard(nextBoard)
       setOrch(nextOrch)
       setError('')
+      if (userId) {
+        writeGridCache(`workplace-board:${userId}`, { board: nextBoard, orch: nextOrch })
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Нет связи с сервером Constructor')
     } finally {
@@ -1108,12 +1115,28 @@ export function useWorkplaceData(personal?: PersonalAgentSeed | null): {
   reloadRef.current = reload
 
   useEffect(() => {
-    void reload()
+    if (!personal?.userId) {
+      setLoading(false)
+      return
+    }
+    const cacheKey = `workplace-board:${personal.userId}`
+    if (!shouldRunGridFetch(cacheKey, generation)) {
+      const cached = readGridCache<{ board: WorkflowBoard; orch: PositionOrchestrator | null }>(cacheKey)
+      if (cached) {
+        setBoard(cached.board)
+        setOrch(cached.orch)
+        setLoading(false)
+      } else {
+        void reload()
+      }
+    } else {
+      void reload()
+    }
     const unsubscribe = window.api.onBoardUpdated?.(() => {
       void reloadRef.current()
     })
     return () => unsubscribe?.()
-  }, [])
+  }, [personal?.userId, generation])
 
   const notice = (text: string): void => {
     setFlash(text)
@@ -1696,7 +1719,7 @@ function buildOrchestratorContext(opts: {
   }
   lines.push(
     '',
-    'Доступные вкладки UI: Рабочее место, Процессы, Календарь, Решения, Показатели, История, Настройки.',
+    'Доступные вкладки UI: Сегодня, Процессы, Задачи, Проекты, Письма, Совещания, Решения, KPI, История, База знаний.',
     'Можно открывать запуски, подтверждать решения, смотреть KPI и историю через инструменты API.'
   )
   return lines.join('\n')

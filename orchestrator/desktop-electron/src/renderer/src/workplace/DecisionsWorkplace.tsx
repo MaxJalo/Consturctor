@@ -12,6 +12,7 @@ import { fileExt, formatSize } from '../pages/filesGrouping'
 import { isUserFacingResultFile } from './preparedDecisions'
 import {
   extractToolDecisions,
+  feedItemsToRunnerEvents,
   isDecisionTool,
   toolIntent,
   type ToolDecisionItem
@@ -507,6 +508,31 @@ export function DecisionsTab({
   const [notifyPrefs, setNotifyPrefs] = useState<Record<string, boolean>>(readNotifyPrefs)
 
   const agentKey = useMemo(() => agents.map((item) => item.workflowId).join('|'), [agents])
+  const [pollTick, setPollTick] = useState(0)
+
+  const runActivityKey = useMemo(
+    () =>
+      Object.entries(runs.entries)
+        .map(([wid, entry]) => {
+          const state = entry.state
+          return [
+            wid,
+            entry.backendRunId,
+            state.activeRunId,
+            state.running,
+            state.items.length,
+            state.status,
+            state.pendingHitl?.requestId || ''
+          ].join(':')
+        })
+        .join('|'),
+    [runs.entries]
+  )
+
+  useEffect(() => {
+    const timer = window.setInterval(() => setPollTick((value) => value + 1), 30000)
+    return () => window.clearInterval(timer)
+  }, [])
 
   useEffect(() => {
     if (!agentKey) {
@@ -526,8 +552,10 @@ export function DecisionsTab({
         status: string
         meetings: MiniMeeting[]
       }> = []
+      const seenRuns = new Set<string>()
       try {
         const collectedFiles: Record<string, WorkflowFileItem[]> = {}
+        const liveEntries = runs.entries
         const jobs = agentsRef.current.slice(0, 40).map(async (agent) => {
           const [history, workflowFiles] = await Promise.all([
             api.listAgentRuns(agent.workflowId).catch(() => [] as AgentRunHistoryItem[]),
@@ -535,10 +563,53 @@ export function DecisionsTab({
           ])
           const visibleFiles = workflowFiles.filter(isUserFacingResultFile)
           collectedFiles[agent.workflowId] = visibleFiles
+
+          const live = liveEntries[agent.workflowId]
+          if (live?.state.items.length) {
+            const liveEvents = feedItemsToRunnerEvents(live.state.items)
+            const liveRunId =
+              live.backendRunId || live.state.activeRunId || `live:${agent.workflowId}`
+            const liveAt = new Date(live.state.runningSinceMs || Date.now()).toISOString()
+            if (liveEvents.length) {
+              seenRuns.add(`${agent.workflowId}:${liveRunId}`)
+              const extracted = extractToolDecisions(liveEvents, {
+                workflowId: agent.workflowId,
+                agentName: agent.name,
+                runId: liveRunId,
+                at: liveAt,
+                runClosed: !live.state.running
+              })
+              for (const item of extracted) {
+                item.files = pickFilesForDecision(item, visibleFiles)
+              }
+              collectedTools.push(...extracted)
+            }
+            const cleaned = cleanRunResult({
+              answer: '',
+              events: liveEvents,
+              status: live.state.running ? 'running' : 'ok'
+            })
+            const meetings = meetingsFromEvents(liveEvents)
+            if (cleaned.text || meetings.length) {
+              collectedResults.push({
+                workflowId: agent.workflowId,
+                agentName: agent.name,
+                runId: liveRunId,
+                at: liveAt,
+                text: cleaned.text,
+                status: live.state.running ? 'running' : 'ok',
+                meetings
+              })
+            }
+          }
+
           const matched = history
             .filter((run) => inRange(runStamp(run), fromDay, toDay))
-            .slice(0, 5)
+            .slice(0, 10)
           for (const run of matched) {
+            const runKey = `${agent.workflowId}:${run.runId}`
+            if (seenRuns.has(runKey)) continue
+            seenRuns.add(runKey)
             const detail = await api.getAgentRunDetail(agent.workflowId, run.runId).catch(() => null)
             const events: AgentRunnerEvent[] = detail?.events || []
             const at = run.finishedAt || run.startedAt || ''
@@ -589,7 +660,7 @@ export function DecisionsTab({
     return () => {
       alive = false
     }
-  }, [agentKey, fromDay, toDay])
+  }, [agentKey, fromDay, toDay, runActivityKey, pollTick, runs.entries])
 
   const livePending = useMemo(() => {
     if (!inRange(new Date(), fromDay, toDay)) return []
@@ -679,7 +750,13 @@ export function DecisionsTab({
   }, [livePending, tools, query, processId, status, priority, attachmentsOnly, due, sort, today])
 
   const pending = visibleTools.filter((item) => item.status === 'pending')
-  const history = visibleTools.filter((item) => item.status !== 'pending')
+  const awaitingMe = visibleTools.filter((item) => decisionStatusBucket(item) === 'pending')
+  const underReview = visibleTools.filter((item) => decisionStatusBucket(item) === 'review')
+  const confirmedToday = visibleTools.filter((item) => {
+    if (decisionStatusBucket(item) !== 'confirmed') return false
+    const stamp = parseIso(item.at)
+    return stamp ? dayKey(stamp) === todayKey() : false
+  })
   const returned = visibleTools.filter((item) => decisionStatusBucket(item) === 'returned')
   const selected = visibleTools.find((item) => item.id === selectedId) || null
   const selectedFiles = selected
@@ -857,10 +934,16 @@ export function DecisionsTab({
   ].filter((item) => Boolean(item.label))
 
   return (
-    <div className="wp-page">
-      <div className="wp-head">
+    <div className="wp-page spec-v04-page spec-decisions-page">
+      <div className="wp-head spec-v04-head">
         <div>
           <h1 className="page-title">Решения</h1>
+          <div className="wp-sub">Подтверждение решений, подготовленных ИИ и сотрудниками</div>
+        </div>
+        <div className="spec-v04-head-actions">
+          <button type="button" className="btn-primary spec-quick-launch">
+            ▶ Быстрый запуск
+          </button>
         </div>
       </div>
       <section className="wp-decisions-kpi">
@@ -869,8 +952,22 @@ export function DecisionsTab({
             !
           </div>
           <div>
-            <p>Ждут подтверждения</p>
-            <strong>{pending.length}</strong>
+            <p>Ожидают меня</p>
+            <strong>{awaitingMe.length}</strong>
+          </div>
+        </article>
+        <article className="wp-decisions-kpi-card review">
+          <div className="wp-decisions-kpi-icon nf-review" aria-hidden>
+            <svg viewBox="0 0 24 24" width="20" height="20" focusable="false">
+              <path
+                fill="currentColor"
+                d="M12 4.5C7 4.5 2.73 7.61 1 12c1.73 4.39 6 7.5 11 7.5s9.27-3.11 11-7.5c-1.73-4.39-6-7.5-11-7.5zm0 12.5c-2.76 0-5-2.24-5-5s2.24-5 5-5 5 2.24 5 5-2.24 5-5 5zm0-8c-1.66 0-3 1.34-3 3s1.34 3 3 3 3-1.34 3-3-1.34-3-3-3z"
+              />
+            </svg>
+          </div>
+          <div>
+            <p>На рассмотрении</p>
+            <strong>{underReview.length}</strong>
           </div>
         </article>
         <article className="wp-decisions-kpi-card done">
@@ -878,17 +975,8 @@ export function DecisionsTab({
             ✓
           </div>
           <div>
-            <p>История за период</p>
-            <strong>{history.length}</strong>
-          </div>
-        </article>
-        <article className="wp-decisions-kpi-card review">
-          <div className="wp-decisions-kpi-icon" aria-hidden>
-            ●
-          </div>
-          <div>
-            <p>Результаты агентов</p>
-            <strong>{visibleResults.length}</strong>
+            <p>Подтверждено сегодня</p>
+            <strong>{confirmedToday.length}</strong>
           </div>
         </article>
         <article className="wp-decisions-kpi-card returned">

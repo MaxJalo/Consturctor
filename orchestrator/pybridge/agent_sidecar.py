@@ -3210,6 +3210,147 @@ class Sidecar:
             except Exception:  # noqa: BLE001
                 pass
 
+    def read_calendar(self, command: dict[str, Any]) -> None:
+        request_id = str(command.get("requestId") or command.get("id") or "")
+        input_data: dict[str, Any] = {}
+        date_from = str(command.get("dateFrom") or "").strip()
+        date_to = str(command.get("dateTo") or "").strip()
+        if date_from:
+            input_data["date_from"] = date_from
+        if date_to:
+            input_data["date_to"] = date_to
+        people = command.get("people")
+        if isinstance(people, list):
+            names = [str(p).strip() for p in people if str(p).strip()]
+            if names:
+                input_data["people"] = names
+        for_user = str(command.get("forUser") or "").strip()
+        if for_user:
+            input_data["for_user"] = for_user
+        if command.get("allVisible"):
+            input_data["all_visible"] = True
+        days_forward = command.get("daysForward")
+        if isinstance(days_forward, int) and days_forward > 0:
+            input_data["days_forward"] = days_forward
+        if for_user or command.get("allVisible"):
+            input_data["max_scan_items"] = 2000
+
+        def _work() -> None:
+            try:
+                from app.tools.ac.dispatch import invoke_ac_tool
+
+                output = invoke_ac_tool("outlook.read_calendar", input_data)
+                events = output.get("events") or []
+                emit(
+                    {
+                        "type": "calendar_result",
+                        "requestId": request_id,
+                        "ok": True,
+                        "events": events if isinstance(events, list) else [],
+                        "calendars": output.get("calendars") or [],
+                        "rangeStart": output.get("range_start") or "",
+                        "rangeEnd": output.get("range_end") or "",
+                    }
+                )
+            except Exception as exc:  # noqa: BLE001
+                emit(
+                    {
+                        "type": "calendar_result",
+                        "requestId": request_id,
+                        "ok": False,
+                        "error": _exc_text(exc, "Не удалось прочитать календарь Outlook"),
+                    }
+                )
+
+        threading.Thread(
+            target=_work,
+            name=f"read_calendar-{request_id[:8]}",
+            daemon=True,
+        ).start()
+
+    def search_mail(self, command: dict[str, Any]) -> None:
+        request_id = str(command.get("requestId") or command.get("id") or "")
+        input_data: dict[str, Any] = {
+            "folder": str(command.get("folder") or "Inbox"),
+            "max_results": int(command.get("maxResults") or 50),
+        }
+        date_value = str(command.get("date") or "").strip()
+        if date_value:
+            input_data["date"] = date_value
+        query = command.get("query")
+        if query is not None and str(query).strip():
+            input_data["query"] = str(query).strip()
+
+        def _work() -> None:
+            try:
+                from app.tools.ac.dispatch import invoke_ac_tool
+
+                output = invoke_ac_tool("outlook.search_mail", input_data)
+                messages = output.get("messages") or []
+                emit(
+                    {
+                        "type": "mail_result",
+                        "requestId": request_id,
+                        "ok": True,
+                        "messages": messages if isinstance(messages, list) else [],
+                        "source": output.get("source") or "outlook_com",
+                    }
+                )
+            except Exception as exc:  # noqa: BLE001
+                emit(
+                    {
+                        "type": "mail_result",
+                        "requestId": request_id,
+                        "ok": False,
+                        "error": _exc_text(exc, "Не удалось прочитать почту Outlook"),
+                    }
+                )
+
+        threading.Thread(
+            target=_work,
+            name=f"search_mail-{request_id[:8]}",
+            daemon=True,
+        ).start()
+
+    def invoke_ac_tool_cmd(self, command: dict[str, Any]) -> None:
+        request_id = str(command.get("requestId") or command.get("id") or "")
+        tool_name = str(command.get("tool") or "").strip()
+        raw_input = command.get("input")
+        input_data = raw_input if isinstance(raw_input, dict) else {}
+
+        def _work() -> None:
+            try:
+                from app.tools.ac.dispatch import invoke_ac_tool
+
+                if not tool_name:
+                    raise ValueError("tool name required")
+                output = invoke_ac_tool(tool_name, input_data)
+                emit(
+                    {
+                        "type": "ac_tool_result",
+                        "requestId": request_id,
+                        "ok": True,
+                        "tool": tool_name,
+                        "result": output if isinstance(output, dict) else {"value": output},
+                    }
+                )
+            except Exception as exc:  # noqa: BLE001
+                emit(
+                    {
+                        "type": "ac_tool_result",
+                        "requestId": request_id,
+                        "ok": False,
+                        "tool": tool_name,
+                        "error": _exc_text(exc, "Не удалось выполнить локальный инструмент"),
+                    }
+                )
+
+        threading.Thread(
+            target=_work,
+            name=f"invoke_ac-{request_id[:8]}",
+            daemon=True,
+        ).start()
+
     def cancel(self, command: dict[str, Any]) -> None:
         run_id = str(command.get("id") or "")
         workflow_id = str(command.get("workflowId") or "").strip()
@@ -3423,6 +3564,12 @@ def main() -> None:
                 sidecar.hitl(command)
             elif ctype == "skip":
                 sidecar.skip(command)
+            elif ctype == "read_calendar":
+                sidecar.read_calendar(command)
+            elif ctype == "search_mail":
+                sidecar.search_mail(command)
+            elif ctype == "invoke_ac_tool":
+                sidecar.invoke_ac_tool_cmd(command)
             elif ctype == "cancel":
                 sidecar.cancel(command)
             elif ctype == "shutdown":

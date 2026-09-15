@@ -17,6 +17,7 @@ function testLoginResult(): LoginResult {
       position: 'Тестовый пользователь',
       role: 'user',
       isAdmin: false,
+      nameMail: '',
       avatarUrl: null,
       canChangeDepartment: true,
       activityStatus: 'online',

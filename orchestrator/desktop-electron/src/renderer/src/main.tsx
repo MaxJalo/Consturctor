@@ -7,6 +7,8 @@ import './styles.css'
 import './admin/admin-pages.css'
 import './admin/admin-overview.css'
 import './admin/admin-themes.css'
+import './layout/orchGrid.css'
+import './tabs/grid/todayGrid.css'
 import { initAdminTheme } from './admin/theme/adminThemes'
 
 initAdminTheme()
