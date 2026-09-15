@@ -28,6 +28,8 @@ import {
 } from '../../workplace/useSpecV04Data'
 import { SpecIconCalendar, SpecIconSearch } from '../../workplace/specV04Icons'
 import { buildProcessesQuickActions } from '../../workplace/specGridQuickActions'
+import { applyMeetingDoneToRow, isMeetingRowId } from '../../workplace/meetingCompletion'
+import { useMeetingCompletion } from '../../workplace/useMeetingCompletion'
 
 const DETAIL_TABS = [
   { id: 'general', label: 'Общее' },
@@ -50,10 +52,14 @@ const PROCESS_TABS = [
 
 function ProcessDetail({
   row,
-  onOpen
+  onOpen,
+  meetingDone,
+  onToggleMeetingDone
 }: {
   row: SpecProcessRow
   onOpen?: (workflowId: string, title: string) => void
+  meetingDone?: boolean
+  onToggleMeetingDone?: () => void
 }): React.JSX.Element {
   const openId =
     row.id.startsWith('erp:') || row.id.startsWith('mail:') || row.id.startsWith('meet:') || row.id.startsWith('proj:')
@@ -138,6 +144,15 @@ function ProcessDetail({
         </div>
       ) : null}
       <footer className="spec-detail-actions">
+        {isMeetingRowId(row.id) && onToggleMeetingDone ? (
+          <button
+            type="button"
+            className={meetingDone ? 'spec-btn-outline spec-btn-outline-block' : 'spec-btn-launch spec-btn-launch-block'}
+            onClick={onToggleMeetingDone}
+          >
+            {meetingDone ? 'Снять отметку выполнения' : 'Отметить выполненным'}
+          </button>
+        ) : null}
         {openId ? (
           <>
             <button type="button" className="spec-btn-outline spec-btn-outline-block" onClick={() => onOpen?.(openId, row.name)}>
@@ -147,7 +162,7 @@ function ProcessDetail({
               <span>Запустить исполнение</span>
             </button>
           </>
-        ) : (
+        ) : isMeetingRowId(row.id) ? null : (
           <p className="spec-v04-muted">Открытие в Constructor — для регламентных агентов.</p>
         )}
       </footer>
@@ -167,13 +182,24 @@ export function ProcessesGridTab({
   onAskOrchestrator?: (message: string, context: string) => void
 }): React.JSX.Element {
   const data = useSpecV04Sources(user)
+  const meetingCompletion = useMeetingCompletion()
   const [tab, setTab] = useState('all')
+  const [rowMenuId, setRowMenuId] = useState('')
   const allRows = data.allProcessRows
   const rows = useMemo(() => filterProcessRowsByTab(allRows, tab), [allRows, tab])
+  const displayRows = useMemo(
+    () =>
+      rows.map((row) =>
+        isMeetingRowId(row.id) && meetingCompletion.isDone(row.id)
+          ? applyMeetingDoneToRow(row, true)
+          : row
+      ),
+    [rows, meetingCompletion.revision, meetingCompletion.isDone]
+  )
   const tabCounts = useMemo(() => countProcessRowsByTab(allRows), [allRows])
   const [selectedId, setSelectedId] = useState('')
-  const effectiveId = selectedId || rows[0]?.id || ''
-  const selected = rows.find((item) => item.id === effectiveId)
+  const effectiveId = selectedId || displayRows[0]?.id || ''
+  const selected = displayRows.find((item) => item.id === effectiveId)
 
   const tabs = useMemo(
     () =>
@@ -197,6 +223,7 @@ export function ProcessesGridTab({
         id: action.id,
         label: action.label,
         tone: action.tone,
+        icon: action.icon,
         onClick: () => void action.run()
       })),
     []
@@ -283,7 +310,7 @@ export function ProcessesGridTab({
                   </td>
                 </tr>
               ) : null}
-              {rows.map((row) => (
+              {displayRows.map((row) => (
                 <tr
                   key={row.id}
                   className={effectiveId === row.id ? 'selected' : ''}
@@ -307,23 +334,44 @@ export function ProcessesGridTab({
                     <SpecProgress value={row.progress} />
                   </td>
                   <td>
-                    <button
-                      type="button"
-                      className="btn-ghost spec-row-menu"
-                      onClick={(event) => {
-                        event.stopPropagation()
-                        if (
-                          !row.id.startsWith('erp:') &&
-                          !row.id.startsWith('mail:') &&
-                          !row.id.startsWith('meet:') &&
-                          !row.id.startsWith('proj:')
-                        ) {
-                          onOpenRun(row.id, row.name)
-                        }
-                      }}
-                    >
-                      ⋮
-                    </button>
+                    <div className="spec-row-menu-wrap">
+                      <button
+                        type="button"
+                        className="btn-ghost spec-row-menu"
+                        aria-expanded={rowMenuId === row.id}
+                        onClick={(event) => {
+                          event.stopPropagation()
+                          if (isMeetingRowId(row.id)) {
+                            setRowMenuId((current) => (current === row.id ? '' : row.id))
+                            return
+                          }
+                          setRowMenuId('')
+                          if (
+                            !row.id.startsWith('erp:') &&
+                            !row.id.startsWith('mail:') &&
+                            !row.id.startsWith('proj:')
+                          ) {
+                            onOpenRun(row.id, row.name)
+                          }
+                        }}
+                      >
+                        ⋮
+                      </button>
+                      {rowMenuId === row.id && isMeetingRowId(row.id) ? (
+                        <div className="files-menu spec-row-menu-dropdown">
+                          <button
+                            type="button"
+                            onClick={(event) => {
+                              event.stopPropagation()
+                              setRowMenuId('')
+                              meetingCompletion.toggle(row.id)
+                            }}
+                          >
+                            {meetingCompletion.isDone(row.id) ? 'Снять отметку' : 'Отметить выполненным'}
+                          </button>
+                        </div>
+                      ) : null}
+                    </div>
                   </td>
                 </tr>
               ))}
@@ -333,7 +381,14 @@ export function ProcessesGridTab({
       </OrchSlotMain>
       <OrchSlotSide>
         {selected ? (
-          <ProcessDetail row={selected} onOpen={onOpen} />
+          <ProcessDetail
+            row={selected}
+            onOpen={onOpen}
+            meetingDone={isMeetingRowId(selected.id) ? meetingCompletion.isDone(selected.id) : undefined}
+            onToggleMeetingDone={
+              isMeetingRowId(selected.id) ? () => meetingCompletion.toggle(selected.id) : undefined
+            }
+          />
         ) : (
           <div className="wp-card spec-v04-muted">Выберите процесс в таблице</div>
         )}

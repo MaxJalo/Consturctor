@@ -25,9 +25,10 @@ function testLoginResult(): LoginResult {
 
 interface LoginPageProps {
   onLoggedIn: (result: LoginResult, remember: boolean, password: string) => void
+  banner?: string
 }
 
-export function LoginPage({ onLoggedIn }: LoginPageProps): React.JSX.Element {
+export function LoginPage({ onLoggedIn, banner }: LoginPageProps): React.JSX.Element {
   const [fio, setFio] = useState(savedFio())
   const [password, setPassword] = useState('')
   const [showPassword, setShowPassword] = useState(false)
@@ -76,6 +77,7 @@ export function LoginPage({ onLoggedIn }: LoginPageProps): React.JSX.Element {
         <div className="brand">Оркестратор</div>
         <div className="subtitle">Оркестратор должности</div>
         <div className="hint">Вход через учётную запись 1С · пилот · 2 агента</div>
+        {banner ? <div className="login-banner">{banner}</div> : null}
 
         <label>ФИО</label>
         <FioSuggest

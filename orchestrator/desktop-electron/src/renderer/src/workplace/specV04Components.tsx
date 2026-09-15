@@ -2,7 +2,20 @@ import type { ReactNode } from 'react'
 import { stageProgressTone } from './specV04Shell'
 import type { SpecSummaryTile } from './specV04Shell'
 import type { SpecPillTone } from './specV04DemoData'
-import { SpecIconPlay, SpecTileIcon } from './specV04Icons'
+import { SpecIconCalendar, SpecIconOnec, SpecIconPlay, SpecTileIcon } from './specV04Icons'
+import type { SpecQuickActionIcon } from './specGridQuickActions'
+
+function SpecQuickActionIcon({ kind }: { kind: SpecQuickActionIcon }): React.JSX.Element {
+  const icon =
+    kind === 'play' ? (
+      <SpecIconPlay />
+    ) : kind === 'calendar' ? (
+      <SpecIconCalendar />
+    ) : (
+      <SpecIconOnec />
+    )
+  return <span className="spec-quick-action-ico">{icon}</span>
+}
 
 export function SpecPill({
   children,
@@ -237,6 +250,7 @@ export function SpecQuickActions({
         id: string
         label: string
         tone?: 'green' | 'orange' | 'blue' | 'yellow'
+        icon?: SpecQuickActionIcon
         onClick?: () => void
       }
   >
@@ -247,6 +261,7 @@ export function SpecQuickActions({
         const label = typeof item === 'string' ? item : item.label
         const key = typeof item === 'string' ? item : item.id
         const tone = typeof item === 'string' ? undefined : item.tone
+        const icon = typeof item === 'string' ? undefined : item.icon
         const onClick = typeof item === 'string' ? undefined : item.onClick
         return (
           <li key={key}>
@@ -255,7 +270,8 @@ export function SpecQuickActions({
               className={`spec-quick-action-btn${tone ? ` spec-quick-action--${tone}` : ''}`}
               onClick={onClick}
             >
-              {label}
+              {icon ? <SpecQuickActionIcon kind={icon} /> : null}
+              <span className="spec-quick-action-label">{label}</span>
             </button>
           </li>
         )

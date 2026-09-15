@@ -57,7 +57,11 @@ export function buildTodayKpiTiles(data: SpecV04SourcesState): SpecSummaryTile[]
       id: 'onec',
       label: 'Задачи из 1С',
       value: dash(loading, onecTotal ? String(onecTotal) : '—'),
-      hint: loading ? 'загрузка…' : onecTotal ? `${onecDone} выполнено` : data.sources.erp,
+      hint: loading
+        ? 'загрузка…'
+        : onecTotal
+          ? `${onecDone} выполнено`
+          : data.erpError || data.error || data.sources.erp,
       tone: 'blue',
       progress: loading ? undefined : pct(onecDone, onecTotal || 1),
       ring: true

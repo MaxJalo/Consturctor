@@ -271,9 +271,9 @@ def invoke_onec(
         handlers = {**STUB_HANDLERS, **extra}
     elif _erp_sql_ready():
         handlers = {**handlers, **{name: REAL_HANDLERS[name] for name in _ERP_TASK_TOOLS}}
-    from app.services.docflow_tasks import docflow_configured
+    from app.services.docflow_tasks import docflow_url_ready
 
-    if docflow_configured():
+    if docflow_url_ready():
         handlers = {**handlers, "onec.docflow_tasks": REAL_HANDLERS["onec.docflow_tasks"]}
     handler = handlers.get(tool)
     if handler is None:
@@ -445,7 +445,11 @@ def _ensure_odata_query(
 
 def _payload_credentials(payload: dict[str, Any]) -> tuple[str, str] | None:
     username = str(
-        payload.get("username") or payload.get("erp_login") or payload.get("user") or ""
+        payload.get("username")
+        or payload.get("erp_login")
+        or payload.get("user")
+        or payload.get("fio")
+        or ""
     ).strip()
     password = str(payload.get("password") or payload.get("erp_password") or "").strip()
     if username and password:

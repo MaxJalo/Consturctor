@@ -1,4 +1,5 @@
 import { parseMeetingTime } from './outlookMeetings'
+import { formatIpcInvokeError, sidecarAckFailureMessage, type SidecarAck } from './sidecarAck'
 
 const REQUEST_TIMEOUT_MS = 180_000
 
@@ -97,19 +98,25 @@ function requestOutlookMail(range: {
     void window.agent
       .searchOutlookMail(command)
       .then((ack) => {
-        if (ack && ack.ok === false) {
-          finish({
-            ok: false,
-            messages: [],
-            error: 'Sidecar не принял запрос почты — перезапустите Orchestrator (run_dev.bat)'
-          })
+        const fail = sidecarAckFailureMessage(
+          ack as SidecarAck,
+          'Sidecar не принял запрос почты — перезапустите Orchestrator (run_dev.bat)'
+        )
+        if (fail) {
+          finish({ ok: false, messages: [], error: fail })
         }
       })
-      .catch(() => {
+      .catch((err: unknown) => {
+        const detail = err instanceof Error ? err.message : String(err)
+        const mapped = formatIpcInvokeError(detail)
         finish({
           ok: false,
           messages: [],
-          error: 'Не удалось отправить запрос в sidecar Outlook'
+          error: mapped.trim()
+            ? mapped.includes('Main-процесс')
+              ? mapped
+              : `Мост Outlook недоступен (${mapped}) — перезапустите Electron main/preload`
+            : 'Не удалось отправить запрос в sidecar Outlook — перезапустите Electron (main + preload)'
         })
       })
   })

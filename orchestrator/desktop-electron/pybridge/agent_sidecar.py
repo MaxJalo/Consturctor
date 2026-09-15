@@ -36,7 +36,8 @@ Protocol: newline-delimited JSON.
     {"type": "error", "runId": str, "message": str}
     {"type": "ready_state", "ok": bool, "message": str}
 
-All console/log text is ASCII to stay safe on Windows consoles.
+Diagnostics on stderr use UTF-8 (Electron reads stderr as utf-8).
+Protocol on stdout is UTF-8 JSON lines.
 """
 
 from __future__ import annotations
@@ -234,10 +235,17 @@ def emit(message: dict[str, Any]) -> None:
 
 
 def log(message: str) -> None:
-    """ASCII-safe diagnostic to stderr (never stdout, which is the protocol)."""
-    safe = message.encode("ascii", errors="replace").decode("ascii")
-    sys.stderr.write(safe + "\n")
-    sys.stderr.flush()
+    """UTF-8 diagnostic to stderr (never stdout, which is the protocol)."""
+    line = str(message) + "\n"
+    payload = line.encode("utf-8")
+    with _STDOUT_LOCK:
+        buffer = getattr(sys.stderr, "buffer", None)
+        if buffer is not None:
+            buffer.write(payload)
+            buffer.flush()
+        else:
+            sys.stderr.write(line)
+            sys.stderr.flush()
 
 
 def _json_default(value: Any) -> Any:
@@ -251,6 +259,47 @@ def _exc_text(exc: Exception, fallback: str) -> str:
     if not text:
         text = repr(exc).strip()
     return text or fallback
+
+
+def _normalize_onec_cred_keys(payload: dict[str, Any]) -> dict[str, Any]:
+    """Merge camelCase sidecar IPC keys into snake_case env helpers."""
+    out = dict(payload)
+    pairs = (
+        ("onecComUsr", "onec_com_usr"),
+        ("nameMail", "name_mail"),
+        ("erpLogin", "erp_login"),
+        ("erpPassword", "erp_password"),
+    )
+    for src, dst in pairs:
+        if src in payload and not str(out.get(dst) or "").strip():
+            out[dst] = payload[src]
+    if str(out.get("login") or "").strip() and not str(out.get("fio") or "").strip():
+        out["fio"] = out["login"]
+    return out
+
+
+def _apply_onec_session_credentials(raw: dict[str, Any] | None) -> None:
+    """Apply Orchestrator session 1C creds; override desktop/.env ERP_* when provided."""
+    if not isinstance(raw, dict):
+        return
+    payload = _normalize_onec_cred_keys(raw)
+    password = str(payload.get("password") or payload.get("erp_password") or "")
+    fio = str(
+        payload.get("fio") or payload.get("erp_login") or payload.get("login") or ""
+    ).strip()
+    com_usr = ""
+    if not os.environ.get("ONEC_COM_USR", "").strip():
+        for key in ("onec_com_usr", "username", "name_mail"):
+            text = str(payload.get(key) or "").strip()
+            if text:
+                com_usr = text
+                break
+    if com_usr:
+        os.environ["ONEC_COM_USR"] = com_usr
+    if fio:
+        os.environ["ERP_LOGIN"] = fio
+    if password:
+        os.environ["ERP_PASSWORD"] = password
 
 
 KEEP_KNOWLEDGE_FILE_NAME = "keepKnowledgeFile"
@@ -2159,16 +2208,11 @@ class Sidecar:
         # Server-side tools (users.current, 1C tasks, ...) read this process-global
         # token. Without it they fail with "no user session" even if the UI is logged in.
         configure_runtime_api(token=token, base_url=self._api.base_url)
-        # COM 1C workers read ERP_LOGIN / ERP_PASSWORD from the process env.
-        # ONEC_COM_USR in desktop/.env overrides session FIO for COM Usr=.
-        login = str(command.get("login") or "").strip()
+        # COM 1C workers read ERP_LOGIN / ERP_PASSWORD / ONEC_COM_USR from process env.
+        # Session creds from Orchestrator login override desktop/.env when sent here.
+        _apply_onec_session_credentials(command)
         password = str(command.get("password") or "")
-        if login and not os.environ.get("ONEC_COM_USR", "").strip():
-            if not os.environ.get("ERP_LOGIN", "").strip():
-                os.environ["ERP_LOGIN"] = login
-        if password:
-            os.environ["ERP_PASSWORD"] = password
-        elif "password" in command and not os.environ.get("ERP_PASSWORD", "").strip():
+        if "password" in command and not password and not os.environ.get("ERP_PASSWORD", "").strip():
             os.environ.pop("ERP_PASSWORD", None)
 
     def check_ready(self) -> None:
@@ -3612,6 +3656,8 @@ class Sidecar:
 
                 if not tool_name:
                     raise ValueError("tool name required")
+                if tool_name.startswith("onec."):
+                    _apply_onec_session_credentials(input_data)
                 output = invoke_ac_tool(tool_name, input_data)
                 log("invoke_ac_tool ok tool=" + tool_name)
                 emit(

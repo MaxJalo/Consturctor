@@ -638,36 +638,38 @@ function registerMainIpcHandlers(): void {
   ipcHandle('api:stream', handleStream)
   ipcHandle(
     'agent:ready',
-    (_evt, token: string | null, credentials?: { login?: string; password?: string }) => {
+    (
+      _evt,
+      token: string | null,
+      credentials?: { login?: string; password?: string; onecComUsr?: string }
+    ) => {
       agentSidecar.ready(token ?? null, credentials)
       return { ok: true }
     }
   )
-  ipcHandle('agent:start', (_evt, command: AgentSidecarMessage) => {
-    const ok = agentSidecar.send(command)
-    return { ok }
-  })
-  ipcHandle('agent:answer', (_evt, command: AgentSidecarMessage) => {
-    return { ok: agentSidecar.send({ ...command, type: 'answer' }) }
-  })
-  ipcHandle('agent:hitl', (_evt, command: AgentSidecarMessage) => {
-    return { ok: agentSidecar.send({ ...command, type: 'hitl' }) }
-  })
-  ipcHandle('agent:skip', (_evt, command: AgentSidecarMessage) => {
-    return { ok: agentSidecar.send({ ...command, type: 'skip' }) }
-  })
-  ipcHandle('agent:cancel', (_evt, command: AgentSidecarMessage) => {
-    return { ok: agentSidecar.send({ ...command, type: 'cancel' }) }
-  })
-  ipcHandle('agent:read-calendar', (_evt, command: AgentSidecarMessage) => {
-    return { ok: agentSidecar.send({ ...command, type: 'read_calendar' }) }
-  })
-  ipcHandle('agent:search-mail', (_evt, command: AgentSidecarMessage) => {
-    return { ok: agentSidecar.send({ ...command, type: 'search_mail' }) }
-  })
-  ipcHandle('agent:invoke-ac-tool', (_evt, command: AgentSidecarMessage) => {
-    return { ok: agentSidecar.send({ ...command, type: 'invoke_ac_tool' }) }
-  })
+  ipcHandle('agent:status', () => agentSidecar.status())
+  ipcHandle('agent:start', (_evt, command: AgentSidecarMessage) => agentSidecar.send(command))
+  ipcHandle('agent:answer', (_evt, command: AgentSidecarMessage) =>
+    agentSidecar.send({ ...command, type: 'answer' })
+  )
+  ipcHandle('agent:hitl', (_evt, command: AgentSidecarMessage) =>
+    agentSidecar.send({ ...command, type: 'hitl' })
+  )
+  ipcHandle('agent:skip', (_evt, command: AgentSidecarMessage) =>
+    agentSidecar.send({ ...command, type: 'skip' })
+  )
+  ipcHandle('agent:cancel', (_evt, command: AgentSidecarMessage) =>
+    agentSidecar.send({ ...command, type: 'cancel' })
+  )
+  ipcHandle('agent:read-calendar', (_evt, command: AgentSidecarMessage) =>
+    agentSidecar.send({ ...command, type: 'read_calendar' })
+  )
+  ipcHandle('agent:search-mail', (_evt, command: AgentSidecarMessage) =>
+    agentSidecar.send({ ...command, type: 'search_mail' })
+  )
+  ipcHandle('agent:invoke-ac-tool', (_evt, command: AgentSidecarMessage) =>
+    agentSidecar.send({ ...command, type: 'invoke_ac_tool' })
+  )
   ipcHandle('notifications:start', (_evt, token: string) => {
     if (typeof token === 'string' && token.trim()) {
       notifyGuard.start(token.trim())
@@ -690,6 +692,9 @@ function registerMainIpcHandlers(): void {
   ipcHandle('updater:getStatus', () => getUpdateStatus())
   ipcHandle('updater:install', () => installAvailableUpdate())
 }
+
+// Register before app.whenReady and on every electron-vite main HMR reload (whenReady does not re-run).
+registerMainIpcHandlers()
 
 function createWindow(): void {
   const mainWindow = new BrowserWindow({
@@ -741,6 +746,7 @@ function createWindow(): void {
 
 app.whenReady().then(async () => {
   registerMainIpcHandlers()
+  agentSidecar.warmup()
   const up = await ensureLocalBackend(CONFIG.backendUrl)
   console.log(`Orchestrator backend: ${CONFIG.backendUrl}${up ? '' : ' (недоступен)'}`)
   startUpdater({

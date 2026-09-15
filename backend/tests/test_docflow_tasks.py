@@ -6,10 +6,33 @@ from datetime import datetime
 from types import SimpleNamespace
 
 from app.services.docflow_tasks import (
+    _credentials_from_args,
     _map_task,
     _parse_odata_dt,
+    docflow_auth,
     docflow_base_url,
+    docflow_env_auth,
 )
+
+
+def test_docflow_auth_prefers_session_fio_password(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "app.services.docflow_tasks.settings",
+        SimpleNamespace(
+            docflow_odata_username="env-user",
+            docflow_odata_password="env-pass",
+            odata_username="",
+            odata_password="",
+            erp_login="",
+            erp_password="",
+        ),
+    )
+    assert docflow_env_auth() == ("env-user", "env-pass")
+    assert docflow_auth({"fio": "Иванов И.И.", "password": "secret"}) == (
+        "Иванов И.И.",
+        "secret",
+    )
+    assert _credentials_from_args({"username": "u", "erp_password": "p"}) == ("u", "p")
 
 
 def test_docflow_base_url_from_erp(monkeypatch) -> None:

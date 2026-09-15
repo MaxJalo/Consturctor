@@ -21,6 +21,56 @@ export function erpActorUserId(user: UserProfile | null): string {
   return (user?.id || '').trim()
 }
 
+/** v8users.Name for 1C auth when known; otherwise FIO from login screen. */
+export function erpActorComUsername(user: UserProfile | null): string {
+  const fromSession = (comCredentials().nameMail || '').trim()
+  if (fromSession) return fromSession
+  const fromProfile = (user?.nameMail || '').trim()
+  if (fromProfile) return fromProfile
+  return erpActorFio(user)
+}
+
+/** Gateway onec.* invoke: FIO + optional password from login session (not localStorage). */
+export function onecGatewayInvokeArgs(
+  user: UserProfile | null,
+  extra: Record<string, unknown> = {}
+): Record<string, unknown> {
+  const fio = erpActorFio(user)
+  const userId = erpActorUserId(user)
+  const { password } = comCredentials()
+  const username = erpActorComUsername(user)
+  const args: Record<string, unknown> = {
+    ...extra,
+    fio,
+    user_id: userId
+  }
+  if (username && password) {
+    args.username = username
+    args.password = password
+  }
+  return args
+}
+
+/** COM onec.* via sidecar: login FIO + password when user signed in this session. */
+export function onecComInvokeArgs(extra: Record<string, unknown> = {}): Record<string, unknown> {
+  const { login, password, nameMail } = comCredentials()
+  const args: Record<string, unknown> = { ...extra }
+  if (login) {
+    args.fio = login
+    args.erp_login = login
+  }
+  if (nameMail) {
+    args.username = nameMail
+    args.name_mail = nameMail
+    args.onec_com_usr = nameMail
+  }
+  if (password) {
+    args.password = password
+    args.erp_password = password
+  }
+  return args
+}
+
 /** Имя для приветствия и шапки (без отчества / полного ФИО). */
 export function userGivenName(fio: string): string {
   const trimmed = fio.trim()

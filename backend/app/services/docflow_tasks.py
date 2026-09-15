@@ -28,7 +28,23 @@ def docflow_base_url() -> str:
     return ""
 
 
-def docflow_auth() -> tuple[str, str] | None:
+def _credentials_from_args(args: dict[str, Any] | None) -> tuple[str, str] | None:
+    payload = args if isinstance(args, dict) else {}
+    username = str(
+        payload.get("username")
+        or payload.get("erp_login")
+        or payload.get("user")
+        or payload.get("fio")
+        or ""
+    ).strip()
+    password = str(payload.get("password") or payload.get("erp_password") or "").strip()
+    if username and password:
+        return username, password
+    return None
+
+
+def docflow_env_auth() -> tuple[str, str] | None:
+    """Gateway .env fallback when desktop session did not forward a password."""
     user = (settings.docflow_odata_username or settings.odata_username or settings.erp_login).strip()
     password = (
         settings.docflow_odata_password or settings.odata_password or settings.erp_password
@@ -38,8 +54,19 @@ def docflow_auth() -> tuple[str, str] | None:
     return None
 
 
+def docflow_auth(args: dict[str, Any] | None = None) -> tuple[str, str] | None:
+    explicit = _credentials_from_args(args)
+    if explicit:
+        return explicit
+    return docflow_env_auth()
+
+
 def docflow_configured() -> bool:
-    return bool(docflow_base_url() and docflow_auth())
+    return bool(docflow_base_url() and docflow_env_auth())
+
+
+def docflow_url_ready() -> bool:
+    return bool(docflow_base_url())
 
 
 def _odata_str(value: str) -> str:
@@ -50,9 +77,14 @@ def _odata_dt(value: datetime) -> str:
     return value.strftime("%Y-%m-%dT%H:%M:%S")
 
 
-def _get(path: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
+def _get(
+    path: str,
+    params: dict[str, Any] | None = None,
+    *,
+    auth_args: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     base = docflow_base_url()
-    auth = docflow_auth()
+    auth = docflow_auth(auth_args)
     if not base or not auth:
         raise DocflowError("OData документооборота не настроен")
     url = f"{base}/{path.lstrip('/')}"
@@ -62,7 +94,8 @@ def _get(path: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
         raise DocflowError(
             "Документооборот (/doc) отклонил учётку OData. "
             "Добавьте того же пользователя в базу 1С:Документооборот "
-            "или задайте DOCFLOW_ODATA_USERNAME / DOCFLOW_ODATA_PASSWORD."
+            "или войдите в Orchestrator с паролем 1С (учётка сеанса), "
+            "либо задайте DOCFLOW_ODATA_USERNAME / DOCFLOW_ODATA_PASSWORD."
         )
     if response.status_code >= 400:
         text = response.text.lstrip("\ufeff")[:280].replace("\n", " ")
@@ -71,11 +104,15 @@ def _get(path: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
     return data if isinstance(data, dict) else {}
 
 
-def find_user_key(fio: str) -> str:
+def find_user_key(fio: str, *, auth_args: dict[str, Any] | None = None) -> str:
     name = _odata_str(fio.strip())
     if not name:
         return ""
-    data = _get(_USER_ENTITY, params={"$top": 5, "$filter": f"Description eq '{name}'"})
+    data = _get(
+        _USER_ENTITY,
+        params={"$top": 5, "$filter": f"Description eq '{name}'"},
+        auth_args=auth_args,
+    )
     for row in data.get("value") or []:
         if isinstance(row, dict) and row.get("Ref_Key"):
             return str(row["Ref_Key"])
@@ -125,10 +162,11 @@ def list_docflow_tasks(
     date_to: datetime | None = None,
     only_open: bool = False,
     limit: int = 200,
+    auth_args: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
-    if not docflow_configured():
+    if not docflow_base_url() or not docflow_auth(auth_args):
         return []
-    user_key = find_user_key(fio)
+    user_key = find_user_key(fio, auth_args=auth_args)
     if not user_key:
         return []
     limit = max(1, min(int(limit or 200), 200))
@@ -145,6 +183,7 @@ def list_docflow_tasks(
     data = _get(
         _TASK_ENTITY,
         params={"$top": limit, "$orderby": "Date desc", "$filter": filt},
+        auth_args=auth_args,
     )
     items: list[dict[str, Any]] = []
     for row in data.get("value") or []:
@@ -160,10 +199,11 @@ def list_docflow_for_people(
     date_to: datetime | None = None,
     only_open: bool = False,
     limit_per_person: int = 200,
+    auth_args: dict[str, Any] | None = None,
 ) -> tuple[dict[str, list[dict[str, Any]]], str]:
     warning = ""
     result: dict[str, list[dict[str, Any]]] = {name: [] for name in fios}
-    if not docflow_configured():
+    if not docflow_base_url() or not docflow_auth(auth_args):
         return result, "Документооборот: нет URL/учётки OData"
     try:
         for name in fios:
@@ -175,6 +215,7 @@ def list_docflow_for_people(
                 date_to=date_to,
                 only_open=only_open,
                 limit=limit_per_person,
+                auth_args=auth_args,
             )
     except DocflowError as exc:
         return {name: [] for name in fios}, str(exc)
@@ -206,6 +247,7 @@ def handle_docflow_tasks(
             date_to=finish,
             only_open=only_open,
             limit=int(args.get("limit") or 200),
+            auth_args=args,
         )
     except DocflowError as exc:
         tasks = []

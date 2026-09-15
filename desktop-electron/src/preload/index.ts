@@ -207,10 +207,15 @@ const agent = {
     ipcRenderer.invoke('agent:cancel', command),
   readCalendar: (command: Record<string, unknown>): Promise<{ ok: boolean }> =>
     ipcRenderer.invoke('agent:read-calendar', command),
-  searchOutlookMail: (command: Record<string, unknown>): Promise<{ ok: boolean }> =>
+  searchOutlookMail: (
+    command: Record<string, unknown>
+  ): Promise<{ ok: boolean; queued?: boolean; error?: string; reason?: string }> =>
     ipcRenderer.invoke('agent:search-mail', command),
-  invokeAcTool: (command: Record<string, unknown>): Promise<{ ok: boolean }> =>
+  invokeAcTool: (
+    command: Record<string, unknown>
+  ): Promise<{ ok: boolean; queued?: boolean; error?: string; reason?: string }> =>
     ipcRenderer.invoke('agent:invoke-ac-tool', command),
+  sidecarStatus: (): Promise<Record<string, unknown>> => ipcRenderer.invoke('agent:status'),
   onEvent: (callback: (payload: Record<string, unknown>) => void): (() => void) => {
     const listener = (_event: unknown, payload: Record<string, unknown>): void => {
       callback(payload)

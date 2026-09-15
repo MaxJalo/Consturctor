@@ -6,6 +6,8 @@ import { SpecAskOrchestratorBlock, SpecPanel, SpecPill, SpecSummaryTiles } from 
 import { ASK_CHIPS } from '../../workplace/specV04DemoData'
 import { useTodayKpiData } from '../../workplace/useTodayKpiData'
 import { useTodayOutlookMail } from '../../workplace/useTodayOutlookMail'
+import { comPasswordSessionHint } from '../../workplace/onecSessionHints'
+import { OneCReconnectDialog, OneCReconnectInline } from '../../workplace/OneCReconnectDialog'
 import { erpActorFio } from '../../workplace/userContext'
 import { useTodayProjectTasks } from '../../workplace/useTodayProjectTasks'
 import { parseMeetingTime } from '../../utils/outlookMeetings'
@@ -33,7 +35,8 @@ function MiniTableCard({
   loading,
   error,
   emptyText,
-  hint
+  hint,
+  emptyExtra
 }: {
   title: string
   columns: string[]
@@ -42,6 +45,7 @@ function MiniTableCard({
   error?: string
   emptyText?: string
   hint?: string
+  emptyExtra?: React.ReactNode
 }): React.JSX.Element {
   const body = ((): React.ReactNode => {
     if (loading) {
@@ -57,7 +61,7 @@ function MiniTableCard({
       return (
         <tr>
           <td colSpan={columns.length} className="today-table-status today-table-error">
-            {error}
+            {emptyExtra || error}
           </td>
         </tr>
       )
@@ -66,7 +70,7 @@ function MiniTableCard({
       return (
         <tr>
           <td colSpan={columns.length} className="today-table-status">
-            {emptyText || 'Нет данных'}
+            {emptyExtra || emptyText || 'Нет данных'}
           </td>
         </tr>
       )
@@ -122,6 +126,7 @@ export function TodayGridTab({
 }): React.JSX.Element {
   const { data, tiles } = useTodayKpiData(user)
   const [periodDay, setPeriodDay] = useState(startOfToday)
+  const [onecDialogOpen, setOnecDialogOpen] = useState(false)
   const outlookMail = useTodayOutlookMail(periodDay)
   const preparedDecisions = useTodayPreparedDecisions(periodDay, user.id)
   const projectTasks = useTodayProjectTasks(periodDay, data)
@@ -156,6 +161,14 @@ export function TodayGridTab({
   const ask = (message: string): void => {
     onAskOrchestrator(message, 'Вкладка «Сегодня»')
   }
+
+  const onecReconnectBlock =
+    !data.sourcesLoading && !taskRows.length && data.oneCAuthFailure ? (
+      <OneCReconnectInline
+        errorHint={data.erpError || data.error}
+        onOpen={() => setOnecDialogOpen(true)}
+      />
+    ) : undefined
 
   const {
     layoutWithStatic,
@@ -214,9 +227,13 @@ export function TodayGridTab({
           title="Задачи из 1С"
           loading={data.sourcesLoading}
           error={
-            taskRows.length ? undefined : data.erpError || data.error || undefined
+            taskRows.length
+              ? undefined
+              : [data.erpError || data.error, !data.erpError && !data.error ? comPasswordSessionHint() : '']
+                  .filter(Boolean)
+                  .join(' · ') || undefined
           }
-          emptyText="Нет задач 1С для отображения"
+          emptyText={`Нет задач 1С для отображения · ${comPasswordSessionHint()}`}
           hint={
             taskRows.length && data.erpError
               ? data.erpError
@@ -224,6 +241,7 @@ export function TodayGridTab({
                 ? data.sources.erp
                 : undefined
           }
+          emptyExtra={onecReconnectBlock}
           columns={['Задача', 'Срок', 'Статус', 'Исполнитель']}
           rows={taskRows.map((row) => [
             <TodayCellText key={`${row.id}-t`} text={row.title} />,
@@ -355,6 +373,8 @@ export function TodayGridTab({
       data.erpError,
       data.erpTasks,
       data.error,
+      data.oneCAuthFailure,
+      onecReconnectBlock,
       data.meetings,
       data.outlookMailbox,
       data.sources.erp,
@@ -411,6 +431,12 @@ export function TodayGridTab({
           widgets={todayWidgets}
         />
       </OrchSlotTodayCanvas>
+      <OneCReconnectDialog
+        open={onecDialogOpen}
+        onClose={() => setOnecDialogOpen(false)}
+        user={user}
+        errorHint={data.erpError || data.error}
+      />
     </>
   )
 }

@@ -36,6 +36,10 @@ export interface SpecV04SourcesState {
   }
   /** TurboProject API / учётка недоступны (не путать с пустым портфелем). */
   turboNoSession: boolean
+  /** Пароль 1С из экрана входа в памяти renderer (не localStorage). */
+  comPasswordInSession: boolean
+  /** Нужен повторный ввод пароля 1С (COM / gateway / OData). */
+  oneCAuthFailure: boolean
 }
 
 function pct(done: number, total: number): number {
@@ -133,18 +137,53 @@ export function buildProcessTiles(data: SpecV04SourcesState): SpecSummaryTile[] 
   ]
 }
 
+function taskTileValue(loading: boolean, count: number): string {
+  if (loading) return '—'
+  return count ? String(count) : '—'
+}
+
 export function buildTaskTiles(data: SpecV04SourcesState): SpecSummaryTile[] {
+  const loading = data.sourcesLoading
   const overdue = data.erpTasks.filter((t) => t.urgent && t.status !== 'Выполнена').length
+  const projOpen = data.projects.reduce((s, p) => s + p.tasks, 0)
+  const onecHint = loading
+    ? 'загрузка…'
+    : data.erpTaskCount
+      ? data.sources.erp
+      : data.erpError || data.error || data.sources.erp
   return [
-    { id: 'all', label: 'Все задачи', value: String(data.erpTaskCount || '—'), tone: 'blue' },
-    { id: 'onec', label: 'Задачи из 1С', value: String(data.erpTaskCount || '—'), tone: 'blue' },
+    {
+      id: 'all',
+      label: 'Все задачи',
+      value: taskTileValue(loading, data.erpTaskCount),
+      hint: onecHint,
+      tone: 'blue'
+    },
+    {
+      id: 'onec',
+      label: 'Задачи из 1С',
+      value: taskTileValue(loading, data.erpTaskCount),
+      hint: onecHint,
+      tone: 'blue'
+    },
     {
       id: 'proj',
       label: 'Проектные',
-      value: String(data.projects.reduce((s, p) => s + p.tasks, 0) || '—'),
+      value: taskTileValue(loading, projOpen),
+      hint: loading ? 'загрузка…' : data.sources.turbo,
       tone: 'purple'
     },
-    { id: 'reg', label: 'Регламентные', value: String(data.processRows.length || '—'), tone: 'green' },
-    { id: 'bad', label: 'Просроченные', value: String(overdue || '—'), tone: 'orange' }
+    {
+      id: 'reg',
+      label: 'Регламентные',
+      value: taskTileValue(loading, data.processRows.length),
+      tone: 'green'
+    },
+    {
+      id: 'bad',
+      label: 'Просроченные',
+      value: taskTileValue(loading, overdue),
+      tone: 'orange'
+    }
   ]
 }

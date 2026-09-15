@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { OneCReconnectDialog, OneCReconnectInline } from '../../workplace/OneCReconnectDialog'
 import type { UserProfile } from '../../api/types'
 import {
   OrchSlotBotC,
@@ -9,6 +10,7 @@ import {
 } from '../../layout/GridSlots'
 import { SpecAskOrchestratorBlock, SpecPill, SpecProgress, SpecSummaryTiles } from '../../workplace/specV04Components'
 import { ASK_CHIPS } from '../../workplace/specV04DemoData'
+import { comPasswordSessionHint } from '../../workplace/onecSessionHints'
 import { buildTaskTiles, useSpecV04Sources } from '../../workplace/useSpecV04Data'
 import { StandardGridFilters } from './gridFilters'
 
@@ -21,6 +23,18 @@ export function TasksGridTab({
 }): React.JSX.Element {
   const data = useSpecV04Sources(user)
   const taskRows = data.erpTasks
+  const showOneCReconnect = !data.loading && !taskRows.length && data.oneCAuthFailure
+  const emptyCore =
+    data.loading && !taskRows.length
+      ? 'Загружаем задачи из 1С…'
+      : data.erpError || data.error || 'Нет открытых задач 1С.'
+  const emptyMessage =
+    data.loading && !taskRows.length
+      ? emptyCore
+      : showOneCReconnect
+        ? emptyCore
+        : `${emptyCore}${emptyCore.includes('Пароль 1С в сессии') ? '' : ` · ${comPasswordSessionHint()}`}`
+  const [onecDialogOpen, setOnecDialogOpen] = useState(false)
   const [selectedId, setSelectedId] = useState('')
   const effectiveId = selectedId || taskRows[0]?.id || ''
   const selected = taskRows.find((item) => item.id === effectiveId)
@@ -51,8 +65,18 @@ export function TasksGridTab({
             <tbody>
               {!taskRows.length ? (
                 <tr>
-                  <td colSpan={7} className="spec-v04-empty">
-                    {data.loading ? 'Загружаем задачи из 1С…' : 'Нет открытых задач 1С.'}
+                  <td
+                    colSpan={7}
+                    className={`spec-v04-empty${data.erpError || data.error ? ' today-table-error' : ''}`}
+                  >
+                    {showOneCReconnect ? (
+                      <OneCReconnectInline
+                        errorHint={emptyMessage}
+                        onOpen={() => setOnecDialogOpen(true)}
+                      />
+                    ) : (
+                      emptyMessage
+                    )}
                   </td>
                 </tr>
               ) : null}
@@ -101,6 +125,12 @@ export function TasksGridTab({
       <OrchSlotBotC>
         <SpecAskOrchestratorBlock chips={ASK_CHIPS.tasks} placeholder="Спросить про задачи…" onSubmit={ask} />
       </OrchSlotBotC>
+      <OneCReconnectDialog
+        open={onecDialogOpen}
+        onClose={() => setOnecDialogOpen(false)}
+        user={user}
+        errorHint={data.erpError || data.error}
+      />
     </>
   )
 }

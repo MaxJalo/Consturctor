@@ -85,6 +85,24 @@ function cursorEnvFromDesktop(desktopRoot: string): Record<string, string> {
 
 export type AgentSidecarMessage = Record<string, unknown>
 
+export type AgentSidecarSendResult = {
+  ok: boolean
+  queued?: boolean
+  error?: string
+  reason?: 'not_ready' | 'start_failed' | 'stopped' | 'write_failed'
+}
+
+export type AgentSidecarStatus = {
+  ready: boolean
+  starting: boolean
+  queuedCommands: number
+  error: string
+  sidecarPath: string
+  desktopRoot: string
+  python: string
+  cwd: string
+}
+
 type EventSink = (message: AgentSidecarMessage) => void
 
 const START_TYPES = new Set([
@@ -119,6 +137,13 @@ export class AgentSidecar {
   private isReady = false
   private pending: AgentSidecarMessage[] = []
   private lastStart: AgentSidecarMessage | null = null
+  private lastStartError = ''
+  private lastPaths: { sidecar: string; desktopRoot: string; python: string; cwd: string } = {
+    sidecar: '',
+    desktopRoot: '',
+    python: '',
+    cwd: ''
+  }
   private readonly runMeta = new Map<string, { workflowId: string; kind: string }>()
 
   constructor(
@@ -200,30 +225,63 @@ export class AgentSidecar {
     }
   }
 
+  warmup(): void {
+    this.start()
+    this.configure(this.lastToken)
+  }
+
+  status(): AgentSidecarStatus {
+    const { sidecar, desktopRoot } = this.resolvePaths()
+    const python = this.lastPaths.python || this.pythonCommand()
+    const cwd =
+      this.lastPaths.cwd ||
+      (existsSync(desktopRoot) ? desktopRoot : existsSync(sidecar) ? dirname(sidecar) : '')
+    return {
+      ready: this.isReady,
+      starting: Boolean(this.child) && !this.isReady,
+      queuedCommands: this.pending.length,
+      error: this.lastStartError,
+      sidecarPath: this.lastPaths.sidecar || sidecar,
+      desktopRoot: this.lastPaths.desktopRoot || desktopRoot,
+      python,
+      cwd
+    }
+  }
+
   start(): void {
     if (this.child) return
     const { sidecar, desktopRoot } = this.resolvePaths()
+    const python = process.env.CONSTRUCTOR_PYTHON || this.pythonCommand()
+    const cwd = existsSync(desktopRoot) ? desktopRoot : dirname(sidecar)
+    this.lastPaths = { sidecar, desktopRoot, python, cwd }
     if (!existsSync(sidecar)) {
+      this.lastStartError = `Файл sidecar не найден: ${sidecar}`
       this.onEvent({
         type: 'error',
-        message: `Agent sidecar not found at ${sidecar}`
+        message: this.lastStartError
       })
       return
     }
+    this.lastStartError = ''
     const env = this.runtimeEnv(sidecar, desktopRoot)
     let child: ChildProcessWithoutNullStreams
     try {
-      child = spawn(env.CONSTRUCTOR_PYTHON || this.pythonCommand(), ['-u', sidecar], {
-        cwd: existsSync(desktopRoot) ? desktopRoot : undefined,
-        env
+      child = spawn(env.CONSTRUCTOR_PYTHON || python, ['-u', sidecar], {
+        cwd: existsSync(cwd) ? cwd : undefined,
+        env,
+        windowsHide: true
       })
     } catch (err) {
+      this.lastStartError = `Не удалось запустить sidecar: ${err instanceof Error ? err.message : String(err)}`
       this.onEvent({
         type: 'error',
-        message: `Failed to start agent sidecar: ${err instanceof Error ? err.message : String(err)}`
+        message: this.lastStartError
       })
       return
     }
+    console.log(
+      `[agent-sidecar] spawn python=${python} sidecar=${sidecar} cwd=${cwd} desktop=${desktopRoot}`
+    )
     this.child = child
     this.isReady = false
     this.stdoutBuffer = ''
@@ -244,9 +302,10 @@ export class AgentSidecar {
     child.stdout.on('error', ignorePipeError)
     child.stderr.on('error', ignorePipeError)
     child.on('error', (err) => {
+      this.lastStartError = `Sidecar process error: ${err instanceof Error ? err.message : String(err)}`
       this.onEvent({
         type: 'error',
-        message: `Agent sidecar error: ${err instanceof Error ? err.message : String(err)}`
+        message: this.lastStartError
       })
     })
     child.on('exit', (code) => {
@@ -297,6 +356,7 @@ export class AgentSidecar {
         if (message.type === 'ready') {
           this.restarts = 0
           this.isReady = true
+          this.lastStartError = ''
           this.flushPending()
         }
         // Opt-in diagnostics (set AGENT_SIDECAR_DEBUG=1) to confirm that runner
@@ -348,7 +408,10 @@ export class AgentSidecar {
     return next
   }
 
-  send(command: AgentSidecarMessage): boolean {
+  send(command: AgentSidecarMessage): AgentSidecarSendResult {
+    if (this.stopping) {
+      return { ok: false, error: 'Sidecar останавливается', reason: 'stopped' }
+    }
     const type = String(command.type || '')
     if (isStartCommand(command)) {
       this.lastStart = command
@@ -360,11 +423,16 @@ export class AgentSidecar {
     if (!this.child) {
       this.start()
     }
+    if (this.lastStartError && !this.child) {
+      return { ok: false, error: this.lastStartError, reason: 'start_failed' }
+    }
     if (!this.isReady || !this.stdinOpen()) {
       this.enqueue(command)
-      return true
+      return { ok: true, queued: true, reason: 'not_ready' }
     }
     return this.write(command)
+      ? { ok: true }
+      : { ok: false, error: 'Не удалось записать в sidecar', reason: 'write_failed' }
   }
 
   private stdinOpen(): boolean {

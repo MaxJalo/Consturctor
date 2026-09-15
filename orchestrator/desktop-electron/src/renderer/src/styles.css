@@ -973,6 +973,17 @@ input {
   color: rgba(255, 255, 255, 0.72);
   font-size: 13px;
 }
+.login-card .login-banner {
+  margin: 12px 0 4px;
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: rgba(255, 180, 80, 0.15);
+  border: 1px solid rgba(255, 180, 80, 0.35);
+  color: #ffe8c8;
+  font-size: 13px;
+  line-height: 1.45;
+}
+
 .login-card .hint {
   text-align: center;
   color: rgba(255, 255, 255, 0.45);
@@ -3433,6 +3444,40 @@ input {
   justify-content: flex-end;
   margin-top: 12px;
 }
+.onec-reconnect-input {
+  width: 100%;
+  box-sizing: border-box;
+  border: 1px solid #d5dbe3;
+  border-radius: 10px;
+  padding: 10px 12px;
+  font-size: 14px;
+  color: #10141a;
+}
+.onec-reconnect-input:focus {
+  outline: 2px solid rgba(13, 59, 115, 0.25);
+  border-color: #0d3b73;
+}
+.onec-reconnect-form-error {
+  color: #c0392b;
+  font-size: 13px;
+  margin: 0;
+}
+.onec-reconnect-error-hint {
+  color: #6b7380;
+  font-size: 12px;
+}
+.onec-reconnect-inline {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 12px;
+  max-width: 520px;
+  text-align: left;
+}
+.onec-reconnect-inline-btn {
+  width: auto;
+}
+
 .modal-actions .btn-primary,
 .modal-actions .btn-light {
   width: auto;
@@ -11937,34 +11982,72 @@ button.feed-tool-head:hover {
 .spec-quick-action-btn {
   width: 100%;
   text-align: left;
-  border: none;
-  background: transparent;
-  padding: 8px 10px;
-  border-radius: 10px;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  min-height: 0;
+  border: 1px solid transparent;
+  background: #f4f7f6;
+  padding: 4px 8px 4px 6px;
+  border-radius: 8px;
   cursor: pointer;
-  font-size: 13px;
+  font-size: 12px;
   font-weight: 600;
-  color: #fff;
+  color: var(--content-primary, #10141a);
+  box-shadow: 0 1px 3px rgba(16, 20, 26, 0.05);
   transition: filter 0.15s ease, transform 0.1s ease;
+  font-family: inherit;
+}
+.spec-quick-action-label {
+  flex: 1;
+  min-width: 0;
+  line-height: 1.2;
+}
+.spec-quick-action-ico {
+  width: 18px;
+  height: 18px;
+  border-radius: 5px;
+  background: rgba(255, 255, 255, 0.65);
+  display: grid;
+  place-items: center;
+  flex-shrink: 0;
+  color: inherit;
+}
+.spec-quick-action-ico .spec-tile-ico,
+.spec-quick-action-ico .spec-filter-ico,
+.spec-quick-action-ico .spec-launch-play {
+  width: 12px;
+  height: 12px;
 }
 .spec-quick-action-btn:hover {
-  filter: brightness(1.06);
+  filter: brightness(0.98);
 }
 .spec-quick-action-btn:active {
   transform: scale(0.99);
 }
+.spec-quick-action-btn:focus-visible {
+  outline: 2px solid #1565c0;
+  outline-offset: 1px;
+}
 .spec-quick-action--green {
-  background: linear-gradient(135deg, #2e9a6f, #248f62);
+  background: #e5f7ef;
+  color: #1f5c45;
+  border-color: #c2ead8;
 }
 .spec-quick-action--orange {
-  background: linear-gradient(135deg, #e67e22, #d35400);
+  background: #fff0e3;
+  color: #8a4b12;
+  border-color: #ffd9b8;
 }
 .spec-quick-action--blue {
-  background: linear-gradient(135deg, #1565c0, #0d47a1);
+  background: #e8efff;
+  color: #234a8a;
+  border-color: #c8d9fb;
 }
 .spec-quick-action--yellow {
-  background: linear-gradient(135deg, #e6a700, #c99200);
-  color: #1a1a1a;
+  background: #fff8e3;
+  color: #7a5f12;
+  border-color: #f5e6a8;
 }
 .spec-link-btn {
   margin-top: 8px;
@@ -12088,6 +12171,11 @@ button.feed-tool-head:hover {
 }
 .spec-row-menu {
   padding: 4px 8px;
+}
+.spec-row-menu-wrap {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
 }
 .proc-deadline-value {
   max-width: 100%;

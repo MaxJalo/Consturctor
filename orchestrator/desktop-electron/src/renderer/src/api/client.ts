@@ -56,6 +56,7 @@ import {
   type SupportTicketItem
 } from './types'
 import { decodeAgentMessage, previewText } from './chatCodec'
+import { formatGatewayToolError } from '../workplace/onecSessionHints'
 
 type Params = Record<string, string | number | boolean | undefined | null>
 
@@ -1964,7 +1965,10 @@ export class ApiClient {
     } catch (err) {
       return {
         ok: false,
-        error: err instanceof ApiError ? err.message : 'Ошибка вызова инструмента'
+        error:
+          err instanceof ApiError
+            ? formatGatewayToolError(err.message, err.status)
+            : 'Ошибка вызова инструмента'
       }
     }
   }

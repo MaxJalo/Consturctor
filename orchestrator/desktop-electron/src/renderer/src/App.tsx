@@ -10,6 +10,7 @@ import {
   clearComCredentials,
   comCredentials,
   clearSession,
+  hasComPassword,
   loadSession,
   saveSession,
   setComCredentials
@@ -38,6 +39,11 @@ import { isPersonalAgentWorkflowId, personalAgentWorkflowId } from './workplace/
 import { DiagnosticsPage, SettingsTab, TicketsPage } from './workplace/WorkplaceTabs'
 import { GridDataRefreshProvider } from './workplace/GridDataRefreshContext'
 import { SpecV04SourcesProvider } from './workplace/SpecV04SourcesProvider'
+import {
+  ComCredentialsRevisionProvider,
+  useBumpComCredentialsRevision,
+  useComCredentialsRevision
+} from './workplace/ComCredentialsRevisionContext'
 
 function decodeJwtPart(part: string): string {
   const normalized = part.replace(/-/g, '+').replace(/_/g, '/')
@@ -114,7 +120,9 @@ function findExistingChat(threads: ChatThread[], name: string, peerId?: string):
 export function App(): React.JSX.Element {
   return (
     <RunProvider>
-      <AppShell />
+      <ComCredentialsRevisionProvider>
+        <AppShell />
+      </ComCredentialsRevisionProvider>
     </RunProvider>
   )
 }
@@ -128,7 +136,11 @@ function AppShell(): React.JSX.Element {
   const [unread, setUnread] = useState(0)
   const [avatarUrl, setAvatarUrl] = useState<string | null>(null)
   const [toast, setToast] = useState('')
+  /** JWT restored from localStorage but 1C password is only in memory after login form. */
+  const [requireComLogin, setRequireComLogin] = useState(false)
   const kickedRef = useRef(false)
+  const comCredsRevision = useComCredentialsRevision()
+  const bumpComCredentialsRevision = useBumpComCredentialsRevision()
   const [chatRefreshAt, setChatRefreshAt] = useState(0)
   const runs = useRuns()
 
@@ -157,6 +169,7 @@ function AppShell(): React.JSX.Element {
             try {
               const profile = await api.me(8_000)
               setUser(profile)
+              setRequireComLogin(!hasComPassword())
             } catch {
               clearSession(true)
               api.setToken(null)
@@ -207,16 +220,20 @@ function AppShell(): React.JSX.Element {
     if (!user) {
       kickedRef.current = false
       void window.api.stopNotifications?.()
-      void agentClient.ready(null, { login: '', password: '' }).catch(() => undefined)
+      void agentClient.ready(null, { login: '', password: '', onecComUsr: '' }).catch(() => undefined)
       return
     }
     const token = api.getToken()
     if (token) void window.api.startNotifications?.(token)
     const creds = comCredentials()
     void agentClient
-      .ready(token, { login: creds.login || user.fio, password: creds.password || '' })
+      .ready(token, {
+        login: creds.login || user.fio,
+        password: creds.password || '',
+        onecComUsr: creds.nameMail || user.nameMail || ''
+      })
       .catch(() => undefined)
-  }, [user?.id])
+  }, [user?.id ?? '', user?.nameMail ?? '', user?.fio ?? '', comCredsRevision])
 
   useEffect(() => {
     if (!user) return
@@ -246,9 +263,15 @@ function AppShell(): React.JSX.Element {
 
   function onLoggedIn(result: LoginResult, remember: boolean, password = ''): void {
     api.setToken(result.accessToken || null)
-    setComCredentials(result.user.fio, password)
+    setComCredentials(result.user.fio, password, result.user.nameMail)
+    bumpComCredentialsRevision()
+    setRequireComLogin(false)
     void agentClient
-      .ready(result.accessToken || null, { login: result.user.fio, password })
+      .ready(result.accessToken || null, {
+        login: result.user.fio,
+        password,
+        onecComUsr: result.user.nameMail || ''
+      })
       .catch(() => undefined)
     if (remember && result.accessToken) {
       saveSession({ accessToken: result.accessToken, fio: result.user.fio })
@@ -272,6 +295,7 @@ function AppShell(): React.JSX.Element {
     setAvatarUrl(null)
     setView({ kind: 'tab', key: 'today' })
     setUser(null)
+    setRequireComLogin(false)
   }
 
   function onLogout(): void {
@@ -405,8 +429,17 @@ function AppShell(): React.JSX.Element {
     )
   }
 
-  if (!user) {
-    return <LoginPage onLoggedIn={onLoggedIn} />
+  if (!user || requireComLogin) {
+    return (
+      <LoginPage
+        onLoggedIn={onLoggedIn}
+        banner={
+          requireComLogin
+            ? 'Сеанс Orchestrator восстановлен по сохранённому токену. Введите пароль 1С для загрузки задач и OData.'
+            : undefined
+        }
+      />
+    )
   }
   const activeUser = user
 
@@ -660,7 +693,7 @@ function AppShell(): React.JSX.Element {
     const tabKey = view.key as WorkplaceTabKey
     return (
       <GridDataRefreshProvider userId={activeUser.id}>
-        <SpecV04SourcesProvider user={activeUser}>
+        <SpecV04SourcesProvider user={activeUser} comCredsRevision={comCredsRevision}>
       <div className="app-root orch-app-root">
         <OrchGridShell
           activeKey={tabKey}
@@ -695,7 +728,7 @@ function AppShell(): React.JSX.Element {
 
   return (
     <GridDataRefreshProvider userId={activeUser.id}>
-      <SpecV04SourcesProvider user={activeUser}>
+      <SpecV04SourcesProvider user={activeUser} comCredsRevision={comCredsRevision}>
     <div className="app-root">
       <Sidebar
         active={activeKey}

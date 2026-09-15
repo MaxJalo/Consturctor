@@ -298,7 +298,11 @@ export function RunProvider({ children }: { children: React.ReactNode }): React.
     const token = api.getToken()
     const creds = comCredentials()
     void agentClient
-      .ready(token, { login: creds.login, password: creds.password })
+      .ready(token, {
+        login: creds.login,
+        password: creds.password,
+        onecComUsr: creds.nameMail
+      })
       .catch(() => undefined)
     // Background evaluations always start a fresh thread (no resume / no chat).
     const resume = background ? '' : resumeAgentId || existing?.resumeAgentId || ''
