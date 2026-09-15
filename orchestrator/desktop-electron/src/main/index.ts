@@ -7,10 +7,16 @@ app.setPath('userData', join(app.getPath('appData'), DESKTOP_APP_NAME))
 if (process.platform === 'win32') {
   app.setAppUserModelId('com.orchestrator.desktop')
 }
-import { readFileSync, existsSync, mkdirSync, writeFileSync } from 'node:fs'
+import { readFileSync, existsSync, mkdirSync, writeFileSync, statSync, copyFileSync } from 'node:fs'
 import { NotificationGuard, showToast, type ToastPayload } from './notifications'
 import { AgentSidecar, type AgentSidecarMessage } from './agentSidecar'
-import { ensureLocalBackend } from './ensureBackend'
+import {
+  LOCAL_BACKEND_DEFAULT,
+  ensureDesktopBackend,
+  ensureLocalBackend,
+  isLoopback,
+  pingBackendHealth
+} from './ensureBackend'
 import { loadExternalOdataEnv } from './odataExternalEnv'
 import { getUpdateStatus, installAvailableUpdate, startUpdater, stopUpdater } from './updater'
 
@@ -56,7 +62,7 @@ function parseEnvFile(path: string): Record<string, string> {
   return out
 }
 
-const LOCAL_BACKEND = 'http://127.0.0.1:7812'
+const LOCAL_BACKEND = LOCAL_BACKEND_DEFAULT
 const LAN_BACKEND = 'http://192.168.1.157:7812'
 
 function preferLocalBackend(env: Record<string, string>): boolean {
@@ -72,19 +78,24 @@ function preferLocalBackend(env: Record<string, string>): boolean {
   return flag === '1' || flag === 'true' || flag === 'yes'
 }
 
-/** Profile .env often keeps stale 127.0.0.1; in dev prefer cwd `.env` and process env. */
+/** Profile .env often keeps stale 127.0.0.1; in dev prefer cwd `.env` and ORCH_PREFER_LOCAL. */
 function resolveBackendUrl(env: Record<string, string>): string {
+  const cwdEnvPath = join(process.cwd(), '.env')
+  const cwdEnv =
+    !app.isPackaged && existsSync(cwdEnvPath) ? parseEnvFile(cwdEnvPath) : ({} as Record<string, string>)
+
+  if (!app.isPackaged && preferLocalBackend({ ...env, ...cwdEnv })) {
+    const fromCwd = (cwdEnv.BACKEND_URL || '').trim()
+    if (fromCwd && isLoopback(fromCwd)) return fromCwd.replace(/\/+$/, '')
+    return LOCAL_BACKEND
+  }
+
   const fromProcess = (process.env.BACKEND_URL || '').trim()
   if (fromProcess) return fromProcess.replace(/\/+$/, '')
 
-  const cwdEnvPath = join(process.cwd(), '.env')
   if (!app.isPackaged && existsSync(cwdEnvPath)) {
-    const fromCwd = (parseEnvFile(cwdEnvPath).BACKEND_URL || '').trim()
+    const fromCwd = (cwdEnv.BACKEND_URL || '').trim()
     if (fromCwd) return fromCwd.replace(/\/+$/, '')
-  }
-
-  if (!app.isPackaged && preferLocalBackend(env)) {
-    return LOCAL_BACKEND
   }
 
   const fromProfile = (env.BACKEND_URL || '').trim()
@@ -148,6 +159,15 @@ function loadConfig(): {
   for (const candidate of candidates) {
     if (existsSync(candidate)) {
       env = { ...parseEnvFile(candidate), ...env }
+    }
+  }
+  if (!app.isPackaged) {
+    const cwdEnvPath = join(process.cwd(), '.env')
+    if (existsSync(cwdEnvPath)) {
+      env = { ...env, ...parseEnvFile(cwdEnvPath) }
+    }
+    for (const [key, value] of Object.entries(process.env)) {
+      if (value !== undefined && value !== '') env[key] = value
     }
   }
   const backendUrl = resolveBackendUrl(env)
@@ -246,15 +266,144 @@ const notifyGuard = new NotificationGuard(CONFIG.backendUrl, (command) => {
 const MIME_BY_EXT: Record<string, string> = {
   '.docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
   '.xlsx': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  '.pptx': 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
   '.doc': 'application/msword',
+  '.xls': 'application/vnd.ms-excel',
+  '.ppt': 'application/vnd.ms-powerpoint',
   '.pdf': 'application/pdf',
   '.md': 'text/markdown',
   '.txt': 'text/plain',
+  '.csv': 'text/csv',
+  '.json': 'application/json',
+  '.xml': 'application/xml',
+  '.html': 'text/html',
+  '.htm': 'text/html',
   '.png': 'image/png',
   '.jpg': 'image/jpeg',
   '.jpeg': 'image/jpeg',
   '.webp': 'image/webp',
   '.gif': 'image/gif'
+}
+
+const LOCAL_FILE_PREVIEW_MAX_BYTES = 20 * 1024 * 1024
+
+const TEXT_PREVIEW_EXTS = new Set(['.txt', '.md', '.csv', '.json', '.xml', '.html', '.htm', '.log'])
+
+const EXTERNAL_OFFICE_EXTS = new Set(['.doc', '.docx', '.xls', '.xlsx', '.ppt', '.pptx'])
+
+type LocalFilePreviewResult =
+  | {
+      ok: true
+      path: string
+      size: number
+      mime: string
+      kind: 'text'
+      text: string
+    }
+  | {
+      ok: true
+      path: string
+      size: number
+      mime: string
+      kind: 'embed'
+      dataUrl: string
+    }
+  | {
+      ok: true
+      path: string
+      size: number
+      mime: string
+      kind: 'external'
+      hint: string
+    }
+  | { ok: false; error: string; tooLarge?: boolean; path?: string; size?: number }
+
+function resolveSafeLocalFile(filePath: string): { ok: true; path: string } | { ok: false; error: string } {
+  const target = String(filePath || '').trim()
+  if (!target) return { ok: false, error: 'Пустой путь' }
+  if (!existsSync(target)) return { ok: false, error: 'Файл не найден' }
+  try {
+    const st = statSync(target)
+    if (!st.isFile()) return { ok: false, error: 'Не файл' }
+    return { ok: true, path: target }
+  } catch {
+    return { ok: false, error: 'Нет доступа к файлу' }
+  }
+}
+
+function localFilePreviewKind(ext: string, mime: string): 'text' | 'embed' | 'external' {
+  if (TEXT_PREVIEW_EXTS.has(ext) || mime.startsWith('text/')) return 'text'
+  if (EXTERNAL_OFFICE_EXTS.has(ext)) return 'external'
+  if (mime.startsWith('image/') || ext === '.pdf') return 'embed'
+  return 'external'
+}
+
+async function handleReadLocalFilePreview(_evt: unknown, filePath: string): Promise<LocalFilePreviewResult> {
+  const resolved = resolveSafeLocalFile(filePath)
+  if (!resolved.ok) return { ok: false, error: resolved.error }
+  let size = 0
+  try {
+    size = statSync(resolved.path).size
+  } catch {
+    return { ok: false, error: 'Не удалось прочитать файл' }
+  }
+  if (size > LOCAL_FILE_PREVIEW_MAX_BYTES) {
+    return {
+      ok: false,
+      tooLarge: true,
+      path: resolved.path,
+      size,
+      error: 'Файл слишком большой для предпросмотра в приложении'
+    }
+  }
+  const ext = extname(resolved.path).toLowerCase()
+  const mime = MIME_BY_EXT[ext] || 'application/octet-stream'
+  const kind = localFilePreviewKind(ext, mime)
+  try {
+    const buffer = readFileSync(resolved.path)
+    if (kind === 'text') {
+      return { ok: true, path: resolved.path, size, mime, kind: 'text', text: buffer.toString('utf-8') }
+    }
+    if (kind === 'embed') {
+      return {
+        ok: true,
+        path: resolved.path,
+        size,
+        mime,
+        kind: 'embed',
+        dataUrl: `data:${mime};base64,${buffer.toString('base64')}`
+      }
+    }
+    return {
+      ok: true,
+      path: resolved.path,
+      size,
+      mime,
+      kind: 'external',
+      hint: 'Документ откроется во внешнем приложении (Word, Excel…)'
+    }
+  } catch {
+    return { ok: false, error: 'Не удалось прочитать файл' }
+  }
+}
+
+async function handleCopyLocalFile(
+  _evt: unknown,
+  opts: { sourcePath: string; defaultName?: string }
+): Promise<{ ok: boolean; canceled?: boolean; path?: string; error?: string }> {
+  const resolved = resolveSafeLocalFile(opts.sourcePath)
+  if (!resolved.ok) return { ok: false, error: resolved.error }
+  const win = BrowserWindow.getFocusedWindow()
+  const result = await dialog.showSaveDialog(win!, {
+    defaultPath: opts.defaultName || basename(resolved.path)
+  })
+  if (result.canceled || !result.filePath) return { ok: false, canceled: true }
+  try {
+    copyFileSync(resolved.path, result.filePath)
+    return { ok: true, path: result.filePath }
+  } catch {
+    return { ok: false, error: 'Не удалось сохранить файл' }
+  }
 }
 
 function buildUrl(path: string, params?: RequestOptions['params']): string {
@@ -329,8 +478,11 @@ async function handleRequest(_evt: unknown, opts: RequestOptions) {
     }
     if (!response.ok) {
       const adminPath = (opts.path || '').includes('/api/v1/admin/')
-      const usingLan = CONFIG.backendUrl.replace(/\/+$/, '') !== LOCAL_BACKEND
-      if (adminPath && usingLan && (response.status === 404 || response.status === 405)) {
+      const primaryBase = CONFIG.backendUrl.replace(/\/+$/, '')
+      const usingLan = primaryBase !== LOCAL_BACKEND
+      const adminMissing = response.status === 404 || response.status === 405
+      if (adminPath && adminMissing && (usingLan || isLoopback(primaryBase))) {
+        await ensureLocalBackend(LOCAL_BACKEND)
         try {
           const localPath = `${LOCAL_BACKEND}${opts.path}`
           const usp = new URLSearchParams()
@@ -355,10 +507,28 @@ async function handleRequest(_evt: unknown, opts: RequestOptions) {
             }
           }
           if (localResponse.ok) {
+            console.log(
+              `Admin API fallback: ${opts.path} — LAN ${CONFIG.backendUrl} → ${LOCAL_BACKEND}`
+            )
             return { ok: true, status: localResponse.status, data: localData }
+          }
+          if (localResponse.status !== 404 && localResponse.status !== 405) {
+            return {
+              ok: false,
+              status: localResponse.status,
+              error: extractDetail(localResponse.status, localData)
+            }
           }
         } catch {
           // keep original error from CONFIG.backendUrl
+        }
+        const localUp = await pingBackendHealth(LOCAL_BACKEND)
+        return {
+          ok: false,
+          status: response.status,
+          error: localUp
+            ? 'Не удалось загрузить админ-данные. Перелогиньтесь или обновите страницу.'
+            : 'Не удалось подключиться к локальному backend. Проверьте orchestrator\\backend (run_dev.bat) и порт 7812.'
         }
       }
       return { ok: false, status: response.status, error: extractDetail(response.status, data) }
@@ -783,6 +953,14 @@ function registerMainIpcHandlers(): void {
     const result = await dialog.showOpenDialog(win!, options)
     return result.canceled ? [] : result.filePaths
   })
+  ipcHandle('shell:openPath', async (_evt, filePath: string) => {
+    const target = String(filePath || '').trim()
+    if (!target) return { ok: false, error: 'Пустой путь' }
+    const err = await shell.openPath(target)
+    return err ? { ok: false, error: err } : { ok: true }
+  })
+  ipcHandle('fs:readLocalFilePreview', handleReadLocalFilePreview)
+  ipcHandle('fs:copyLocalFile', handleCopyLocalFile)
   ipcHandle('updater:getStatus', () => getUpdateStatus())
   ipcHandle('updater:install', () => installAvailableUpdate())
   ipcHandle('orch:load-odata-external-env', () => {
@@ -875,8 +1053,19 @@ function createWindow(): void {
 app.whenReady().then(async () => {
   registerMainIpcHandlers()
   agentSidecar.warmup()
-  const up = await ensureLocalBackend(CONFIG.backendUrl)
-  console.log(`Orchestrator backend: ${CONFIG.backendUrl}${up ? '' : ' (недоступен)'}`)
+  const ready = await ensureDesktopBackend(CONFIG.backendUrl)
+  const remoteUp =
+    CONFIG.backendUrl.replace(/\/+$/, '') === LOCAL_BACKEND
+      ? ready
+      : await pingBackendHealth(CONFIG.backendUrl)
+  const localUp = await pingBackendHealth(LOCAL_BACKEND)
+  console.log(
+    `Orchestrator backend: ${CONFIG.backendUrl}${remoteUp ? '' : ' (недоступен)'}` +
+      (localUp ? `; local ${LOCAL_BACKEND} up` : `; local ${LOCAL_BACKEND} down`)
+  )
+  if (!ready) {
+    console.warn('Backend auto-start did not complete — admin/workplace may fail until backend is up.')
+  }
   startUpdater({
     owner: CONFIG.updateOwner,
     repo: CONFIG.updateRepo,

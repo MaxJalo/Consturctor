@@ -1,6 +1,7 @@
 import { parseMeetingTime } from './outlookMeetings'
 
-const REQUEST_TIMEOUT_MS = 180_000
+/** Список писем — дольше, но не блокирует UI (async sidecar); 90s вместо 180s. */
+const REQUEST_TIMEOUT_MS = 90_000
 
 export function dayKeyLocal(day: Date): string {
   const y = day.getFullYear()

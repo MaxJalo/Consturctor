@@ -196,6 +196,38 @@ def test_odata_configured_accepts_invoke_overrides() -> None:
     )
 
 
+def test_list_current_tasks_odata_merges_docflow(monkeypatch) -> None:
+    from app.services import erp_tasks_odata
+
+    monkeypatch.setattr(
+        erp_tasks_odata,
+        "_fetch_odata_tasks",
+        lambda **_: ([{"number": "1", "title": "ERP", "source": "erp_pm+odata", "done": False}], ""),
+    )
+    monkeypatch.setattr(
+        erp_tasks_odata,
+        "_query_tasks",
+        lambda **_: [],
+    )
+    def _fake_attach_docflow(tasks_by_fio, **_kwargs):
+        tasks_by_fio.setdefault("Иванов И.И.", []).append(
+            {"number": "d1", "title": "ДО", "source": "документооборот", "done": False}
+        )
+        return ""
+
+    monkeypatch.setattr("app.services.erp_tasks._attach_docflow", _fake_attach_docflow)
+    monkeypatch.setattr(
+        erp_tasks_odata,
+        "resolve_actor",
+        lambda **_: ("Иванов И.И.", "u1"),
+    )
+    result = erp_tasks_odata.list_current_tasks_odata(fio="Иванов И.И.", limit=10)
+    assert result["count"] == 2
+    assert result["docflow_warning"] == ""
+    sources = {str(t.get("source")) for t in result["tasks"]}
+    assert "документооборот" in sources
+
+
 def test_invoke_erp_tasks_odata_stub_without_odata(monkeypatch) -> None:
     monkeypatch.setattr("app.services.onec_tools._erp_sql_ready", lambda: False)
     monkeypatch.setattr("app.services.onec_tools.odata_configured", lambda: False)
@@ -440,11 +472,13 @@ def test_build_task_user_relevance_clause_ref_and_title() -> None:
         catalog_refs=[ref],
     )
     assert "t._Fld2503_RRRef = ?" in sql
-    assert "_Fld2510_RRRef" not in sql
+    assert "t._Fld2510_RRRef = ?" in sql
     assert "_Fld2518_RRRef" not in sql
     assert "CAST(t._Name AS nvarchar(500)) LIKE ?" in sql
     assert "CAST(t._Fld2509 AS nvarchar(1000)) LIKE ?" in sql
-    assert params == [ref, f"%{fio}%", f"%{fio}%"]
+    assert params[:2] == [ref, ref]
+    assert params[2:4] == [f"%{fio}%", f"%{fio}%"]
+    assert "%Жалыбин М.Д.%" in params
 
 
 def test_build_task_user_relevance_clause_bp_addressee() -> None:
@@ -455,9 +489,9 @@ def test_build_task_user_relevance_clause_bp_addressee() -> None:
         include_bp_addressee=True,
     )
     assert "t._Fld2503_RRRef = ?" in sql
+    assert "t._Fld2510_RRRef = ?" in sql
     assert "t._Fld2518_RRRef = ?" in sql
-    assert "_Fld2510_RRRef" not in sql
-    assert params == [ref, ref]
+    assert params == [ref, ref, ref]
 
 
 def test_build_task_user_relevance_clause_multiple_fios() -> None:
@@ -466,7 +500,10 @@ def test_build_task_user_relevance_clause_multiple_fios() -> None:
         catalog_refs=[],
     )
     assert " OR " in sql
-    assert params == ["%Иванов И.И.%", "%Иванов И.И.%", "%Петров П.П.%", "%Петров П.П.%"]
+    assert "%Иванов И.И.%" in params
+    assert "%Петров П.П.%" in params
+    assert all(p.endswith("%") and p.startswith("%") for p in params)
+    assert len(params) >= 4
 
 
 def test_build_task_user_relevance_clause_empty() -> None:

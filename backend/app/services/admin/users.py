@@ -38,7 +38,20 @@ def build_admin_users() -> AdminUsersOut:
     with SessionLocal() as db:
         total = int(db.scalar(select(func.count()).select_from(AppUser)) or 0)
         if total == 0:
-            return AdminUsersOut.model_validate(stub)
+            return AdminUsersOut(
+                source="admin_api",
+                breadcrumb=str(stub["breadcrumb"]),
+                title=str(stub["title"]),
+                subtitle=str(stub["subtitle"]),
+                add_label=str(stub["addLabel"]),
+                filters=[
+                    AdminFilterOut(id="department", options=["Все подразделения"]),
+                    AdminFilterOut(id="role", options=["Все роли", "Администратор", "Пользователь"]),
+                    AdminFilterOut(id="status", options=["Все статусы", "Активен", "Не в сети"]),
+                ],
+                rows=[],
+                pagination={"pageSize": _PAGE_SIZE, "total": 0},
+            )
         users = (
             db.execute(select(AppUser).order_by(AppUser.fio.asc()).limit(500))
             .scalars()

@@ -87,7 +87,27 @@ def dump_user_tasks(
     since_days: int = 90,
     executions: bool = False,
     already_ref: bool = False,
+    service: bool = False,
+    password: str = "",
 ) -> dict[str, Any]:
+    if service:
+        from app.services.docflow_document_tasks import odata_entity
+        from app.services.docflow_tasks import docflow_base_url, list_docflow_tasks
+
+        auth_args = {"fio": user.strip(), "password": password} if password else None
+        tasks = list_docflow_tasks(
+            fio=user.strip(),
+            only_open=True,
+            limit=200,
+            auth_args=auth_args,
+        )
+        return {
+            "endpoint": f"{docflow_base_url()}/{odata_entity()}?$filter=Исполнитель_Key…",
+            "user_fio": user.strip(),
+            "count": len(tasks),
+            "rows": tasks,
+        }
+
     if executions:
         from app.tools.onec.connection import create_session
         from app.tools.onec.dok_http import dok_endpoint_url, fetch_user_document_executions
@@ -139,6 +159,11 @@ def main(argv: list[str] | None = None) -> int:
         help="Таблица исполнений документов (TasksII/User), не inbox",
     )
     parser.add_argument(
+        "--service",
+        action="store_true",
+        help="Через backend list_docflow_tasks (OData Исполнитель + TasksII)",
+    )
+    parser.add_argument(
         "--ref",
         action="store_true",
         help="Для --executions: аргument уже ERP Ref_Key",
@@ -156,12 +181,15 @@ def main(argv: list[str] | None = None) -> int:
     payloads: list[dict[str, Any]] = []
     try:
         for user in users:
+            pwd = (os.environ.get("MY_PASSWORD") or os.environ.get("ERP_PASSWORD") or "").strip()
             payloads.append(
                 dump_user_tasks(
                     user,
                     since_days=args.since_days,
                     executions=args.executions,
                     already_ref=args.ref,
+                    service=args.service,
+                    password=pwd,
                 )
             )
     except ImportError as error:
@@ -187,6 +215,19 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.json:
         print(json.dumps(result, ensure_ascii=False, indent=2, default=str))
+        return 0
+
+    if args.service:
+        for payload in payloads:
+            print(f"Endpoint: {payload.get('endpoint')}")
+            print(f"Пользователь: {payload.get('user_fio')}  задач: {payload.get('count')}")
+            for index, row in enumerate(payload.get("rows") or [], start=1):
+                if not isinstance(row, dict):
+                    continue
+                print(
+                    f"{index}. [{row.get('number')}] {row.get('title')} | "
+                    f"срок={row.get('due_at') or '—'} | {row.get('source')}"
+                )
         return 0
 
     blocks = [format_inbox_table(payload) for payload in payloads]

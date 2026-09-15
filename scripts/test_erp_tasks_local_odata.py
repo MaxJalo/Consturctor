@@ -163,7 +163,7 @@ def probe_sql(*, fio: str, expect_number: str) -> int:
         list_current_tasks,
     )
 
-    print("--- SQL _query_tasks (relevance: executor OR title/comment FIO) ---")
+    print("--- SQL _query_tasks (relevance: executor OR responsible OR title/comment FIO) ---")
     try:
         rows = _query_tasks(fio=fio, only_open=True, limit=80)
     except Exception as exc:  # noqa: BLE001

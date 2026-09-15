@@ -65,6 +65,30 @@ export function personNameMatches(actor: string, candidate: string): boolean {
   return Boolean(actorParts[0] && candParts[0] && actorParts[0] === candParts[0])
 }
 
+function turboTaskExecutorNames(task: Record<string, unknown>): string[] {
+  const executors = Array.isArray(task.executors)
+    ? task.executors.filter((item): item is string => typeof item === 'string' && item.trim())
+    : []
+  if (executors.length) return executors
+  const assignments = Array.isArray(task.assignments) ? task.assignments : []
+  const names: string[] = []
+  for (const item of assignments) {
+    if (!item || typeof item !== 'object') continue
+    const row = item as Record<string, unknown>
+    const direct = String(row.resource_name ?? row.ResourceName ?? row.resourceName ?? '').trim()
+    if (direct) {
+      names.push(direct)
+      continue
+    }
+    const resource = row.resource
+    if (resource && typeof resource === 'object') {
+      const nested = String((resource as Record<string, unknown>).name ?? '').trim()
+      if (nested) names.push(nested)
+    }
+  }
+  return names
+}
+
 export function turboTaskAssignedToActor(
   task: Record<string, unknown>,
   actorFio: string,
@@ -72,9 +96,7 @@ export function turboTaskAssignedToActor(
 ): boolean {
   const fio = actorFio.trim()
   const ids = new Set(resourceIds.map((item) => item.trim()).filter(Boolean))
-  const executors = Array.isArray(task.executors)
-    ? task.executors.filter((item): item is string => typeof item === 'string')
-    : []
+  const executors = turboTaskExecutorNames(task)
   if (fio && executors.some((name) => personNameMatches(fio, name))) return true
   const rawIds = task.executor_resource_ids
   if (ids.size && Array.isArray(rawIds)) {

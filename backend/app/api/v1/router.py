@@ -14,6 +14,7 @@ from app.api.v1 import (
     tools,
     triggers,
     workflows,
+    workplace,
 )
 from app.modules.chat.api import router as chat_router
 
@@ -31,4 +32,5 @@ api_router.include_router(notifications.router, prefix="/api/v1")
 api_router.include_router(calendar.router, prefix="/api/v1")
 api_router.include_router(triggers.router, prefix="/api/v1")
 api_router.include_router(orchestrator.router, prefix="/api/v1")
+api_router.include_router(workplace.router, prefix="/api/v1")
 api_router.include_router(chat_router, prefix="/api/v1")

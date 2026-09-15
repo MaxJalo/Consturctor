@@ -57,36 +57,64 @@ from pathlib import Path
 from typing import Any
 
 
+def _is_orchestrator_desktop(path: Path) -> bool:
+    normalized = str(path).replace("\\", "/").lower()
+    return normalized.endswith("/orchestrator/desktop") or "/orchestrator/orchestrator/desktop" in normalized
+
+
+def _strip_other_desktop_roots(keep: Path) -> None:
+    """Avoid importing app.* from Consturctor/desktop when Orchestrator desktop is intended."""
+    keep_resolved = keep.resolve()
+    for entry in list(sys.path):
+        if not entry:
+            continue
+        try:
+            candidate = Path(entry).resolve()
+        except OSError:
+            continue
+        if candidate == keep_resolved:
+            continue
+        if (candidate / "app" / "config.py").is_file():
+            try:
+                sys.path.remove(entry)
+            except ValueError:
+                pass
+
+
+def _use_desktop_root(desktop_root: Path) -> Path:
+    desktop_root = desktop_root.resolve()
+    if not desktop_root.is_dir():
+        raise RuntimeError(f"desktop folder not found at {desktop_root}")
+    _strip_other_desktop_roots(desktop_root)
+    path_str = str(desktop_root)
+    while path_str in sys.path:
+        sys.path.remove(path_str)
+    sys.path.insert(0, path_str)
+    return desktop_root
+
+
 def _bootstrap_desktop_path() -> Path:
     """Add the desktop/ folder to sys.path so app.* is importable."""
     env_root = os.environ.get("CONSTRUCTOR_DESKTOP_ROOT", "").strip()
     if env_root:
-        desktop_root = Path(env_root).resolve()
-        if not desktop_root.is_dir():
-            raise RuntimeError(f"desktop folder not found at {desktop_root}")
-        path_str = str(desktop_root)
-        if path_str not in sys.path:
-            sys.path.insert(0, path_str)
-        return desktop_root
+        return _use_desktop_root(Path(env_root))
 
     here = Path(__file__).resolve()
+    sidecar_is_orchestrator = "orchestrator" in str(here).replace("\\", "/").lower()
     candidates: list[Path] = []
     for parent in here.parents:
         candidates.append(parent / "Consturctor" / "desktop")
         candidates.append(parent / "desktop")
     found = [path for path in candidates if (path / "app" / "config.py").is_file()]
+    if sidecar_is_orchestrator:
+        orchestrator_desktops = [path for path in found if _is_orchestrator_desktop(path)]
+        if orchestrator_desktops:
+            return _use_desktop_root(orchestrator_desktops[0])
     for desktop_root in found:
         if (desktop_root / ".env").is_file():
-            path_str = str(desktop_root)
-            if path_str not in sys.path:
-                sys.path.insert(0, path_str)
-            return desktop_root
+            return _use_desktop_root(desktop_root)
     if found:
-        desktop_root = found[0]
-        path_str = str(desktop_root)
-        if path_str not in sys.path:
-            sys.path.insert(0, path_str)
-        return desktop_root
+        return _use_desktop_root(found[0])
     raise RuntimeError(f"desktop folder not found near {here}")
 
 

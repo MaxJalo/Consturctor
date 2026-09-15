@@ -11,6 +11,7 @@ import {
   type TodayPlanBlock,
   type TodayPlanBlockDetail
 } from './todayDemoData'
+import { openOutlookCalendarView } from '../../workplace/specGridQuickActions'
 
 const DAY_START = TODAY_PLAN_DAY_START
 const DAY_END = TODAY_PLAN_DAY_END
@@ -499,7 +500,11 @@ export function TodayPlanPanel({
             {plan.loading ? <p className="today-plan-head-note">Загружаем календарь…</p> : null}
           </div>
         </div>
-        <button type="button" className="today-plan-open">
+        <button
+          type="button"
+          className="today-plan-open"
+          onClick={() => void openOutlookCalendarView()}
+        >
           Открыть полный план →
         </button>
       </header>

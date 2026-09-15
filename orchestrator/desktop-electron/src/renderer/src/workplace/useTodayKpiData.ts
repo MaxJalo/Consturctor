@@ -35,8 +35,6 @@ export function buildTodayKpiTiles(data: SpecV04SourcesState): SpecSummaryTile[]
   const projActive = data.projects.filter(
     (p) => !/заверш|закрыт|complete|done/i.test(p.status)
   ).length
-  const projHint = loading ? 'загрузка…' : data.sources.turbo
-
   const meetToday = data.meetingCountToday
 
   return [
@@ -57,11 +55,7 @@ export function buildTodayKpiTiles(data: SpecV04SourcesState): SpecSummaryTile[]
       id: 'onec',
       label: 'Задачи из 1С',
       value: dash(loading, onecTotal ? String(onecTotal) : '—'),
-      hint: loading
-        ? 'загрузка…'
-        : onecTotal
-          ? [data.erpSecondaryHint, `${onecDone} выполнено`].filter(Boolean).join(' · ')
-          : data.erpError || data.error || data.sources.erp,
+      hint: loading ? 'загрузка…' : onecTotal ? `${onecDone} выполнено` : '1С ERP',
       tone: 'blue',
       progress: loading ? undefined : pct(onecDone, onecTotal || 1),
       ring: true
@@ -83,11 +77,7 @@ export function buildTodayKpiTiles(data: SpecV04SourcesState): SpecSummaryTile[]
       id: 'proj',
       label: 'Проекты',
       value: dash(loading, projTotal ? String(projTotal) : '—'),
-      hint: loading
-        ? 'загрузка…'
-        : projTotal
-          ? `${projActive} активных`
-          : projHint,
+      hint: loading ? 'загрузка…' : projTotal ? `${projActive} активных` : 'TurboProject',
       tone: 'purple',
       progress: loading ? undefined : pct(projActive, projTotal || 1),
       ring: true

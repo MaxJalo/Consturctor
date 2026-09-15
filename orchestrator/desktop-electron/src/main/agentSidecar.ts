@@ -88,7 +88,10 @@ function isOrchestratorRepoDesktop(path: string): boolean {
 
 function resolveDesktopRoot(starts: string[], fallback: string): string {
   const envDesktop = process.env.CONSTRUCTOR_DESKTOP_ROOT
-  if (envDesktop && isDesktopRoot(envDesktop)) return envDesktop
+  if (envDesktop) {
+    const resolved = resolve(envDesktop)
+    if (isDesktopRoot(resolved)) return resolved
+  }
   const found = collectDesktopCandidates(starts)
   const local = found.find((path) => isOrchestratorRepoDesktop(path))
   if (local) return local

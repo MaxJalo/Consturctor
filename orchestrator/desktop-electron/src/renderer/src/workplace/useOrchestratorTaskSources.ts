@@ -7,6 +7,7 @@ export {
   fetchOrchestratorTaskSources,
   loadOrchestratorErpTasks,
   loadOrchestratorTurboPortfolio,
+  loadOrchestratorTurboTaskRows,
   onecComTasksFallbackEnabled,
   pickTurboProjectsForTaskFetch,
   turboPinnedProjectFileIds

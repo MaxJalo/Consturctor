@@ -20,7 +20,13 @@ import {
 } from './onecSessionHints'
 import { onecGatewayInvokeArgs, turboProjectInvokeArgs } from './userContext'
 import { comSearchTasksToErpRecords, invokeLocalAcTool } from '../utils/localAcTool'
-import { erpTaskToRow, outlookMessageToMailRow, turboProjectToRow } from './specV04Mappers'
+import {
+  erpTaskToRow,
+  outlookMessageToMailRow,
+  turboProjectTaskToSpecTaskRow,
+  turboProjectToRow
+} from './specV04Mappers'
+import { turboTaskAssignedToActor } from './turboAssigneeMatch'
 import type { SpecMailRow, SpecProjectRow, SpecTaskRow } from './specV04DemoData'
 import { isTurboNoSessionError } from './turboSession'
 
@@ -306,12 +312,40 @@ export async function loadOrchestratorErpTasks(
 
   let tasks = erpParsed.rows
   let sourceLabel = erpParsed.source || ORCH_SOURCE_ID.erpPm
+  let supplementalDocflowWarning = ''
   const payloadObj =
     erpRes.ok && erpRes.result && typeof erpRes.result === 'object'
       ? (erpRes.result as Record<string, unknown>)
       : null
   const odataWarning = String(payloadObj?.odata_warning || '').trim()
-  const docflowWarning = uniqueErrorJoin(erpParsed.warning, odataWarning)
+
+  const hasDocflowRow = tasks.some((row) => /документооборот|docflow|1С ДО/i.test(row.source))
+  if (!hasDocflowRow) {
+    const dfRes = await api.invokeServerTool('onec.docflow_tasks', {
+      ...onecArgs,
+      only_open: true,
+      limit: 80
+    })
+    const dfParsed = parseErpToolTasks(dfRes, erpFio)
+    supplementalDocflowWarning = dfParsed.warning
+    if (dfParsed.rows.length) {
+      const seen = new Set(tasks.map((row) => row.id))
+      for (const row of dfParsed.rows) {
+        if (seen.has(row.id)) continue
+        seen.add(row.id)
+        tasks.push(row)
+      }
+      if (!/документооборот|docflow/i.test(sourceLabel)) {
+        sourceLabel = `${sourceLabel}+документооборот`
+      }
+    }
+  }
+
+  const docflowWarning = uniqueErrorJoin(
+    erpParsed.warning,
+    odataWarning,
+    supplementalDocflowWarning
+  )
   let mergedError = uniqueErrorJoin(
     erpRes.error || '',
     erpParsed.error,
@@ -532,9 +566,75 @@ export function pickTurboProjectsForTaskFetch(projects: SpecProjectRow[], max = 
   return selected
 }
 
+export type OrchestratorTurboTasksLoad = {
+  tasks: SpecTaskRow[]
+  error: string
+}
+
+function isOpenTurboTask(task: Record<string, unknown>): boolean {
+  const percent = Number(task.percent_complete ?? 0)
+  return !Number.isFinite(percent) || percent < 1
+}
+
+/** Open TurboProject tasks for current user (assignee filter), across portfolio projects. */
+export async function loadOrchestratorTurboTaskRows(
+  user: UserProfile,
+  erpFio: string,
+  projects: SpecProjectRow[],
+  turboNoSession: boolean
+): Promise<OrchestratorTurboTasksLoad> {
+  if (turboNoSession || !projects.length) {
+    return { tasks: [], error: '' }
+  }
+  const candidates = turboProjectFetchCandidates(projects, 8)
+  if (!candidates.length) return { tasks: [], error: '' }
+
+  const byId = new Map(projects.map((row) => [row.id, row]))
+  let fetchError = ''
+  const batches = await Promise.all(
+    candidates.map(async (project) => {
+      const res = await api.invokeServerTool(
+        'turboproject.get_project_tasks',
+        turboProjectInvokeArgs(user, {
+          project_id: project.id,
+          status: 'open',
+          limit: 60
+        })
+      )
+      if (!res.ok || !res.result || typeof res.result !== 'object') {
+        const hint = (res.error || '').trim()
+        if (hint && !fetchError) fetchError = hint
+        return [] as SpecTaskRow[]
+      }
+      const payload = res.result as Record<string, unknown>
+      const raw = Array.isArray(payload.tasks) ? payload.tasks : []
+      const meta = byId.get(project.id)
+      const projectName = meta?.name || `TurboProject #${project.id}`
+      return raw
+        .filter((item): item is Record<string, unknown> => Boolean(item) && typeof item === 'object')
+        .filter((task) => turboTaskAssignedToActor(task, erpFio))
+        .filter(isOpenTurboTask)
+        .map((task) => turboProjectTaskToSpecTaskRow(task, project.id, projectName, erpFio))
+    })
+  )
+  const seen = new Set<string>()
+  const tasks: SpecTaskRow[] = []
+  for (const row of batches.flat()) {
+    if (seen.has(row.id)) continue
+    seen.add(row.id)
+    tasks.push(row)
+  }
+  tasks.sort((left, right) => {
+    if (left.urgent !== right.urgent) return left.urgent ? -1 : 1
+    return left.deadline.localeCompare(right.deadline, 'ru')
+  })
+  return { tasks, error: fetchError }
+}
+
 export type OrchestratorTaskSourcesBundle = {
   erp: OrchestratorErpLoad
   turbo: OrchestratorTurboLoad
+  turboTasks: OrchestratorTurboTasksLoad
   mail: OrchestratorMailLoad
 }
 
@@ -548,6 +648,12 @@ export async function fetchOrchestratorTaskSources(
     loadOrchestratorErpTasks(user, erpFio),
     loadOrchestratorTurboPortfolio(user, erpFio)
   ])
+  const turboTasks = await loadOrchestratorTurboTaskRows(
+    user,
+    erpFio,
+    turbo.projects,
+    turbo.turboNoSession
+  )
   const mail = await loadOrchestratorOutlookMailWeek(outlookMailbox)
-  return { erp, turbo, mail }
+  return { erp, turbo, turboTasks, mail }
 }

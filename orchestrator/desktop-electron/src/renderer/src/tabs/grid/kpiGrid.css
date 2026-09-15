@@ -1,0 +1,119 @@
+.orch-kpi-tiles .spec-v04-tiles-rich {
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+}
+
+@media (max-width: 1400px) {
+  .orch-kpi-tiles .spec-v04-tiles-rich {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+
+.kpi-dash-main-table .spec-v04-table td,
+.kpi-dash-main-table .spec-v04-table th {
+  vertical-align: middle;
+}
+
+.kpi-dash-agent-name {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.kpi-compare-chart {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 4px 0;
+}
+
+.kpi-compare-row {
+  display: grid;
+  grid-template-columns: 110px minmax(0, 1fr);
+  gap: 10px;
+  align-items: center;
+  font-size: 13px;
+}
+
+.kpi-compare-track {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.kpi-compare-track i {
+  display: block;
+  height: 8px;
+  border-radius: 4px;
+  min-width: 4px;
+}
+
+.kpi-compare-track i.emp {
+  background: #1565c0;
+}
+
+.kpi-compare-track i.ai {
+  background: #08745f;
+}
+
+.kpi-compare-legend {
+  display: flex;
+  gap: 14px;
+  font-size: 12px;
+  color: var(--content-muted);
+  margin-bottom: 8px;
+}
+
+.kpi-compare-legend span::before {
+  content: '';
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  border-radius: 2px;
+  margin-right: 6px;
+  vertical-align: -1px;
+}
+
+.kpi-compare-legend .emp::before {
+  background: #1565c0;
+}
+
+.kpi-compare-legend .ai::before {
+  background: #08745f;
+}
+
+.kpi-dynamics-chart {
+  width: 100%;
+  height: 160px;
+}
+
+.kpi-dynamics-chart line {
+  stroke: rgba(16, 20, 26, 0.08);
+  stroke-width: 1;
+}
+
+.kpi-dynamics-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-top: 8px;
+  font-size: 12px;
+  color: var(--content-muted);
+}
+
+.kpi-dynamics-legend i {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  border-radius: 2px;
+  margin-right: 4px;
+}
+
+.kpi-dash-status-banner {
+  margin: 0 0 4px;
+  font-size: 13px;
+  color: var(--content-muted);
+}
+
+.kpi-dash-status-banner.error {
+  color: #c0392b;
+}

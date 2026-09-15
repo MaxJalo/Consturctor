@@ -1,4 +1,5 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
+import { MailDetailPanel } from '../tabs/grid/MailDetailPanel'
 import { AgentsPage } from '../pages/AgentsPage'
 import { api } from '../api/client'
 import type { UserProfile } from '../api/types'
@@ -373,10 +374,17 @@ export function MailTabWorkplace({
   onAskOrchestrator: (message: string, context: string) => void
 }): React.JSX.Element {
   const data = useSpecV04Sources(user)
-  const mailRows = data.mailRows
+  const [rowPatches, setRowPatches] = useState<Record<string, Partial<import('./specV04DemoData').SpecMailRow>>>({})
+  const mailRows = useMemo(
+    () => data.mailRows.map((row) => ({ ...row, ...rowPatches[row.id] })),
+    [data.mailRows, rowPatches]
+  )
   const [selectedId, setSelectedId] = useState('')
   const effectiveId = selectedId || mailRows[0]?.id || ''
   const selected = mailRows.find((item) => item.id === effectiveId)
+  const patchRow = useCallback((id: string, patch: Partial<(typeof mailRows)[0]>) => {
+    setRowPatches((prev) => ({ ...prev, [id]: { ...prev[id], ...patch } }))
+  }, [])
   const tiles: SpecSummaryTile[] = [
     { id: 'p', label: 'К обработке', value: String(mailRows.length || '—'), tone: 'blue' },
     { id: 'box', label: 'Ящик Outlook', value: data.outlookMailbox || 'локальный профиль', tone: 'orange' },
@@ -421,7 +429,7 @@ export function MailTabWorkplace({
                     <td colSpan={9} className="spec-v04-empty">
                       {data.loading
                         ? 'Загружаем письма…'
-                        : `Нет непрочитанных через IMAP. Outlook: ${data.outlookMailbox || 'проверьте профиль'}.`}
+                        : `Нет писем за неделю (Outlook COM). Ящик: ${data.outlookMailbox || 'проверьте профиль'}.`}
                     </td>
                   </tr>
                 ) : null}
@@ -458,29 +466,11 @@ export function MailTabWorkplace({
         }
         side={
           selected ? (
-            <div className="spec-detail-card spec-mail-preview">
-              <h2>{selected.subject}</h2>
-              <p className="spec-v04-muted">
-                От: {selected.sender} · {selected.time}
-              </p>
-              <div className="spec-detail-tags">
-                <SpecPill tone={selected.priTone}>{selected.priority}</SpecPill>
-                <SpecPill tone={selected.stTone}>{selected.status}</SpecPill>
-                <SpecPill tone="purple">CRM</SpecPill>
-              </div>
-              <p className="spec-v04-muted">Просмотр тела письма — через агента Outlook или imap.fetch_message.</p>
-              <footer className="spec-detail-actions">
-                <button type="button" className="btn-ghost">
-                  Ответить
-                </button>
-                <button type="button" className="btn-ghost">
-                  Передать ИИ
-                </button>
-                <button type="button" className="btn-primary">
-                  Привязать к процессу
-                </button>
-              </footer>
-            </div>
+            <MailDetailPanel
+              mail={selected}
+              onPatchRow={patchRow}
+              onAskOrchestrator={(message) => ask(message)}
+            />
           ) : null
         }
       />

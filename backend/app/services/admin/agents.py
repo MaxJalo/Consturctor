@@ -99,9 +99,18 @@ def _detail(
     last_status: dict[str, str],
     recent: list[AgentRun],
 ) -> AdminAgentDetailOut:
-    chrome = stub_payloads.stub_ai_agents()["detail"]
     if not workflows:
-        return AdminAgentDetailOut.model_validate(chrome)
+        return AdminAgentDetailOut(
+            name="Нет агентов",
+            status="—",
+            status_tone="neutral",
+            description="В базе Constructor нет workflow — данные из PostgreSQL backend.",
+            tabs=["Обзор"],
+            active_tab="Обзор",
+            info=[],
+            metrics=[],
+            processes=[],
+        )
     ranked = sorted(workflows, key=lambda row: stats.get(row.id, (0, 0, 0))[0], reverse=True)
     workflow = ranked[0]
     total, ok, err = stats.get(workflow.id, (0, 0, 0))

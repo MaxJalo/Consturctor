@@ -17,6 +17,11 @@ export interface SpecV04SourcesState {
   erpFio: string
   erpTasks: SpecTaskRow[]
   erpTaskCount: number
+  /** TurboProject open tasks (только текущий исполнитель). */
+  turboTasks: SpecTaskRow[]
+  turboTaskCount: number
+  /** ERP + Turbo + регламентные агенты для KPI «Все задачи». */
+  allTaskCount: number
   projects: SpecProjectRow[]
   projectCount: number
   mailRows: SpecMailRow[]
@@ -106,7 +111,7 @@ export function buildProcessTiles(data: SpecV04SourcesState): SpecSummaryTile[] 
       id: 'onec',
       label: 'Задачи из 1С',
       value: onecTotal ? `${onecTotal} активных` : '—',
-      hint: onecTotal ? `${onecDone} выполнено` : data.sources.erp,
+      hint: onecTotal ? `${onecDone} выполнено` : '1С ERP',
       tone: 'blue',
       progress: pct(onecDone, onecTotal || 1),
       ring: true
@@ -115,7 +120,7 @@ export function buildProcessTiles(data: SpecV04SourcesState): SpecSummaryTile[] 
       id: 'proj',
       label: 'Проекты',
       value: projTotal ? `${projTotal} в портфеле` : '—',
-      hint: data.sources.turbo,
+      hint: 'TurboProject',
       tone: 'purple',
       progress: projTotal ? 50 : 0,
       ring: true
@@ -124,7 +129,7 @@ export function buildProcessTiles(data: SpecV04SourcesState): SpecSummaryTile[] 
       id: 'mail',
       label: 'Письма (Outlook)',
       value: mailTotal ? `${mailTotal} за неделю` : '—',
-      hint: data.outlookMailbox || data.sources.mail,
+      hint: 'Outlook',
       tone: 'orange',
       progress: mailTotal ? 30 : 0,
       ring: true
@@ -148,19 +153,19 @@ function taskTileValue(loading: boolean, count: number): string {
 
 export function buildTaskTiles(data: SpecV04SourcesState): SpecSummaryTile[] {
   const loading = data.sourcesLoading
-  const overdue = data.erpTasks.filter((t) => t.urgent && t.status !== 'Выполнена').length
-  const projOpen = data.projects.reduce((s, p) => s + p.tasks, 0)
-  const onecHint = loading
+  const gridTasks = [...data.erpTasks, ...data.turboTasks]
+  const overdue = gridTasks.filter((t) => t.urgent && t.status !== 'Выполнена').length
+  const regTotal = data.processRows.length
+  const allHint = loading
     ? 'загрузка…'
-    : data.erpTaskCount
-      ? [data.erpSecondaryHint, data.sources.erp].filter(Boolean).join(' · ')
-      : data.erpError || data.error || data.sources.erp
+    : '1С ERP + ДО + Turbo + регламент'
+  const onecHint = loading ? 'загрузка…' : 'ERP и документооборот'
   return [
     {
       id: 'all',
       label: 'Все задачи',
-      value: taskTileValue(loading, data.erpTaskCount),
-      hint: onecHint,
+      value: taskTileValue(loading, data.allTaskCount),
+      hint: allHint,
       tone: 'blue'
     },
     {
@@ -173,14 +178,14 @@ export function buildTaskTiles(data: SpecV04SourcesState): SpecSummaryTile[] {
     {
       id: 'proj',
       label: 'Проектные',
-      value: taskTileValue(loading, projOpen),
-      hint: loading ? 'загрузка…' : data.sources.turbo,
+      value: taskTileValue(loading, data.turboTaskCount),
+      hint: loading ? 'загрузка…' : 'TurboProject, мои',
       tone: 'purple'
     },
     {
       id: 'reg',
       label: 'Регламентные',
-      value: taskTileValue(loading, data.processRows.length),
+      value: taskTileValue(loading, regTotal),
       tone: 'green'
     },
     {

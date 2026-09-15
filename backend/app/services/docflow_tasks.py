@@ -1,4 +1,9 @@
-"""Задачи 1С:Документооборот (публикация /doc) через OData."""
+"""Задачи 1С:Документооборот (публикация /doc).
+
+OData: ``Task_ЗадачаИсполнителя`` с фильтром по колонке **Исполнитель**
+(листовые задачи как в обработке ``ТД_ЗадачиДокумента``).
+HTTP fallback: ``{DOK_HTTP_BASE_URL}/TasksII/User`` (hs/dterp).
+"""
 
 from __future__ import annotations
 
@@ -8,6 +13,11 @@ from typing import Any
 import httpx
 
 from app.config import settings
+from app.services.docflow_document_tasks import (
+    fetch_executor_tasks_odata,
+    map_document_executor_row,
+    odata_entity,
+)
 from app.services.erp_tasks import from_1c_datetime, task_is_late
 from app.services.onec_response_text import (
     decode_http_body,
@@ -16,7 +26,7 @@ from app.services.onec_response_text import (
     sanitize_onec_error_snippet,
 )
 
-_TASK_ENTITY = "Task_ЗадачаИсполнителя"
+_TASK_ENTITY = odata_entity()
 _USER_ENTITY = "Catalog_Пользователи"
 
 
@@ -144,28 +154,7 @@ def _parse_odata_dt(raw: Any) -> datetime | None:
 
 
 def _map_task(row: dict[str, Any], *, fio: str) -> dict[str, Any]:
-    done = bool(row.get("Executed"))
-    created = _parse_odata_dt(row.get("Date"))
-    due = _parse_odata_dt(row.get("СрокИсполнения"))
-    completed = _parse_odata_dt(row.get("ДатаИсполнения"))
-    comment = " ".join(str(row.get("Описание") or row.get("РезультатВыполнения") or "").split())
-    approval = str(row.get("СостояниеБизнесПроцесса") or "").strip()
-    title = " ".join(str(row.get("Description") or row.get("ПредметСтрокой") or "").split())
-    return {
-        "number": str(row.get("Number") or "").strip(),
-        "title": title,
-        "status": "выполнена" if done else "открыта",
-        "done": done,
-        "late": task_is_late(done=done, completed_at=completed, due_at=due),
-        "created_at": created.isoformat(sep=" ") if created else "",
-        "due_at": due.isoformat(sep=" ") if due else "",
-        "completed_at": completed.isoformat(sep=" ") if completed else "",
-        "comment": comment,
-        "approval": approval or ("завершена" if done else "не согласовано"),
-        "exported_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-        "performer": fio,
-        "source": "документооборот",
-    }
+    return map_document_executor_row(row, fio=fio)
 
 
 def _list_docflow_via_soap(fio: str, *, limit: int) -> tuple[list[dict[str, Any]], str]:
@@ -202,32 +191,85 @@ def list_docflow_tasks(
             return tasks
         return []
     limit = max(1, min(int(limit or 200), 200))
-    clauses = [
-        f"Исполнитель eq cast(guid'{user_key}','Catalog_Пользователи')",
-    ]
-    if only_open:
-        clauses.append("Executed eq false")
-    if date_from is not None:
-        clauses.append(f"Date ge datetime'{_odata_dt(date_from)}'")
-    if date_to is not None:
-        clauses.append(f"Date le datetime'{_odata_dt(date_to)}'")
-    filt = " and ".join(clauses)
-    try:
+
+    def _fetch(filter_clauses: list[str]) -> list[dict[str, Any]]:
+        filt = " and ".join(filter_clauses)
         data = _get(
             _TASK_ENTITY,
             params={"$top": limit, "$orderby": "Date desc", "$filter": filt},
             auth_args=auth_args,
         )
+        out: list[dict[str, Any]] = []
+        for row in data.get("value") or []:
+            if isinstance(row, dict):
+                out.append(_map_task(row, fio=fio))
+        return out
+
+    def _base_clauses() -> list[str]:
+        clauses: list[str] = []
+        if only_open:
+            clauses.append("Executed eq false")
+        if date_from is not None:
+            clauses.append(f"Date ge datetime'{_odata_dt(date_from)}'")
+        if date_to is not None:
+            clauses.append(f"Date le datetime'{_odata_dt(date_to)}'")
+        return clauses
+
+    try:
+        to_me = fetch_executor_tasks_odata(
+            user_key=user_key,
+            fio=fio,
+            only_open=only_open,
+            limit=limit,
+            date_from=date_from,
+            date_to=date_to,
+            get_page=_get,
+            auth_args=auth_args,
+        )
+        if not to_me:
+            to_me = _fetch(
+                [
+                    f"Исполнитель eq cast(guid'{user_key}','Catalog_Пользователи')",
+                    *_base_clauses(),
+                ]
+            )
+
+        http_tasks: list[dict[str, Any]] = []
+        try:
+            from app.tools.onec.docflow_http_tasks import fetch_document_executor_tasks_http
+
+            http_tasks, _ = fetch_document_executor_tasks_http(
+                user_ref=user_key,
+                fio=fio,
+                only_open=only_open,
+                limit=limit,
+                auth_args=auth_args,
+            )
+        except ImportError:
+            pass
+
+        from_me: list[dict[str, Any]] = []
+        try:
+            raw_from = _fetch(
+                [
+                    f"Автор eq cast(guid'{user_key}','Catalog_Пользователи')",
+                    *_base_clauses(),
+                ]
+            )
+            for item in raw_from:
+                tagged = dict(item)
+                tagged["source"] = "документооборот (от меня)"
+                from_me.append(tagged)
+        except DocflowError:
+            pass
+        from app.services.erp_tasks import merge_task_lists
+
+        return merge_task_lists(to_me, http_tasks, from_me, limit=limit)
     except DocflowError:
         if only_open:
             tasks, _ = _list_docflow_via_soap(fio, limit=limit)
             return tasks
         raise
-    items: list[dict[str, Any]] = []
-    for row in data.get("value") or []:
-        if isinstance(row, dict):
-            items.append(_map_task(row, fio=fio))
-    return items
 
 
 def list_docflow_for_people(

@@ -11801,6 +11801,63 @@ button.feed-tool-head:hover {
 .spec-v04-table-compact td {
   padding: 8px 10px;
 }
+.spec-v04-col-expand {
+  width: 36px;
+  padding-left: 8px !important;
+  padding-right: 4px !important;
+}
+.spec-v04-expand-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--wp-muted, #64748b);
+  font-size: 10px;
+  cursor: pointer;
+  transition: transform 0.15s ease;
+}
+.spec-v04-expand-btn:hover {
+  background: rgba(15, 23, 42, 0.06);
+}
+.spec-v04-expand-btn.open {
+  transform: rotate(90deg);
+}
+.spec-v04-row-expand {
+  cursor: default;
+}
+.spec-v04-row-expand td {
+  background: rgba(15, 23, 42, 0.03);
+  padding-top: 0;
+  padding-bottom: 12px;
+  vertical-align: top;
+}
+.spec-v04-nested-wrap {
+  margin: 4px 0 0 28px;
+}
+.spec-detail-pane-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.spec-detail-pane-row h4 {
+  margin: 0;
+}
+.spec-v04-toggle-inline {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--wp-muted, #64748b);
+  cursor: pointer;
+  user-select: none;
+}
 .spec-pill {
   display: inline-block;
   padding: 2px 8px;
@@ -12188,6 +12245,238 @@ button.feed-tool-head:hover {
   display: flex;
   flex-direction: column;
   gap: 4px;
+  font-size: 13px;
+}
+.spec-mail-body-preview {
+  white-space: pre-wrap;
+  font-size: 13px;
+  line-height: 1.45;
+  max-height: 220px;
+  overflow: auto;
+  margin: 10px 0;
+}
+.spec-mail-action-note {
+  margin: 6px 0 0;
+  font-size: 12px;
+}
+.spec-mail-att-btn {
+  margin-left: 8px;
+  flex-shrink: 0;
+}
+.spec-mail-attachments {
+  gap: 8px;
+  margin-bottom: 8px;
+}
+.spec-mail-att-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.spec-mail-att-head .spec-detail-pane {
+  margin: 0;
+}
+.spec-mail-att-open-all {
+  height: 36px;
+  padding: 0 14px;
+  font-size: 12px;
+  border-radius: 18px;
+}
+.spec-mail-att-compact-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.spec-mail-att-compact-row {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px 10px;
+  border-radius: 10px;
+  background: rgba(16, 20, 26, 0.04);
+}
+.spec-mail-att-name {
+  font-size: 13px;
+  font-weight: 600;
+  word-break: break-word;
+}
+.spec-mail-att-compact-actions,
+.spec-mail-att-list-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.spec-mail-att-action-btn {
+  height: 32px;
+  padding: 0 12px;
+  font-size: 12px;
+  border-radius: 16px;
+  flex: 0 0 auto;
+  min-width: 0;
+}
+.spec-mail-read-row {
+  display: flex;
+  gap: 8px;
+  width: 100%;
+}
+.spec-mail-read-btn {
+  flex: 1;
+  height: 40px;
+  padding: 0 12px;
+  font-size: 13px;
+  border-radius: 20px;
+  min-width: 0;
+}
+.spec-mail-detail-actions .spec-btn-launch-block,
+.spec-mail-detail-actions .spec-btn-outline-block {
+  width: 100%;
+}
+.spec-mail-att-modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 120;
+  background: rgba(16, 20, 26, 0.32);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+}
+.spec-mail-att-modal {
+  width: min(960px, 100%);
+  max-height: min(88vh, 720px);
+  background: #fff;
+  border-radius: 18px;
+  box-shadow: 0 18px 48px rgba(16, 20, 26, 0.18);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.spec-mail-att-modal-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 16px 18px 8px;
+}
+.spec-mail-att-modal-head h3 {
+  margin: 0;
+  font-size: 17px;
+}
+.spec-mail-att-modal-sub {
+  margin: 4px 0 0;
+  font-size: 12px;
+}
+.spec-mail-att-modal-close {
+  border: none;
+  background: rgba(16, 20, 26, 0.06);
+  width: 32px;
+  height: 32px;
+  border-radius: 16px;
+  font-size: 20px;
+  line-height: 1;
+  cursor: pointer;
+  color: #152033;
+}
+.spec-mail-att-modal-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 0 18px 12px;
+}
+.spec-mail-att-toolbar-btn {
+  height: 38px;
+  padding: 0 16px;
+  font-size: 13px;
+  border-radius: 19px;
+}
+.spec-mail-att-modal-body {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1.1fr);
+  gap: 0;
+  border-top: 1px solid rgba(16, 20, 26, 0.08);
+  min-height: 280px;
+  overflow: hidden;
+}
+@media (max-width: 760px) {
+  .spec-mail-att-modal-body {
+    grid-template-columns: 1fr;
+    max-height: 60vh;
+    overflow: auto;
+  }
+}
+.spec-mail-att-list {
+  list-style: none;
+  margin: 0;
+  padding: 8px;
+  overflow: auto;
+  max-height: min(56vh, 520px);
+}
+.spec-mail-att-list li {
+  border-radius: 12px;
+  padding: 10px;
+  margin-bottom: 6px;
+  border: 1px solid transparent;
+}
+.spec-mail-att-list li.is-active {
+  border-color: rgba(21, 101, 192, 0.35);
+  background: rgba(21, 101, 192, 0.06);
+}
+.spec-mail-att-list-main {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin-bottom: 8px;
+}
+.spec-mail-att-size {
+  font-size: 11px;
+}
+.spec-mail-att-preview-pane {
+  border-left: 1px solid rgba(16, 20, 26, 0.08);
+  padding: 12px 14px;
+  overflow: auto;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+.spec-mail-att-preview-pane .spec-detail-pane {
+  margin: 0 0 8px;
+}
+.spec-mail-att-preview-empty {
+  margin: 0;
+  font-size: 13px;
+}
+.spec-mail-att-preview-error {
+  color: #c62828;
+  font-size: 12px;
+  margin: 0;
+}
+.spec-mail-att-preview-text {
+  margin: 0;
+  white-space: pre-wrap;
+  font-size: 12px;
+  line-height: 1.45;
+  max-height: 100%;
+  overflow: auto;
+}
+.spec-mail-att-preview-embed {
+  flex: 1;
+  min-height: 240px;
+  width: 100%;
+  border: none;
+  border-radius: 8px;
+  background: #f5f7fa;
+}
+.spec-mail-att-preview-img {
+  max-width: 100%;
+  max-height: min(48vh, 440px);
+  object-fit: contain;
+  border-radius: 8px;
+}
+.spec-mail-att-preview-external {
   font-size: 13px;
 }
 .spec-row-menu {

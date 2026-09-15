@@ -19,13 +19,19 @@ export function erpTaskToRow(task: Record<string, unknown>, actorFio: string): S
   const due = String(task.due_at || '').trim()
   const done = Boolean(task.done)
   const late = Boolean(task.late)
-  const taskSource = String(task.source || 'erp_pm').trim()
+  const taskSource = String(task.source || 'erp_pm').trim().toLowerCase()
+  let sourceLabel = '1С ERP'
+  if (taskSource.includes('документооборот') || taskSource.includes('docflow')) {
+    sourceLabel = taskSource.includes('от меня') ? '1С ДО (от меня)' : '1С ДО'
+  } else if (taskSource.includes('odata')) {
+    sourceLabel = '1С ERP (OData)'
+  }
   return {
     id: number || title,
     title,
-    source: taskSource === 'erp_pm' || taskSource.includes('erp_pm') ? '1С ERP' : '1С',
-    sourceTone: 'blue',
-    process: String(task.approval || 'Документооборот'),
+    source: sourceLabel,
+    sourceTone: taskSource.includes('документооборот') || taskSource.includes('docflow') ? 'green' : 'blue',
+    process: String(task.approval || task.comment || '—'),
     project: '—',
     deadline: due || '—',
     urgent: late || (!done && due.includes(String(new Date().getDate()))),
@@ -197,6 +203,14 @@ function turboTaskStatusLabel(percent: number, delayDays: number): string {
   return 'Запланировано'
 }
 
+/** Turbo MPP percent_complete is 0–1; some payloads use 0–100. */
+export function turboTaskProgressDisplay(task: Record<string, unknown>): number {
+  const raw = Number(task.percent_complete ?? 0)
+  if (!Number.isFinite(raw)) return 0
+  if (raw > 0 && raw <= 1) return Math.round(raw * 100)
+  return Math.round(Math.min(100, raw))
+}
+
 function turboTaskAssigneeLabel(
   executors: string[],
   actorFio: string
@@ -209,6 +223,34 @@ function turboTaskAssigneeLabel(
     return { label: 'Сотрудник', tone: 'blue' }
   }
   return { label: first, tone: 'blue' }
+}
+
+/** TurboProject open task → row for вкладка «Задачи». */
+export function turboProjectTaskToSpecTaskRow(
+  task: Record<string, unknown>,
+  projectId: string,
+  projectName: string,
+  actorFio: string
+): SpecTaskRow {
+  const mini = turboProjectTaskToTodayRow(task, projectId, actorFio)
+  const delayDays = Number(task.delay_days ?? 0)
+  return {
+    id: `turbo:${projectId}:${mini.id}`,
+    title: mini.title,
+    source: 'TurboProject',
+    sourceTone: 'purple',
+    process: projectName || `Проект ${projectId}`,
+    project: projectName || projectId,
+    deadline: mini.deadline,
+    urgent: Number.isFinite(delayDays) && delayDays > 0,
+    priority: delayDays > 0 ? 'Высокий' : 'Средний',
+    priorityTone: delayDays > 0 ? 'red' : 'orange',
+    status: mini.status,
+    statusTone: mini.statusTone,
+    executor: actorFio,
+    who: mini.assignee,
+    progress: turboTaskProgressDisplay(task)
+  }
 }
 
 /** TurboProject open task row for «Сегодня → проектные задачи». */
@@ -224,6 +266,7 @@ export function turboProjectTaskToTodayRow(
   statusTone: SpecPillTone
   assignee: string
   assigneeTone: SpecPillTone
+  progress: number
 } {
   const percent = Number(task.percent_complete ?? 0)
   const delayDays = Number(task.delay_days ?? 0)
@@ -246,7 +289,8 @@ export function turboProjectTaskToTodayRow(
     status,
     statusTone: toneForStatus(status),
     assignee: label,
-    assigneeTone: tone
+    assigneeTone: tone,
+    progress: turboTaskProgressDisplay(task)
   }
 }
 
@@ -306,19 +350,30 @@ export function outlookMessageToMailRow(msg: Record<string, unknown>, index: num
   const subject = String(msg.subject || 'Без темы')
   const rawTime = String(msg.datetime || msg.received_at || msg.sent_at || '')
   const direction = String(msg.direction || 'inbox')
+  const entryId = String(msg.entry_id ?? msg.uid ?? index)
+  const unread = Boolean(msg.unread)
+  const attachmentNames = Array.isArray(msg.attachment_names)
+    ? msg.attachment_names.map((n) => String(n)).filter(Boolean)
+    : []
+  const bodyPreview = String(msg.body_preview || '').trim()
+  const inboxStatus = unread ? 'Непрочитано' : 'Прочитано'
   return {
-    id: String(msg.entry_id ?? msg.uid ?? index),
+    id: entryId,
+    entryId,
     sender: String(msg.sender || msg.from || '—'),
     subject,
     category: direction === 'sent' ? 'Отправленные' : 'Входящие',
     catTone: 'blue',
-    link: '—',
+    link: attachmentNames.length ? `Вложений: ${attachmentNames.length}` : '—',
     time: rawTime,
-    priority: 'Средний',
-    priTone: 'orange',
-    status: direction === 'sent' ? 'Отправлено' : 'Получено',
-    stTone: direction === 'sent' ? 'green' : 'orange',
-    assignee: '—'
+    priority: unread ? 'Высокий' : 'Средний',
+    priTone: unread ? 'red' : 'orange',
+    status: direction === 'sent' ? 'Отправлено' : inboxStatus,
+    stTone: direction === 'sent' ? 'green' : unread ? 'orange' : 'blue',
+    assignee: '—',
+    unread,
+    bodyPreview: bodyPreview || undefined,
+    attachmentNames: attachmentNames.length ? attachmentNames : undefined
   }
 }
 

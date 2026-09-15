@@ -4,7 +4,7 @@ import { fetchAdminLaunchCalendar } from '../adminApi'
 import { useAdminTabLoad } from '../hooks/useAdminTabLoad'
 import {
   addDays,
-  ADMIN_MOCK_TODAY,
+  adminToday,
   buildMonthGrid,
   dayIsoKey,
   enumerateRangeDays,
@@ -35,7 +35,9 @@ const EVENT_TONE: Record<string, string> = {
   red: 'admin-cal-event--red'
 }
 
-const MOCK_EVENT_WEEK_START = getWeekRange(ADMIN_MOCK_TODAY).start
+function currentWeekStart(): Date {
+  return getWeekRange(adminToday()).start
+}
 const MONTH_WEEKDAYS = ['Понедельник', 'Вторник', 'Среда', 'Четверг', 'Пятница', 'Суббота', 'Воскресенье']
 const MONTH_VISIBLE_EVENTS = 3
 
@@ -54,7 +56,7 @@ function rangeForView(view: string, anchor: Date): AdminDateRange {
   if (view === 'День') return { start: day, end: day }
   if (view === 'Месяц') return getMonthRange(day)
   if (view === 'Сегодня') {
-    const today = ADMIN_MOCK_TODAY
+    const today = adminToday()
     return { start: today, end: today }
   }
   return getWeekRange(day)
@@ -105,7 +107,7 @@ function LaunchMonthGrid({ anchor, selectedDay, events, onSelectDay }: LaunchMon
           const dayEvents = eventsByDay.get(dayIsoKey(date)) ?? []
           const shown = dayEvents.slice(0, MONTH_VISIBLE_EVENTS)
           const leftover = dayEvents.length - shown.length
-          const isToday = isSameDay(date, ADMIN_MOCK_TODAY)
+          const isToday = isSameDay(date, adminToday())
           const isSelected = isSameDay(date, selectedDay)
           return (
             <button
@@ -141,10 +143,10 @@ export function LaunchCalendarPage(): React.JSX.Element {
   const { data, loading, error } = useAdminTabLoad(emptyAdminCalendar, fetchAdminLaunchCalendar)
   const rowHeight = 56
   const [activeView, setActiveView] = useState(data.activeView)
-  const [selectedDay, setSelectedDay] = useState(ADMIN_MOCK_TODAY)
-  const [range, setRange] = useState<AdminDateRange>(() => getWeekRange(ADMIN_MOCK_TODAY))
-  const [miniMonth, setMiniMonth] = useState(ADMIN_MOCK_TODAY.getMonth())
-  const [miniYear, setMiniYear] = useState(ADMIN_MOCK_TODAY.getFullYear())
+  const [selectedDay, setSelectedDay] = useState(() => adminToday())
+  const [range, setRange] = useState<AdminDateRange>(() => getWeekRange(adminToday()))
+  const [miniMonth, setMiniMonth] = useState(() => adminToday().getMonth())
+  const [miniYear, setMiniYear] = useState(() => adminToday().getFullYear())
   const [agentChecked, setAgentChecked] = useState<Record<string, boolean>>(() =>
     Object.fromEntries(data.agentFilters.map((item) => [item.id, item.checked]))
   )
@@ -154,7 +156,7 @@ export function LaunchCalendarPage(): React.JSX.Element {
   }, [data.agentFilters])
 
   const visibleDays = useMemo(() => {
-    if (activeView === 'Сегодня') return [ADMIN_MOCK_TODAY]
+    if (activeView === 'Сегодня') return [adminToday()]
     return enumerateRangeDays(range)
   }, [activeView, range])
 
@@ -170,7 +172,7 @@ export function LaunchCalendarPage(): React.JSX.Element {
   const isMonthView = activeView === 'Месяц'
 
   const datedEvents = useMemo(() => {
-    const base = isMonthView ? getMonthRange(selectedDay).start : MOCK_EVENT_WEEK_START
+    const base = isMonthView ? getMonthRange(selectedDay).start : currentWeekStart()
     return data.events.map((event) => ({
       ...event,
       date: addDays(base, event.dayIndex)
@@ -195,10 +197,10 @@ export function LaunchCalendarPage(): React.JSX.Element {
 
   function handleViewChange(mode: string): void {
     if (mode === 'Сегодня') {
-      syncSelection(ADMIN_MOCK_TODAY, { start: ADMIN_MOCK_TODAY, end: ADMIN_MOCK_TODAY }, mode)
+      syncSelection(adminToday(), { start: adminToday(), end: adminToday() }, mode)
       return
     }
-    const anchor = mode === 'День' || mode === 'Неделя' || mode === 'Месяц' ? selectedDay : ADMIN_MOCK_TODAY
+    const anchor = mode === 'День' || mode === 'Неделя' || mode === 'Месяц' ? selectedDay : adminToday()
     syncSelection(anchor, rangeForView(mode, anchor), mode)
   }
 
@@ -213,7 +215,7 @@ export function LaunchCalendarPage(): React.JSX.Element {
 
   function shiftPeriod(delta: number): void {
     if (activeView === 'День' || activeView === 'Сегодня') {
-      const anchor = activeView === 'Сегодня' ? ADMIN_MOCK_TODAY : selectedDay
+      const anchor = activeView === 'Сегодня' ? adminToday() : selectedDay
       const next = addDays(anchor, delta)
       syncSelection(next, { start: next, end: next }, activeView === 'Сегодня' ? 'День' : activeView)
       return
@@ -392,7 +394,7 @@ export function LaunchCalendarPage(): React.JSX.Element {
               {miniCells.map(({ date, muted }) => {
                 const inRange = isDateInRange(date, range)
                 const edge = isRangeEdge(date, range)
-                const today = isSameDay(date, ADMIN_MOCK_TODAY)
+                const today = isSameDay(date, adminToday())
                 return (
                   <button
                     key={date.toISOString()}

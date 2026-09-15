@@ -73,6 +73,42 @@ const api = {
     filters?: { name: string; extensions: string[] }[]
     properties?: string[]
   }): Promise<string[]> => ipcRenderer.invoke('dialog:openFile', options),
+  openPath: (filePath: string): Promise<{ ok: boolean; error?: string }> =>
+    ipcRenderer.invoke('shell:openPath', filePath),
+  readLocalFilePreview: (
+    filePath: string
+  ): Promise<
+    | {
+        ok: true
+        path: string
+        size: number
+        mime: string
+        kind: 'text'
+        text: string
+      }
+    | {
+        ok: true
+        path: string
+        size: number
+        mime: string
+        kind: 'embed'
+        dataUrl: string
+      }
+    | {
+        ok: true
+        path: string
+        size: number
+        mime: string
+        kind: 'external'
+        hint: string
+      }
+    | { ok: false; error: string; tooLarge?: boolean; path?: string; size?: number }
+  > => ipcRenderer.invoke('fs:readLocalFilePreview', filePath),
+  copyLocalFile: (opts: {
+    sourcePath: string
+    defaultName?: string
+  }): Promise<{ ok: boolean; canceled?: boolean; path?: string; error?: string }> =>
+    ipcRenderer.invoke('fs:copyLocalFile', opts),
   saveClipboardImage: (): Promise<string> => ipcRenderer.invoke('clipboard:saveImage'),
   startNotifications: (token: string): Promise<{ ok: boolean }> =>
     ipcRenderer.invoke('notifications:start', token),

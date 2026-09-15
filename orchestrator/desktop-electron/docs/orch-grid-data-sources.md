@@ -8,7 +8,7 @@
 | Таблица процессов | live | agents + 1C + Turbo + Outlook mail + Outlook meetings |
 | Задачи 1С | live | LAN gateway: **`onec.erp_tasks_current`** (SQL `_query_tasks` + docflow). Локальный `127.0.0.1:7812`: **`onec.erp_tasks_odata`** (OData `Task_ЗадачаИсполнителя` + SQL merge `fallback_sql`) или `VITE_ERP_TASKS_SOURCE=odata`. COM `onec.search_tasks` — `VITE_ONEC_COM_TASKS_FALLBACK=1` |
 | Проекты | live | `turboproject.get_user_portfolio` (source id `turboproject`) |
-| Письма (вкладка «Почта» / процессы) | live | `outlook.search_mail` (COM): `folder=All`, `date_from`/`date_to` = текущая неделя (пн…вс), `max_results=50`; sidecar `agent:search-mail` |
+| Письма (вкладка «Почта» / процессы) | live | `outlook.search_mail` (COM): `folder=All`, `date_from`/`date_to` = текущая неделя (пн…вс), `max_results=50`; sidecar `agent:search-mail`. Действия в боковой панели: `outlook.fetch_message`, `outlook.display_message` (ответ/открыть), `outlook.mark_read`, `outlook.save_attachment`; вложения — `fs:readLocalFilePreview` / `fs:copyLocalFile` + модалка `MailAttachmentsModal`, внешнее открытие — `shell:openPath`, таймаут UI 45s |
 | Письма («Сегодня» → Outlook) | live | `outlook.search_mail`: `folder=Inbox`, `date=YYYY-MM-DD` (день = «Период») |
 | Совещания | live/partial | `ensureOutlookMeetings` |
 | База знаний | partial | `api.listWorkflows()` (регламенты Constructor) |

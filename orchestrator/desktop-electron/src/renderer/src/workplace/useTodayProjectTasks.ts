@@ -21,6 +21,7 @@ export type TodayProjectTaskRow = {
   statusTone: SpecPillTone
   assignee: string
   assigneeTone: SpecPillTone
+  progress: number
 }
 
 function isOpenTask(task: Record<string, unknown>): boolean {

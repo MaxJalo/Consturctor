@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
+import { OrchSlotBotC, OrchSlotFilters, OrchSlotMain, OrchSlotMetrics, OrchSlotSide } from '../layout/GridSlots'
 import { api } from '../api/client'
 import type { AgentRunHistoryItem, AgentRunnerEvent, WorkflowFileItem } from '../api/types'
 import { FilterBar } from './FilterBar'
@@ -462,9 +463,12 @@ function DecisionDetail({
 }
 
 export function DecisionsTab({
-  onOpenRun
+  onOpenRun,
+  inGridShell = false
 }: {
   onOpenRun: (workflowId: string, title: string, runId?: string) => void
+  /** Разметка OrchGridShell (метрики / фильтры / main+side / нижняя панель). */
+  inGridShell?: boolean
 }): React.JSX.Element {
   const today = todayKey()
   const [query, setQuery] = useState('')
@@ -933,63 +937,54 @@ export function DecisionsTab({
     }
   ].filter((item) => Boolean(item.label))
 
-  return (
-    <div className="wp-page spec-v04-page spec-decisions-page">
-      <div className="wp-head spec-v04-head">
+  const kpiTiles = (
+    <section className="wp-decisions-kpi">
+      <article className="wp-decisions-kpi-card wait">
+        <div className="wp-decisions-kpi-icon" aria-hidden>
+          !
+        </div>
         <div>
-          <h1 className="page-title">Решения</h1>
-          <div className="wp-sub">Подтверждение решений, подготовленных ИИ и сотрудниками</div>
+          <p>Ожидают меня</p>
+          <strong>{awaitingMe.length}</strong>
         </div>
-        <div className="spec-v04-head-actions">
-          <button type="button" className="btn-primary spec-quick-launch">
-            ▶ Быстрый запуск
-          </button>
+      </article>
+      <article className="wp-decisions-kpi-card review">
+        <div className="wp-decisions-kpi-icon nf-review" aria-hidden>
+          <svg viewBox="0 0 24 24" width="20" height="20" focusable="false">
+            <path
+              fill="currentColor"
+              d="M12 4.5C7 4.5 2.73 7.61 1 12c1.73 4.39 6 7.5 11 7.5s9.27-3.11 11-7.5c-1.73-4.39-6-7.5-11-7.5zm0 12.5c-2.76 0-5-2.24-5-5s2.24-5 5-5 5 2.24 5 5-2.24 5-5 5zm0-8c-1.66 0-3 1.34-3 3s1.34 3 3 3 3-1.34 3-3-1.34-3-3-3z"
+            />
+          </svg>
         </div>
-      </div>
-      <section className="wp-decisions-kpi">
-        <article className="wp-decisions-kpi-card wait">
-          <div className="wp-decisions-kpi-icon" aria-hidden>
-            !
-          </div>
-          <div>
-            <p>Ожидают меня</p>
-            <strong>{awaitingMe.length}</strong>
-          </div>
-        </article>
-        <article className="wp-decisions-kpi-card review">
-          <div className="wp-decisions-kpi-icon nf-review" aria-hidden>
-            <svg viewBox="0 0 24 24" width="20" height="20" focusable="false">
-              <path
-                fill="currentColor"
-                d="M12 4.5C7 4.5 2.73 7.61 1 12c1.73 4.39 6 7.5 11 7.5s9.27-3.11 11-7.5c-1.73-4.39-6-7.5-11-7.5zm0 12.5c-2.76 0-5-2.24-5-5s2.24-5 5-5 5 2.24 5 5-2.24 5-5 5zm0-8c-1.66 0-3 1.34-3 3s1.34 3 3 3 3-1.34 3-3-1.34-3-3-3z"
-              />
-            </svg>
-          </div>
-          <div>
-            <p>На рассмотрении</p>
-            <strong>{underReview.length}</strong>
-          </div>
-        </article>
-        <article className="wp-decisions-kpi-card done">
-          <div className="wp-decisions-kpi-icon" aria-hidden>
-            ✓
-          </div>
-          <div>
-            <p>Подтверждено сегодня</p>
-            <strong>{confirmedToday.length}</strong>
-          </div>
-        </article>
-        <article className="wp-decisions-kpi-card returned">
-          <div className="wp-decisions-kpi-icon" aria-hidden>
-            ↻
-          </div>
-          <div>
-            <p>Возвращено</p>
-            <strong>{returned.length}</strong>
-          </div>
-        </article>
-      </section>
-      <FilterBar
+        <div>
+          <p>На рассмотрении</p>
+          <strong>{underReview.length}</strong>
+        </div>
+      </article>
+      <article className="wp-decisions-kpi-card done">
+        <div className="wp-decisions-kpi-icon" aria-hidden>
+          ✓
+        </div>
+        <div>
+          <p>Подтверждено сегодня</p>
+          <strong>{confirmedToday.length}</strong>
+        </div>
+      </article>
+      <article className="wp-decisions-kpi-card returned">
+        <div className="wp-decisions-kpi-icon" aria-hidden>
+          ↻
+        </div>
+        <div>
+          <p>Возвращено</p>
+          <strong>{returned.length}</strong>
+        </div>
+      </article>
+    </section>
+  )
+
+  const filtersBar = (
+    <FilterBar
         query={query}
         onQuery={setQuery}
         queryPlaceholder="Найти решение"
@@ -1075,7 +1070,10 @@ export function DecisionsTab({
           </select>
         </label>
       </FilterBar>
-      {duePanelOpen || due === 'period' ? (
+  )
+
+  const duePanel =
+    duePanelOpen || due === 'period' ? (
         <section className="wp-card wp-deadline-panel">
           <div className="wp-deadline-head">
             <button
@@ -1123,9 +1121,9 @@ export function DecisionsTab({
             })}
           </div>
         </section>
-      ) : null}
-      {error ? <div className="wp-banner wp-banner-warn">{error}</div> : null}
-      <div className="wp-decisions-columns wp-decisions-master">
+      ) : null
+
+  const toolsList = (
             <section className="wp-card wp-decisions-col">
               <h2>Подтверждение инструментов</h2>
               <p>
@@ -1177,6 +1175,9 @@ export function DecisionsTab({
                 })}
               </div>
             </section>
+  )
+
+  const detailPanel = (
             <section className="wp-card wp-decisions-col wp-decision-detail">
               {!selected ? (
                 <article className="wp-decisions-mini">
@@ -1204,7 +1205,9 @@ export function DecisionsTab({
                 />
               )}
             </section>
-          </div>
+  )
+
+  const agentResults = (
           <section className="wp-card wp-decisions-col">
             <h2>Результаты агентов</h2>
             <p>Итог работы, без хода выполнения.</p>
@@ -1246,6 +1249,48 @@ export function DecisionsTab({
               ))}
             </div>
           </section>
+  )
+
+  if (inGridShell) {
+    return (
+      <>
+        <OrchSlotMetrics>{kpiTiles}</OrchSlotMetrics>
+        <OrchSlotFilters>
+          {filtersBar}
+          {duePanel}
+        </OrchSlotFilters>
+        <OrchSlotMain>
+          {error ? <div className="wp-banner wp-banner-warn">{error}</div> : null}
+          {toolsList}
+        </OrchSlotMain>
+        <OrchSlotSide>{detailPanel}</OrchSlotSide>
+        <OrchSlotBotC>{agentResults}</OrchSlotBotC>
+      </>
+    )
+  }
+
+  return (
+    <div className="wp-page spec-v04-page spec-decisions-page">
+      <div className="wp-head spec-v04-head">
+        <div>
+          <h1 className="page-title">Решения</h1>
+          <div className="wp-sub">Подтверждение решений, подготовленных ИИ и сотрудниками</div>
+        </div>
+        <div className="spec-v04-head-actions">
+          <button type="button" className="btn-primary spec-quick-launch">
+            ▶ Быстрый запуск
+          </button>
+        </div>
+      </div>
+      {kpiTiles}
+      {filtersBar}
+      {duePanel}
+      {error ? <div className="wp-banner wp-banner-warn">{error}</div> : null}
+      <div className="wp-decisions-columns wp-decisions-master">
+        {toolsList}
+        {detailPanel}
+      </div>
+      {agentResults}
     </div>
   )
 }

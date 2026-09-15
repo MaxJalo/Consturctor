@@ -992,6 +992,39 @@ def _resolve_task_assignee_filter(payload: dict[str, Any]) -> tuple[str, set[str
     return assignee, resource_ids, True
 
 
+def _assignment_resource_name(assignment: Any) -> str:
+    if not isinstance(assignment, dict):
+        return ""
+    direct = str(
+        assignment.get("resource_name")
+        or assignment.get("ResourceName")
+        or assignment.get("resourceName")
+        or ""
+    ).strip()
+    if direct:
+        return direct
+    resource = assignment.get("resource")
+    if isinstance(resource, dict):
+        nested = str(resource.get("name") or resource.get("Name") or "").strip()
+        if nested:
+            return nested
+    return str(assignment.get("name") or "").strip()
+
+
+def _assignment_resource_id(assignment: Any) -> str:
+    if not isinstance(assignment, dict):
+        return ""
+    rid = assignment.get("resource_id") or assignment.get("ResourceId") or assignment.get("resourceId")
+    if rid is not None and str(rid).strip():
+        return str(rid).strip()
+    resource = assignment.get("resource")
+    if isinstance(resource, dict):
+        nested = resource.get("id") or resource.get("Id")
+        if nested is not None and str(nested).strip():
+            return str(nested).strip()
+    return ""
+
+
 def _task_assigned_to(
     raw_task: dict[str, Any],
     assignee_fio: str,
@@ -1004,10 +1037,10 @@ def _task_assigned_to(
         if not isinstance(assignment, dict):
             continue
         if resource_ids:
-            rid = assignment.get("resource_id")
-            if rid is not None and str(rid).strip() in resource_ids:
+            rid = _assignment_resource_id(assignment)
+            if rid and rid in resource_ids:
                 return True
-        name = str(assignment.get("resource_name") or "").strip()
+        name = _assignment_resource_name(assignment)
         if assignee_fio and name and _person_name_matches(assignee_fio, name):
             return True
     return False
@@ -1017,7 +1050,15 @@ def _task_rows(details: dict[str, Any]) -> list[dict[str, Any]]:
     rows = []
     for task in details.get("tasks") or []:
         assignments = task.get("assignments") or []
-        executors = [item.get("resource_name") for item in assignments if item.get("resource_name")]
+        executors: list[str] = []
+        executor_resource_ids: list[str] = []
+        for item in assignments:
+            name = _assignment_resource_name(item)
+            if name:
+                executors.append(name)
+            rid = _assignment_resource_id(item)
+            if rid:
+                executor_resource_ids.append(rid)
         percent = float(task.get("percent_complete") or 0.0)
         finish_date = iso_or_none(task.get("finish_date"))
         rows.append(
@@ -1032,6 +1073,7 @@ def _task_rows(details: dict[str, Any]) -> list[dict[str, Any]]:
                 "is_summary": bool(task.get("is_summary")),
                 "is_milestone": bool(task.get("is_milestone")),
                 "executors": executors,
+                "executor_resource_ids": executor_resource_ids,
                 "delay_days": _delay_days(finish_date),
             }
         )

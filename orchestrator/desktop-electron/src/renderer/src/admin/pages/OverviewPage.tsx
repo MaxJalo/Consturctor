@@ -1,36 +1,18 @@
-import { useCallback, useEffect, useState } from 'react'
 import { emptyAdminOverview, type AdminOverviewMock } from '../adminEmpty'
 import { fetchAdminOverview } from '../adminApi'
-import { formatAdminLoadError } from '../adminLoadError'
 import { AdminBreadcrumb } from '../components/AdminBreadcrumb'
 import { DashboardToolbar } from '../components/DashboardToolbar'
 import { DonutChartCard } from '../components/DonutChartCard'
 import { IntegrationStatusCard } from '../components/IntegrationStatusCard'
 import { LineChartCard } from '../components/LineChartCard'
 import { MetricGrid } from '../components/MetricGrid'
+import { useAdminTabLoad } from '../hooks/useAdminTabLoad'
 
 export function OverviewPage(): React.JSX.Element {
-  const [data, setData] = useState<AdminOverviewMock>(emptyAdminOverview)
-  const [loading, setLoading] = useState(true)
-  const [error, setError] = useState<string | null>(null)
-
-  const load = useCallback(async () => {
-    setLoading(true)
-    setError(null)
-    try {
-      const overview = await fetchAdminOverview()
-      setData(overview)
-    } catch (err) {
-      setError(formatAdminLoadError(err, 'Не удалось загрузить обзор'))
-      setData(emptyAdminOverview)
-    } finally {
-      setLoading(false)
-    }
-  }, [])
-
-  useEffect(() => {
-    void load()
-  }, [load])
+  const { data, loading, error, reload } = useAdminTabLoad<AdminOverviewMock>(
+    emptyAdminOverview,
+    fetchAdminOverview
+  )
 
   return (
     <div className="admin-page admin-overview-page">
@@ -39,7 +21,7 @@ export function OverviewPage(): React.JSX.Element {
         title={data.dashboardTitle}
         subtitle={data.dashboardSubtitle}
         refreshLabel={data.refreshLabel}
-        onRefresh={() => void load()}
+        onRefresh={() => void reload()}
       />
       {loading ? <p className="admin-kb-sub">Загрузка показателей…</p> : null}
       {error ? (

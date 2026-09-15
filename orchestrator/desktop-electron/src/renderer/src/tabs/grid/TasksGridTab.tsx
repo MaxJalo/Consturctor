@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { OneCReconnectDialog, OneCReconnectInline } from '../../workplace/OneCReconnectDialog'
 import type { UserProfile } from '../../api/types'
 import {
@@ -22,18 +22,24 @@ export function TasksGridTab({
   onAskOrchestrator: (message: string, context: string) => void
 }): React.JSX.Element {
   const data = useSpecV04Sources(user)
-  const taskRows = data.erpTasks
-  const showOneCReconnect = !data.loading && !taskRows.length && data.oneCAuthFailure
-  const emptyCore =
+  const taskRows = useMemo(
+    () => [...data.erpTasks, ...data.turboTasks],
+    [data.erpTasks, data.turboTasks]
+  )
+  const bannerText = (data.erpError || data.error || '').trim()
+  const showOneCReconnect =
+    !data.loading && !data.erpTasks.length && !data.turboTasks.length && data.oneCAuthFailure
+  const emptyTableText =
     data.loading && !taskRows.length
-      ? 'Загружаем задачи из 1С…'
-      : data.erpError || data.error || 'Нет открытых задач 1С.'
-  const emptyMessage =
-    data.loading && !taskRows.length
-      ? emptyCore
+      ? 'Загружаем задачи…'
       : showOneCReconnect
-        ? emptyCore
-        : `${emptyCore}${emptyCore.includes('Пароль 1С в сессии') ? '' : ` · ${comPasswordSessionHint()}`}`
+        ? 'Нужно подключить 1С.'
+        : bannerText
+          ? 'Нет открытых задач в таблице.'
+          : 'Нет открытых задач.'
+  const reconnectHint = showOneCReconnect
+    ? bannerText || 'Не удалось загрузить задачи 1С.'
+    : ''
   const [onecDialogOpen, setOnecDialogOpen] = useState(false)
   useEffect(() => {
     if (data.loading || !showOneCReconnect || data.comPasswordInSession) return
@@ -54,12 +60,15 @@ export function TasksGridTab({
       </OrchSlotFilters>
       <OrchSlotMain>
         <div className="spec-v04-table-wrap wp-card">
-          {(data.erpError || data.error) && !showOneCReconnect ? (
-            <p className="today-table-status today-table-error today-table-banner">
-              {data.erpError || data.error}
-            </p>
+          {bannerText && !showOneCReconnect ? (
+            <p className="today-table-status today-table-error today-table-banner">{bannerText}</p>
           ) : data.erpSecondaryHint ? (
             <p className="today-table-status today-table-banner">{data.erpSecondaryHint}</p>
+          ) : null}
+          {!bannerText && !data.erpSecondaryHint && !data.loading && !taskRows.length ? (
+            <p className="today-table-status today-table-banner spec-v04-muted">
+              {comPasswordSessionHint()}
+            </p>
           ) : null}
           <table className="spec-v04-table">
             <thead>
@@ -79,13 +88,11 @@ export function TasksGridTab({
                   <td colSpan={7} className="spec-v04-empty">
                     {showOneCReconnect ? (
                       <OneCReconnectInline
-                        errorHint={emptyMessage}
+                        errorHint={reconnectHint}
                         onOpen={() => setOnecDialogOpen(true)}
                       />
-                    ) : data.erpError || data.error ? (
-                      'Нет открытых задач 1С.'
                     ) : (
-                      emptyMessage
+                      emptyTableText
                     )}
                   </td>
                 </tr>

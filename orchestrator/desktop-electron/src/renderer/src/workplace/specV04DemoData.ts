@@ -226,6 +226,8 @@ export const DEMO_PROJECT_ROWS: SpecProjectRow[] = [
 
 export interface SpecMailRow {
   id: string
+  /** Outlook MAPI EntryID (same as id when loaded via COM). */
+  entryId?: string
   sender: string
   subject: string
   category: string
@@ -237,6 +239,9 @@ export interface SpecMailRow {
   status: string
   stTone: SpecPillTone
   assignee: string
+  unread?: boolean
+  bodyPreview?: string
+  attachmentNames?: string[]
 }
 
 export const DEMO_MAIL_ROWS: SpecMailRow[] = [

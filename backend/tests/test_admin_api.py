@@ -161,6 +161,42 @@ def test_history_tab_for_maps_trigger_kinds():
     )
 
 
+def test_build_admin_users_empty_db_returns_no_stub_rows(monkeypatch):
+    from app.services.admin import users as admin_users_service
+
+    class _ScalarResult:
+        def __init__(self, value):
+            self._value = value
+
+        def scalar(self):
+            return self._value
+
+        def scalars(self):
+            return self
+
+        def all(self):
+            return []
+
+    class _FakeSession:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def scalar(self, _stmt):
+            return 0
+
+        def execute(self, _stmt):
+            return _ScalarResult([])
+
+    monkeypatch.setattr(admin_users_service, "SessionLocal", lambda: _FakeSession())
+    out = admin_users_service.build_admin_users()
+    assert out.source == "admin_api"
+    assert out.rows == []
+    assert out.pagination["total"] == 0
+
+
 def test_admin_users_route_returns_admin_api(monkeypatch):
     from app.schemas.admin import AdminUsersOut
     from app.services.admin import users as admin_users_service

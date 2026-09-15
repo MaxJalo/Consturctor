@@ -22,6 +22,7 @@ export function useAdminTabLoad<T>(
       setData(next)
     } catch (err) {
       setError(formatAdminLoadError(err))
+      setData(fallback)
     } finally {
       setLoading(false)
     }

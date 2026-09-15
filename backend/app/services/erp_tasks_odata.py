@@ -206,16 +206,36 @@ def list_current_tasks_odata(
                 part for part in (odata_warning, f"SQL fallback: {exc}") if part
             )
 
+    merged = {actor_fio: tasks}
+    docflow_warning = ""
+    try:
+        from app.services.erp_tasks import _attach_docflow
+
+        docflow_warning = _attach_docflow(
+            merged,
+            date_from=None,
+            date_to=None,
+            only_open=True,
+            limit_per_person=limit,
+            auth_args=auth_args,
+        )
+    except Exception as exc:  # noqa: BLE001 — docflow must not hide erp_pm OData tasks
+        docflow_warning = str(exc).strip() or "Документооборот: ошибка слияния"
+    tasks = merged[actor_fio]
+    source = "erp_pm+odata+документооборот" if docflow_warning or any(
+        str(t.get("source") or "").startswith("документооборот") for t in tasks
+    ) else "erp_pm+odata"
+
     return {
         "summary": f"Текущие задачи (OData): {len(tasks)} ({actor_fio})",
         "fio": actor_fio,
         "user_id": actor_id,
         "count": len(tasks),
         "tasks": tasks,
-        "source": "erp_pm+odata",
+        "source": source,
         "odata_warning": odata_warning,
         "sql_fallback_merged": sql_fallback_count,
-        "docflow_warning": "",
+        "docflow_warning": docflow_warning,
     }
 
 

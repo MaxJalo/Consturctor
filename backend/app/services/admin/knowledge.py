@@ -134,8 +134,24 @@ def _load(db: Session) -> tuple[list[AdminKnowledgeRowOut], dict]:
                 agent="—",
             )
 
-    chrome_doc = stub_payloads.stub_knowledge_base()["document"]
-    return rows, preview or chrome_doc
+    empty_doc = {
+        "title": "Нет документов",
+        "status": "—",
+        "statusTone": "neutral",
+        "meta": "База знаний пуста",
+        "text": "",
+        "format": "—",
+        "author": "—",
+        "category": "—",
+        "tags": [],
+        "usageTotal": "—",
+        "usageTrend": "",
+        "usageBars": [0, 0, 0, 0],
+        "agentsShare": [],
+        "related": [],
+        "relatedCount": 0,
+    }
+    return rows, preview or empty_doc
 
 
 def _type_label(filename: str, kind: str, mime: str) -> str:

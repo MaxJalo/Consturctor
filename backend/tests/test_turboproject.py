@@ -556,6 +556,54 @@ def test_get_project_tasks_filters_by_session_employee_fio(monkeypatch) -> None:
     assert [item["id"] for item in result["tasks"]] == [2]
 
 
+def test_get_project_tasks_assignee_from_nested_resource(monkeypatch) -> None:
+    yesterday = (datetime.now() - timedelta(days=1)).date().isoformat()
+
+    def fake_api_get(path: str, _token: str, **_: object) -> dict:
+        assert path == "/api/projects/files/363"
+        return {
+            "tasks": [
+                {
+                    "id": 1,
+                    "name": "Open nested assignee",
+                    "is_summary": False,
+                    "finish_date": yesterday,
+                    "percent_complete": 0.2,
+                    "assignments": [{"resource": {"id": 7, "name": "Жалыбин М.Д."}}],
+                },
+                {
+                    "id": 2,
+                    "name": "Done",
+                    "is_summary": False,
+                    "finish_date": yesterday,
+                    "percent_complete": 1,
+                    "assignments": [{"resource_name": "Жалыбин М.Д."}],
+                },
+            ]
+        }
+
+    monkeypatch.setattr(
+        "app.services.turboproject._login_for_args",
+        lambda args=None, force=False: ("token", ("test@turbo-don.ru", "secret")),
+    )
+    monkeypatch.setattr("app.services.turboproject._api_get", fake_api_get)
+    monkeypatch.setattr("app.services.turboproject._card_cache", {})
+
+    result = get_project_tasks(
+        {
+            "project_id": 363,
+            "status": "open",
+            "employee": "Жалыбин Максим Дмитриевич",
+        }
+    )
+
+    assert result["matched_tasks_count"] == 1
+    task = result["tasks"][0]
+    assert task["id"] == 1
+    assert task["executors"] == ["Жалыбин М.Д."]
+    assert task["executor_resource_ids"] == ["7"]
+
+
 def test_get_overdue_projects_sorts_by_delay_days(monkeypatch) -> None:
     old_date = (datetime.now() - timedelta(days=20)).date().isoformat()
     recent_date = (datetime.now() - timedelta(days=5)).date().isoformat()

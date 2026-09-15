@@ -37,6 +37,9 @@ const EMPTY: SpecV04SourcesState = {
   erpFio: '',
   erpTasks: [],
   erpTaskCount: 0,
+  turboTasks: [],
+  turboTaskCount: 0,
+  allTaskCount: 0,
   projects: [],
   projectCount: 0,
   mailRows: [],
@@ -79,6 +82,8 @@ export function SpecV04SourcesProvider({
   const [turboNoSession, setTurboNoSession] = useState(false)
   const [error, setError] = useState('')
   const [erpTasks, setErpTasks] = useState<SpecTaskRow[]>([])
+  const [turboTasks, setTurboTasks] = useState<SpecTaskRow[]>([])
+  const [turboTasksError, setTurboTasksError] = useState('')
   const [erpSource, setErpSource] = useState('—')
   const [erpError, setErpError] = useState('')
   const [erpSecondaryHint, setErpSecondaryHint] = useState('')
@@ -99,6 +104,8 @@ export function SpecV04SourcesProvider({
     ;(async () => {
       setSourcesLoading(true)
       setError('')
+      setTurboTasks([])
+      setTurboTasksError('')
       setOneCAuthFailure(false)
       try {
         const bundle = await fetchOrchestratorTaskSources(user, erpFio, outlookMailbox)
@@ -117,8 +124,15 @@ export function SpecV04SourcesProvider({
         setProjects(bundle.turbo.projects)
         setTurboSource(bundle.turbo.sourceLabel)
         setTurboNoSession(bundle.turbo.turboNoSession)
+        setTurboTasks(bundle.turboTasks.tasks)
+        setTurboTasksError(bundle.turboTasks.error || '')
         if (bundle.turbo.hint?.trim() && !bundle.turbo.projects.length) {
           setError((prev) => (prev ? `${prev} · ${bundle.turbo.hint}` : bundle.turbo.hint))
+        }
+        if (bundle.turboTasks.error?.trim() && bundle.turboTasks.tasks.length) {
+          setErpSecondaryHint((prev) =>
+            prev ? `${prev} · Turbo: ${bundle.turboTasks.error}` : `Turbo: ${bundle.turboTasks.error}`
+          )
         }
 
         setMailRows(bundle.mail.rows)
@@ -154,6 +168,11 @@ export function SpecV04SourcesProvider({
     return agents.filter((a) => !a.standalone).map(agentToProcessRow)
   }, [agents])
 
+  const allTaskCount = useMemo(
+    () => erpTasks.length + turboTasks.length + regRows.length,
+    [erpTasks.length, turboTasks.length, regRows.length]
+  )
+
   const allProcessRows = useMemo(() => {
     const erpRows = erpTasks.map(erpTaskToProcessRow)
     const projRows = projects.map(turboProjectToProcessRow)
@@ -177,6 +196,9 @@ export function SpecV04SourcesProvider({
       erpSecondaryHint,
       erpTasks,
       erpTaskCount: erpTasks.length,
+      turboTasks,
+      turboTaskCount: turboTasks.length,
+      allTaskCount,
       projects,
       projectCount: projects.length,
       mailRows,
@@ -205,6 +227,9 @@ export function SpecV04SourcesProvider({
       erpError,
       erpSecondaryHint,
       erpTasks,
+      turboTasks,
+      allTaskCount,
+      turboTasksError,
       projects,
       mailRows,
       regRows,

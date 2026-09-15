@@ -341,30 +341,55 @@ def _resolve_catalog_refs(cur: Any, unique_names: Sequence[str]) -> list[bytes]:
     return refs
 
 
+def _title_fio_like_patterns(fio: str) -> list[str]:
+    """Full FIO and «Фамилия И.О.» variants for title/comment (aligned with OData title scan)."""
+    normalized = " ".join(str(fio or "").split())
+    if not normalized:
+        return []
+    patterns: list[str] = []
+    seen: set[str] = set()
+
+    def add(pattern: str) -> None:
+        if pattern in seen:
+            return
+        seen.add(pattern)
+        patterns.append(pattern)
+
+    add(f"%{normalized}%")
+    parts = normalized.split()
+    if len(parts) >= 2:
+        surname = parts[0]
+        initials = ".".join(part[0] for part in parts[1:] if part)
+        if initials:
+            add(f"%{surname} {initials}.%")
+            add(f"%{surname} {initials}%")
+    return patterns
+
+
 def build_task_user_relevance_clause(
     *,
     unique_names: Sequence[str],
     catalog_refs: Sequence[bytes],
     include_bp_addressee: bool = False,
 ) -> tuple[str, list[Any]]:
-    """SQL fragment: user is executor (1C «Задачи мне») or named in title/comment."""
+    """SQL fragment: executor, ответственный (_Fld2510), or FIO in title/comment."""
     parts: list[str] = []
     params: list[Any] = []
     for ref in catalog_refs:
-        ref_match = ["t._Fld2503_RRRef = ?"]
-        ref_params: list[Any] = [ref]
+        ref_match = ["t._Fld2503_RRRef = ?", "t._Fld2510_RRRef = ?"]
+        ref_params: list[Any] = [ref, ref]
         if include_bp_addressee:
             ref_match.append("t._Fld2518_RRRef = ?")
             ref_params.append(ref)
         parts.append("(" + " OR ".join(ref_match) + ")")
         params.extend(ref_params)
     for name in unique_names:
-        pattern = f"%{name}%"
-        parts.append(
-            "(CAST(t._Name AS nvarchar(500)) LIKE ?"
-            " OR CAST(t._Fld2509 AS nvarchar(1000)) LIKE ?)"
-        )
-        params.extend([pattern, pattern])
+        for pattern in _title_fio_like_patterns(name):
+            parts.append(
+                "(CAST(t._Name AS nvarchar(500)) LIKE ?"
+                " OR CAST(t._Fld2509 AS nvarchar(1000)) LIKE ?)"
+            )
+            params.extend([pattern, pattern])
     if not parts:
         return ("1 = 0", [])
     if len(parts) == 1:
