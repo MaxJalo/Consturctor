@@ -1,5 +1,6 @@
 import type { WorkplaceAgent } from './WorkplaceBoard'
 import type { SpecMailRow, SpecPillTone, SpecProcessRow, SpecProjectRow, SpecTaskRow } from './specV04DemoData'
+import { parseIso } from '../utils/calendar'
 
 function toneForStatus(text: string): SpecPillTone {
   const key = text.toLowerCase()
@@ -11,14 +12,18 @@ function toneForStatus(text: string): SpecPillTone {
 }
 
 export function erpTaskToRow(task: Record<string, unknown>, actorFio: string): SpecTaskRow {
-  const title = String(task.title || task.number || 'Задача 1С').trim()
+  const number = String(task.number || '').trim()
+  const titleRaw = String(task.title || number || 'Задача 1С').trim()
+  const title =
+    number && titleRaw && !titleRaw.includes(number) ? `${number} · ${titleRaw}` : titleRaw
   const due = String(task.due_at || '').trim()
   const done = Boolean(task.done)
   const late = Boolean(task.late)
+  const taskSource = String(task.source || 'erp_pm').trim()
   return {
-    id: String(task.number || title),
+    id: number || title,
     title,
-    source: '1С',
+    source: taskSource === 'erp_pm' || taskSource.includes('erp_pm') ? '1С ERP' : '1С',
     sourceTone: 'blue',
     process: String(task.approval || 'Документооборот'),
     project: '—',
@@ -133,34 +138,154 @@ export function agentToProcessRow(agent: WorkplaceAgent): SpecProcessRow {
   }
 }
 
-export function turboProjectToRow(item: Record<string, unknown>): SpecProjectRow {
+function turboOpenTaskCount(item: Record<string, unknown>): number {
+  const stats = item.task_stats as Record<string, unknown> | undefined
+  if (stats) {
+    const nonSummary = Number(stats.non_summary_tasks ?? 0)
+    const completed = Number(stats.completed_tasks ?? 0)
+    if (Number.isFinite(nonSummary) && nonSummary > 0) {
+      return Math.max(0, nonSummary - (Number.isFinite(completed) ? completed : 0))
+    }
+    const overdue = Number(stats.overdue_tasks_count ?? 0)
+    if (Number.isFinite(overdue) && overdue > 0) return overdue
+  }
+  const direct = Number(item.open_tasks ?? item.tasks_count ?? 0)
+  return Number.isFinite(direct) && direct > 0 ? direct : 0
+}
+
+function turboProjectDeadline(item: Record<string, unknown>): string {
+  const dates = item.dates as Record<string, unknown> | undefined
+  const fromDates = dates?.finish_date || dates?.plan_finish_1c
+  if (fromDates) return String(fromDates)
+  const data1c = item.data_1c as Record<string, unknown> | undefined
+  if (data1c?.planovaya_data_okonchaniya) return String(data1c.planovaya_data_okonchaniya)
+  if (data1c?.data_okonchaniya) return String(data1c.data_okonchaniya)
+  return String(item.finish_date || item.deadline || '—')
+}
+
+function turboProjectRole(item: Record<string, unknown>, actorFio: string): string {
+  const actor = actorFio.trim().toLowerCase()
+  const owner = String(item.owner || '').trim()
+  const curator = String(item.curator || '').trim()
+  const customer = String(item.customer || '').trim()
+  const match = (value: string, label: string): string | null => {
+    if (!value || !actor) return null
+    return value.toLowerCase().includes(actor.split(/\s+/)[0] || actor) ? label : null
+  }
+  return (
+    match(owner, 'Руководитель') ||
+    match(curator, 'Куратор') ||
+    match(customer, 'Заказчик') ||
+    String(item.role || item.participant_role || 'Участник')
+  )
+}
+
+function formatTurboTaskDeadline(raw: string): string {
+  const value = (raw || '').trim()
+  if (!value) return '—'
+  const stamp = parseIso(value) || parseIso(value.replace(' ', 'T'))
+  if (!stamp) return value.length > 10 ? value.slice(0, 10) : value
+  const dd = String(stamp.getDate()).padStart(2, '0')
+  const mm = String(stamp.getMonth() + 1).padStart(2, '0')
+  return `${dd}.${mm}`
+}
+
+function turboTaskStatusLabel(percent: number, delayDays: number): string {
+  if (percent >= 1) return 'Выполнена'
+  if (delayDays > 0) return 'Просрочена'
+  if (percent > 0) return 'В работе'
+  return 'Запланировано'
+}
+
+function turboTaskAssigneeLabel(
+  executors: string[],
+  actorFio: string
+): { label: string; tone: SpecPillTone } {
+  const first = (executors[0] || '').trim()
+  if (!first) return { label: '—', tone: 'gray' }
+  if (/^(ии|ai|агент)/i.test(first)) return { label: 'ИИ', tone: 'purple' }
+  const actor = actorFio.trim().toLowerCase()
+  if (actor && first.toLowerCase().includes(actor.split(/\s+/)[0] || '')) {
+    return { label: 'Сотрудник', tone: 'blue' }
+  }
+  return { label: first, tone: 'blue' }
+}
+
+/** TurboProject open task row for «Сегодня → проектные задачи». */
+export function turboProjectTaskToTodayRow(
+  task: Record<string, unknown>,
+  projectId: string,
+  actorFio: string
+): {
+  id: string
+  title: string
+  deadline: string
+  status: string
+  statusTone: SpecPillTone
+  assignee: string
+  assigneeTone: SpecPillTone
+} {
+  const percent = Number(task.percent_complete ?? 0)
+  const delayDays = Number(task.delay_days ?? 0)
+  const status = turboTaskStatusLabel(
+    Number.isFinite(percent) ? percent : 0,
+    Number.isFinite(delayDays) ? delayDays : 0
+  )
+  const executors = Array.isArray(task.executors)
+    ? task.executors.filter((item): item is string => typeof item === 'string')
+    : []
+  const { label, tone } = turboTaskAssigneeLabel(executors, actorFio)
+  const outline = String(task.outline_number ?? task.wbs ?? '').trim()
+  const name = String(task.name || 'Задача').trim()
+  const title = outline && !name.includes(outline) ? `${outline} · ${name}` : name
+  const id = String(task.uid ?? task.id ?? `${projectId}:${name}`)
+  return {
+    id,
+    title,
+    deadline: formatTurboTaskDeadline(String(task.finish_date || '')),
+    status,
+    statusTone: toneForStatus(status),
+    assignee: label,
+    assigneeTone: tone
+  }
+}
+
+export function turboProjectToRow(item: Record<string, unknown>, actorFio = ''): SpecProjectRow {
   const name = String(item.project_name || item.title || item.name || 'Проект').trim()
   const fileId = String(item.file_id || item.fileId || '').trim()
-  const code = String(item.project_code || fileId || item.id || '').trim() || '—'
+  const data1c = item.data_1c as Record<string, unknown> | undefined
+  const code =
+    String(item.project_code || data1c?.nomer_proekta || fileId || item.id || '').trim() || '—'
   const progressRaw = Number(item.percent_complete ?? item.progress ?? 0)
   const progress = Number.isFinite(progressRaw) ? Math.round(progressRaw) : 0
+  const stats = item.task_stats as Record<string, unknown> | undefined
+  const overdueCount = Number(stats?.overdue_tasks_count ?? 0)
   const risk = String(item.risk || item.status_risk || '').toLowerCase()
   let riskLabel = 'Нет'
   let riskTone: SpecPillTone = 'green'
-  if (risk.includes('high') || risk.includes('высок')) {
-    riskLabel = 'Высокий'
+  if (overdueCount > 0 || risk.includes('high') || risk.includes('высок')) {
+    riskLabel = overdueCount > 0 ? `Просрочек: ${overdueCount}` : 'Высокий'
     riskTone = 'red'
   } else if (risk.includes('risk') || risk.includes('риск')) {
     riskLabel = 'Есть риск'
     riskTone = 'orange'
   }
+  const openTasks = turboOpenTaskCount(item)
+  const manager = String(item.owner || data1c?.rukovoditel || data1c?.rukovoditel_proekta || '').trim()
   return {
     id: fileId || code,
     name,
     code,
-    role: String(item.role || item.participant_role || 'Участник'),
-    tasks: Number(item.open_tasks ?? item.tasks_count ?? 0) || 0,
-    status: 'В работе',
+    role: turboProjectRole(item, actorFio),
+    tasks: openTasks,
+    status: String(data1c?.status_proekta || item.status || 'В работе'),
     statusTone: 'blue',
-    deadline: String(item.finish_date || item.deadline || '—'),
+    deadline: turboProjectDeadline(item),
     progress,
     risk: riskLabel,
-    riskTone
+    riskTone,
+    fileId: fileId || undefined,
+    manager: manager || undefined
   }
 }
 

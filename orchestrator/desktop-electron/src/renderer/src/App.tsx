@@ -14,8 +14,11 @@ import {
   hasComPassword,
   loadSession,
   saveSession,
-  setComCredentials
+  setComCredentials,
+  setDevGatewayCredentials,
+  syncComProfileFromUser
 } from './store/session'
+import { formatGatewayToolError, shouldForceReLogin } from './workplace/onecSessionHints'
 import { AgentRunPage } from './pages/AgentRunPage'
 import { AgentHistoryPage } from './pages/AgentHistoryPage'
 import { AgentSchedulePage } from './pages/AgentSchedulePage'
@@ -202,6 +205,15 @@ function AppShell(): React.JSX.Element {
       try {
         const config = await window.api.getConfig()
         setShowLogout(!config.testUser)
+        const dev = config.devGatewaySecrets
+        if (dev) {
+          setDevGatewayCredentials({
+            fio: dev.fio,
+            nameMail: dev.nameMail,
+            password: dev.password
+          })
+          bumpComCredentialsRevision()
+        }
         const stored = loadSession()
         if (stored?.accessToken) {
           if (!isOrchestratorToken(stored.accessToken)) {
@@ -258,20 +270,34 @@ function AppShell(): React.JSX.Element {
   }, [])
 
   useEffect(() => {
+    api.setUnauthorizedHandler((message, status) => {
+      if (!shouldForceReLogin(message, status)) return
+      if (kickedRef.current) return
+      kickedRef.current = true
+      const hint = formatGatewayToolError(message, status)
+      void resetToLogin().then(() => {
+        setRequireComLogin(true)
+        if (hint) flash(hint)
+      })
+    })
+    return () => api.setUnauthorizedHandler(null)
+  }, [])
+
+  useEffect(() => {
     if (!user) {
       kickedRef.current = false
       void window.api.stopNotifications?.()
-      void agentClient.ready(null, { login: '', password: '', onecComUsr: '' }).catch(() => undefined)
+      void agentClient.ready(null, { login: '', password: '' }).catch(() => undefined)
       return
     }
     const token = api.getToken()
     if (token) void window.api.startNotifications?.(token)
+    syncComProfileFromUser(user)
     const creds = comCredentials()
     void agentClient
       .ready(token, {
         login: creds.login || user.fio,
-        password: creds.password || '',
-        onecComUsr: creds.nameMail || user.nameMail || ''
+        password: creds.password || ''
       })
       .catch(() => undefined)
   }, [user?.id ?? '', user?.nameMail ?? '', user?.fio ?? '', comCredsRevision])
@@ -315,8 +341,7 @@ function AppShell(): React.JSX.Element {
     void agentClient
       .ready(result.accessToken || null, {
         login: result.user.fio,
-        password,
-        onecComUsr: result.user.nameMail || ''
+        password
       })
       .catch(() => undefined)
     if (remember && result.accessToken) {

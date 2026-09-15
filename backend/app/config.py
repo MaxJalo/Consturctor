@@ -6,11 +6,12 @@ from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 BACKEND_ROOT = Path(__file__).resolve().parents[1]
+WORKSPACE_ROOT = BACKEND_ROOT.parent.parent
 
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
-        env_file=BACKEND_ROOT / ".env",
+        env_file=(WORKSPACE_ROOT / ".env", BACKEND_ROOT / ".env"),
         env_file_encoding="utf-8",
         extra="ignore",
     )
@@ -80,6 +81,9 @@ class Settings(BaseSettings):
     turboproject_email: str = ""
     turboproject_password: str = ""
     turboproject_timeout_sec: float = 60.0
+    my_name: str = Field(default="", validation_alias="MY_NAME")
+    my_name_mail: str = Field(default="", validation_alias="MY_NAME_MAIL")
+    my_password: str = Field(default="", validation_alias="MY_PASSWORD")
 
     # 1C OData (server-side tools onec.odata_*; desktop never executes onec.*)
     odata_base_url: str = ""
@@ -94,6 +98,8 @@ class Settings(BaseSettings):
     erp_password: str = ""
     # Temporary: issue JWT as ERP_LOGIN without querying erp_pm SQL.
     auth_skip_erp_sql: bool = False
+    # Dev: do not compare JWT sid to Redis (LAN vs localhost BACKEND_URL mismatch).
+    auth_skip_session_lock: bool = False
     auth_bypass_user_id: str = ""
     onec_sql_allowlist: str = ""
     onec_odata_entity_allowlist: str = ""

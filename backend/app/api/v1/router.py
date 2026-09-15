@@ -1,6 +1,7 @@
 from fastapi import APIRouter
 
 from app.api.v1 import (
+    admin,
     agents,
     auth,
     calendar,
@@ -19,6 +20,7 @@ from app.modules.chat.api import router as chat_router
 api_router = APIRouter()
 api_router.include_router(health.router)
 api_router.include_router(auth.router, prefix="/api/v1")
+api_router.include_router(admin.router, prefix="/api/v1")
 api_router.include_router(llm.router, prefix="/api/v1")
 api_router.include_router(regulations.router, prefix="/api/v1")
 api_router.include_router(agents.router, prefix="/api/v1")

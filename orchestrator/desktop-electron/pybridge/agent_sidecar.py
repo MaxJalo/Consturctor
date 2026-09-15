@@ -261,45 +261,18 @@ def _exc_text(exc: Exception, fallback: str) -> str:
     return text or fallback
 
 
-def _normalize_onec_cred_keys(payload: dict[str, Any]) -> dict[str, Any]:
-    """Merge camelCase sidecar IPC keys into snake_case env helpers."""
-    out = dict(payload)
-    pairs = (
-        ("onecComUsr", "onec_com_usr"),
-        ("nameMail", "name_mail"),
-        ("erpLogin", "erp_login"),
-        ("erpPassword", "erp_password"),
-    )
-    for src, dst in pairs:
-        if src in payload and not str(out.get(dst) or "").strip():
-            out[dst] = payload[src]
-    if str(out.get("login") or "").strip() and not str(out.get("fio") or "").strip():
-        out["fio"] = out["login"]
-    return out
+from app.tools.ac.workers.onec_com_session import (  # noqa: E402
+    apply_onec_session_credentials,
+    com_session_auth_ready,
+    missing_com_auth_message,
+    snapshot_desktop_com_env,
+)
+
+_DESKTOP_COM_ENV = snapshot_desktop_com_env()
 
 
 def _apply_onec_session_credentials(raw: dict[str, Any] | None) -> None:
-    """Apply Orchestrator session 1C creds; override desktop/.env ERP_* when provided."""
-    if not isinstance(raw, dict):
-        return
-    payload = _normalize_onec_cred_keys(raw)
-    password = str(payload.get("password") or payload.get("erp_password") or "")
-    fio = str(
-        payload.get("fio") or payload.get("erp_login") or payload.get("login") or ""
-    ).strip()
-    com_usr = ""
-    if not os.environ.get("ONEC_COM_USR", "").strip():
-        for key in ("onec_com_usr", "username", "name_mail"):
-            text = str(payload.get(key) or "").strip()
-            if text:
-                com_usr = text
-                break
-    if com_usr:
-        os.environ["ONEC_COM_USR"] = com_usr
-    if fio:
-        os.environ["ERP_LOGIN"] = fio
-    if password:
-        os.environ["ERP_PASSWORD"] = password
+    apply_onec_session_credentials(raw, desktop_snapshot=_DESKTOP_COM_ENV)
 
 
 KEEP_KNOWLEDGE_FILE_NAME = "keepKnowledgeFile"
@@ -2211,9 +2184,6 @@ class Sidecar:
         # COM 1C workers read ERP_LOGIN / ERP_PASSWORD / ONEC_COM_USR from process env.
         # Session creds from Orchestrator login override desktop/.env when sent here.
         _apply_onec_session_credentials(command)
-        password = str(command.get("password") or "")
-        if "password" in command and not password and not os.environ.get("ERP_PASSWORD", "").strip():
-            os.environ.pop("ERP_PASSWORD", None)
 
     def check_ready(self) -> None:
         try:
@@ -3658,6 +3628,8 @@ class Sidecar:
                     raise ValueError("tool name required")
                 if tool_name.startswith("onec."):
                     _apply_onec_session_credentials(input_data)
+                    if not com_session_auth_ready():
+                        raise RuntimeError(missing_com_auth_message())
                 output = invoke_ac_tool(tool_name, input_data)
                 log("invoke_ac_tool ok tool=" + tool_name)
                 emit(

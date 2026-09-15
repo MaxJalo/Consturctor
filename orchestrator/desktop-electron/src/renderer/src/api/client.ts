@@ -111,8 +111,18 @@ function normalizeFioKey(value: string): string {
   return (value || '').toLowerCase().replace(/[ьъ\u0301]/g, '')
 }
 
+const LOCAL_ADMIN_FIO_KEYS = new Set([
+  'уставицкий андрей алексеевич',
+  'жалыбин максим дмитриевич',
+  'жалыбин максим димитриевич'
+])
+
+function localAdminFioKey(value: string): string {
+  return normalizeFioKey(value).replace(/ё/g, 'е').replace(/\s+/g, ' ').trim()
+}
+
 function isLocalAdminFio(value: string): boolean {
-  return normalizeFioKey(value).replace(/ё/g, 'е').replace(/\s+/g, ' ').trim() === 'уставицкий андрей алексеевич'
+  return LOCAL_ADMIN_FIO_KEYS.has(localAdminFioKey(value))
 }
 
 const PROFILE_OVERRIDES: Array<{ needle: string; position: string; department: string }> = [
@@ -1035,8 +1045,15 @@ export function suggestionsFromRoleMatch(roleMatch: RoleMatchResult): AgentSugge
 }
 
 
+export type UnauthorizedHandler = (message: string, status: number) => void
+
 export class ApiClient {
   private token: string | null = null
+  private unauthorizedHandler: UnauthorizedHandler | null = null
+
+  setUnauthorizedHandler(handler: UnauthorizedHandler | null): void {
+    this.unauthorizedHandler = handler
+  }
 
   setToken(token: string | null): void {
     this.token = token
@@ -1060,7 +1077,12 @@ export class ApiClient {
       timeoutMs: opts.timeoutMs
     })
     if (!res.ok) {
-      throw new ApiError(res.error || 'Ошибка backend', res.status)
+      const message = res.error || 'Ошибка backend'
+      const status = res.status
+      if (status === 401 && this.unauthorizedHandler) {
+        this.unauthorizedHandler(message, status)
+      }
+      throw new ApiError(message, status)
     }
     return (res.data ?? ({} as T)) as T
   }
@@ -2012,6 +2034,39 @@ export class ApiClient {
   async download(url: string, defaultName: string): Promise<boolean> {
     const res = await window.api.download({ url, defaultName, token: this.token })
     return Boolean(res.ok)
+  }
+
+  // ---------- Admin (orchestrator panel) ----------
+  async adminOverview(): Promise<Record<string, unknown>> {
+    return this.request<Record<string, unknown>>('GET', '/api/v1/admin/overview')
+  }
+
+  async adminHistory(): Promise<Record<string, unknown>> {
+    return this.request<Record<string, unknown>>('GET', '/api/v1/admin/history')
+  }
+
+  async adminLaunchCalendar(): Promise<Record<string, unknown>> {
+    return this.request<Record<string, unknown>>('GET', '/api/v1/admin/launch-calendar')
+  }
+
+  async adminKpi(): Promise<Record<string, unknown>> {
+    return this.request<Record<string, unknown>>('GET', '/api/v1/admin/kpi')
+  }
+
+  async adminUsers(): Promise<Record<string, unknown>> {
+    return this.request<Record<string, unknown>>('GET', '/api/v1/admin/users')
+  }
+
+  async adminAiAgents(): Promise<Record<string, unknown>> {
+    return this.request<Record<string, unknown>>('GET', '/api/v1/admin/ai-agents')
+  }
+
+  async adminKnowledgeBase(): Promise<Record<string, unknown>> {
+    return this.request<Record<string, unknown>>('GET', '/api/v1/admin/knowledge-base')
+  }
+
+  async adminSettings(): Promise<Record<string, unknown>> {
+    return this.request<Record<string, unknown>>('GET', '/api/v1/admin/settings')
   }
 }
 

@@ -11,8 +11,10 @@ from app.services.erp_tasks import (
     actor_from_args,
     actor_from_jwt,
     build_subordinate_task_tree,
+    build_task_user_relevance_clause,
     from_1c_datetime,
     is_constructor_test_probe,
+    list_current_tasks,
     list_org_subordinates,
     merge_task_lists,
     parse_date,
@@ -381,3 +383,94 @@ def test_constructor_test_probes_detected() -> None:
     assert is_constructor_test_probe({"number": "96", "title": "тестовая проба Constructor"})
     assert is_constructor_test_probe({"title": "проба Constructor", "comment": ""})
     assert not is_constructor_test_probe({"number": "12", "title": "Поручение РК по аудиту"})
+
+
+def test_build_task_user_relevance_clause_ref_and_title() -> None:
+    ref = bytes.fromhex("980E6CB31113810E11F1599041290A43")
+    fio = "Жалыбин Максим Дмитриевич"
+    sql, params = build_task_user_relevance_clause(
+        unique_names=[fio],
+        catalog_refs=[ref],
+    )
+    assert "t._Fld2503_RRRef = ?" in sql
+    assert "_Fld2510_RRRef" not in sql
+    assert "_Fld2518_RRRef" not in sql
+    assert "CAST(t._Name AS nvarchar(500)) LIKE ?" in sql
+    assert "CAST(t._Fld2509 AS nvarchar(1000)) LIKE ?" in sql
+    assert params == [ref, f"%{fio}%", f"%{fio}%"]
+
+
+def test_build_task_user_relevance_clause_bp_addressee() -> None:
+    ref = bytes.fromhex("980E6CB31113810E11F1599041290A43")
+    sql, params = build_task_user_relevance_clause(
+        unique_names=[],
+        catalog_refs=[ref],
+        include_bp_addressee=True,
+    )
+    assert "t._Fld2503_RRRef = ?" in sql
+    assert "t._Fld2518_RRRef = ?" in sql
+    assert "_Fld2510_RRRef" not in sql
+    assert params == [ref, ref]
+
+
+def test_build_task_user_relevance_clause_multiple_fios() -> None:
+    sql, params = build_task_user_relevance_clause(
+        unique_names=["Иванов И.И.", "Петров П.П."],
+        catalog_refs=[],
+    )
+    assert " OR " in sql
+    assert params == ["%Иванов И.И.%", "%Иванов И.И.%", "%Петров П.П.%", "%Петров П.П.%"]
+
+
+def test_build_task_user_relevance_clause_empty() -> None:
+    sql, params = build_task_user_relevance_clause(unique_names=[], catalog_refs=[])
+    assert sql == "1 = 0"
+    assert params == []
+
+
+def test_list_current_tasks_response_shape(monkeypatch) -> None:
+    sample = {
+        "number": "00-Л-000040259",
+        "title": "Жалыбин М.Д. — поручение",
+        "status": "открыта",
+        "done": False,
+        "late": False,
+        "due_at": "2026-09-15 18:00:00",
+        "created_at": "2026-09-01 10:00:00",
+        "completed_at": "",
+        "comment": "",
+        "approval": "не согласовано",
+        "exported_at": "2026-09-15 12:00:00",
+        "performer": "Жалыбин Максим Дмитриевич",
+        "source": "erp_pm",
+    }
+
+    monkeypatch.setattr(
+        "app.services.erp_tasks.resolve_actor",
+        lambda **_kwargs: ("Жалыбин Максим Дмитриевич", "1CUSER"),
+    )
+    monkeypatch.setattr(
+        "app.services.erp_tasks._query_tasks",
+        lambda **_kwargs: [sample],
+    )
+    monkeypatch.setattr("app.services.erp_tasks._attach_docflow", lambda *_a, **_k: "")
+
+    result = list_current_tasks(fio="Жалыбин Максим Дмитриевич", limit=10)
+    assert result["fio"] == "Жалыбин Максим Дмитриевич"
+    assert result["user_id"] == "1CUSER"
+    assert result["count"] == 1
+    assert "erp_pm" in result["source"]
+    assert isinstance(result["tasks"], list)
+    task = result["tasks"][0]
+    for key in (
+        "number",
+        "title",
+        "status",
+        "done",
+        "late",
+        "due_at",
+        "source",
+    ):
+        assert key in task
+    assert task["number"] == "00-Л-000040259"
+    assert task["source"] == "erp_pm"

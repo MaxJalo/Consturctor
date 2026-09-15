@@ -1,6 +1,6 @@
 import { useContext } from 'react'
-import type { UserProfile } from '../api/types'
 import { type MeetingEvent } from '../utils/outlookMeetings'
+import type { UserProfile } from '../api/types'
 import type { SpecSummaryTile } from './specV04Shell'
 import type { SpecMailRow, SpecProcessRow, SpecProjectRow, SpecTaskRow } from './specV04DemoData'
 import { SpecV04SourcesContext } from './SpecV04SourcesProvider'
@@ -36,6 +36,8 @@ export interface SpecV04SourcesState {
   }
   /** TurboProject API / учётка недоступны (не путать с пустым портфелем). */
   turboNoSession: boolean
+  /** Профиль для turboproject.* (email/nameMail из сессии). */
+  user: UserProfile | null
   /** Пароль 1С из экрана входа в памяти renderer (не localStorage). */
   comPasswordInSession: boolean
   /** Нужен повторный ввод пароля 1С (COM / gateway / OData). */
@@ -149,7 +151,7 @@ export function buildTaskTiles(data: SpecV04SourcesState): SpecSummaryTile[] {
   const onecHint = loading
     ? 'загрузка…'
     : data.erpTaskCount
-      ? data.sources.erp
+      ? [data.erpError || data.error, data.sources.erp].filter(Boolean).join(' · ')
       : data.erpError || data.error || data.sources.erp
   return [
     {

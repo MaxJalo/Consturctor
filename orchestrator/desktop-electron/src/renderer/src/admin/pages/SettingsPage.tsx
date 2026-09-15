@@ -3,13 +3,28 @@ import { ADMIN_THEMES } from '../theme/adminThemes'
 import { useAdminTheme } from '../hooks/useAdminTheme'
 import { AdminPageHeader } from '../components/shared/AdminPageHeader'
 import { AdminPageShell } from '../components/shared/AdminPageShell'
+import { fetchAdminSettings } from '../adminApi'
+import { useAdminTabLoad } from '../hooks/useAdminTabLoad'
+
+const SETTINGS_FALLBACK = {
+  breadcrumb: 'Настройки — Параметры интерфейса',
+  title: 'Настройки',
+  subtitle: 'Персонализация интерфейса администратора'
+}
 
 export function SettingsPage(): React.JSX.Element {
   const { themeId, setThemeId } = useAdminTheme()
+  const { data, loading, error } = useAdminTabLoad(SETTINGS_FALLBACK, fetchAdminSettings)
 
   return (
-    <AdminPageShell breadcrumb="Настройки — Параметры интерфейса" className="admin-page--fill">
-      <AdminPageHeader title="Настройки" subtitle="Персонализация интерфейса администратора" />
+    <AdminPageShell breadcrumb={data.breadcrumb} className="admin-page--fill">
+      <AdminPageHeader title={data.title} subtitle={data.subtitle} />
+      {loading ? <p className="admin-kb-sub">Загрузка…</p> : null}
+      {error ? (
+        <p className="admin-kb-sub" role="alert">
+          {error}
+        </p>
+      ) : null}
       <section className="admin-panel admin-settings-panel">
         <div className="admin-panel-title-row">
           <span className="admin-panel-title-row__icon">

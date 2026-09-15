@@ -1,12 +1,12 @@
 # Admin UI registry
 
-Единый источник моков: [`../mocks/adminMocks.ts`](../mocks/adminMocks.ts)
+Данные вкладок: `GET /api/v1/admin/*` через [`adminApi.ts`](adminApi.ts) и [`hooks/useAdminTabLoad.ts`](hooks/useAdminTabLoad.ts). Типы и fallback при ошибке сети: [`../mocks/adminMocks.ts`](../mocks/adminMocks.ts). Обзор — live-метрики в [`backend/app/services/admin/overview.py`](../../../../backend/app/services/admin/overview.py); пользователи — `AppUser` в БД; остальные вкладки — stub с `source: admin_api`.
 
 ## Вкладка «Обзор»
 
 | Элемент | Файл | Props / данные |
 |--------|------|----------------|
-| Страница | [`pages/OverviewPage.tsx`](pages/OverviewPage.tsx) | Берёт `adminOverviewMock` |
+| Страница | [`pages/OverviewPage.tsx`](pages/OverviewPage.tsx) | `fetchAdminOverview()` → `/api/v1/admin/overview` |
 | Хлебные крошки | [`components/AdminBreadcrumb.tsx`](components/AdminBreadcrumb.tsx) | `title: string` ← `adminOverviewMock.breadcrumb` |
 | Toolbar | [`components/DashboardToolbar.tsx`](components/DashboardToolbar.tsx) | `title`, `subtitle`, `periodLabel`, `dateRange`, `refreshLabel`, `onRefresh?` ← поля `dashboard*` в моке |
 | Сетка KPI | [`components/MetricGrid.tsx`](components/MetricGrid.tsx) | `metrics: AdminMetricMock[]` ← `adminOverviewMock.metrics` |

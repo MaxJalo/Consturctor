@@ -21,6 +21,39 @@ export function formatComToolError(message: string): string {
   return text
 }
 
+export type ApiAuthErrorKind =
+  | 'session_revoked'
+  | 'invalid_token'
+  | 'auth_required'
+  | 'gateway_auth'
+  | 'other'
+
+/** Classify backend / gateway auth errors for UI and re-login policy. */
+export function classifyApiAuthError(message: string, status = 0): ApiAuthErrorKind {
+  const text = (message || '').trim()
+  if (!text && status !== 401 && status !== 402) return 'other'
+  if (/Сеанс завершён|session_replaced|другом устройств/i.test(text)) return 'session_revoked'
+  if (/Недействительный токен|invalid token/i.test(text)) return 'invalid_token'
+  if (/Требуется авторизация|authorization required/i.test(text)) return 'auth_required'
+  if (/Неверный логин или пароль/i.test(text)) return 'other'
+  if (
+    /Gateway отклонил|отклонил учётку OData|OData документооборота|docflow.*401|документооборот.*отклон/i.test(
+      text
+    )
+  ) {
+    return 'gateway_auth'
+  }
+  if (status === 402) return 'gateway_auth'
+  if (status === 401 && /gateway|odata|docflow|отклонил учётку/i.test(text)) return 'gateway_auth'
+  return 'other'
+}
+
+/** True when the desktop should clear JWT and show the login form. */
+export function shouldForceReLogin(message: string, status = 0): boolean {
+  const kind = classifyApiAuthError(message, status)
+  return kind === 'session_revoked' || kind === 'invalid_token' || kind === 'auth_required'
+}
+
 /** COM / gateway / OData signals that 1C credentials or session must be re-entered. */
 export function isOneCAuthFailure(...chunks: (string | undefined | null)[]): boolean {
   const text = chunks
@@ -32,7 +65,12 @@ export function isOneCAuthFailure(...chunks: (string | undefined | null)[]): boo
   if (/Войдите с паролем 1С|пароль не сохраняется|Пароль 1С в сессии: нет/i.test(text)) {
     return true
   }
-  if (/Gateway отклонил запрос \(401\)|\b401\b|\b402\b|unauthorized|отклонил учётку/i.test(text)) {
+  if (
+    /Сеанс Orchestrator завершён|JWT недействителен|Требуется авторизация/i.test(text)
+  ) {
+    return true
+  }
+  if (/Gateway\/OData отклонил|отклонил учётку OData|\b402\b|unauthorized|отклонил учётку/i.test(text)) {
     return true
   }
   if (/не удалось открыть сеанс|неверно указан пользователь|неверный логин|неверный пароль|authentication/i.test(text)) {
@@ -57,18 +95,63 @@ export function isDoubleOneCAuthHint(...chunks: (string | undefined | null)[]): 
 
 export function formatGatewayToolError(message: string, status = 0): string {
   const text = (message || '').trim()
-  if (status === 401) {
+  const kind = classifyApiAuthError(text, status)
+
+  if (kind === 'session_revoked') {
     return (
-      'Gateway отклонил запрос (401). Обновите constructor-gateway на сервере ' +
-      'и войдите в Orchestrator с паролем 1С. ' +
-      (text ? `(${text})` : '')
+      'Сеанс Orchestrator завершён (вход на другом устройстве или повторный вход). ' +
+      'Войдите с паролем 1С снова.'
     )
+  }
+  if (kind === 'invalid_token') {
+    return (
+      'JWT недействителен или выдан другим backend (localhost vs LAN :7812). ' +
+      'Выйдите и войдите снова; для dev используйте run_dev.bat backend и BACKEND_URL=http://127.0.0.1:7812.'
+    )
+  }
+  if (kind === 'auth_required') {
+    return 'Требуется авторизация — войдите с паролем 1С.'
+  }
+  if (kind === 'gateway_auth') {
+    const code = status === 402 ? 402 : 401
+    const tail = text && !/Gateway отклонил/i.test(text) ? ` (${text})` : ''
+    return (
+      `Gateway/OData отклонил запрос (${code}). Проверьте пароль 1С в сеансе и ODATA_* / DOCFLOW_* на backend. ` +
+      `На старом LAN gateway обновите constructor-gateway.${tail} ${comPasswordSessionHint()}`
+    )
+  }
+  if (status === 401 && text) {
+    return `Доступ запрещён (401): ${text}`
+  }
+  if (status === 401) {
+    return `Доступ запрещён (401). ${comPasswordSessionHint()}`
   }
   if (/401|402|unauthorized|отклонил учётку/i.test(text)) {
     if (/обновите|gateway/i.test(text)) return text
-    return `${text} Если ошибка повторяется — обновите gateway и проверьте пароль 1С в сессии (${comPasswordSessionHint()}).`
+    return `${text} Если ошибка повторяется — проверьте пароль 1С (${comPasswordSessionHint()}).`
   }
   return text
+}
+
+/** Gateway/docflow hint strings must not appear as rows in the 1C task grid. */
+export function isErpMetaHintRecord(task: Record<string, unknown>): boolean {
+  const number = String(task.number || '').trim()
+  if (/^\d{2}-[\wА-Яа-яЁё.-]+-\d{3,}$/i.test(number)) return false
+  const title = String(task.title || number || '').trim()
+  if (!title) return true
+  if (/BACKEND_URL|127\.0\.0\.1:7812|192\.168\.\d+\.\d+:7812|LAN gateway|run_dev\.bat/i.test(title)) {
+    return true
+  }
+  if (/Документооборот\s*\(\/doc\)|отклонил учётку OData|OData документооборота/i.test(title)) {
+    return true
+  }
+  if (
+    /Gateway\/SQL без задач|onec\.erp_tasks_current|erp_pm stub|Gateway вернул stub/i.test(title)
+  ) {
+    return true
+  }
+  if (/Войдите с паролем 1С|Пароль 1С в сессии/i.test(title)) return true
+  return false
 }
 
 export function stubSourceMessage(source: string): string {
@@ -76,7 +159,7 @@ export function stubSourceMessage(source: string): string {
   if (key !== 'stub') return ''
   return (
     'Gateway вернул stub (нет ERP SQL / OData на сервере). ' +
-    'Проверьте backend на 7812 или дождитесь COM-fallback (desktop + sidecar).'
+    'Проверьте ERP_* на backend :7812. COM onec.search_tasks — только при VITE_ONEC_COM_TASKS_FALLBACK=1.'
   )
 }
 

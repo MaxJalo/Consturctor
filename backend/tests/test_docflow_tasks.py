@@ -21,8 +21,8 @@ def test_docflow_auth_prefers_session_fio_password(monkeypatch) -> None:
         SimpleNamespace(
             docflow_odata_username="env-user",
             docflow_odata_password="env-pass",
-            odata_username="",
-            odata_password="",
+            odata_username="odata-only",
+            odata_password="odata-pass",
             erp_login="",
             erp_password="",
         ),
@@ -32,7 +32,25 @@ def test_docflow_auth_prefers_session_fio_password(monkeypatch) -> None:
         "Иванов И.И.",
         "secret",
     )
+    assert docflow_auth(
+        {"username": "name_mail_slug", "fio": "Иванов И.И.", "password": "secret"}
+    ) == ("Иванов И.И.", "secret")
     assert _credentials_from_args({"username": "u", "erp_password": "p"}) == ("u", "p")
+
+
+def test_docflow_env_auth_falls_back_to_odata_when_no_docflow_or_erp(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "app.services.docflow_tasks.settings",
+        SimpleNamespace(
+            docflow_odata_username="",
+            docflow_odata_password="",
+            odata_username="odata-only",
+            odata_password="odata-pass",
+            erp_login="",
+            erp_password="",
+        ),
+    )
+    assert docflow_env_auth() == ("odata-only", "odata-pass")
 
 
 def test_docflow_base_url_from_erp(monkeypatch) -> None:

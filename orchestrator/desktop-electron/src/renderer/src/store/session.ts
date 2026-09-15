@@ -46,11 +46,33 @@ let comPassword = ''
 let comNameMail = ''
 let comCredentialsRevision = 0
 
+/** Dev-only: workspace `.env` via Electron main (not Vite); never persisted. */
+let devGatewayPassword = ''
+let devGatewayNameMail = ''
+let devGatewayFio = ''
+
 export function setComCredentials(login: string, password: string, nameMail = ''): void {
   comLogin = (login || '').trim()
   comPassword = password || ''
   comNameMail = (nameMail || '').trim()
   comCredentialsRevision += 1
+}
+
+/** After JWT restore: sync v8users.Name / FIO from profile without touching password. */
+export function syncComProfileFromUser(user: { fio?: string; nameMail?: string } | null): void {
+  if (!user) return
+  const nextMail = (user.nameMail || '').trim()
+  const nextLogin = (user.fio || '').trim()
+  let changed = false
+  if (nextMail && nextMail !== comNameMail) {
+    comNameMail = nextMail
+    changed = true
+  }
+  if (!comLogin && nextLogin) {
+    comLogin = nextLogin
+    changed = true
+  }
+  if (changed) comCredentialsRevision += 1
 }
 
 export function clearComCredentials(): void {
@@ -65,7 +87,36 @@ export function comCredentials(): { login: string; password: string; nameMail: s
 }
 
 export function hasComPassword(): boolean {
-  return Boolean(comPassword)
+  return Boolean(comPassword || devGatewayPassword)
+}
+
+export function setDevGatewayCredentials(opts: {
+  password?: string
+  nameMail?: string
+  fio?: string
+}): void {
+  devGatewayPassword = (opts.password || '').trim()
+  devGatewayNameMail = (opts.nameMail || '').trim().toLowerCase()
+  devGatewayFio = (opts.fio || '').trim()
+  if (devGatewayPassword || devGatewayNameMail || devGatewayFio) {
+    comCredentialsRevision += 1
+  }
+}
+
+export function devGatewayCredentials(): {
+  password: string
+  nameMail: string
+  fio: string
+} {
+  return {
+    password: devGatewayPassword,
+    nameMail: devGatewayNameMail,
+    fio: devGatewayFio
+  }
+}
+
+export function gatewaySessionPassword(): string {
+  return comPassword || devGatewayPassword
 }
 
 /** Bumps on set/clear — use in React deps to refetch 1C after re-login. */

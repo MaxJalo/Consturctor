@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import type { UserProfile } from '../../api/types'
 import { OrchSlotFilters, OrchSlotMetrics, OrchSlotTodayCanvas } from '../../layout/GridSlots'
 import { TodayWidgetGrid, useTodayWidgetLayout } from './TodayWidgetGrid'
@@ -42,6 +42,7 @@ function MiniTableCard({
   columns: string[]
   rows: React.ReactNode[][]
   loading?: boolean
+  /** Shown above the table (KPI/banner), never as a fake data row. */
   error?: string
   emptyText?: string
   hint?: string
@@ -53,15 +54,6 @@ function MiniTableCard({
         <tr>
           <td colSpan={columns.length} className="today-table-status">
             Загружаем…
-          </td>
-        </tr>
-      )
-    }
-    if (error) {
-      return (
-        <tr>
-          <td colSpan={columns.length} className="today-table-status today-table-error">
-            {emptyExtra || error}
           </td>
         </tr>
       )
@@ -89,6 +81,9 @@ function MiniTableCard({
       title={title}
       extra={hint ? <span className="spec-v04-muted today-table-hint">{hint}</span> : undefined}
     >
+      {error && !loading ? (
+        <p className="today-table-status today-table-error today-table-banner">{error}</p>
+      ) : null}
       <div className="spec-v04-table-wrap today-table-scroll">
         <table className="today-mini-table">
           <thead>
@@ -162,13 +157,19 @@ export function TodayGridTab({
     onAskOrchestrator(message, 'Вкладка «Сегодня»')
   }
 
-  const onecReconnectBlock =
-    !data.sourcesLoading && !taskRows.length && data.oneCAuthFailure ? (
-      <OneCReconnectInline
-        errorHint={data.erpError || data.error}
-        onOpen={() => setOnecDialogOpen(true)}
-      />
-    ) : undefined
+  const showOneCReconnect =
+    !data.sourcesLoading && !taskRows.length && data.oneCAuthFailure
+  const onecReconnectBlock = showOneCReconnect ? (
+    <OneCReconnectInline
+      errorHint={data.erpError || data.error}
+      onOpen={() => setOnecDialogOpen(true)}
+    />
+  ) : undefined
+
+  useEffect(() => {
+    if (data.sourcesLoading || !showOneCReconnect || data.comPasswordInSession) return
+    setOnecDialogOpen(true)
+  }, [data.sourcesLoading, showOneCReconnect, data.comPasswordInSession])
 
   const {
     layoutWithStatic,
@@ -227,20 +228,16 @@ export function TodayGridTab({
           title="Задачи из 1С"
           loading={data.sourcesLoading}
           error={
-            taskRows.length
-              ? undefined
-              : [data.erpError || data.error, !data.erpError && !data.error ? comPasswordSessionHint() : '']
+            data.erpError || data.error
+              ? [data.erpError || data.error, !taskRows.length ? comPasswordSessionHint() : '']
                   .filter(Boolean)
-                  .join(' · ') || undefined
-          }
-          emptyText={`Нет задач 1С для отображения · ${comPasswordSessionHint()}`}
-          hint={
-            taskRows.length && data.erpError
-              ? data.erpError
-              : data.sources.erp !== '—'
-                ? data.sources.erp
+                  .join(' · ')
+              : !taskRows.length
+                ? comPasswordSessionHint()
                 : undefined
           }
+          emptyText="Нет задач 1С для отображения"
+          hint={data.sources.erp !== '—' ? data.sources.erp : undefined}
           emptyExtra={onecReconnectBlock}
           columns={['Задача', 'Срок', 'Статус', 'Исполнитель']}
           rows={taskRows.map((row) => [

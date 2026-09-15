@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { OneCReconnectDialog, OneCReconnectInline } from '../../workplace/OneCReconnectDialog'
 import type { UserProfile } from '../../api/types'
 import {
@@ -35,6 +35,10 @@ export function TasksGridTab({
         ? emptyCore
         : `${emptyCore}${emptyCore.includes('Пароль 1С в сессии') ? '' : ` · ${comPasswordSessionHint()}`}`
   const [onecDialogOpen, setOnecDialogOpen] = useState(false)
+  useEffect(() => {
+    if (data.loading || !showOneCReconnect || data.comPasswordInSession) return
+    setOnecDialogOpen(true)
+  }, [data.loading, showOneCReconnect, data.comPasswordInSession])
   const [selectedId, setSelectedId] = useState('')
   const effectiveId = selectedId || taskRows[0]?.id || ''
   const selected = taskRows.find((item) => item.id === effectiveId)
@@ -50,6 +54,11 @@ export function TasksGridTab({
       </OrchSlotFilters>
       <OrchSlotMain>
         <div className="spec-v04-table-wrap wp-card">
+          {(data.erpError || data.error) && !showOneCReconnect ? (
+            <p className="today-table-status today-table-error today-table-banner">
+              {data.erpError || data.error}
+            </p>
+          ) : null}
           <table className="spec-v04-table">
             <thead>
               <tr>
@@ -65,15 +74,14 @@ export function TasksGridTab({
             <tbody>
               {!taskRows.length ? (
                 <tr>
-                  <td
-                    colSpan={7}
-                    className={`spec-v04-empty${data.erpError || data.error ? ' today-table-error' : ''}`}
-                  >
+                  <td colSpan={7} className="spec-v04-empty">
                     {showOneCReconnect ? (
                       <OneCReconnectInline
                         errorHint={emptyMessage}
                         onOpen={() => setOnecDialogOpen(true)}
                       />
+                    ) : data.erpError || data.error ? (
+                      'Нет открытых задач 1С.'
                     ) : (
                       emptyMessage
                     )}

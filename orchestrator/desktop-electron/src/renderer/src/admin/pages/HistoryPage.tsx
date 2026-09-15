@@ -1,5 +1,7 @@
 import { useCallback, useMemo, useState } from 'react'
-import { adminHistoryMock, getAllHistoryRows } from '../../mocks/adminMocks'
+import { adminHistoryMock } from '../../mocks/adminMocks'
+import { fetchAdminHistory } from '../adminApi'
+import { useAdminTabLoad } from '../hooks/useAdminTabLoad'
 import { AdminDataTable } from '../components/shared/AdminDataTable'
 import { AdminFilterBar } from '../components/shared/AdminFilterBar'
 import { AdminPageHeader } from '../components/shared/AdminPageHeader'
@@ -14,24 +16,25 @@ import { downloadTableExport } from '../utils/exportTable'
 import { matchesFilter, matchesSearch } from '../utils/tableFilters'
 
 export function HistoryPage(): React.JSX.Element {
-  const mock = adminHistoryMock
-  const [activeTab, setActiveTab] = useState(mock.activeTab)
-  const allRows = useMemo(() => getAllHistoryRows(activeTab), [activeTab])
+  const { data, loading, error } = useAdminTabLoad(adminHistoryMock, fetchAdminHistory)
+  const [activeTab, setActiveTab] = useState(data.activeTab)
+  const allRows = useMemo(() => data.rows, [data.rows])
 
   const filterFn = useCallback(
     (row: (typeof allRows)[number], filters: Record<string, string>, search: string) => {
+      if ((row.tab || 'processes') !== activeTab) return false
       if (!matchesFilter(row.status, filters.status || '')) return false
       if (!matchesFilter(row.agent, filters.agent || '')) return false
       if (!matchesFilter(row.process, filters.process || '')) return false
       if (!matchesFilter(row.user, filters.user || '')) return false
       return matchesSearch([row.id, row.process, row.agent, row.user, row.status, row.launchedAt, row.duration], search)
     },
-    []
+    [activeTab]
   )
 
   const { filtered, paged, page, setPage, handleFiltersChange, total } = useAdminFilteredTable({
     rows: allRows,
-    pageSize: mock.pagination.pageSize,
+    pageSize: data.pagination.pageSize,
     filterFn,
     resetKey: activeTab
   })
@@ -57,17 +60,23 @@ export function HistoryPage(): React.JSX.Element {
   }
 
   return (
-    <AdminPageShell breadcrumb={mock.breadcrumb}>
+    <AdminPageShell breadcrumb={data.breadcrumb}>
       <AdminPageHeader
-        title={mock.title}
-        subtitle={mock.subtitle}
+        title={data.title}
+        subtitle={data.subtitle}
         controls={<AdminPeriodControls />}
       />
-      <AdminSegmentTabs tabs={mock.tabs} activeId={activeTab} onChange={handleTabChange} />
+      {loading ? <p className="admin-kb-sub">Загрузка…</p> : null}
+      {error ? (
+        <p className="admin-kb-sub" role="alert">
+          {error}
+        </p>
+      ) : null}
+      <AdminSegmentTabs tabs={data.tabs} activeId={activeTab} onChange={handleTabChange} />
       <div className="admin-panel admin-panel--overflow-visible">
         <AdminFilterBar
           key={activeTab}
-          filters={mock.filters}
+          filters={data.filters}
           exportLabel="Экспорт"
           onFiltersChange={handleFiltersChange}
           onExport={handleExport}
@@ -96,7 +105,7 @@ export function HistoryPage(): React.JSX.Element {
         />
         <AdminPagination
           page={page}
-          pageSize={mock.pagination.pageSize}
+          pageSize={data.pagination.pageSize}
           total={total}
           onPageChange={setPage}
         />

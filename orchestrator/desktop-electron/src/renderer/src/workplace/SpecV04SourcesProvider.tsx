@@ -6,7 +6,6 @@ import {
   useState,
   type ReactNode
 } from 'react'
-import { api } from '../api/client'
 import type { UserProfile } from '../api/types'
 import {
   countMeetingsOnDay,
@@ -14,30 +13,19 @@ import {
   ensureOutlookMeetings,
   type MeetingEvent
 } from '../utils/outlookMeetings'
-import { fetchOutlookMailForRange, outlookMailWeekRange } from '../utils/outlookMail'
 import { hasComPassword } from '../store/session'
-import {
-  enrichEmptyOneCErrors,
-  formatComToolError,
-  formatGatewayToolError,
-  isOneCAuthFailure
-} from './onecSessionHints'
-import { erpActorFio, onecGatewayInvokeArgs, outlookMailboxAddress } from './userContext'
+import { erpActorFio, outlookMailboxAddress } from './userContext'
 import {
   agentToProcessRow,
   erpTaskToProcessRow,
-  erpTaskToRow,
   mailRowToProcessRow,
   meetingToProcessRow,
-  outlookMessageToMailRow,
-  turboProjectToProcessRow,
-  turboProjectToRow
+  turboProjectToProcessRow
 } from './specV04Mappers'
 import type { SpecMailRow, SpecProcessRow, SpecProjectRow, SpecTaskRow } from './specV04DemoData'
 import { useWorkplaceData } from './WorkplaceBoard'
 import { useGridRefreshGeneration } from './GridDataRefreshContext'
-import { isTurboNoSessionError } from './turboSession'
-import { comSearchTasksToErpRecords, invokeLocalAcTool } from '../utils/localAcTool'
+import { fetchOrchestratorTaskSources, ORCH_SOURCE_ID } from './orchestratorTaskSources'
 import type { SpecV04SourcesState } from './useSpecV04Data'
 
 const EMPTY: SpecV04SourcesState = {
@@ -62,99 +50,11 @@ const EMPTY: SpecV04SourcesState = {
   sources: { erp: '—', turbo: '—', mail: '—' },
   turboNoSession: false,
   comPasswordInSession: false,
-  oneCAuthFailure: false
+  oneCAuthFailure: false,
+  user: null
 }
 
 export const SpecV04SourcesContext = createContext<SpecV04SourcesState>(EMPTY)
-
-function parseErpToolTasks(
-  res: { ok: boolean; result?: unknown; error?: string },
-  erpFio: string
-): { rows: SpecTaskRow[]; source: string; error: string } {
-  if (!res.ok || !res.result || typeof res.result !== 'object') {
-    return {
-      rows: [],
-      source: '',
-      error: res.error ? formatGatewayToolError(res.error) : res.error || ''
-    }
-  }
-  const payload = res.result as Record<string, unknown>
-  const source = String(payload.source || 'erp_pm')
-  const warning = String(payload.docflow_warning || payload.warning || '').trim()
-  const raw = Array.isArray(payload.tasks) ? payload.tasks : []
-  const rows = raw
-    .filter((item): item is Record<string, unknown> => Boolean(item) && typeof item === 'object')
-    .map((item) => erpTaskToRow(item, erpFio))
-  return { rows, source, error: warning }
-}
-
-function mergeErpTaskRows(primary: SpecTaskRow[], extra: SpecTaskRow[]): SpecTaskRow[] {
-  const seen = new Set<string>()
-  const merged: SpecTaskRow[] = []
-  for (const row of [...primary, ...extra]) {
-    const key = `${row.id}:${row.title}`
-    if (seen.has(key)) continue
-    seen.add(key)
-    merged.push(row)
-  }
-  return merged
-}
-
-function isComTaskSource(source: string): boolean {
-  const key = source.toLowerCase()
-  return key.includes('onec_com') || key.includes('com32')
-}
-
-function uniqueErrorJoin(...chunks: (string | undefined | null)[]): string {
-  const seen = new Set<string>()
-  const parts: string[] = []
-  for (const chunk of chunks) {
-    if (!chunk?.trim()) continue
-    for (const piece of chunk.split(' · ')) {
-      const text = piece.trim()
-      if (!text || seen.has(text)) continue
-      seen.add(text)
-      parts.push(text)
-    }
-  }
-  return parts.join(' · ')
-}
-
-async function loadComErpTasks(
-  erpFio: string,
-  priorError: string
-): Promise<{ rows: SpecTaskRow[]; source: string; error: string }> {
-  const comRes = await invokeLocalAcTool('onec.search_tasks', {
-    mine_only: true,
-    limit: 80
-  })
-  if (comRes.ok && comRes.result) {
-    const comRecords = comSearchTasksToErpRecords(comRes.result)
-    if (comRecords.length) {
-      const note = priorError.trim()
-        ? `Gateway/ OData без задач; показаны через COM 1С (${priorError.trim()})`
-        : 'Задачи через COM 1С (сеанс desktop)'
-      return {
-        rows: comRecords.map((item) => erpTaskToRow(item, erpFio)),
-        source: String(comRes.result.source || 'onec_com'),
-        error: note
-      }
-    }
-    const payloadErr = formatComToolError(
-      String((comRes.result as Record<string, unknown>).error || '').trim()
-    )
-    return {
-      rows: [],
-      source: '',
-      error: uniqueErrorJoin(priorError, payloadErr, formatComToolError(comRes.error || ''))
-    }
-  }
-  return {
-    rows: [],
-    source: '',
-    error: uniqueErrorJoin(priorError, formatComToolError(comRes.error || ''))
-  }
-}
 
 export function SpecV04SourcesProvider({
   user,
@@ -199,158 +99,28 @@ export function SpecV04SourcesProvider({
       setError('')
       setOneCAuthFailure(false)
       try {
-        const onecArgs = onecGatewayInvokeArgs(user, { limit: 80 })
-        const mailRange = outlookMailWeekRange()
-        const [erpRes, docflowRes, turboRes, outlookMailRes, turboStatus] = await Promise.all([
-          api.invokeServerTool('onec.erp_tasks_current', onecArgs),
-          api.invokeServerTool('onec.docflow_tasks', onecGatewayInvokeArgs(user, { limit: 80, only_open: true })),
-          api.invokeServerTool('turboproject.get_user_portfolio', { employee: erpFio, limit: 40 }),
-          fetchOutlookMailForRange(mailRange.dateFrom, mailRange.dateTo, {
-            folder: 'All',
-            maxResults: 50
-          }),
-          api.getToolStatus('turboproject').catch(() => null)
-        ])
+        const bundle = await fetchOrchestratorTaskSources(user, erpFio, outlookMailbox)
         if (!alive) return
 
-        const erpParsed = parseErpToolTasks(erpRes, erpFio)
-        let docParsed = parseErpToolTasks(docflowRes, erpFio)
-        const docflowOdataFailed =
-          Boolean(docflowRes.error?.trim()) ||
-          Boolean(docParsed.error?.trim()) ||
-          (!docflowRes.ok && !docParsed.rows.length)
-
-        const gatewayPriorErrors = [
-          erpRes.error,
-          docflowRes.error,
-          erpParsed.error,
-          docParsed.error,
-          !erpRes.ok && !erpParsed.rows.length ? 'onec.erp_tasks_current недоступен' : '',
-          erpParsed.source === 'stub' ? 'erp_pm stub (нет SQL gateway)' : ''
-        ]
-          .filter((item): item is string => Boolean(item && item.trim()))
-          .join(' · ')
-
-        let comParsed: { rows: SpecTaskRow[]; source: string; error: string } | null = null
-
-        if (docflowOdataFailed && !docParsed.rows.length && !isComTaskSource(docParsed.source)) {
-          comParsed = await loadComErpTasks(
-            erpFio,
-            docParsed.error || docflowRes.error || 'OData документооборота'
-          )
-          if (!alive) return
-          if (comParsed.rows.length) {
-            docParsed = {
-              rows: comParsed.rows,
-              source: comParsed.source,
-              error: comParsed.error
-            }
-          } else if (comParsed.error) {
-            docParsed = { ...docParsed, error: comParsed.error }
-          }
-        }
-
-        let mergedTasks = mergeErpTaskRows(erpParsed.rows, docParsed.rows)
-
-        if (
-          mergedTasks.length === 0 &&
-          !isComTaskSource(docParsed.source) &&
-          !(comParsed?.rows.length)
-        ) {
-          comParsed = await loadComErpTasks(erpFio, gatewayPriorErrors)
-          if (!alive) return
-          if (comParsed.rows.length) {
-            mergedTasks = mergeErpTaskRows(erpParsed.rows, comParsed.rows)
-            if (!docParsed.rows.length) {
-              docParsed = {
-                rows: comParsed.rows,
-                source: comParsed.source,
-                error: comParsed.error
-              }
-            }
-          } else if (comParsed.error) {
-            docParsed = {
-              ...docParsed,
-              error: uniqueErrorJoin(docParsed.error, comParsed.error)
-            }
-          }
-        }
-        setErpTasks(mergedTasks)
-        const sourceParts = [erpParsed.source, docParsed.source].filter(Boolean)
-        setErpSource(
-          mergedTasks.length
-            ? [...new Set(sourceParts)].join(' + ') || '1С'
-            : sourceParts[0] || erpRes.error || docflowRes.error || '—'
-        )
-        const erpErrorJoined = enrichEmptyOneCErrors(
-          uniqueErrorJoin(
-            erpRes.error ? formatGatewayToolError(erpRes.error) : '',
-            docflowRes.error ? formatGatewayToolError(docflowRes.error) : '',
-            erpParsed.error,
-            docParsed.error
-          ),
-          {
-            erpSource: erpParsed.source,
-            docSource: docParsed.source,
-            mergedCount: mergedTasks.length
-          }
-        )
-        setErpError(erpErrorJoined)
-        setOneCAuthFailure(
-          mergedTasks.length === 0 &&
-            (!hasComPassword() ||
-              isOneCAuthFailure(
-                erpRes.error,
-                docflowRes.error,
-                erpParsed.error,
-                docParsed.error,
-                comParsed?.error,
-                erpErrorJoined
-              ))
-        )
-
-        if (turboStatus && !turboStatus.configured) {
-          setProjects([])
-          setTurboSource('TurboProject не настроен')
-          setTurboNoSession(true)
-        } else if (turboRes.ok && turboRes.result && typeof turboRes.result === 'object') {
-          const payload = turboRes.result as Record<string, unknown>
-          setTurboSource(String(payload.source || 'turboproject'))
-          setTurboNoSession(false)
-          const raw = Array.isArray(payload.projects) ? payload.projects : []
-          setProjects(
-            raw
-              .filter((item): item is Record<string, unknown> => Boolean(item) && typeof item === 'object')
-              .map((item) => turboProjectToRow(item))
-          )
-        } else {
-          setProjects([])
-          const turboErr = turboRes.error || 'недоступно'
-          setTurboSource(turboErr)
-          setTurboNoSession(isTurboNoSessionError(turboErr))
-        }
-
-        if (outlookMailRes.ok && outlookMailRes.messages.length) {
-          setMailSource(
-            outlookMailRes.source ||
-              `outlook.search_mail (${mailRange.dateFrom}…${mailRange.dateTo}, All)`
-          )
-          setMailRows(
-            outlookMailRes.messages.map((item, index) => outlookMessageToMailRow(item, index))
-          )
-        } else {
-          setMailRows([])
-          const mailHint = outlookMailRes.error
-            ? `Outlook: ${outlookMailRes.error}`
-            : outlookMailbox
-              ? `Outlook: ${outlookMailbox}`
-              : 'outlook.search_mail (локальный профиль)'
-          setMailSource(
-            outlookMailRes.ok
-              ? `outlook.search_mail (${mailRange.dateFrom}…${mailRange.dateTo}, All)`
-              : mailHint
+        setErpTasks(bundle.erp.tasks)
+        setErpSource(bundle.erp.tasks.length ? bundle.erp.sourceLabel : bundle.erp.sourceLabel)
+        setErpError(bundle.erp.error)
+        setOneCAuthFailure(bundle.erp.oneCAuthFailure)
+        if (bundle.erp.error?.trim()) {
+          setError((prev) =>
+            prev && prev.includes(bundle.erp.error.trim()) ? prev : bundle.erp.error.trim()
           )
         }
+
+        setProjects(bundle.turbo.projects)
+        setTurboSource(bundle.turbo.sourceLabel)
+        setTurboNoSession(bundle.turbo.turboNoSession)
+        if (bundle.turbo.hint?.trim() && !bundle.turbo.projects.length) {
+          setError((prev) => (prev ? `${prev} · ${bundle.turbo.hint}` : bundle.turbo.hint))
+        }
+
+        setMailRows(bundle.mail.rows)
+        setMailSource(bundle.mail.sourceLabel)
       } catch (err) {
         if (alive) setError(err instanceof Error ? err.message : 'Не удалось загрузить данные')
       } finally {
@@ -413,10 +183,15 @@ export function SpecV04SourcesProvider({
       meetingCount: meetings.length,
       meetingCountToday,
       meetings,
-      sources: { erp: erpSource, turbo: turboSource, mail: mailSource },
+      sources: {
+        erp: erpSource || ORCH_SOURCE_ID.erpPm,
+        turbo: turboSource || ORCH_SOURCE_ID.turboProject,
+        mail: mailSource
+      },
       turboNoSession,
       comPasswordInSession: hasComPassword(),
-      oneCAuthFailure
+      oneCAuthFailure,
+      user
     }),
     [
       sourcesLoading,
@@ -437,7 +212,8 @@ export function SpecV04SourcesProvider({
       mailSource,
       turboNoSession,
       comCredsRevision,
-      oneCAuthFailure
+      oneCAuthFailure,
+      user
     ]
   )
 

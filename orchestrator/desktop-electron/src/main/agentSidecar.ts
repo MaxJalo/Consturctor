@@ -175,7 +175,6 @@ export class AgentSidecar {
   private lastToken: string | null = null
   private lastLogin = ''
   private lastPassword = ''
-  private lastOnecComUsr = ''
   private isReady = false
   private pending: AgentSidecarMessage[] = []
   private lastStart: AgentSidecarMessage | null = null
@@ -568,17 +567,15 @@ export class AgentSidecar {
     if (credentials) {
       if (credentials.login !== undefined) this.lastLogin = String(credentials.login || '')
       if (credentials.password !== undefined) this.lastPassword = String(credentials.password || '')
-      if (credentials.onecComUsr !== undefined) {
-        this.lastOnecComUsr = String(credentials.onecComUsr || '')
-      }
     }
     this.send({
       type: 'configure',
       backendUrl: this.backendUrl,
       token: this.lastToken,
       login: this.lastLogin,
-      password: this.lastPassword,
-      onecComUsr: this.lastOnecComUsr
+      fio: this.lastLogin,
+      erp_login: this.lastLogin,
+      password: this.lastPassword
     })
   }
 

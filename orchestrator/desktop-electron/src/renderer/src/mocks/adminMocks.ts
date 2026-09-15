@@ -242,6 +242,7 @@ export interface AdminHistoryRowMock {
   launchedAt: string
   duration: string
   sla: AdminSlaTone
+  tab?: string
 }
 
 export interface AdminHistoryMock extends AdminPeriodMock {

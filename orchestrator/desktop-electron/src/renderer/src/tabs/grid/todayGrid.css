@@ -548,6 +548,15 @@
   color: #b42318;
 }
 
+.today-table-banner {
+  text-align: left;
+  margin: 0 0 8px;
+  padding: 8px 10px !important;
+  border-radius: 8px;
+  background: rgba(180, 35, 24, 0.08);
+  line-height: 1.35;
+}
+
 .today-table-hint {
   font-size: 11px;
   max-width: 220px;

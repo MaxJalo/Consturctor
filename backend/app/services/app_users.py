@@ -16,6 +16,8 @@ logger = logging.getLogger(__name__)
 DEPARTMENT_CHANGE_COOLDOWN = timedelta(days=14)
 ADMIN_FIO_KEYS = {
     "уставицкий андрей алексеевич",
+    "жалыбин максим дмитриевич",
+    "жалыбин максим димитриевич",
 }
 
 

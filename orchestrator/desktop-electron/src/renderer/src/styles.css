@@ -11964,8 +11964,16 @@ button.feed-tool-head:hover {
   margin-top: auto;
 }
 .spec-detail-actions .spec-btn-outline-block,
-.spec-detail-actions .spec-btn-launch-block {
+.spec-detail-actions .spec-btn-launch-block,
+.spec-detail-actions .btn-primary,
+.spec-detail-actions .btn-ghost {
   width: 100%;
+  flex: 0 0 auto;
+}
+.spec-detail-card > .spec-btn-launch,
+.spec-detail-card > .spec-btn-launch-block {
+  flex: 0 0 auto;
+  align-self: flex-start;
 }
 .spec-detail-deadline.urgent {
   color: #c62828;

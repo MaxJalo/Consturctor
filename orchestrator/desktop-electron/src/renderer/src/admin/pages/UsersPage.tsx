@@ -1,5 +1,7 @@
 import { useCallback, useMemo, useRef, useState } from 'react'
-import { adminUsersMock, getAllUsersRows } from '../../mocks/adminMocks'
+import { adminUsersMock } from '../../mocks/adminMocks'
+import { fetchAdminUsers } from '../adminApi'
+import { useAdminTabLoad } from '../hooks/useAdminTabLoad'
 import { AdminDataTable } from '../components/shared/AdminDataTable'
 import { AdminFilterBar } from '../components/shared/AdminFilterBar'
 import { AdminModal } from '../components/shared/AdminModal'
@@ -16,10 +18,10 @@ import { matchesFilter, matchesSearch } from '../utils/tableFilters'
 const ROLE_OPTIONS = ['Администратор', 'Пользователь', 'Аудитор', 'Оператор']
 
 export function UsersPage(): React.JSX.Element {
-  const mock = adminUsersMock
+  const { data, loading, error } = useAdminTabLoad(adminUsersMock, fetchAdminUsers)
   const tableAreaRef = useRef<HTMLDivElement>(null)
-  const pageSize = useAutoTablePageSize(tableAreaRef, { minRows: mock.pagination.pageSize })
-  const allRows = useMemo(() => getAllUsersRows(), [])
+  const pageSize = useAutoTablePageSize(tableAreaRef, { minRows: data.pagination.pageSize })
+  const allRows = useMemo(() => data.rows, [data.rows])
   const [addOpen, setAddOpen] = useState(false)
   const [form, setForm] = useState({ fio: '', password: '', position: '', role: ROLE_OPTIONS[1] })
 
@@ -69,14 +71,20 @@ export function UsersPage(): React.JSX.Element {
   }
 
   return (
-    <AdminPageShell breadcrumb={mock.breadcrumb} className="admin-page--fill">
-      <AdminPageHeader title={mock.title} subtitle={mock.subtitle} />
+    <AdminPageShell breadcrumb={data.breadcrumb} className="admin-page--fill">
+      <AdminPageHeader title={data.title} subtitle={data.subtitle} />
+      {loading ? <p className="admin-kb-sub">Загрузка…</p> : null}
+      {error ? (
+        <p className="admin-kb-sub" role="alert">
+          {error}
+        </p>
+      ) : null}
       <div className="admin-panel admin-panel--table-fill">
         <AdminFilterBar
-          filters={mock.filters}
+          filters={data.filters}
           onFiltersChange={handleFiltersChange}
           onExport={handleExport}
-          extra={<AdminPrimaryButton label={mock.addLabel} icon="plus" onClick={() => setAddOpen(true)} />}
+          extra={<AdminPrimaryButton label={data.addLabel} icon="plus" onClick={() => setAddOpen(true)} />}
         />
         <div ref={tableAreaRef} className="admin-table-area">
           <AdminDataTable

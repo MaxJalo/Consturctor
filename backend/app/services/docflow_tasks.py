@@ -9,6 +9,12 @@ import httpx
 
 from app.config import settings
 from app.services.erp_tasks import from_1c_datetime, task_is_late
+from app.services.onec_response_text import (
+    decode_http_body,
+    format_onec_http_error,
+    looks_like_garbled,
+    sanitize_onec_error_snippet,
+)
 
 _TASK_ENTITY = "Task_ЗадачаИсполнителя"
 _USER_ENTITY = "Catalog_Пользователи"
@@ -30,11 +36,12 @@ def docflow_base_url() -> str:
 
 def _credentials_from_args(args: dict[str, Any] | None) -> tuple[str, str] | None:
     payload = args if isinstance(args, dict) else {}
+    # Документооборот: учётные записи как в 1С (ФИО), не slug name_mail из erp_pm.
     username = str(
-        payload.get("username")
+        payload.get("fio")
         or payload.get("erp_login")
         or payload.get("user")
-        or payload.get("fio")
+        or payload.get("username")
         or ""
     ).strip()
     password = str(payload.get("password") or payload.get("erp_password") or "").strip()
@@ -45,12 +52,15 @@ def _credentials_from_args(args: dict[str, Any] | None) -> tuple[str, str] | Non
 
 def docflow_env_auth() -> tuple[str, str] | None:
     """Gateway .env fallback when desktop session did not forward a password."""
-    user = (settings.docflow_odata_username or settings.odata_username or settings.erp_login).strip()
-    password = (
-        settings.docflow_odata_password or settings.odata_password or settings.erp_password
-    ).strip()
+    user = (settings.docflow_odata_username or settings.erp_login).strip()
+    password = (settings.docflow_odata_password or settings.erp_password).strip()
     if user and password:
         return user, password
+    # odata.user часто есть только в erp_pm; для /doc — явные DOCFLOW_* или ERP_LOGIN.
+    odata_user = settings.odata_username.strip()
+    odata_pass = settings.odata_password.strip()
+    if not user and not password and odata_user and odata_pass:
+        return odata_user, odata_pass
     return None
 
 
@@ -91,15 +101,18 @@ def _get(
     with httpx.Client(timeout=settings.odata_timeout_sec, auth=auth) as client:
         response = client.get(url, params=params, headers={"Accept": "application/json"})
     if response.status_code in {401, 402}:
-        raise DocflowError(
+        msg = (
             "Документооборот (/doc) отклонил учётку OData. "
             "Добавьте того же пользователя в базу 1С:Документооборот "
             "или войдите в Orchestrator с паролем 1С (учётка сеанса), "
             "либо задайте DOCFLOW_ODATA_USERNAME / DOCFLOW_ODATA_PASSWORD."
         )
+        detail = sanitize_onec_error_snippet(decode_http_body(response.content))
+        if detail and not looks_like_garbled(detail) and "отклонил учётку" not in detail:
+            msg = f"{msg} ({detail})"
+        raise DocflowError(msg)
     if response.status_code >= 400:
-        text = response.text.lstrip("\ufeff")[:280].replace("\n", " ")
-        raise DocflowError(f"Документооборот OData HTTP {response.status_code}: {text}")
+        raise DocflowError(format_onec_http_error(response, prefix="Документооборот OData"))
     data = response.json()
     return data if isinstance(data, dict) else {}
 
@@ -155,6 +168,15 @@ def _map_task(row: dict[str, Any], *, fio: str) -> dict[str, Any]:
     }
 
 
+def _list_docflow_via_soap(fio: str, *, limit: int) -> tuple[list[dict[str, Any]], str]:
+    from app.tools.onec.docflow_inbox_fetch import fetch_inbox_tasks_soap
+
+    tasks, warning = fetch_inbox_tasks_soap(fio, since_days=90)
+    if limit > 0:
+        tasks = tasks[: max(1, min(int(limit), 200))]
+    return tasks, warning
+
+
 def list_docflow_tasks(
     *,
     fio: str,
@@ -165,9 +187,19 @@ def list_docflow_tasks(
     auth_args: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
     if not docflow_base_url() or not docflow_auth(auth_args):
-        return []
-    user_key = find_user_key(fio, auth_args=auth_args)
+        tasks, _ = _list_docflow_via_soap(fio, limit=limit)
+        return tasks
+    try:
+        user_key = find_user_key(fio, auth_args=auth_args)
+    except DocflowError:
+        if only_open:
+            tasks, _ = _list_docflow_via_soap(fio, limit=limit)
+            return tasks
+        raise
     if not user_key:
+        if only_open:
+            tasks, _ = _list_docflow_via_soap(fio, limit=limit)
+            return tasks
         return []
     limit = max(1, min(int(limit or 200), 200))
     clauses = [
@@ -180,11 +212,17 @@ def list_docflow_tasks(
     if date_to is not None:
         clauses.append(f"Date le datetime'{_odata_dt(date_to)}'")
     filt = " and ".join(clauses)
-    data = _get(
-        _TASK_ENTITY,
-        params={"$top": limit, "$orderby": "Date desc", "$filter": filt},
-        auth_args=auth_args,
-    )
+    try:
+        data = _get(
+            _TASK_ENTITY,
+            params={"$top": limit, "$orderby": "Date desc", "$filter": filt},
+            auth_args=auth_args,
+        )
+    except DocflowError:
+        if only_open:
+            tasks, _ = _list_docflow_via_soap(fio, limit=limit)
+            return tasks
+        raise
     items: list[dict[str, Any]] = []
     for row in data.get("value") or []:
         if isinstance(row, dict):
@@ -218,7 +256,20 @@ def list_docflow_for_people(
                 auth_args=auth_args,
             )
     except DocflowError as exc:
-        return {name: [] for name in fios}, str(exc)
+        warning = str(exc)
+        merged_any = False
+        for name in fios:
+            if not name:
+                continue
+            soap_tasks, soap_warn = _list_docflow_via_soap(name, limit=limit_per_person)
+            if soap_warn and not warning:
+                warning = soap_warn
+            if soap_tasks:
+                result[name] = soap_tasks
+                merged_any = True
+        if merged_any:
+            return result, warning
+        return {name: [] for name in fios}, warning
     return result, warning
 
 

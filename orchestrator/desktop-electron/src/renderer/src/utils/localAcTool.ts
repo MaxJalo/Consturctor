@@ -1,3 +1,4 @@
+import type { UserProfile } from '../api/types'
 import { formatIpcInvokeError, sidecarAckFailureMessage, type SidecarAck } from './sidecarAck'
 import { onecComInvokeArgs } from '../workplace/userContext'
 
@@ -30,7 +31,8 @@ function sidecarUnavailableMessage(): string {
 export function invokeLocalAcTool(
   tool: string,
   input: Record<string, unknown> = {},
-  timeoutMs = DEFAULT_TIMEOUT_MS
+  timeoutMs = DEFAULT_TIMEOUT_MS,
+  user: UserProfile | null = null
 ): Promise<LocalAcToolResult> {
   const toolName = tool.trim()
   if (!toolName) {
@@ -73,7 +75,7 @@ export function invokeLocalAcTool(
       }
     })
     const payload =
-      toolName.startsWith('onec.') ? onecComInvokeArgs(input) : input
+      toolName.startsWith('onec.') ? onecComInvokeArgs(input, user) : input
     void window.agent
       .invokeAcTool({ requestId, tool: toolName, input: payload })
       .then((ack) => {

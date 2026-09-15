@@ -70,8 +70,7 @@ export function OneCReconnectDialog({
       await agentClient
         .ready(token, {
           login,
-          password,
-          onecComUsr: mail || user.nameMail || ''
+          password
         })
         .catch(() => undefined)
       forceRefresh()

@@ -176,6 +176,10 @@ export interface SpecProjectRow {
   progress: number
   risk: string
   riskTone: SpecPillTone
+  /** TurboProject file_id (when distinct from code). */
+  fileId?: string
+  /** Руководитель / owner из карточки или 1С. */
+  manager?: string
 }
 
 export const DEMO_PROJECT_ROWS: SpecProjectRow[] = [

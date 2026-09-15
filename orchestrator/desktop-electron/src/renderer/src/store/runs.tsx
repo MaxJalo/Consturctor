@@ -300,8 +300,7 @@ export function RunProvider({ children }: { children: React.ReactNode }): React.
     void agentClient
       .ready(token, {
         login: creds.login,
-        password: creds.password,
-        onecComUsr: creds.nameMail
+        password: creds.password
       })
       .catch(() => undefined)
     // Background evaluations always start a fresh thread (no resume / no chat).

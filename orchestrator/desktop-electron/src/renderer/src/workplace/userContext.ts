@@ -1,5 +1,5 @@
 import type { UserProfile } from '../api/types'
-import { comCredentials, savedFio } from '../store/session'
+import { comCredentials, devGatewayCredentials, gatewaySessionPassword, savedFio } from '../store/session'
 
 export const TURBO_DON_MAIL_DOMAIN = 'turbo-don.ru'
 
@@ -14,7 +14,11 @@ export function outlookMailboxAddress(user: UserProfile | null): string {
 export function erpActorFio(user: UserProfile | null): string {
   const fromCom = (comCredentials().login || '').trim()
   if (fromCom) return fromCom
-  return (user?.fio || savedFio() || '').trim()
+  const fromProfile = (user?.fio || savedFio() || '').trim()
+  if (fromProfile) return fromProfile
+  const fromDev = devGatewayCredentials().fio
+  if (fromDev) return fromDev
+  return String(import.meta.env.VITE_MY_NAME ?? '').trim()
 }
 
 export function erpActorUserId(user: UserProfile | null): string {
@@ -30,6 +34,17 @@ export function erpActorComUsername(user: UserProfile | null): string {
   return erpActorFio(user)
 }
 
+/** Latin 1C login for TurboProject / Outlook — never FIO. */
+export function turboNameMailSlug(user: UserProfile | null): string {
+  const fromSession = (comCredentials().nameMail || '').trim().toLowerCase()
+  if (fromSession) return fromSession
+  const fromProfile = (user?.nameMail || '').trim().toLowerCase()
+  if (fromProfile) return fromProfile
+  const fromDev = devGatewayCredentials().nameMail
+  if (fromDev) return fromDev
+  return String(import.meta.env.VITE_MY_NAME_MAIL ?? '').trim().toLowerCase()
+}
+
 /** Gateway onec.* invoke: FIO + optional password from login session (not localStorage). */
 export function onecGatewayInvokeArgs(
   user: UserProfile | null,
@@ -37,32 +52,51 @@ export function onecGatewayInvokeArgs(
 ): Record<string, unknown> {
   const fio = erpActorFio(user)
   const userId = erpActorUserId(user)
-  const { password } = comCredentials()
+  const password = gatewaySessionPassword()
   const username = erpActorComUsername(user)
   const args: Record<string, unknown> = {
     ...extra,
     fio,
     user_id: userId
   }
-  if (username && password) {
-    args.username = username
-    args.password = password
-  }
+  if (username) args.username = username
+  if (password) args.password = password
   return args
 }
 
-/** COM onec.* via sidecar: login FIO + password when user signed in this session. */
-export function onecComInvokeArgs(extra: Record<string, unknown> = {}): Record<string, unknown> {
-  const { login, password, nameMail } = comCredentials()
-  const args: Record<string, unknown> = { ...extra }
-  if (login) {
-    args.fio = login
-    args.erp_login = login
+/** Gateway turboproject.*: portfolio employee + TurboProject login from session (email + password). */
+export function turboProjectInvokeArgs(
+  user: UserProfile | null,
+  extra: Record<string, unknown> = {}
+): Record<string, unknown> {
+  const employee = erpActorFio(user)
+  const password = gatewaySessionPassword()
+  const nameMail = turboNameMailSlug(user)
+  const email = nameMail ? `${nameMail}@${TURBO_DON_MAIL_DOMAIN}` : ''
+  const args: Record<string, unknown> = {
+    ...extra,
+    employee,
+    fio: employee
   }
   if (nameMail) {
-    args.username = nameMail
     args.name_mail = nameMail
-    args.onec_com_usr = nameMail
+  }
+  if (email) args.email = email
+  if (password) args.password = password
+  return args
+}
+
+/** COM onec.* via sidecar: FIO + session password (Usr= in COM is FIO, not nameMail). */
+export function onecComInvokeArgs(
+  extra: Record<string, unknown> = {},
+  user: UserProfile | null = null
+): Record<string, unknown> {
+  const { login, password } = comCredentials()
+  const args: Record<string, unknown> = { ...extra }
+  const fio = (login || user?.fio || savedFio() || '').trim()
+  if (fio) {
+    args.fio = fio
+    args.erp_login = fio
   }
   if (password) {
     args.password = password

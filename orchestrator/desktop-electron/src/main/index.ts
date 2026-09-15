@@ -55,6 +55,22 @@ function parseEnvFile(path: string): Record<string, string> {
   return out
 }
 
+const LOCAL_BACKEND = 'http://127.0.0.1:7812'
+const LAN_BACKEND = 'http://192.168.1.157:7812'
+
+function preferLocalBackend(env: Record<string, string>): boolean {
+  const flag = (
+    process.env.ORCH_PREFER_LOCAL ||
+    env.ORCH_PREFER_LOCAL ||
+    process.env.VITE_ORCH_PREFER_LOCAL ||
+    env.VITE_ORCH_PREFER_LOCAL ||
+    ''
+  )
+    .trim()
+    .toLowerCase()
+  return flag === '1' || flag === 'true' || flag === 'yes'
+}
+
 /** Profile .env often keeps stale 127.0.0.1; in dev prefer cwd `.env` and process env. */
 function resolveBackendUrl(env: Record<string, string>): string {
   const fromProcess = (process.env.BACKEND_URL || '').trim()
@@ -66,10 +82,35 @@ function resolveBackendUrl(env: Record<string, string>): string {
     if (fromCwd) return fromCwd.replace(/\/+$/, '')
   }
 
+  if (!app.isPackaged && preferLocalBackend(env)) {
+    return LOCAL_BACKEND
+  }
+
   const fromProfile = (env.BACKEND_URL || '').trim()
   if (fromProfile) return fromProfile.replace(/\/+$/, '')
 
-  return 'http://192.168.1.157:7812'
+  return app.isPackaged ? LAN_BACKEND : LOCAL_BACKEND
+}
+
+function loadWorkspaceDevGateway(env: Record<string, string>): {
+  fio: string
+  nameMail: string
+  password: string
+} | null {
+  if (app.isPackaged) return null
+  const candidates = [
+    join(process.cwd(), '..', '..', '..', '.env'),
+    join(process.cwd(), '..', '..', '.env')
+  ]
+  let merged: Record<string, string> = { ...env }
+  for (const path of candidates) {
+    if (existsSync(path)) merged = { ...parseEnvFile(path), ...merged }
+  }
+  const password = (merged.MY_PASSWORD || merged.TURBOPROJECT_PASSWORD || '').trim()
+  const nameMail = (merged.MY_NAME_MAIL || merged.NAME_MAIL || '').trim().toLowerCase()
+  const fio = (merged.MY_NAME || merged.TURBOPROJECT_EMPLOYEE || '').trim()
+  if (!password && !nameMail && !fio) return null
+  return { fio, nameMail, password }
 }
 
 function loadConfig(): {
@@ -78,6 +119,7 @@ function loadConfig(): {
   updateOwner: string
   updateRepo: string
   updateToken: string
+  devGateway: { fio: string; nameMail: string; password: string } | null
 } {
   const userEnv = join(app.getPath('userData'), '.env')
   const resourceEnv = join(process.resourcesPath, 'desktop', '.env')
@@ -131,7 +173,8 @@ function loadConfig(): {
     env.GITHUB_TOKEN ||
     ''
   ).trim()
-  return { backendUrl, testUser, updateOwner, updateRepo, updateToken }
+  const devGateway = loadWorkspaceDevGateway(env)
+  return { backendUrl, testUser, updateOwner, updateRepo, updateToken, devGateway }
 }
 
 const CONFIG = loadConfig()
@@ -626,7 +669,15 @@ function ipcHandle(channel: string, handler: IpcHandler): void {
 function registerMainIpcHandlers(): void {
   ipcHandle('app:getConfig', () => ({
     backendUrl: CONFIG.backendUrl,
-    testUser: CONFIG.testUser
+    testUser: CONFIG.testUser,
+    devGateway: CONFIG.devGateway
+      ? {
+          fio: CONFIG.devGateway.fio,
+          nameMail: CONFIG.devGateway.nameMail,
+          hasPassword: Boolean(CONFIG.devGateway.password)
+        }
+      : null,
+    devGatewaySecrets: CONFIG.devGateway
   }))
   ipcHandle('api:request', handleRequest)
   ipcHandle('api:upload', handleUpload)
