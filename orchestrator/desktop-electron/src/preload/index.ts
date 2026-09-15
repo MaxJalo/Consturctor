@@ -192,6 +192,10 @@ const agent = {
     ipcRenderer.invoke('agent:cancel', command),
   readCalendar: (command: Record<string, unknown>): Promise<{ ok: boolean }> =>
     ipcRenderer.invoke('agent:read-calendar', command),
+  searchOutlookMail: (command: Record<string, unknown>): Promise<{ ok: boolean }> =>
+    ipcRenderer.invoke('agent:search-mail', command),
+  invokeAcTool: (command: Record<string, unknown>): Promise<{ ok: boolean }> =>
+    ipcRenderer.invoke('agent:invoke-ac-tool', command),
   onEvent: (callback: (payload: Record<string, unknown>) => void): (() => void) => {
     const listener = (_event: unknown, payload: Record<string, unknown>): void => {
       callback(payload)

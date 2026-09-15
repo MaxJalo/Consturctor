@@ -132,6 +132,7 @@ function parseUser(data: Record<string, unknown>): UserProfile {
   return applyProfileOverrides({
     id: String(data.id ?? ''),
     fio: String(data.fio ?? ''),
+    nameMail: String(data.name_mail ?? data.nameMail ?? '').trim(),
     department: String(data.department ?? ''),
     position: String(data.position ?? ''),
     avatarUrl: optionalUrl(data.avatarUrl) ?? optionalUrl(data.avatar_url),
@@ -1942,6 +1943,29 @@ export class ApiClient {
       name: kind,
       configured: Boolean(data.configured),
       mode: String(data.mode ?? (data.configured ? 'real' : 'stub'))
+    }
+  }
+
+  async invokeServerTool(
+    tool: string,
+    args: Record<string, unknown> = {},
+    timeoutMs = 120_000
+  ): Promise<{ ok: boolean; tool?: string; result?: unknown; error?: string }> {
+    try {
+      const data = await this.request<Record<string, unknown>>('POST', '/api/v1/tools/invoke', {
+        body: { tool, arguments: args },
+        timeoutMs
+      })
+      return {
+        ok: Boolean(data.ok ?? true),
+        tool: String(data.tool ?? tool),
+        result: data.result
+      }
+    } catch (err) {
+      return {
+        ok: false,
+        error: err instanceof ApiError ? err.message : 'Ошибка вызова инструмента'
+      }
     }
   }
 

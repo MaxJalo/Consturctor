@@ -934,10 +934,16 @@ export function DecisionsTab({
   ].filter((item) => Boolean(item.label))
 
   return (
-    <div className="wp-page">
-      <div className="wp-head">
+    <div className="wp-page spec-v04-page spec-decisions-page">
+      <div className="wp-head spec-v04-head">
         <div>
           <h1 className="page-title">Решения</h1>
+          <div className="wp-sub">Подтверждение решений, подготовленных ИИ и сотрудниками</div>
+        </div>
+        <div className="spec-v04-head-actions">
+          <button type="button" className="btn-primary spec-quick-launch">
+            ▶ Быстрый запуск
+          </button>
         </div>
       </div>
       <section className="wp-decisions-kpi">

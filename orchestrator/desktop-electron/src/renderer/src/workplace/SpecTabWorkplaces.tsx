@@ -1,19 +1,45 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { AgentsPage } from '../pages/AgentsPage'
-import { SpecV04Shell, type SpecSummaryTile } from './specV04Shell'
+import { api } from '../api/client'
+import type { UserProfile } from '../api/types'
+import { ensureOutlookMeetings } from '../utils/outlookMeetings'
+import type { SpecSummaryTile } from './specV04Shell'
+import {
+  SpecAskOrchestratorBlock,
+  SpecBottomRow,
+  SpecFilters,
+  SpecPageHead,
+  SpecPanel,
+  SpecPill,
+  SpecProgress,
+  SpecQuickActions,
+  SpecQuickLaunchButton,
+  SpecSplit,
+  SpecSummaryTiles
+} from './specV04Components'
+import { ASK_CHIPS, type SpecKnowledgeRow } from './specV04DemoData'
+import { buildTaskTiles, useSpecV04Sources } from './useSpecV04Data'
 
-function demoFilters(): React.JSX.Element {
+function standardFilters(): React.JSX.Element {
   return (
     <>
-      <select className="wp-select" defaultValue="">
-        <option value="">Период: текущий месяц</option>
+      <select className="wp-select" defaultValue="month">
+        <option value="month">Период: текущий месяц</option>
         <option value="week">Неделя</option>
-        <option value="day">Сегодня</option>
+      </select>
+      <select className="wp-select" defaultValue="">
+        <option value="">Источник: все</option>
+      </select>
+      <select className="wp-select" defaultValue="">
+        <option value="">Проект: все</option>
       </select>
       <select className="wp-select" defaultValue="">
         <option value="">Статус: все</option>
       </select>
-      <input className="wp-search" placeholder="Поиск" />
+      <input className="wp-search" placeholder="Поиск…" />
+      <select className="wp-select" defaultValue="new">
+        <option value="new">Сортировка: сначала новые</option>
+      </select>
       <button type="button" className="btn-ghost">
         Сбросить фильтры
       </button>
@@ -21,173 +47,571 @@ function demoFilters(): React.JSX.Element {
   )
 }
 
-function SpecTablePlaceholder({
-  columns,
-  empty
+export function TasksTabWorkplace({
+  user,
+  onAskOrchestrator
 }: {
-  columns: string[]
-  empty: string
+  user: UserProfile
+  onAskOrchestrator: (message: string, context: string) => void
 }): React.JSX.Element {
+  const data = useSpecV04Sources(user)
+  const taskRows = data.erpTasks
+  const [selectedId, setSelectedId] = useState('')
+  const effectiveId = selectedId || taskRows[0]?.id || ''
+  const selected = taskRows.find((item) => item.id === effectiveId)
+  const tiles: SpecSummaryTile[] = buildTaskTiles(data)
+  const ask = (m: string) => onAskOrchestrator(m, 'Вкладка «Задачи»')
+
   return (
-    <div className="spec-v04-table-wrap wp-card">
-      <table className="spec-v04-table">
-        <thead>
-          <tr>
-            {columns.map((col) => (
-              <th key={col}>{col}</th>
+    <div className="wp-page spec-v04-page">
+      <SpecPageHead
+        title="Задачи"
+        subtitle="Единый центр управления задачами сотрудника"
+        actions={
+          <button type="button" className="btn-primary">
+            + Создать задачу ▾
+          </button>
+        }
+      />
+      <SpecSummaryTiles tiles={tiles} />
+      <SpecFilters>{standardFilters()}</SpecFilters>
+      <SpecSplit
+        wideSide
+        main={
+          <div className="spec-v04-table-wrap wp-card">
+            <table className="spec-v04-table">
+              <thead>
+                <tr>
+                  <th />
+                  <th>Задача</th>
+                  <th>Источник</th>
+                  <th>Процесс</th>
+                  <th>Проект</th>
+                  <th>Срок</th>
+                  <th>Приоритет</th>
+                  <th>Статус</th>
+                  <th>Исполнитель</th>
+                  <th>Кто выполняет</th>
+                  <th>Прогресс</th>
+                  <th />
+                </tr>
+              </thead>
+              <tbody>
+                {!taskRows.length ? (
+                  <tr>
+                    <td colSpan={12} className="spec-v04-empty">
+                      {data.loading
+                        ? 'Загружаем задачи из 1С…'
+                        : `Нет открытых задач 1С для ${data.erpFio || 'пользователя'}.`}
+                    </td>
+                  </tr>
+                ) : null}
+                {taskRows.map((row) => (
+                  <tr
+                    key={row.id}
+                    className={effectiveId === row.id ? 'selected' : ''}
+                    onClick={() => setSelectedId(row.id)}
+                  >
+                    <td>
+                      <input type="checkbox" onClick={(e) => e.stopPropagation()} />
+                    </td>
+                    <td>
+                      <strong>{row.title}</strong>
+                    </td>
+                    <td>
+                      <SpecPill tone={row.sourceTone}>{row.source}</SpecPill>
+                    </td>
+                    <td>{row.process}</td>
+                    <td>{row.project}</td>
+                    <td className={row.urgent ? 'spec-deadline-urgent' : ''}>{row.deadline}</td>
+                    <td>
+                      <SpecPill tone={row.priorityTone}>{row.priority}</SpecPill>
+                    </td>
+                    <td>
+                      <SpecPill tone={row.statusTone}>{row.status}</SpecPill>
+                    </td>
+                    <td>{row.executor}</td>
+                    <td>{row.who}</td>
+                    <td>
+                      <SpecProgress value={row.progress} />
+                    </td>
+                    <td>⋮</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        }
+        side={
+          selected ? (
+            <div className="spec-detail-card">
+              <h2>{selected.title}</h2>
+              <div className="spec-detail-tags">
+                <SpecPill tone={selected.statusTone}>{selected.status}</SpecPill>
+                <SpecPill tone={selected.priorityTone}>{selected.priority} приоритет</SpecPill>
+              </div>
+              <div className="spec-detail-tabs">
+                <button type="button" className="active">
+                  Детали
+                </button>
+                <button type="button">Документы (3)</button>
+                <button type="button">История (6)</button>
+                <button type="button">Связанные (4)</button>
+              </div>
+              <p className="spec-v04-muted">
+                Описание задачи, основание из регламента REG-003 и связанные материалы из базы знаний.
+              </p>
+              <dl className="spec-detail-meta">
+                <div>
+                  <dt>Процесс</dt>
+                  <dd>{selected.process}</dd>
+                </div>
+                <div>
+                  <dt>Проект</dt>
+                  <dd>{selected.project}</dd>
+                </div>
+                <div>
+                  <dt>Срок</dt>
+                  <dd>{selected.deadline}</dd>
+                </div>
+              </dl>
+              <SpecProgress value={selected.progress} />
+              <footer className="spec-detail-actions">
+                <button type="button" className="btn-primary">
+                  Отметить выполненной
+                </button>
+                <button type="button" className="btn-ghost">
+                  Изменить
+                </button>
+              </footer>
+            </div>
+          ) : null
+        }
+      />
+      <SpecBottomRow>
+        <SpecPanel title="Мои задачи на сегодня">
+          <ul className="spec-today-list">
+            {taskRows.slice(0, 5).map((row) => (
+              <li key={row.id}>
+                <span>{row.deadline}</span>
+                <strong>{row.title}</strong>
+                <SpecProgress value={row.progress} />
+              </li>
             ))}
-          </tr>
-        </thead>
-        <tbody>
-          <tr>
-            <td colSpan={columns.length} className="spec-v04-empty">
-              {empty}
-            </td>
-          </tr>
-        </tbody>
-      </table>
+          </ul>
+        </SpecPanel>
+        <SpecPanel title="Быстрые действия">
+          <SpecQuickActions
+            items={[
+              'Создать задачу из письма',
+              'Создать из документа',
+              'Назначить исполнителя',
+              'Перенести срок',
+              'Связать с процессом'
+            ]}
+          />
+        </SpecPanel>
+        <SpecAskOrchestratorBlock
+          placeholder="Например: «Покажи просроченные задачи»"
+          chips={ASK_CHIPS.tasks}
+          onSubmit={ask}
+        />
+      </SpecBottomRow>
     </div>
   )
 }
 
-export function TasksTabWorkplace({
-  onAskOrchestrator
-}: {
-  onAskOrchestrator: (message: string, context: string) => void
-}): React.JSX.Element {
-  const tiles: SpecSummaryTile[] = useMemo(
-    () => [
-      { id: 'all', label: 'Все задачи', value: '—', tone: 'blue' },
-      { id: 'onec', label: 'Из 1С', value: '—', tone: 'blue' },
-      { id: 'proj', label: 'Проектные', value: '—', tone: 'purple' },
-      { id: 'reg', label: 'Регламентные', value: '—', tone: 'green' },
-      { id: 'bad', label: 'Просроченные / ожидающие', value: '—', tone: 'orange' }
-    ],
-    []
-  )
-  return (
-    <SpecV04Shell
-      title="Задачи"
-      subtitle="Единый центр управления задачами сотрудника"
-      tiles={tiles}
-      filters={demoFilters()}
-      onAskOrchestrator={(message) => onAskOrchestrator(message, 'Вкладка «Задачи»')}
-    >
-      <SpecTablePlaceholder
-        columns={[
-          'Задача',
-          'Источник',
-          'Процесс',
-          'Проект',
-          'Срок',
-          'Приоритет',
-          'Статус',
-          'Исполнитель',
-          'Кто выполняет',
-          'Прогресс',
-          'Действия'
-        ]}
-        empty="Подключите Task Service и 1С — таблица задач появится здесь."
-      />
-      <section className="wp-card spec-v04-side-block">
-        <h3>Мои задачи на сегодня</h3>
-        <p className="spec-v04-muted">Упрощённый список актуальных задач текущего дня.</p>
-      </section>
-    </SpecV04Shell>
-  )
-}
-
 export function ProjectsTabWorkplace({
+  user,
   onAskOrchestrator
 }: {
+  user: UserProfile
   onAskOrchestrator: (message: string, context: string) => void
 }): React.JSX.Element {
+  const data = useSpecV04Sources(user)
+  const projectRows = data.projects
+  const [selectedId, setSelectedId] = useState('')
+  const effectiveId = selectedId || projectRows[0]?.id || ''
+  const selected = projectRows.find((item) => item.id === effectiveId)
   const tiles: SpecSummaryTile[] = [
-    { id: 'active', label: 'Активные проекты', value: '—', tone: 'purple' },
-    { id: 'today', label: 'Задачи на сегодня', value: '—', tone: 'purple' },
-    { id: 'risk', label: 'С риском', value: '—', tone: 'orange' },
-    { id: 'done', label: 'Завершённые этапы', value: '—', tone: 'green' },
-    { id: 'load', label: 'Загрузка', value: '—', tone: 'neutral' }
+    { id: 'a', label: 'Активные проекты', value: String(projectRows.length || '—'), tone: 'purple' },
+    {
+      id: 't',
+      label: 'Задачи на сегодня',
+      value: String(projectRows.reduce((s, p) => s + p.tasks, 0) || '—'),
+      tone: 'blue'
+    },
+    {
+      id: 'r',
+      label: 'Проекты с риском',
+      value: String(projectRows.filter((p) => p.riskTone !== 'green').length || '—'),
+      tone: 'orange'
+    },
+    { id: 'd', label: 'Источник', value: data.sources.turbo, tone: 'green' },
+    { id: 'l', label: 'Сотрудник', value: data.erpFio || '—', tone: 'neutral' }
   ]
+  const ask = (m: string) => onAskOrchestrator(m, 'Вкладка «Проекты»')
+
   return (
-    <SpecV04Shell
-      title="Проекты"
-      subtitle="Проектная деятельность, роли, риски и задачи на сегодня"
-      tiles={tiles}
-      filters={demoFilters()}
-      onAskOrchestrator={(message) => onAskOrchestrator(message, 'Вкладка «Проекты»')}
-    >
-      <SpecTablePlaceholder
-        columns={['Проект', 'Код', 'Роль', 'Мои задачи', 'Статус', 'Срок', 'Прогресс', 'Риск', 'Действия']}
-        empty="Подключите Project Service — реестр проектов по спецификации v0.4."
+    <div className="wp-page spec-v04-page">
+      <SpecPageHead
+        title="Проекты"
+        subtitle="Ваши проекты, роли, задачи, сроки и результаты"
+        actions={<SpecQuickLaunchButton />}
       />
-    </SpecV04Shell>
+      <SpecSummaryTiles tiles={tiles} />
+      <SpecFilters>{standardFilters()}</SpecFilters>
+      <SpecSplit
+        main={
+          <div className="spec-v04-table-wrap wp-card">
+            <h3 className="spec-table-caption">Проекты ({projectRows.length})</h3>
+            <table className="spec-v04-table">
+              <thead>
+                <tr>
+                  <th>Проект</th>
+                  <th>Код</th>
+                  <th>Роль</th>
+                  <th>Мои задачи</th>
+                  <th>Статус</th>
+                  <th>Срок</th>
+                  <th>Прогресс</th>
+                  <th>Риск</th>
+                  <th />
+                </tr>
+              </thead>
+              <tbody>
+                {!projectRows.length ? (
+                  <tr>
+                    <td colSpan={9} className="spec-v04-empty">
+                      {data.loading
+                        ? 'Загружаем портфель TurboProject…'
+                        : `Нет проектов для ${data.erpFio}. Проверьте turboproject.get_user_portfolio.`}
+                    </td>
+                  </tr>
+                ) : null}
+                {projectRows.map((row) => (
+                  <tr
+                    key={row.id}
+                    className={effectiveId === row.id ? 'selected' : ''}
+                    onClick={() => setSelectedId(row.id)}
+                  >
+                    <td>
+                      <strong>{row.name}</strong>
+                    </td>
+                    <td>{row.code}</td>
+                    <td>{row.role}</td>
+                    <td>{row.tasks}</td>
+                    <td>
+                      <SpecPill tone={row.statusTone}>{row.status}</SpecPill>
+                    </td>
+                    <td>{row.deadline}</td>
+                    <td>
+                      <SpecProgress value={row.progress} />
+                    </td>
+                    <td>
+                      <SpecPill tone={row.riskTone}>{row.risk}</SpecPill>
+                    </td>
+                    <td>⋮</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        }
+        side={
+          selected ? (
+            <div className="spec-detail-card">
+              <h2>{selected.name}</h2>
+              <div className="spec-detail-tags">
+                <SpecPill tone={selected.statusTone}>{selected.status}</SpecPill>
+                <SpecPill tone={selected.riskTone}>{selected.risk}</SpecPill>
+              </div>
+              <p className="spec-v04-muted">Роль: {selected.role}. Срок: {selected.deadline}.</p>
+              <h4>Открытых задач в MPP: {selected.tasks}</h4>
+              <SpecProgress value={selected.progress} />
+              <footer className="spec-detail-actions">
+                <button type="button" className="btn-ghost">
+                  Открыть в проекте
+                </button>
+                <button type="button" className="btn-primary">
+                  + Создать задачу
+                </button>
+              </footer>
+            </div>
+          ) : null
+        }
+      />
+      <SpecBottomRow>
+        <SpecPanel title="Задачи по проектам на сегодня (12)">
+          <table className="spec-v04-table spec-v04-table-compact">
+            <tbody>
+              <tr>
+                <td>09:30</td>
+                <td>Проверить ТЗ</td>
+                <td>CRM</td>
+                <td>
+                  <SpecPill tone="red">Высокий</SpecPill>
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </SpecPanel>
+        <SpecPanel title="Календарь проекта">
+          <p className="spec-v04-muted">Август 2024 — контрольные точки и этапы.</p>
+        </SpecPanel>
+        <SpecAskOrchestratorBlock placeholder="Например: «Какой статус проекта CRM?»" chips={ASK_CHIPS.projects} onSubmit={ask} />
+      </SpecBottomRow>
+    </div>
   )
 }
 
 export function MailTabWorkplace({
+  user,
   onAskOrchestrator
 }: {
+  user: UserProfile
   onAskOrchestrator: (message: string, context: string) => void
 }): React.JSX.Element {
+  const data = useSpecV04Sources(user)
+  const mailRows = data.mailRows
+  const [selectedId, setSelectedId] = useState('')
+  const effectiveId = selectedId || mailRows[0]?.id || ''
+  const selected = mailRows.find((item) => item.id === effectiveId)
   const tiles: SpecSummaryTile[] = [
-    { id: 'new', label: 'Новые', value: '—', tone: 'orange' },
-    { id: 'todo', label: 'К обработке', value: '—', tone: 'orange' },
-    { id: 'hi', label: 'Высокий приоритет', value: '—', tone: 'orange' },
-    { id: 'proj', label: 'По проектам', value: '—', tone: 'purple' },
-    { id: 'reg', label: 'По регламентам', value: '—', tone: 'green' }
+    { id: 'p', label: 'К обработке', value: String(mailRows.length || '—'), tone: 'blue' },
+    { id: 'box', label: 'Ящик Outlook', value: data.outlookMailbox || 'локальный профиль', tone: 'orange' },
+    { id: 'src', label: 'Источник списка', value: data.sources.mail, tone: 'purple' }
   ]
+  const ask = (m: string) => onAskOrchestrator(m, 'Вкладка «Письма»')
+
   return (
-    <SpecV04Shell
-      title="Письма"
-      subtitle="Единый центр обработки рабочей почты Outlook"
-      tiles={tiles}
-      filters={demoFilters()}
-      onAskOrchestrator={(message) => onAskOrchestrator(message, 'Вкладка «Письма»')}
-    >
-      <SpecTablePlaceholder
-        columns={[
-          'Отправитель',
-          'Тема',
-          'Категория',
-          'Процесс / проект',
-          'Время',
-          'Приоритет',
-          'Статус',
-          'Исполнитель'
-        ]}
-        empty="Интеграция Outlook Mail — список писем и карточка с вложениями и извлечёнными задачами."
+    <div className="wp-page spec-v04-page">
+      <SpecPageHead
+        title="Письма"
+        subtitle={
+          data.outlookMailbox
+            ? `Почта Outlook: ${data.outlookMailbox} · список через ${data.sources.mail}`
+            : 'Единый центр обработки рабочей почты Outlook'
+        }
+        actions={<SpecQuickLaunchButton />}
       />
-    </SpecV04Shell>
+      <SpecSummaryTiles tiles={tiles} />
+      <SpecFilters>{standardFilters()}</SpecFilters>
+      <SpecSplit
+        main={
+          <div className="spec-v04-table-wrap wp-card">
+            <h3 className="spec-table-caption">Письма ({mailRows.length})</h3>
+            <table className="spec-v04-table">
+              <thead>
+                <tr>
+                  <th />
+                  <th>Отправитель</th>
+                  <th>Тема</th>
+                  <th>Категория</th>
+                  <th>Процесс / проект</th>
+                  <th>Время</th>
+                  <th>Приоритет</th>
+                  <th>Статус</th>
+                  <th>Исполнитель</th>
+                </tr>
+              </thead>
+              <tbody>
+                {!mailRows.length ? (
+                  <tr>
+                    <td colSpan={9} className="spec-v04-empty">
+                      {data.loading
+                        ? 'Загружаем письма…'
+                        : `Нет непрочитанных через IMAP. Outlook: ${data.outlookMailbox || 'проверьте профиль'}.`}
+                    </td>
+                  </tr>
+                ) : null}
+                {mailRows.map((row) => (
+                  <tr
+                    key={row.id}
+                    className={effectiveId === row.id ? 'selected' : ''}
+                    onClick={() => setSelectedId(row.id)}
+                  >
+                    <td>
+                      <input type="checkbox" onClick={(e) => e.stopPropagation()} />
+                    </td>
+                    <td>{row.sender}</td>
+                    <td>
+                      <strong>{row.subject}</strong>
+                    </td>
+                    <td>
+                      <SpecPill tone={row.catTone}>{row.category}</SpecPill>
+                    </td>
+                    <td>{row.link}</td>
+                    <td>{row.time}</td>
+                    <td>
+                      <SpecPill tone={row.priTone}>{row.priority}</SpecPill>
+                    </td>
+                    <td>
+                      <SpecPill tone={row.stTone}>{row.status}</SpecPill>
+                    </td>
+                    <td>{row.assignee}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        }
+        side={
+          selected ? (
+            <div className="spec-detail-card spec-mail-preview">
+              <h2>{selected.subject}</h2>
+              <p className="spec-v04-muted">
+                От: {selected.sender} · {selected.time}
+              </p>
+              <div className="spec-detail-tags">
+                <SpecPill tone={selected.priTone}>{selected.priority}</SpecPill>
+                <SpecPill tone={selected.stTone}>{selected.status}</SpecPill>
+                <SpecPill tone="purple">CRM</SpecPill>
+              </div>
+              <p className="spec-v04-muted">Просмотр тела письма — через агента Outlook или imap.fetch_message.</p>
+              <footer className="spec-detail-actions">
+                <button type="button" className="btn-ghost">
+                  Ответить
+                </button>
+                <button type="button" className="btn-ghost">
+                  Передать ИИ
+                </button>
+                <button type="button" className="btn-primary">
+                  Привязать к процессу
+                </button>
+              </footer>
+            </div>
+          ) : null
+        }
+      />
+      <SpecBottomRow>
+        <SpecPanel title="Письма, требующие ответа сегодня">
+          <ul className="spec-today-list">
+            <li>
+              <span>11:00</span>
+              <strong>{selected?.subject}</strong>
+            </li>
+          </ul>
+        </SpecPanel>
+        <SpecPanel title="Связанные задачи">
+          <p className="spec-v04-muted">8 задач, созданных из писем.</p>
+        </SpecPanel>
+        <SpecAskOrchestratorBlock
+          placeholder={data.outlookMailbox ? `Что важного в ${data.outlookMailbox}?` : 'Спросить по почте'}
+          chips={ASK_CHIPS.mail}
+          onSubmit={ask}
+        />
+      </SpecBottomRow>
+    </div>
   )
 }
 
 export function MeetingsTabWorkplace({
+  user,
   onAskOrchestrator,
   onOpenRun,
   onOpenSchedule,
   onOpenHistory
 }: {
+  user: UserProfile
   onAskOrchestrator: (message: string, context: string) => void
   onOpenRun: (workflowId: string, runId?: string, autoStart?: boolean) => void
   onOpenSchedule: (workflowId: string, title: string) => void
   onOpenHistory: (workflowId: string, title: string) => void
 }): React.JSX.Element {
+  const data = useSpecV04Sources(user)
+  const [meetings, setMeetings] = useState<
+    { time: string; title: string; format: string; participants: string; prep: string; prepTone: 'green' | 'orange'; status: string; stTone: 'blue' | 'gray' }[]
+  >([])
+  useEffect(() => {
+    let alive = true
+    void ensureOutlookMeetings('week', new Date(), { owner: data.erpFio }).then((res) => {
+      if (!alive) return
+      setMeetings(
+        (res.meetings || []).slice(0, 20).map((m) => ({
+          time: (m.start || '').slice(11, 16) || '—',
+          title: m.subject,
+          format: m.location || '—',
+          participants: m.attendees ? `${m.attendees.split(';').length} чел.` : '—',
+          prep: '—',
+          prepTone: 'orange' as const,
+          status: 'Запланировано',
+          stTone: 'gray' as const
+        }))
+      )
+    })
+    return () => {
+      alive = false
+    }
+  }, [data.erpFio])
+
   const tiles: SpecSummaryTile[] = [
-    { id: 'period', label: 'За период', value: '—', tone: 'lilac' },
-    { id: 'today', label: 'Сегодня', value: '—', tone: 'lilac' },
-    { id: 'prep', label: 'Подготовка материалов', value: '—', tone: 'blue' },
-    { id: 'dec', label: 'Требуются решения', value: '—', tone: 'orange' },
-    { id: 'done', label: 'Завершённые', value: '—', tone: 'green' }
+    { id: 't', label: 'На неделе (Outlook)', value: String(data.meetingCount || meetings.length || '—'), tone: 'lilac' },
+    { id: 'box', label: 'Календарь', value: data.outlookMailbox || data.erpFio, tone: 'blue' }
   ]
+  const ask = (m: string) => onAskOrchestrator(m, 'Вкладка «Совещания»')
+
   return (
-    <SpecV04Shell
-      title="Совещания"
-      subtitle="Календарь, подготовка материалов, повестки и поручения"
-      tiles={tiles}
-      filters={demoFilters()}
-      onAskOrchestrator={(message) => onAskOrchestrator(message, 'Вкладка «Совещания»')}
-    >
+    <div className="wp-page spec-v04-page">
+      <SpecPageHead title="Совещания" subtitle="Календарь, подготовка и материалы" actions={<SpecQuickLaunchButton />} />
+      <SpecSummaryTiles tiles={tiles} />
+      <SpecFilters>{standardFilters()}</SpecFilters>
+      <div className="spec-meetings-grid">
+        <SpecPanel title="Календарь на 12 августа 2024">
+          <div className="spec-day-calendar">
+            {['09:00', '10:00', '12:00', '14:00', '16:00'].map((slot) => (
+              <div key={slot} className="spec-cal-slot">
+                <span>{slot}</span>
+                <div className="spec-cal-event">Совещание</div>
+              </div>
+            ))}
+          </div>
+        </SpecPanel>
+        <SpecPanel title="Ближайшие совещания (12)">
+          <table className="spec-v04-table spec-v04-table-compact">
+            <thead>
+              <tr>
+                <th>Время</th>
+                <th>Название</th>
+                <th>Формат</th>
+                <th>Участники</th>
+                <th>Подготовка</th>
+                <th>Статус</th>
+              </tr>
+            </thead>
+            <tbody>
+              {!meetings.length ? (
+                <tr>
+                  <td colSpan={6} className="spec-v04-empty">
+                    Нет событий Outlook на неделе для {data.erpFio}.
+                  </td>
+                </tr>
+              ) : null}
+              {meetings.map((row) => (
+                <tr key={`${row.time}-${row.title}`}>
+                  <td>{row.time}</td>
+                  <td>
+                    <strong>{row.title}</strong>
+                  </td>
+                  <td>{row.format}</td>
+                  <td>{row.participants}</td>
+                  <td>
+                    <SpecPill tone={row.prepTone}>{row.prep}</SpecPill>
+                  </td>
+                  <td>
+                    <SpecPill tone={row.stTone}>{row.status}</SpecPill>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </SpecPanel>
+        <div className="spec-detail-card">
+          <h2>{meetings[0]?.title || 'Совещание'}</h2>
+          <p className="spec-v04-muted">{meetings[0]?.time || '—'} · {meetings[0]?.format || '—'}</p>
+          <p className="spec-v04-muted">Данные из outlook.read_calendar (локальный Outlook).</p>
+        </div>
+      </div>
       <div className="spec-v04-meetings-embed">
         <AgentsPage
           variant="calendar"
@@ -196,58 +620,174 @@ export function MeetingsTabWorkplace({
           onOpenHistory={onOpenHistory}
         />
       </div>
-    </SpecV04Shell>
+      <SpecAskOrchestratorBlock
+        placeholder="Например: «Подготовить краткое резюме совещания»"
+        chips={ASK_CHIPS.meetings}
+        onSubmit={ask}
+      />
+    </div>
   )
 }
 
 export function KnowledgeTabWorkplace({
+  user,
   onAskOrchestrator
 }: {
+  user: UserProfile
   onAskOrchestrator: (message: string, context: string) => void
 }): React.JSX.Element {
-  const [selected, setSelected] = useState('')
-  const tiles: SpecSummaryTile[] = [
-    { id: 'all', label: 'Документов всего', value: '—', tone: 'neutral' },
-    { id: 'upd', label: 'Обновлено за период', value: '—', tone: 'neutral' },
-    { id: 'reg', label: 'Регламенты', value: '—', tone: 'green' },
-    { id: 'tpl', label: 'Шаблоны', value: '—', tone: 'blue' },
-    { id: 'how', label: 'Статьи и инструкции', value: '—', tone: 'neutral' }
-  ]
+  const data = useSpecV04Sources(user)
+  const [catalog, setCatalog] = useState<SpecKnowledgeRow[]>([])
+  const [catalogLoading, setCatalogLoading] = useState(true)
+  useEffect(() => {
+    let alive = true
+    void api
+      .listWorkflows()
+      .then((items) => {
+        if (!alive) return
+        setCatalog(
+          items
+            .filter((w) => w.documentName)
+            .slice(0, 50)
+            .map((w) => ({
+              id: w.id,
+              name: w.documentName || w.title,
+              type: 'Регламент',
+              typeTone: 'green' as const,
+              section: w.phase || '—',
+              process: w.title,
+              project: '—',
+              version: '—',
+              updated: '—',
+              author: 'Constructor'
+            }))
+        )
+      })
+      .finally(() => {
+        if (alive) setCatalogLoading(false)
+      })
+    return () => {
+      alive = false
+    }
+  }, [])
+  const [selectedId, setSelectedId] = useState('')
+  const effectiveId = selectedId || catalog[0]?.id || ''
+  const selected = catalog.find((item) => item.id === effectiveId)
+  const tiles: SpecSummaryTile[] = useMemo(
+    () => [
+      { id: 'all', label: 'Документов (агенты)', value: String(catalog.length || '—'), tone: 'neutral' },
+      { id: 'reg', label: 'Регламенты', value: String(catalog.length || '—'), tone: 'green' }
+    ],
+    [catalog.length]
+  )
+  const ask = (m: string) => onAskOrchestrator(m, 'Вкладка «База знаний»')
+
   return (
-    <SpecV04Shell
-      title="База знаний"
-      subtitle="Регламенты, шаблоны, инструкции и связанные материалы"
-      tiles={tiles}
-      filters={demoFilters()}
-      onAskOrchestrator={(message) => onAskOrchestrator(message, 'Вкладка «База знаний»')}
-    >
-      <div className="spec-v04-knowledge-layout">
-        <SpecTablePlaceholder
-          columns={[
-            'Название',
-            'Тип',
-            'Раздел',
-            'Процесс',
-            'Проект',
-            'Версия',
-            'Обновлено',
-            'Автор',
-            'Действия'
-          ]}
-          empty="Knowledge Base — каталог материалов. Выберите строку для карточки справа."
-        />
-        <aside className="wp-card spec-v04-doc-card">
-          <h3>Карточка документа</h3>
-          {selected ? (
-            <p>{selected}</p>
-          ) : (
-            <p className="spec-v04-muted">Выберите материал в каталоге — здесь версия, содержание и шаблоны.</p>
-          )}
-          <button type="button" className="btn-ghost" onClick={() => setSelected('')}>
-            Очистить выбор
-          </button>
-        </aside>
-      </div>
-    </SpecV04Shell>
+    <div className="wp-page spec-v04-page">
+      <SpecPageHead
+        title="База знаний"
+        subtitle="Регламенты, шаблоны, инструкции и связанные материалы"
+        actions={<SpecQuickLaunchButton />}
+      />
+      <SpecSummaryTiles tiles={tiles} />
+      <SpecFilters>{standardFilters()}</SpecFilters>
+      <SpecSplit
+        main={
+          <div className="spec-v04-table-wrap wp-card">
+            <h3 className="spec-table-caption">Каталог материалов</h3>
+            <table className="spec-v04-table">
+              <thead>
+                <tr>
+                  <th>Название</th>
+                  <th>Тип</th>
+                  <th>Раздел</th>
+                  <th>Процесс</th>
+                  <th>Проект</th>
+                  <th>Версия</th>
+                  <th>Обновлено</th>
+                  <th>Автор</th>
+                  <th />
+                </tr>
+              </thead>
+              <tbody>
+                {catalogLoading ? (
+                  <tr>
+                    <td colSpan={9} className="spec-v04-empty">
+                      Загружаем регламенты с backend…
+                    </td>
+                  </tr>
+                ) : null}
+                {!catalogLoading && !catalog.length ? (
+                  <tr>
+                    <td colSpan={9} className="spec-v04-empty">
+                      Нет опубликованных регламентов на сервере.
+                    </td>
+                  </tr>
+                ) : null}
+                {catalog.map((row) => (
+                  <tr
+                    key={row.id}
+                    className={effectiveId === row.id ? 'selected' : ''}
+                    onClick={() => setSelectedId(row.id)}
+                  >
+                    <td>
+                      <strong>{row.name}</strong>
+                    </td>
+                    <td>
+                      <SpecPill tone={row.typeTone}>{row.type}</SpecPill>
+                    </td>
+                    <td>{row.section}</td>
+                    <td>{row.process}</td>
+                    <td>{row.project}</td>
+                    <td>{row.version}</td>
+                    <td>{row.updated}</td>
+                    <td>{row.author}</td>
+                    <td>⋮</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        }
+        side={
+          selected ? (
+            <div className="spec-detail-card">
+              <h2>{selected.name}</h2>
+              <div className="spec-detail-tags">
+                <SpecPill tone={selected.typeTone}>{selected.type}</SpecPill>
+                <span className="wp-code">{selected.version}</span>
+              </div>
+              <p className="spec-v04-muted">Краткое содержание регламента и ключевые разделы 1–6.</p>
+              <h4>Связанные шаблоны</h4>
+              <ul className="spec-link-list">
+                <li>Протокол совещания.docx</li>
+                <li>Повестка.docx</li>
+              </ul>
+              <footer className="spec-detail-actions">
+                <button type="button" className="btn-primary">
+                  Открыть
+                </button>
+                <button type="button" className="btn-ghost">
+                  Использовать в процессе
+                </button>
+              </footer>
+            </div>
+          ) : null
+        }
+      />
+      <SpecBottomRow>
+        <SpecPanel title="Популярные материалы">
+          <ul className="spec-link-list">
+            <li>Регламент совещаний · 128 просмотров</li>
+          </ul>
+        </SpecPanel>
+        <SpecPanel title="Недавно обновлённые">
+          <ul className="spec-link-list">
+            <li>{selected?.name} · {selected?.updated}</li>
+          </ul>
+        </SpecPanel>
+        <SpecAskOrchestratorBlock placeholder="Найти регламент по совещаниям" chips={ASK_CHIPS.knowledge} onSubmit={ask} />
+      </SpecBottomRow>
+    </div>
   )
 }

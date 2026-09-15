@@ -1225,7 +1225,7 @@ export function KpiPage({
   const recalcBusy = Boolean(recalcId) || recalcAll
 
   return (
-    <div className="kpi-page">
+    <div className="kpi-page spec-v04-page">
       <div className="kpi-head">
         <div>
           <h1 className="page-title">KPI</h1>

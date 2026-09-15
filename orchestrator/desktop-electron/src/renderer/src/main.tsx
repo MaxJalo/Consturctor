@@ -1,9 +1,10 @@
 import './browserApi'
 import { StrictMode } from 'react'
-import { createRoot } from 'react-dom/client'
+import { createRoot, type Root } from 'react-dom/client'
 import { App } from './App'
-import { RunProvider } from './store/runs'
 import './styles.css'
+import './layout/orchGrid.css'
+import './tabs/grid/todayGrid.css'
 
 function preventWindowFileOpen(event: DragEvent): void {
   event.preventDefault()
@@ -12,10 +13,16 @@ function preventWindowFileOpen(event: DragEvent): void {
 window.addEventListener('dragover', preventWindowFileOpen)
 window.addEventListener('drop', preventWindowFileOpen)
 
-createRoot(document.getElementById('root')!).render(
+const container = document.getElementById('root')!
+const hot = import.meta.hot
+let root: Root = hot?.data.root as Root
+if (!root) {
+  root = createRoot(container)
+  if (hot) hot.data.root = root
+}
+
+root.render(
   <StrictMode>
-    <RunProvider>
-      <App />
-    </RunProvider>
+    <App />
   </StrictMode>
 )

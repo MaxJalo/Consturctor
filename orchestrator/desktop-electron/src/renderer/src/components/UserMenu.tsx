@@ -3,6 +3,7 @@ import { api } from '../api/client'
 import type { InboxNotification, UserProfile } from '../api/types'
 import logoUrl from '../assets/logo.png'
 import { NotificationInbox } from './NotificationInbox'
+import { userGivenName } from '../workplace/userContext'
 
 interface UserMenuProps {
   user: UserProfile
@@ -13,6 +14,8 @@ interface UserMenuProps {
   showLogout: boolean
   onOpenAgent?: (workflowId: string, runId: string) => void
   onOpenSettings?: () => void
+  /** orch-grid: имя и должность справа от аватара */
+  profileAfterAvatar?: boolean
 }
 
 export function UserMenu({
@@ -23,7 +26,8 @@ export function UserMenu({
   onLogout,
   showLogout,
   onOpenAgent,
-  onOpenSettings
+  onOpenSettings,
+  profileAfterAvatar = false
 }: UserMenuProps): React.JSX.Element {
   const [menuOpen, setMenuOpen] = useState(false)
   const [inboxOpen, setInboxOpen] = useState(false)
@@ -120,8 +124,59 @@ export function UserMenu({
     }
   }
 
+  const positionLine = user.position.trim()
+  const whoBlock = (
+    <div className="who">
+      <div className="name" title={user.fio}>
+        {profileAfterAvatar ? userGivenName(user.fio) : user.fio}
+      </div>
+      {positionLine ? (
+        <div className="pos" title={positionLine}>
+          {positionLine}
+        </div>
+      ) : null}
+    </div>
+  )
+
+  const avatarBlock = (
+    <div style={{ position: 'relative' }}>
+      <button
+        className="avatar"
+        onClick={() => {
+          setMenuOpen((value) => !value)
+          setInboxOpen(false)
+        }}
+      >
+        <img className="avatar-img" src={avatarUrl || logoUrl} alt={user.fio} />
+        <span className={`avatar-status ${user.activityStatus || 'online'}`} />
+      </button>
+      {menuOpen && (
+        <div className="user-dropdown">
+          <div className="user-dropdown-dept">{user.department || 'Без подразделения'}</div>
+          {onOpenSettings ? (
+            <button
+              type="button"
+              className="user-dropdown-logout"
+              onClick={() => {
+                setMenuOpen(false)
+                onOpenSettings()
+              }}
+            >
+              Настройки
+            </button>
+          ) : null}
+          {showLogout && (
+            <button className="user-dropdown-logout" onClick={onLogout}>
+              Выйти
+            </button>
+          )}
+        </div>
+      )}
+    </div>
+  )
+
   return (
-    <div className="user-menu" ref={ref}>
+    <div className={`user-menu${profileAfterAvatar ? ' user-menu-profile-after-avatar' : ''}`} ref={ref}>
       <div className="notify-wrap">
         <button className="icon-btn" title="Уведомления" onClick={() => void openInbox()}>
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none">
@@ -146,45 +201,9 @@ export function UserMenu({
         )}
       </div>
 
-      <div className="who">
-        <div className="name">{user.fio}</div>
-        {user.position && <div className="pos">{user.position}</div>}
-      </div>
-
-      <div style={{ position: 'relative' }}>
-        <button
-          className="avatar"
-          onClick={() => {
-            setMenuOpen((value) => !value)
-            setInboxOpen(false)
-          }}
-        >
-          <img className="avatar-img" src={avatarUrl || logoUrl} alt={user.fio} />
-          <span className={`avatar-status ${user.activityStatus || 'online'}`} />
-        </button>
-        {menuOpen && (
-          <div className="user-dropdown">
-            <div className="user-dropdown-dept">{user.department || 'Без подразделения'}</div>
-            {onOpenSettings ? (
-              <button
-                type="button"
-                className="user-dropdown-logout"
-                onClick={() => {
-                  setMenuOpen(false)
-                  onOpenSettings()
-                }}
-              >
-                Настройки
-              </button>
-            ) : null}
-            {showLogout && (
-              <button className="user-dropdown-logout" onClick={onLogout}>
-                Выйти
-              </button>
-            )}
-          </div>
-        )}
-      </div>
+      {!profileAfterAvatar ? whoBlock : null}
+      {avatarBlock}
+      {profileAfterAvatar ? whoBlock : null}
     </div>
   )
 }

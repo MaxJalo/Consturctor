@@ -1,6 +1,8 @@
 import type { ReactNode } from 'react'
 
-export type SpecSummaryTone = 'green' | 'blue' | 'purple' | 'orange' | 'lilac' | 'neutral'
+export type SpecSummaryTone = 'green' | 'blue' | 'purple' | 'orange' | 'lilac' | 'yellow' | 'red' | 'neutral'
+
+export type SpecPillTone = 'green' | 'blue' | 'orange' | 'red' | 'purple' | 'gray' | 'yellow'
 
 export interface SpecSummaryTile {
   id: string
@@ -8,6 +10,8 @@ export interface SpecSummaryTile {
   value: string
   hint?: string
   tone?: SpecSummaryTone
+  progress?: number
+  ring?: boolean
 }
 
 interface SpecV04ShellProps {

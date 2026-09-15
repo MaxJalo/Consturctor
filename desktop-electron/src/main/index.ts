@@ -60,6 +60,23 @@ function parseEnvFile(path: string): Record<string, string> {
   return out
 }
 
+/** Profile .env often keeps stale 127.0.0.1; in dev prefer cwd `.env` and process env. */
+function resolveBackendUrl(env: Record<string, string>): string {
+  const fromProcess = (process.env.BACKEND_URL || '').trim()
+  if (fromProcess) return fromProcess.replace(/\/+$/, '')
+
+  const cwdEnvPath = join(process.cwd(), '.env')
+  if (!app.isPackaged && existsSync(cwdEnvPath)) {
+    const fromCwd = (parseEnvFile(cwdEnvPath).BACKEND_URL || '').trim()
+    if (fromCwd) return fromCwd.replace(/\/+$/, '')
+  }
+
+  const fromProfile = (env.BACKEND_URL || '').trim()
+  if (fromProfile) return fromProfile.replace(/\/+$/, '')
+
+  return 'http://192.168.1.157:7812'
+}
+
 function loadConfig(): {
   backendUrl: string
   testUser: boolean
@@ -93,11 +110,7 @@ function loadConfig(): {
       env = { ...parseEnvFile(candidate), ...env }
     }
   }
-  const backendUrl = (
-    process.env.BACKEND_URL ||
-    env.BACKEND_URL ||
-    'http://192.168.1.157:7812'
-  ).replace(/\/+$/, '')
+  const backendUrl = resolveBackendUrl(env)
   const flag = (process.env.CONSTRUCTOR_TEST_USER || env.CONSTRUCTOR_TEST_USER || '')
     .trim()
     .toLowerCase()
@@ -847,6 +860,15 @@ app.whenReady().then(() => {
   })
   ipcMain.handle('agent:cancel', (_evt, command: AgentSidecarMessage) => {
     return { ok: agentSidecar.send({ ...command, type: 'cancel' }) }
+  })
+  ipcMain.handle('agent:read-calendar', (_evt, command: AgentSidecarMessage) => {
+    return { ok: agentSidecar.send({ ...command, type: 'read_calendar' }) }
+  })
+  ipcMain.handle('agent:search-mail', (_evt, command: AgentSidecarMessage) => {
+    return { ok: agentSidecar.send({ ...command, type: 'search_mail' }) }
+  })
+  ipcMain.handle('agent:invoke-ac-tool', (_evt, command: AgentSidecarMessage) => {
+    return { ok: agentSidecar.send({ ...command, type: 'invoke_ac_tool' }) }
   })
   ipcMain.handle('notifications:start', (_evt, token: string) => {
     if (typeof token === 'string' && token.trim()) {

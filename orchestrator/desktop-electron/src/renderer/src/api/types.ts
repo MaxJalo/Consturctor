@@ -3,6 +3,8 @@ export interface UserProfile {
   fio: string
   department: string
   position: string
+  /** Логин 1С (v8users.Name) → Outlook: {nameMail}@turbo-don.ru */
+  nameMail: string
   avatarUrl: string | null
   canChangeDepartment: boolean
   activityStatus: string

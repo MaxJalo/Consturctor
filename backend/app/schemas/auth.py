@@ -14,6 +14,8 @@ class UserOut(BaseModel):
     fio: str
     department: str = ""
     position: str = ""
+    """Логин 1С (v8users.Name) для почты Outlook: {name_mail}@turbo-don.ru"""
+    name_mail: str = ""
     avatar_url: str | None = None
     can_change_department: bool = True
     department_change_available_at: datetime | None = None

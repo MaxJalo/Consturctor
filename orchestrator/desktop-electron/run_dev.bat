@@ -1,6 +1,7 @@
 @echo off
 cd /d "%~dp0"
 set "BACKEND_URL=http://192.168.1.157:7812"
+set "VITE_BACKEND_URL=%BACKEND_URL%"
 rem Docker often binds 5174 locally — use a free Vite port for Orchestrator.
 if not defined ORCH_VITE_PORT set "ORCH_VITE_PORT=5176"
 rem Use orchestrator/desktop (has reset_run_scratch), not sibling Consturctor/desktop.
