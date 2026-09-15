@@ -119,8 +119,7 @@ _MAX_PROJECT_IDS = 20
 _MAX_USER_PORTFOLIO = 500
 _MAX_OVERDUE_ITEMS = 8
 _MAX_RESOURCES = 20
-_token = ""
-_token_at = 0.0
+_token_cache: dict[str, tuple[str, float]] = {}
 _token_lock = threading.Lock()
 _client: httpx.Client | None = None
 _client_lock = threading.Lock()
@@ -128,7 +127,7 @@ _CARD_TTL_SEC = 300.0
 _INDEX_TTL_SEC = 120.0
 _card_cache: dict[str, tuple[float, Any]] = {}
 _card_cache_lock = threading.Lock()
-_index_cache: tuple[float, Any] | None = None
+_index_cache_by_key: dict[str, tuple[float, Any]] = {}
 _index_cache_lock = threading.Lock()
 
 
@@ -136,12 +135,64 @@ class TurboProjectError(RuntimeError):
     pass
 
 
+_TURBO_DON_DOMAIN = "turbo-don.ru"
+
+
 def turboproject_configured() -> bool:
-    return bool(
-        settings.turboproject_api_base.strip()
-        and settings.turboproject_email.strip()
-        and settings.turboproject_password.strip()
+    return bool(settings.turboproject_api_base.strip())
+
+
+def _turbo_email_from_slug(slug: str) -> str:
+    raw = (slug or "").strip().lower()
+    if not raw:
+        return ""
+    if "@" in raw:
+        return raw
+    return f"{raw}@{_TURBO_DON_DOMAIN}"
+
+
+def _payload_mail_slug(payload: dict[str, Any]) -> str:
+    return str(payload.get("name_mail") or payload.get("nameMail") or "").strip()
+
+
+def _payload_turbo_credentials(payload: dict[str, Any]) -> tuple[str, str] | None:
+    email = str(
+        payload.get("email") or payload.get("turboproject_email") or payload.get("username") or ""
+    ).strip()
+    if not email:
+        email = _turbo_email_from_slug(_payload_mail_slug(payload))
+    password = str(payload.get("password") or payload.get("turboproject_password") or "").strip()
+    if email and password:
+        return email, password
+    return None
+
+
+def _settings_turbo_credentials() -> tuple[str, str] | None:
+    email = settings.turboproject_email.strip()
+    password = settings.turboproject_password or settings.my_password
+    if not email:
+        email = _turbo_email_from_slug(settings.my_name_mail)
+    if email and password:
+        return email, password
+    return None
+
+
+def _resolve_turbo_credentials(args: dict[str, Any] | None) -> tuple[str, str]:
+    payload = args if isinstance(args, dict) else {}
+    explicit = _payload_turbo_credentials(payload)
+    if explicit:
+        return explicit
+    fallback = _settings_turbo_credentials()
+    if fallback:
+        return fallback
+    raise TurboProjectError(
+        "TurboProject: нет учётных данных "
+        "(email/password или name_mail из сессии; иначе TURBOPROJECT_EMAIL/MY_NAME_MAIL и PASSWORD)"
     )
+
+
+def _turbo_cred_cache_key(email: str) -> str:
+    return email.strip().casefold() or "__empty__"
 
 
 def parse_iso_date(value: Any) -> datetime | None:
@@ -400,23 +451,26 @@ def _http_client() -> httpx.Client:
     return _client
 
 
-def _login(*, force: bool = False) -> str:
-    global _token, _token_at
+def _login_for_args(args: dict[str, Any] | None = None, *, force: bool = False) -> tuple[str, tuple[str, str]]:
+    creds = _resolve_turbo_credentials(args)
+    email, password = creds
+    cache_key = _turbo_cred_cache_key(email)
     now = time.monotonic()
-    if not force and _token and now - _token_at < _TOKEN_TTL_SEC:
-        return _token
+    if not force:
+        cached = _token_cache.get(cache_key)
+        if cached and now - cached[1] < _TOKEN_TTL_SEC:
+            return cached[0], creds
     with _token_lock:
         now = time.monotonic()
-        if not force and _token and now - _token_at < _TOKEN_TTL_SEC:
-            return _token
+        if not force:
+            cached = _token_cache.get(cache_key)
+            if cached and now - cached[1] < _TOKEN_TTL_SEC:
+                return cached[0], creds
         url = f"{_base_url()}/api/auth/login"
         try:
             response = _http_client().post(
                 url,
-                json={
-                    "email": settings.turboproject_email.strip(),
-                    "password": settings.turboproject_password,
-                },
+                json={"email": email, "password": password},
             )
             response.raise_for_status()
             token = str(response.json().get("token") or "").strip()
@@ -424,12 +478,22 @@ def _login(*, force: bool = False) -> str:
             raise TurboProjectError(f"TurboProject: не удалось войти: {exc}") from exc
         if not token:
             raise TurboProjectError("TurboProject: в ответе login нет token")
-        _token = token
-        _token_at = now
-        return token
+        _token_cache[cache_key] = (token, now)
+        return token, creds
 
 
-def _api_get(path: str, token: str, *, retry: bool = True) -> Any:
+def _login(*, args: dict[str, Any] | None = None, force: bool = False) -> str:
+    token, _creds = _login_for_args(args, force=force)
+    return token
+
+
+def _api_get(
+    path: str,
+    token: str,
+    *,
+    creds: tuple[str, str],
+    retry: bool = True,
+) -> Any:
     url = f"{_base_url()}{path}"
     headers = {"Authorization": f"Bearer {token}", "Accept": "application/json"}
     try:
@@ -437,7 +501,11 @@ def _api_get(path: str, token: str, *, retry: bool = True) -> Any:
     except httpx.HTTPError as exc:
         raise TurboProjectError(f"TurboProject GET {path}: {exc}") from exc
     if response.status_code == 401 and retry:
-        return _api_get(path, _login(force=True), retry=False)
+        fresh_token, fresh_creds = _login_for_args(
+            {"email": creds[0], "password": creds[1], "turboproject_email": creds[0], "turboproject_password": creds[1]},
+            force=True,
+        )
+        return _api_get(path, fresh_token, creds=fresh_creds, retry=False)
     if response.status_code >= 400:
         text = response.text[:280].replace("\n", " ")
         raise TurboProjectError(f"TurboProject HTTP {response.status_code} {path}: {text}")
@@ -445,20 +513,21 @@ def _api_get(path: str, token: str, *, retry: bool = True) -> Any:
     return data
 
 
-def _get_index_files(token: str) -> Any:
-    """Cached /api/projects/files index shared across aggregators in one run."""
-    global _index_cache
+def _get_index_files(token: str, *, creds: tuple[str, str]) -> Any:
+    """Cached /api/projects/files index per Turbo login."""
+    cache_key = _turbo_cred_cache_key(creds[0])
     now = time.monotonic()
-    cached = _index_cache
-    if cached is not None and now - cached[0] < _INDEX_TTL_SEC:
-        return cached[1]
-    data = _api_get("/api/projects/files", token)
     with _index_cache_lock:
-        _index_cache = (time.monotonic(), data)
+        cached = _index_cache_by_key.get(cache_key)
+        if cached is not None and now - cached[0] < _INDEX_TTL_SEC:
+            return cached[1]
+    data = _api_get("/api/projects/files", token, creds=creds)
+    with _index_cache_lock:
+        _index_cache_by_key[cache_key] = (time.monotonic(), data)
     return data
 
 
-def _get_card(file_id: Any, token: str) -> Any:
+def _get_card(file_id: Any, token: str, *, creds: tuple[str, str]) -> Any:
     """Cached project card. Cards change slowly, so a short TTL removes the
     biggest cost: re-reading the same portfolio across overdue/blocked/workload
     aggregators (upstream serves each card in ~1.5s)."""
@@ -468,7 +537,7 @@ def _get_card(file_id: Any, token: str) -> Any:
         hit = _card_cache.get(key)
         if hit is not None and now - hit[0] < _CARD_TTL_SEC:
             return hit[1]
-    details = _api_get(f"/api/projects/files/{file_id}", token)
+    details = _api_get(f"/api/projects/files/{file_id}", token, creds=creds)
     with _card_cache_lock:
         _card_cache[key] = (time.monotonic(), details)
     return details
@@ -478,6 +547,7 @@ def _scan_project_cards(
     index_projects: list[dict[str, Any]],
     token: str,
     *,
+    creds: tuple[str, str],
     scan_limit: int,
     consume: Callable[[dict[str, Any], dict[str, Any]], None],
     time_budget: float = _ANALYTICS_TIME_BUDGET_SEC,
@@ -505,7 +575,7 @@ def _scan_project_cards(
     executor = ThreadPoolExecutor(max_workers=workers)
     try:
         future_map = {
-            executor.submit(_get_card, item["file_id"], token): item
+            executor.submit(_get_card, item["file_id"], token, creds=creds): item
             for item in targets
         }
         for future in as_completed(future_map):
@@ -698,7 +768,7 @@ def _matches_date_range(item: dict[str, Any], date_from: str, date_to: str) -> b
     return True
 
 
-def _filtered_index_projects(args: dict[str, Any], *, token: str | None = None) -> tuple[list[dict[str, Any]], int, int]:
+def _filtered_index_projects(args: dict[str, Any]) -> tuple[list[dict[str, Any]], int, int]:
     raw_query = _string_filter(args, "query", "project_name")
     query = raw_query if is_project_name_query(raw_query) else ""
     status = _string_filter(args, "status", "status_proekta")
@@ -708,8 +778,8 @@ def _filtered_index_projects(args: dict[str, Any], *, token: str | None = None) 
     department = _string_filter(args, "department_id", "department", "podrazdelenie")
     date_from = _string_filter(args, "date_from", "from")
     date_to = _string_filter(args, "date_to", "to")
-    active_token = token or _login()
-    summary = _get_index_files(active_token)
+    active_token, creds = _login_for_args(args)
+    summary = _get_index_files(active_token, creds=creds)
     items = summary.get("items") or []
     with_1c = [item for item in items if item.get("has_1c")]
     projects = [build_project_index_item(item) for item in with_1c]
@@ -828,11 +898,167 @@ def _field_list(args: dict[str, Any], *, default: list[str] | None = None) -> li
     return list(default or [])
 
 
+def _normalize_person_key(value: str) -> str:
+    text = (value or "").casefold().replace("ё", "е")
+    for ch in ("ь", "ъ", "\u0301"):
+        text = text.replace(ch, "")
+    return " ".join(text.split())
+
+
+def _surname_and_initials(key: str) -> tuple[str, list[str]] | None:
+    parts = key.split()
+    if len(parts) < 2:
+        return None
+    surname = parts[0]
+    tail = " ".join(parts[1:])
+    if "." not in tail:
+        return None
+    initials: list[str] = []
+    for chunk in tail.replace(".", " ").split():
+        letter = chunk.strip()
+        if letter:
+            initials.append(letter[0])
+    if not initials:
+        return None
+    return surname, initials
+
+
+def _initials_match_name_parts(initials: list[str], name_parts: list[str]) -> bool:
+    if not initials or not name_parts:
+        return False
+    if len(initials) == 1:
+        return initials[0] == name_parts[0][0]
+    needed = min(len(initials), len(name_parts))
+    return all(initials[index] == name_parts[index][0] for index in range(needed))
+
+
+def _person_name_matches(actor: str, candidate: str) -> bool:
+    actor_key = _normalize_person_key(actor)
+    cand_key = _normalize_person_key(candidate)
+    if not actor_key or not cand_key:
+        return False
+    if actor_key == cand_key:
+        return True
+    if actor_key in cand_key or cand_key in actor_key:
+        return True
+    actor_parts = actor_key.split()
+    cand_parts = cand_key.split()
+    if len(actor_parts) >= 2 and len(cand_parts) >= 2:
+        if actor_parts[0] == cand_parts[0] and actor_parts[1] == cand_parts[1]:
+            return True
+    actor_init = _surname_and_initials(actor_key)
+    cand_init = _surname_and_initials(cand_key)
+    if actor_init and len(cand_parts) >= 2:
+        surname, initials = actor_init
+        if surname == cand_parts[0] and _initials_match_name_parts(initials, cand_parts[1:]):
+            return True
+    if cand_init and len(actor_parts) >= 2:
+        surname, initials = cand_init
+        if surname == actor_parts[0] and _initials_match_name_parts(initials, actor_parts[1:]):
+            return True
+    return bool(actor_parts and cand_parts and actor_parts[0] == cand_parts[0])
+
+
+def _resource_id_values(payload: dict[str, Any]) -> set[str]:
+    ids: set[str] = set()
+    raw = payload.get("resource_id") or payload.get("resource_ids") or payload.get("assignee_resource_ids")
+    if isinstance(raw, str):
+        for part in raw.split(","):
+            text = part.strip()
+            if text:
+                ids.add(text)
+    elif isinstance(raw, (list, tuple)):
+        for item in raw:
+            text = str(item).strip()
+            if text:
+                ids.add(text)
+    elif raw not in (None, ""):
+        ids.add(str(raw).strip())
+    return ids
+
+
+def _resolve_task_assignee_filter(payload: dict[str, Any]) -> tuple[str, set[str], bool]:
+    """FIO and/or Turbo resource ids; active unless all_assignees is set."""
+    if bool(payload.get("all_assignees") or payload.get("allAssignees")):
+        return "", set(), False
+    assignee = _string_filter(
+        payload, "assignee", "assignee_id", "employee_id", "resource", "resource_name"
+    )
+    resource_ids = _resource_id_values(payload)
+    if not assignee:
+        assignee = _string_filter(payload, "employee", "fio", "user")
+    if not assignee and not resource_ids:
+        return "", set(), False
+    return assignee, resource_ids, True
+
+
+def _assignment_resource_name(assignment: Any) -> str:
+    if not isinstance(assignment, dict):
+        return ""
+    direct = str(
+        assignment.get("resource_name")
+        or assignment.get("ResourceName")
+        or assignment.get("resourceName")
+        or ""
+    ).strip()
+    if direct:
+        return direct
+    resource = assignment.get("resource")
+    if isinstance(resource, dict):
+        nested = str(resource.get("name") or resource.get("Name") or "").strip()
+        if nested:
+            return nested
+    return str(assignment.get("name") or "").strip()
+
+
+def _assignment_resource_id(assignment: Any) -> str:
+    if not isinstance(assignment, dict):
+        return ""
+    rid = assignment.get("resource_id") or assignment.get("ResourceId") or assignment.get("resourceId")
+    if rid is not None and str(rid).strip():
+        return str(rid).strip()
+    resource = assignment.get("resource")
+    if isinstance(resource, dict):
+        nested = resource.get("id") or resource.get("Id")
+        if nested is not None and str(nested).strip():
+            return str(nested).strip()
+    return ""
+
+
+def _task_assigned_to(
+    raw_task: dict[str, Any],
+    assignee_fio: str,
+    resource_ids: set[str],
+) -> bool:
+    assignments = raw_task.get("assignments") or []
+    if not assignments:
+        return False
+    for assignment in assignments:
+        if not isinstance(assignment, dict):
+            continue
+        if resource_ids:
+            rid = _assignment_resource_id(assignment)
+            if rid and rid in resource_ids:
+                return True
+        name = _assignment_resource_name(assignment)
+        if assignee_fio and name and _person_name_matches(assignee_fio, name):
+            return True
+    return False
+
+
 def _task_rows(details: dict[str, Any]) -> list[dict[str, Any]]:
     rows = []
     for task in details.get("tasks") or []:
         assignments = task.get("assignments") or []
-        executors = [item.get("resource_name") for item in assignments if item.get("resource_name")]
+        executors: list[str] = []
+        executor_resource_ids: list[str] = []
+        for item in assignments:
+            name = _assignment_resource_name(item)
+            if name:
+                executors.append(name)
+            rid = _assignment_resource_id(item)
+            if rid:
+                executor_resource_ids.append(rid)
         percent = float(task.get("percent_complete") or 0.0)
         finish_date = iso_or_none(task.get("finish_date"))
         rows.append(
@@ -840,12 +1066,14 @@ def _task_rows(details: dict[str, Any]) -> list[dict[str, Any]]:
                 "id": task.get("id"),
                 "uid": task.get("uid"),
                 "name": task.get("name"),
+                "outline_number": task.get("outline_number") or task.get("wbs"),
                 "start_date": iso_or_none(task.get("start_date")),
                 "finish_date": finish_date,
                 "percent_complete": percent,
                 "is_summary": bool(task.get("is_summary")),
                 "is_milestone": bool(task.get("is_milestone")),
                 "executors": executors,
+                "executor_resource_ids": executor_resource_ids,
                 "delay_days": _delay_days(finish_date),
             }
         )
@@ -888,8 +1116,8 @@ def list_project_index(args: dict[str, Any] | None = None) -> dict[str, Any]:
         limit = 50
     limit = min(limit, 500)
 
-    token = _login()
-    summary = _get_index_files(token)
+    token, creds = _login_for_args(payload)
+    summary = _get_index_files(token, creds=creds)
     items = summary.get("items") or []
     with_1c = [item for item in items if item.get("has_1c")]
     projects = [build_project_index_item(item) for item in with_1c]
@@ -934,8 +1162,8 @@ def get_project_card(args: dict[str, Any] | None = None) -> dict[str, Any]:
     query = raw_query if is_project_name_query(raw_query) else ""
     manager = str(payload.get("manager") or payload.get("rukovoditel") or "").strip()
     overdue_only = bool(payload.get("overdue_only") or payload.get("overdueOnly"))
-    token = _login()
-    details = _get_card(file_id, token)
+    token, creds = _login_for_args(payload)
+    details = _get_card(file_id, token, creds=creds)
     summary = {
         "id": file_id,
         "original_name": (details.get("file") or {}).get("original_name")
@@ -1013,12 +1241,18 @@ def get_user_portfolio(args: dict[str, Any] | None = None) -> dict[str, Any]:
     limit = _int_filter(payload, "limit", _MAX_USER_PORTFOLIO, _MAX_USER_PORTFOLIO)
     cursor = _cursor_offset(payload)
     page, next_cursor = _page(projects, limit=limit, cursor=cursor)
-    return {
-        "summary": (
-            f"Портфель {employee}: {len(page)} из {len(projects)} проект(ов), "
-            "где сотрудник руководитель, куратор, заказчик или зам. "
-            "Карточки читай только если нужны задачи или просрочки."
-        ),
+    turbo_login = ""
+    try:
+        turbo_login = _resolve_turbo_credentials(payload)[0]
+    except TurboProjectError:
+        pass
+    summary = (
+        f"Портфель {employee}: {len(page)} из {len(projects)} проект(ов), "
+        "где сотрудник руководитель, куратор, заказчик или зам. "
+        "Карточки читай только если нужны задачи или просрочки."
+    )
+    result: dict[str, Any] = {
+        "summary": summary,
         "employee": employee,
         "total_projects": total_projects,
         "projects_with_1c_count": with_1c_count,
@@ -1030,6 +1264,16 @@ def get_user_portfolio(args: dict[str, Any] | None = None) -> dict[str, Any]:
         "source": "turboproject",
         "mode": "user_portfolio",
     }
+    if turbo_login:
+        result["turbo_login_email"] = turbo_login
+    if not projects:
+        result["portfolio_empty_hint"] = (
+            f"Логин TurboProject {turbo_login or '(не задан)'}: индекс /api/projects/files "
+            f"({total_projects} файлов, {with_1c_count} с 1С) не содержит ролей для ФИО «{employee}». "
+            "Это фильтр по руководитель/куратор/заказчик/зам в 1С, не список задач исполнителя. "
+            "Проверьте MY_NAME (ФИО) и MY_NAME_MAIL/TURBOPROJECT_EMAIL (латинский логин API)."
+        )
+    return result
 
 
 def get_project(args: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -1060,20 +1304,21 @@ def get_project_tasks(args: dict[str, Any] | None = None) -> dict[str, Any]:
     if project_id in (None, ""):
         raise TurboProjectError("turboproject.get_project_tasks требует project_id или file_id")
     status = _string_filter(payload, "status")
-    assignee = _string_filter(payload, "assignee_id", "assignee", "employee_id")
+    assignee_fio, resource_ids, filter_assignees = _resolve_task_assignee_filter(payload)
     overdue_only = bool(payload.get("overdue_only") or payload.get("overdueOnly"))
     limit = _int_filter(payload, "limit", 50, 100)
     cursor = _cursor_offset(payload)
-    token = _login()
-    details = _get_card(project_id, token)
+    token, creds = _login_for_args(payload)
+    details = _get_card(project_id, token, creds=creds)
+    raw_tasks = details.get("tasks") or []
     tasks = _task_rows(details)
     filtered = []
-    for task in tasks:
+    for raw_task, task in zip(raw_tasks, tasks, strict=False):
         if task.get("is_summary"):
             continue
         if not _matches_task_status(task, status):
             continue
-        if assignee and not any(_matches_text(executor, assignee) for executor in task.get("executors") or []):
+        if filter_assignees and not _task_assigned_to(raw_task, assignee_fio, resource_ids):
             continue
         if overdue_only and int(task.get("delay_days") or 0) <= 0:
             continue
@@ -1111,7 +1356,7 @@ def get_project_metrics(args: dict[str, Any] | None = None) -> dict[str, Any]:
     )
     rows: list[dict[str, Any]] = []
     for project_id in project_ids:
-        card = get_project_card({"file_id": project_id})
+        card = get_project_card({**payload, "file_id": project_id})
         projects = card.get("projects") if isinstance(card.get("projects"), list) else []
         if not projects:
             continue
@@ -1147,14 +1392,14 @@ def get_overdue_projects(args: dict[str, Any] | None = None) -> dict[str, Any]:
     ids = _explicit_project_ids(payload)
     if not ids and not _has_narrowing(payload):
         return _aggregator_refusal("overdue_projects")
-    token = _login()
+    token, creds = _login_for_args(payload)
     if ids:
         projects = [{"file_id": pid} for pid in ids]
         total_projects = len(ids)
         with_1c_count = len(ids)
         scan_limit = len(ids)
     else:
-        projects, total_projects, with_1c_count = _filtered_index_projects(payload, token=token)
+        projects, total_projects, with_1c_count = _filtered_index_projects(payload)
         scan_limit = _int_filter(payload, "scan_limit", _DEFAULT_AGG_SCAN, _MAX_ANALYTICS_SCAN)
     rows: list[dict[str, Any]] = []
 
@@ -1186,7 +1431,7 @@ def get_overdue_projects(args: dict[str, Any] | None = None) -> dict[str, Any]:
         )
 
     scanned, timed_out = _scan_project_cards(
-        projects, token, scan_limit=scan_limit, consume=consume
+        projects, token, creds=creds, scan_limit=scan_limit, consume=consume
     )
     rows.sort(key=lambda item: (-(int(item.get("delay_days") or 0)), str(item.get("project_name") or "")))
     page = rows[:limit]
@@ -1213,12 +1458,12 @@ def get_projects_with_blocked_tasks(args: dict[str, Any] | None = None) -> dict[
     ids = _explicit_project_ids(payload)
     if not ids and not _has_narrowing(payload):
         return _aggregator_refusal("blocked_tasks")
-    token = _login()
+    token, creds = _login_for_args(payload)
     if ids:
         projects = [{"file_id": pid} for pid in ids]
         scan_limit = len(ids)
     else:
-        projects, _, _ = _filtered_index_projects(payload, token=token)
+        projects, _, _ = _filtered_index_projects(payload)
         scan_limit = _int_filter(payload, "scan_limit", _DEFAULT_AGG_SCAN, _MAX_ANALYTICS_SCAN)
     rows: list[dict[str, Any]] = []
 
@@ -1243,7 +1488,7 @@ def get_projects_with_blocked_tasks(args: dict[str, Any] | None = None) -> dict[
         )
 
     scanned, timed_out = _scan_project_cards(
-        projects, token, scan_limit=scan_limit, consume=consume
+        projects, token, creds=creds, scan_limit=scan_limit, consume=consume
     )
     rows.sort(key=lambda item: (-(int(item.get("max_delay_days") or 0)), str(item.get("project_name") or "")))
     heuristic_note = (
@@ -1274,8 +1519,8 @@ def get_workload_summary(args: dict[str, Any] | None = None) -> dict[str, Any]:
     payload = args if isinstance(args, dict) else {}
     scan_limit = _int_filter(payload, "scan_limit", _DEFAULT_ANALYTICS_SCAN, _MAX_ANALYTICS_SCAN)
     employee = _string_filter(payload, "employee_id", "employee", "resource")
-    token = _login()
-    projects, _, _ = _filtered_index_projects(payload, token=token)
+    token, creds = _login_for_args(payload)
+    projects, _, _ = _filtered_index_projects(payload)
     employees: dict[str, dict[str, Any]] = {}
 
     def consume(index_item: dict[str, Any], details: dict[str, Any]) -> None:
@@ -1303,7 +1548,7 @@ def get_workload_summary(args: dict[str, Any] | None = None) -> dict[str, Any]:
                 item["project_ids"].add(project_id)
 
     scanned, timed_out = _scan_project_cards(
-        projects, token, scan_limit=scan_limit, consume=consume
+        projects, token, creds=creds, scan_limit=scan_limit, consume=consume
     )
     rows = []
     for item in employees.values():
@@ -1390,8 +1635,8 @@ def list_project_cards(args: dict[str, Any] | None = None) -> dict[str, Any]:
         limit = _DEFAULT_PROJECT_LIMIT
     limit = min(limit, 20)
 
-    token = _login()
-    summary = _get_index_files(token)
+    token, creds = _login_for_args(payload)
+    summary = _get_index_files(token, creds=creds)
     items = summary.get("items") or []
     with_1c = [item for item in items if item.get("has_1c")]
     projects: list[dict[str, Any]] = []
@@ -1399,7 +1644,7 @@ def list_project_cards(args: dict[str, Any] | None = None) -> dict[str, Any]:
         current_id = item.get("id")
         if not current_id:
             continue
-        details = _get_card(current_id, token)
+        details = _get_card(current_id, token, creds=creds)
         project = build_project_payload(item, details)
         if query and not _matches_query(project, query):
             continue

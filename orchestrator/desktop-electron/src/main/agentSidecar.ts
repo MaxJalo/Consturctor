@@ -63,31 +63,52 @@ function collectDesktopCandidates(starts: string[]): string[] {
     const path = resolve(value)
     if (!rows.includes(path)) rows.push(path)
   }
+  for (const start of starts) {
+    // Prefer in-repo orchestrator/desktop (desktop-electron is nested under orchestrator/).
+    push(resolve(start, '..', 'desktop'))
+    push(resolve(start, '..', '..', 'desktop'))
+    push(resolve(start, 'desktop'))
+  }
   const constructorDesktop = findConstructorDesktop(starts)
   if (constructorDesktop) push(constructorDesktop)
   for (const start of starts) {
-    push(resolve(start, '..', 'desktop'))
-    push(resolve(start, 'desktop'))
     push(resolve(start, '..', 'Consturctor', 'desktop'))
     push(resolve(start, '..', '..', 'Consturctor', 'desktop'))
   }
   return rows.filter((path) => isDesktopRoot(path))
 }
 
+function isOrchestratorRepoDesktop(path: string): boolean {
+  const normalized = path.replace(/\\/g, '/').toLowerCase()
+  return (
+    normalized.endsWith('/orchestrator/desktop') ||
+    /\/orchestrator\/(?:orchestrator\/)?desktop$/i.test(normalized)
+  )
+}
+
 function resolveDesktopRoot(starts: string[], fallback: string): string {
   const envDesktop = process.env.CONSTRUCTOR_DESKTOP_ROOT
-  if (envDesktop && isDesktopRoot(envDesktop)) return envDesktop
+  if (envDesktop) {
+    const resolved = resolve(envDesktop)
+    if (isDesktopRoot(resolved)) return resolved
+  }
   const found = collectDesktopCandidates(starts)
+  const local = found.find((path) => isOrchestratorRepoDesktop(path))
+  if (local) return local
   return found.find((path) => hasCursorKey(path)) || found[0] || fallback
 }
 
 function cursorEnvFromDesktop(desktopRoot: string): Record<string, string> {
+  const appData = process.env.APPDATA || ''
   const files = [
+    appData ? join(appData, 'constructor-desktop-electron', '.env') : '',
+    appData ? join(appData, 'Orchestrator', '.env') : '',
+    join(process.cwd(), '.env'),
     join(desktopRoot, '.env'),
     ...walkParents(desktopRoot).map((root) => join(root, 'Consturctor', 'desktop', '.env')),
     ...walkParents(desktopRoot).map((root) => join(root, 'backend', '.env')),
     ...walkParents(desktopRoot).map((root) => join(root, 'Consturctor', 'backend', '.env'))
-  ]
+  ].filter(Boolean)
   const out: Record<string, string> = {}
   for (const file of files) {
     const parsed = parseEnvFile(file)
@@ -99,6 +120,24 @@ function cursorEnvFromDesktop(desktopRoot: string): Record<string, string> {
 }
 
 export type AgentSidecarMessage = Record<string, unknown>
+
+export type AgentSidecarSendResult = {
+  ok: boolean
+  queued?: boolean
+  error?: string
+  reason?: 'not_ready' | 'start_failed' | 'stopped' | 'write_failed'
+}
+
+export type AgentSidecarStatus = {
+  ready: boolean
+  starting: boolean
+  queuedCommands: number
+  error: string
+  sidecarPath: string
+  desktopRoot: string
+  python: string
+  cwd: string
+}
 
 type EventSink = (message: AgentSidecarMessage) => void
 
@@ -114,6 +153,15 @@ const START_TYPES = new Set([
 
 function isStartCommand(command: AgentSidecarMessage): boolean {
   return START_TYPES.has(String(command.type || ''))
+}
+
+function isForceRestart(command: AgentSidecarMessage): boolean {
+  const value = command.forceRestart ?? command.force_restart
+  if (value === true) return true
+  const text = String(value ?? '')
+    .trim()
+    .toLowerCase()
+  return text === '1' || text === 'true' || text === 'yes'
 }
 
 /**
@@ -133,6 +181,13 @@ export class AgentSidecar {
   private isReady = false
   private pending: AgentSidecarMessage[] = []
   private lastStart: AgentSidecarMessage | null = null
+  private lastStartError = ''
+  private lastPaths: { sidecar: string; desktopRoot: string; python: string; cwd: string } = {
+    sidecar: '',
+    desktopRoot: '',
+    python: '',
+    cwd: ''
+  }
   private readonly runMeta = new Map<string, { workflowId: string; kind: string }>()
 
   constructor(
@@ -214,30 +269,64 @@ export class AgentSidecar {
     }
   }
 
+  /** Start the Python sidecar as early as possible (before renderer IPC). */
+  warmup(): void {
+    this.start()
+    this.configure(this.lastToken)
+  }
+
+  status(): AgentSidecarStatus {
+    const { sidecar, desktopRoot } = this.resolvePaths()
+    const python = this.lastPaths.python || this.pythonCommand()
+    const cwd =
+      this.lastPaths.cwd ||
+      (existsSync(desktopRoot) ? desktopRoot : existsSync(sidecar) ? dirname(sidecar) : '')
+    return {
+      ready: this.isReady,
+      starting: Boolean(this.child) && !this.isReady,
+      queuedCommands: this.pending.length,
+      error: this.lastStartError,
+      sidecarPath: this.lastPaths.sidecar || sidecar,
+      desktopRoot: this.lastPaths.desktopRoot || desktopRoot,
+      python,
+      cwd
+    }
+  }
+
   start(): void {
     if (this.child) return
     const { sidecar, desktopRoot } = this.resolvePaths()
+    const python = process.env.CONSTRUCTOR_PYTHON || this.pythonCommand()
+    const cwd = existsSync(desktopRoot) ? desktopRoot : dirname(sidecar)
+    this.lastPaths = { sidecar, desktopRoot, python, cwd }
     if (!existsSync(sidecar)) {
+      this.lastStartError = `Файл sidecar не найден: ${sidecar}`
       this.onEvent({
         type: 'error',
-        message: `Agent sidecar not found at ${sidecar}`
+        message: this.lastStartError
       })
       return
     }
+    this.lastStartError = ''
     const env = this.runtimeEnv(sidecar, desktopRoot)
     let child: ChildProcessWithoutNullStreams
     try {
-      child = spawn(env.CONSTRUCTOR_PYTHON || this.pythonCommand(), ['-u', sidecar], {
-        cwd: existsSync(desktopRoot) ? desktopRoot : undefined,
-        env
+      child = spawn(env.CONSTRUCTOR_PYTHON || python, ['-u', sidecar], {
+        cwd: existsSync(cwd) ? cwd : undefined,
+        env,
+        windowsHide: true
       })
     } catch (err) {
+      this.lastStartError = `Не удалось запустить sidecar: ${err instanceof Error ? err.message : String(err)}`
       this.onEvent({
         type: 'error',
-        message: `Failed to start agent sidecar: ${err instanceof Error ? err.message : String(err)}`
+        message: this.lastStartError
       })
       return
     }
+    console.log(
+      `[agent-sidecar] spawn python=${python} sidecar=${sidecar} cwd=${cwd} desktop=${desktopRoot}`
+    )
     this.child = child
     this.isReady = false
     this.stdoutBuffer = ''
@@ -248,13 +337,25 @@ export class AgentSidecar {
       const text = String(chunk).trim()
       if (text) console.error(`[agent-sidecar] ${text}`)
     })
+    const ignorePipeError = (err: Error): void => {
+      console.error(`[agent-sidecar] pipe: ${err.message}`)
+    }
+    child.stdin.on('error', ignorePipeError)
+    child.stdout.on('error', ignorePipeError)
+    child.stderr.on('error', ignorePipeError)
     child.on('error', (err) => {
+      this.lastStartError = `Sidecar process error: ${err instanceof Error ? err.message : String(err)}`
       this.onEvent({
         type: 'error',
-        message: `Agent sidecar error: ${err instanceof Error ? err.message : String(err)}`
+        message: this.lastStartError
       })
     })
     child.on('exit', (code) => {
+      try {
+        if (!child.stdin.destroyed) child.stdin.destroy()
+      } catch {
+        /* already closed */
+      }
       this.child = null
       this.isReady = false
       if (this.stopping) return
@@ -297,6 +398,7 @@ export class AgentSidecar {
         if (message.type === 'ready') {
           this.restarts = 0
           this.isReady = true
+          this.lastStartError = ''
           this.flushPending()
         }
         // Opt-in diagnostics (set AGENT_SIDECAR_DEBUG=1) to confirm that runner
@@ -326,6 +428,14 @@ export class AgentSidecar {
   }
 
   private stampRunMeta(message: AgentSidecarMessage): AgentSidecarMessage {
+    if (message.type === 'run_adopted') {
+      const requested = String(message.runId || '')
+      const linked = String(message.linkedRunId || '')
+      if (requested && linked) {
+        const meta = this.runMeta.get(requested)
+        if (meta) this.runMeta.set(linked, meta)
+      }
+    }
     const runId = String(message.runId || message.id || '')
     const meta = runId ? this.runMeta.get(runId) : undefined
     if (!meta) return message
@@ -340,8 +450,55 @@ export class AgentSidecar {
     return next
   }
 
-  send(command: AgentSidecarMessage): boolean {
+  /** Kill the Python sidecar so stale in-memory runs cannot block a fresh launch. */
+  private hardRestartSidecar(reason: string): void {
+    console.log(`[agent-sidecar] hard restart: ${reason}`)
+    if (this.restartTimer) {
+      clearTimeout(this.restartTimer)
+      this.restartTimer = null
+    }
+    this.isReady = false
+    this.runMeta.clear()
+    const child = this.child
+    this.child = null
+    if (!child) return
+    try {
+      if (child.stdin.writable) {
+        child.stdin.write(JSON.stringify({ type: 'shutdown' }) + '\n')
+      }
+    } catch {
+      /* ignore */
+    }
+    try {
+      child.kill('SIGTERM')
+    } catch {
+      /* ignore */
+    }
+  }
+
+  private sendForceRun(command: AgentSidecarMessage): AgentSidecarSendResult {
+    this.hardRestartSidecar('forceRestart run')
+    this.pending = []
+    this.enqueue(command)
+    this.start()
+    return { ok: true, queued: true, reason: 'not_ready' }
+  }
+
+  private stdinOpen(): boolean {
+    const stdin = this.child?.stdin
+    return Boolean(stdin && stdin.writable && !stdin.destroyed && !stdin.writableEnded)
+  }
+
+  send(command: AgentSidecarMessage): AgentSidecarSendResult {
+    if (this.stopping) {
+      return { ok: false, error: 'Sidecar останавливается', reason: 'stopped' }
+    }
     const type = String(command.type || '')
+    if (type === 'run' && isForceRestart(command)) {
+      this.lastStart = command
+      this.rememberRunMeta(command)
+      return this.sendForceRun(command)
+    }
     if (isStartCommand(command)) {
       this.lastStart = command
       this.rememberRunMeta(command)
@@ -352,11 +509,14 @@ export class AgentSidecar {
     if (!this.child) {
       this.start()
     }
-    if (!this.isReady || !this.child || !this.child.stdin.writable) {
-      this.enqueue(command)
-      return true
+    if (this.lastStartError && !this.child) {
+      return { ok: false, error: this.lastStartError, reason: 'start_failed' }
     }
-    return this.write(command)
+    if (!this.isReady || !this.stdinOpen()) {
+      this.enqueue(command)
+      return { ok: true, queued: true, reason: 'not_ready' }
+    }
+    return this.write(command) ? { ok: true } : { ok: false, error: 'Не удалось записать в sidecar', reason: 'write_failed' }
   }
 
   private enqueue(command: AgentSidecarMessage): void {
@@ -373,15 +533,22 @@ export class AgentSidecar {
   }
 
   private write(command: AgentSidecarMessage): boolean {
-    if (!this.child || !this.child.stdin.writable) {
+    if (!this.stdinOpen()) {
       this.enqueue(command)
       return true
     }
     try {
-      this.child.stdin.write(JSON.stringify(command) + '\n')
+      const stdin = this.child!.stdin
+      const line = JSON.stringify(command) + '\n'
+      stdin.write(line, (err) => {
+        if (err) console.error(`[agent-sidecar] stdin write failed: ${err.message}`)
+      })
       console.log(`[agent-sidecar] sent ${String(command.type || '')}`)
       return true
-    } catch {
+    } catch (err) {
+      console.error(
+        `[agent-sidecar] stdin write failed: ${err instanceof Error ? err.message : String(err)}`
+      )
       this.enqueue(command)
       return false
     }
@@ -395,7 +562,10 @@ export class AgentSidecar {
     }
   }
 
-  configure(token: string | null, credentials?: { login?: string; password?: string }): void {
+  configure(
+    token: string | null,
+    credentials?: { login?: string; password?: string; onecComUsr?: string }
+  ): void {
     this.lastToken = token ?? null
     if (credentials) {
       if (credentials.login !== undefined) this.lastLogin = String(credentials.login || '')
@@ -406,11 +576,16 @@ export class AgentSidecar {
       backendUrl: this.backendUrl,
       token: this.lastToken,
       login: this.lastLogin,
+      fio: this.lastLogin,
+      erp_login: this.lastLogin,
       password: this.lastPassword
     })
   }
 
-  ready(token: string | null, credentials?: { login?: string; password?: string }): void {
+  ready(
+    token: string | null,
+    credentials?: { login?: string; password?: string; onecComUsr?: string }
+  ): void {
     this.lastToken = token ?? null
     this.start()
     this.configure(this.lastToken, credentials)

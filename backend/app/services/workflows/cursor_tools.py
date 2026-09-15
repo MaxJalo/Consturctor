@@ -79,7 +79,7 @@ def current_history_run_id() -> str:
 
 
 class DatasetRegistry:
-    """Полные ответы инструментов прогона: модели уходит preview, коду — весь набор."""
+    """Полные ответы инструментов запуска: модели уходит preview, коду — весь набор."""
 
     def __init__(self) -> None:
         self._items: dict[str, Any] = {}
@@ -291,7 +291,7 @@ def tools_prompt_block(
     phase: str = "execute",
     draft: dict[str, Any] | None = None,
 ) -> str:
-    """Блок инструментов по фазе: проектирование видит контекст, прогон — кандидатов шага."""
+    """Блок инструментов по фазе: проектирование видит контекст, запуск — кандидатов шага."""
     from app.services.local_mcp import DESIGN_PHASE
 
     if phase == DESIGN_PHASE:
@@ -314,7 +314,7 @@ def with_tools_if_desktop(
     """Прикладываем только то, что разрешено фазе.
 
     Полный реестр в промпте заставлял модель рассуждать про транспорт вместо задачи,
-    поэтому для прогона отдаём кандидатов шагов, а для проектирования — контекст.
+    поэтому для запуска отдаём кандидатов шагов, а для проектирования — контекст.
     """
     block = tools_prompt_block(phase=phase, draft=draft)
     return prompt.rstrip() + "\n\n" + block + "\n"
@@ -608,7 +608,7 @@ def invoke_creation_tool(
         _invoke_imap_server,
         _invoke_onec_server,
     )
-    from app.services.onec_tools import ONEC_WRITE_TOOLS
+    from app.services.onec_tools import ONEC_ODATA_WRITE_TOOLS, ONEC_WRITE_TOOLS
     from app.services.tool_names import resolve_tool_name
 
     args = dict(arguments or {})
@@ -616,6 +616,11 @@ def invoke_creation_tool(
     if workflow_id:
         args.setdefault("workflow_id", workflow_id)
         args.setdefault("agent_id", workflow_id)
+    if tool in ONEC_ODATA_WRITE_TOOLS:
+        raise RuntimeError(
+            "Запись в 1С отключена для агентов Constructor. "
+            "Используйте только read-only инструменты (onec.odata_get, onec.meeting_* и т.д.)."
+        )
     if tool.startswith("imap.") or tool in _IMAP_TOOLS:
         return _invoke_imap_server(tool, args)
     if tool in _ONEC_TOOLS:
@@ -1217,7 +1222,7 @@ def _reject_off_phase(phase: str, name: str) -> str:
     return (
         f"{name} недоступен на этапе проектирования "
         f"({contract.get('system')}·{contract.get('entity')}·{contract.get('operation')}). "
-        "Опиши шаг в черновике, данные возьмём в пробном прогоне."
+        "Опиши шаг в черновике, данные возьмём в пробном запуске."
     )
 
 
@@ -1714,7 +1719,7 @@ def _invoke_data_process(arguments: dict[str, Any]) -> dict[str, Any]:
 
     registry = _datasets.get()
     if registry is None:
-        raise RuntimeError("Нет набора данных этого прогона.")
+        raise RuntimeError("Нет набора данных этого запуска.")
     dataset_id = str(arguments.get("dataset_id") or registry.latest_id() or "").strip()
     data = registry.get(dataset_id)
     if data is None:

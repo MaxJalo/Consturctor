@@ -46,6 +46,10 @@ from app.services.erp_tasks import (
     stub_period as _stub_erp_tasks_period,
     stub_subordinate_tasks as _stub_erp_subordinate_tasks,
 )
+from app.services.erp_tasks_odata import (
+    handle_odata_current as _erp_tasks_odata,
+    stub_odata_current as _stub_erp_tasks_odata,
+)
 from app.services.odata_local_catalog import (
     compact_structure,
     entity_search_score,
@@ -54,6 +58,11 @@ from app.services.odata_local_catalog import (
     load_snapshot,
     snapshot_available,
     snapshot_meta,
+)
+from app.services.meeting_protocols import (
+    PROTOCOL_ENTITY,
+    list_meeting_protocols as _list_meeting_protocols,
+    stub_meeting_protocols as _stub_meeting_protocols,
 )
 from app.services.onec_security import (
     default_odata_entities,
@@ -134,11 +143,9 @@ ONEC_TOOLS = frozenset(
     {
         "onec.odata_catalog",
         "onec.odata_get",
-        "onec.odata_post",
-        "onec.odata_patch",
-        "onec.attach_file",
         "onec.sql_query",
         "onec.erp_tasks_current",
+        "onec.erp_tasks_odata",
         "onec.erp_tasks_period",
         "onec.erp_subordinate_tasks",
         "onec.erp_assignments",
@@ -146,16 +153,17 @@ ONEC_TOOLS = frozenset(
         "onec.download_artifact",
         "onec.erp_write_probe",
         "onec.docflow_tasks",
+        "onec.meeting_protocols",
     }
 )
-ONEC_WRITE_TOOLS = frozenset(
+ONEC_ODATA_WRITE_TOOLS = frozenset(
     {
         "onec.odata_post",
         "onec.odata_patch",
         "onec.attach_file",
-        "onec.erp_assignments_write",
     }
 )
+ONEC_WRITE_TOOLS = ONEC_ODATA_WRITE_TOOLS | frozenset({"onec.erp_assignments_write"})
 _ERP_TASK_TOOLS = frozenset(
     {
         "onec.erp_tasks_current",
@@ -164,21 +172,79 @@ _ERP_TASK_TOOLS = frozenset(
     }
 )
 _JWT_ONEC_TOOLS = _ERP_TASK_TOOLS | {
+    "onec.erp_tasks_odata",
     "onec.docflow_tasks",
     "onec.erp_write_probe",
 }
+_ACCESS_TOOLS = frozenset(
+    {
+        "onec.odata_get",
+        "onec.odata_post",
+        "onec.odata_patch",
+        "onec.attach_file",
+        "onec.sql_query",
+        "onec.meeting_protocols",
+    }
+)
 
 
 class OnecToolError(RuntimeError):
     pass
 
 
-def odata_configured() -> bool:
-    has_url = bool(settings.odata_base_url.strip())
-    has_creds = bool(
-        (settings.erp_login.strip() and settings.erp_password.strip())
-        or (settings.odata_username.strip() and settings.odata_password.strip())
+def _access_action(tool: str) -> str:
+    if tool == "onec.sql_query":
+        return "sql"
+    if tool in ONEC_WRITE_TOOLS:
+        return "write"
+    return "read"
+
+
+def _enforce_actor_access(
+    tool: str,
+    args: dict[str, Any],
+    *,
+    actor_user_id: str,
+    actor_fio: str,
+):
+    from app.services.onec_access import (
+        OnecAccessDenied,
+        access_check_enabled,
+        enforce_actor_access,
     )
+
+    if not access_check_enabled():
+        return None
+    # Stub answers are not privileged OData; live SQL still needs a rights check.
+    if tool != "onec.sql_query" and not odata_configured():
+        return None
+    if tool == "onec.sql_query" and not _erp_sql_ready() and not odata_configured():
+        return None
+    try:
+        return enforce_actor_access(
+            action=_access_action(tool),
+            entity=_entity_from_args(args) if tool != "onec.sql_query" else "",
+            user_id=actor_user_id,
+            fio=actor_fio,
+        )
+    except OnecAccessDenied as exc:
+        raise OnecToolError(str(exc)) from exc
+
+
+def _odata_base_url(args: dict[str, Any] | None = None) -> str:
+    payload = args or {}
+    for key in ("odata_base_url", "ODATA_BASE_URL"):
+        value = str(payload.get(key) or "").strip()
+        if value:
+            return value.rstrip("/")
+    return settings.odata_base_url.strip().rstrip("/")
+
+
+def odata_configured(args: dict[str, Any] | None = None) -> bool:
+    """True when OData URL + credentials exist in settings or invoke args."""
+    payload = args or {}
+    has_url = bool(_odata_base_url(payload))
+    has_creds = _odata_auth(payload) is not None
     return has_url and has_creds
 
 
@@ -192,6 +258,12 @@ def _erp_sql_ready() -> bool:
     )
 
 
+_ONEC_WRITE_DISABLED_MSG = (
+    "Запись в 1С отключена для агентов Constructor. "
+    "Используйте только read-only инструменты (onec.odata_get, onec.meeting_* и т.д.)."
+)
+
+
 def invoke_onec(
     tool: str,
     arguments: dict[str, Any] | None = None,
@@ -202,7 +274,9 @@ def invoke_onec(
     from app.services.tool_names import resolve_tool_name
 
     args = arguments if isinstance(arguments, dict) else {}
-    tool = resolve_tool_name(tool, ONEC_TOOLS) or (tool or "").strip()
+    tool = resolve_tool_name(tool, ONEC_TOOLS | ONEC_WRITE_TOOLS) or (tool or "").strip()
+    if tool in ONEC_ODATA_WRITE_TOOLS:
+        raise OnecToolError(_ONEC_WRITE_DISABLED_MSG)
     handlers = REAL_HANDLERS if odata_configured() else STUB_HANDLERS
     # sql_query / задачи работают от ERP SQL даже без OData URL
     if _erp_sql_ready() and not odata_configured():
@@ -211,17 +285,39 @@ def invoke_onec(
         handlers = {**STUB_HANDLERS, **extra}
     elif _erp_sql_ready():
         handlers = {**handlers, **{name: REAL_HANDLERS[name] for name in _ERP_TASK_TOOLS}}
-    from app.services.docflow_tasks import docflow_configured
+    from app.services.docflow_tasks import docflow_url_ready
 
-    if docflow_configured():
+    if docflow_url_ready():
         handlers = {**handlers, "onec.docflow_tasks": REAL_HANDLERS["onec.docflow_tasks"]}
     handler = handlers.get(tool)
     if handler is None:
         raise OnecToolError(f"Неизвестный 1С-инструмент: {tool}")
     try:
-        if tool in _JWT_ONEC_TOOLS:
-            return handler(args, actor_fio=actor_fio, actor_user_id=actor_user_id)
-        return handler(args)
+        access = None
+        if tool in _ACCESS_TOOLS and handler is REAL_HANDLERS.get(tool):
+            access_args = args
+            if tool == "onec.meeting_protocols":
+                access_args = {**args, "entity": PROTOCOL_ENTITY}
+            access = _enforce_actor_access(
+                tool,
+                access_args,
+                actor_user_id=actor_user_id,
+                actor_fio=actor_fio,
+            )
+        if tool == "onec.meeting_protocols":
+            result = handler(args, access=access)
+        elif tool in _JWT_ONEC_TOOLS:
+            result = handler(args, actor_fio=actor_fio, actor_user_id=actor_user_id)
+        else:
+            result = handler(args)
+        if access is not None and tool == "onec.odata_get" and isinstance(result, dict):
+            from app.services.onec_access import OnecAccessDenied, filter_odata_result
+
+            try:
+                return filter_odata_result(result, access, _entity_from_args(args))
+            except OnecAccessDenied as exc:
+                raise OnecToolError(str(exc)) from exc
+        return result
     except OnecToolError:
         raise
     except (ErpTaskError, AssignmentError, ArtifactError) as exc:
@@ -324,6 +420,26 @@ def _build_list_path(entity: str, top: int, *, skip: int = 0) -> str:
     return path
 
 
+def _is_tabular_document_entity(entity: str) -> bool:
+    """True for OData tabular rows like Document_ТД_Протокол_Решения (no Date field)."""
+    cleaned = str(entity or "").strip().lstrip("/").split("?", 1)[0].split("(", 1)[0]
+    if not cleaned.startswith("Document_"):
+        return False
+    try:
+        from app.services.odata_local_catalog import load_snapshot
+
+        index = load_snapshot()
+        if cleaned in index.get("tabular_names", set()):
+            return True
+        if cleaned in index.get("documents", {}):
+            return False
+    except Exception:  # noqa: BLE001
+        pass
+    # Document_<Main>_<TabularSection>
+    tail = cleaned[len("Document_") :]
+    return "_" in tail and tail.count("_") >= 1
+
+
 def _ensure_odata_query(
     path: str,
     *,
@@ -343,9 +459,23 @@ def _ensure_odata_query(
 
 def _payload_credentials(payload: dict[str, Any]) -> tuple[str, str] | None:
     username = str(
-        payload.get("username") or payload.get("erp_login") or payload.get("user") or ""
+        payload.get("odata_username")
+        or payload.get("ODATA_USERNAME")
+        or payload.get("username")
+        or payload.get("erp_login")
+        or payload.get("ERP_LOGIN")
+        or payload.get("user")
+        or payload.get("fio")
+        or ""
     ).strip()
-    password = str(payload.get("password") or payload.get("erp_password") or "").strip()
+    password = str(
+        payload.get("odata_password")
+        or payload.get("ODATA_PASSWORD")
+        or payload.get("password")
+        or payload.get("erp_password")
+        or payload.get("ERP_PASSWORD")
+        or ""
+    ).strip()
     if username and password:
         return username, password
     return None
@@ -486,23 +616,51 @@ def _fetch_related_tabular_parts(
 ) -> dict[str, list[dict[str, Any]]]:
     if not entity or not _GUID_RE.match(ref_key):
         return {}
+    creds = {
+        key: value
+        for key, value in args.items()
+        if key not in {"path", "entity", "top", "skip", "filter"}
+    }
+    parts: dict[str, list[dict[str, Any]]] = {}
+
+    def _store_rows(label: str, payload: Any) -> None:
+        rows = _normalize_odata_rows(payload)
+        if rows and label not in parts:
+            parts[label] = rows
+
+    try:
+        from app.services.odata_local_catalog import get_structure
+
+        structure = get_structure(entity) or {}
+        tabular = structure.get("tabular")
+        if isinstance(tabular, dict):
+            for section_name, section in tabular.items():
+                if not isinstance(section, dict):
+                    continue
+                label = str(section.get("entity") or section_name).strip()
+                nav_path = (
+                    f"{entity}(guid'{ref_key}')/{section_name}?$format=json&$top=50"
+                )
+                try:
+                    raw = _odata_get({"path": nav_path, **creds})
+                    payload = raw.get("data") if isinstance(raw.get("data"), dict) else raw
+                    _store_rows(label, payload)
+                except Exception:  # noqa: BLE001
+                    continue
+    except Exception:  # noqa: BLE001
+        pass
+
     prefix = f"{entity}_"
     names = [name for name in sorted(_cached_catalog_names()) if name.startswith(prefix)]
-    parts: dict[str, list[dict[str, Any]]] = {}
     filter_expr = quote(f"Ref_Key eq guid'{ref_key}'", safe="=,'")
     for name in names[:12]:
+        if name in parts:
+            continue
         try:
             path = _append_odata_query(name, **{"$format": "json", "$top": "50", "$filter": filter_expr})
-            raw = _odata_get(
-                {
-                    **{key: value for key, value in args.items() if key not in {"path", "entity", "top", "skip", "filter"}},
-                    "path": path,
-                }
-            )
+            raw = _odata_get({"path": path, **creds})
             payload = raw.get("data") if isinstance(raw.get("data"), dict) else raw
-            rows = _normalize_odata_rows(payload)
-            if rows:
-                parts[name] = rows
+            _store_rows(name, payload)
         except Exception:  # noqa: BLE001
             continue
     return parts
@@ -660,13 +818,19 @@ def _fetch_odata_list(args: dict[str, Any]) -> dict[str, Any]:
                 odata_path,
                 **{"$filter": quote(" and ".join(filters), safe="=,'")},
             )
-        if (number or extra_filter) and entity.startswith("Document_") and "$orderby" not in odata_path.lower():
+        if (
+            (number or extra_filter)
+            and entity.startswith("Document_")
+            and not _is_tabular_document_entity(entity)
+            and "$orderby" not in odata_path.lower()
+        ):
             odata_path = _append_odata_query(odata_path, **{"$orderby": "Date%20desc"})
 
-    if not settings.odata_base_url:
+    if not _odata_base_url(args):
         raise OnecToolError(
             "ODATA_BASE_URL не настроен. Добавьте ODATA_BASE_URL, "
-            "ODATA_USERNAME/ODATA_PASSWORD (или ERP_LOGIN/ERP_PASSWORD) в backend/.env."
+            "ODATA_USERNAME/ODATA_PASSWORD (или ERP_LOGIN/ERP_PASSWORD) в backend/.env "
+            "или передайте odata_base_url / odata_username / odata_password в invoke."
         )
 
     raw = _odata_get(
@@ -810,8 +974,8 @@ def _stub_sql_query(args: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _odata_url(path: str) -> str:
-    base = settings.odata_base_url.rstrip("/")
+def _odata_url(path: str, args: dict[str, Any] | None = None) -> str:
+    base = _odata_base_url(args)
     cleaned = path.lstrip("/")
     safe = "/()'=,:$"
     if "?" in cleaned:
@@ -835,7 +999,7 @@ def _odata_get(args: dict[str, Any]) -> dict[str, Any]:
         top=top if top is not None and "$top" not in path.lower() else None,
         skip=skip if skip and "$skip" not in path.lower() else None,
     )
-    if not settings.odata_base_url:
+    if not _odata_base_url(args):
         raise OnecToolError("ODATA_BASE_URL not configured")
     auth = _odata_auth(args)
     if not auth:
@@ -843,7 +1007,7 @@ def _odata_get(args: dict[str, Any]) -> dict[str, Any]:
             "OData credentials not configured: set ERP_LOGIN/ERP_PASSWORD "
             "или ODATA_USERNAME/ODATA_PASSWORD"
         )
-    url = _odata_url(path)
+    url = _odata_url(path, args)
     with httpx.Client(timeout=settings.odata_timeout_sec, auth=auth) as client:
         response = client.get(url, headers={"Accept": "application/json"})
         if response.status_code >= 400:
@@ -1312,6 +1476,7 @@ STUB_HANDLERS = {
     "onec.attach_file": _stub_attach_file,
     "onec.sql_query": _stub_sql_query,
     "onec.erp_tasks_current": _stub_erp_tasks_current,
+    "onec.erp_tasks_odata": _stub_erp_tasks_odata,
     "onec.erp_tasks_period": _stub_erp_tasks_period,
     "onec.erp_subordinate_tasks": _stub_erp_subordinate_tasks,
     "onec.erp_assignments": _stub_erp_assignments,
@@ -1319,6 +1484,7 @@ STUB_HANDLERS = {
     "onec.download_artifact": _stub_download_artifact,
     "onec.erp_write_probe": _stub_erp_write_probe,
     "onec.docflow_tasks": _stub_docflow_tasks,
+    "onec.meeting_protocols": _stub_meeting_protocols,
 }
 
 REAL_HANDLERS = {
@@ -1329,6 +1495,7 @@ REAL_HANDLERS = {
     "onec.attach_file": _attach_file,
     "onec.sql_query": _sql_query,
     "onec.erp_tasks_current": _erp_tasks_current,
+    "onec.erp_tasks_odata": _erp_tasks_odata,
     "onec.erp_tasks_period": _erp_tasks_period,
     "onec.erp_subordinate_tasks": _erp_subordinate_tasks,
     "onec.erp_assignments": _erp_assignments,
@@ -1336,4 +1503,5 @@ REAL_HANDLERS = {
     "onec.download_artifact": _download_artifact,
     "onec.erp_write_probe": _erp_write_probe,
     "onec.docflow_tasks": _docflow_tasks,
+    "onec.meeting_protocols": _list_meeting_protocols,
 }

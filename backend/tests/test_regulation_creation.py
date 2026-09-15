@@ -1,14 +1,13 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 from app.db.base import Base
-from app.models.regulation import RegulationCreationDraft
+from app.models.regulation import RegulationCreationDraft, RegulationCreationMessage
 from app.models.user import AppUser
 from app.services.regulation_creation.interview import (
     append_user_turn,
@@ -16,12 +15,18 @@ from app.services.regulation_creation.interview import (
     build_followup_creation_prompt,
     creation_interviewer_rules,
     document_from_interview,
+    document_from_source_text,
+    rename_tz_to_regulation,
+    regulation_title_from_source,
+    interview_facts_closed,
     interview_progress,
     interview_write_document,
     interview_use_tools,
     leading_question_text,
     set_sdk_agent_id,
     document_has_full_text,
+    followup_blocker,
+    is_process_select_message,
     is_replacement_garbage,
     merge_agent_payload,
     parse_selected_process_ids,
@@ -40,9 +45,7 @@ from app.services.regulation_creation.service import (
     _result_from_created_document,
     get_active_creation_session,
     get_creation_document,
-    list_creation_sessions,
     persist_creation_turn,
-    resume_creation_session,
     start_creation_session,
 )
 from app.schemas.regulation import RegulationCreationSendRequest
@@ -92,8 +95,22 @@ def test_interview_state_keeps_attachment_text_in_followup_prompt() -> None:
     assert "interview.processes" in prompt
     assert "answerSufficiency" in prompt
     assert "nextQuestion" in prompt
-    assert "самостоятельный регламент процесса" in prompt
+    assert "дописанный исходный файл" in prompt
+    assert "назови его регламентом, не ТЗ" in prompt
 
+
+def test_document_prompt_includes_sto_structure() -> None:
+    prompt = build_creation_prompt(
+        state={},
+        message="Готово",
+        initial=False,
+        force_create=False,
+        for_document=True,
+        include_attachment_bodies=False,
+    )
+    assert "СТО-34-003" in prompt
+    assert "Назначение и область применения" in prompt
+    assert "ready" in prompt
 
 def test_local_sdk_prompt_omits_attachment_bodies() -> None:
     state = append_user_turn(
@@ -112,6 +129,14 @@ def test_local_sdk_prompt_omits_attachment_bodies() -> None:
     assert "duties.txt" in prompt
     assert "materials/" in prompt
     assert "Пользователь ведет календарь совещаний." not in prompt
+
+
+def test_process_select_message_accepts_mark_process_numbers() -> None:
+    assert is_process_select_message(
+        "Отметьте номера процессов, которые вы сами выполняете на этой должности"
+    )
+    assert is_process_select_message("Отметьте нужные процессы из списка")
+    assert not is_process_select_message("В какой системе вы готовите повестку?")
 
 
 def test_replacement_garbage_is_detected() -> None:
@@ -183,96 +208,7 @@ def test_generic_system_name_does_not_close_work_location() -> None:
     assert state["functions"][0]["openGaps"] == ["tool"]
 
 
-def test_outlook_calendar_closes_work_location() -> None:
-    payload = _ready_payload(
-        {
-            "id": "f1",
-            "title": "Организация заседаний Совета директоров",
-            "actor": "Помощник ПСД",
-            "roleStatus": "belongs",
-            "tool": "MS Outlook, вкладка Календарь: смотрит загруженность сотрудника",
-            "periodicity": "",
-            "triggerAction": "",
-            "userAction": "",
-        }
-    )
-    state = merge_agent_payload({}, payload)
-
-    blocker = ready_blocker(payload, state)
-
-    assert "tool" not in state["functions"][0]["openGaps"]
-    assert blocker is not None
-    assert blocker.field == "periodicity"
-
-
-def test_ready_with_critical_process_unknown_is_blocked() -> None:
-    payload = {
-        "status": "ready",
-        "message": "Готово",
-        "interview": {
-            "functions": [
-                {
-                    "id": "f1",
-                    "title": "Организация заседаний СД",
-                    "actor": "Помощник ПСД",
-                    "roleStatus": "belongs",
-                    "tool": "MS Outlook, вкладка Календарь: смотрит загруженность сотрудника",
-                    "periodicity": "Перед каждым заседанием",
-                    "triggerAction": "Согласована повестка заседания",
-                    "userAction": "Создает событие в календаре Outlook",
-                }
-            ],
-            "processes": [
-                {
-                    "id": "f1",
-                    "title": "Организация заседаний СД",
-                    "roleStatus": "belongs",
-                    "knownFacts": {
-                        "workLocation": "MS Outlook, вкладка Календарь",
-                        "frequency": "Перед каждым заседанием",
-                        "trigger": "Согласована повестка заседания",
-                        "steps": ["Создает событие в календаре Outlook"],
-                    },
-                    "unknowns": [
-                        {
-                            "field": "outputs",
-                            "reason": "Неясно, какой результат должен быть подтвержден после планирования.",
-                            "critical": True,
-                        }
-                    ],
-                }
-            ],
-        },
-        "document": {
-            "title": "Регламент",
-            "sections": [
-                {
-                    "title": "Организация заседаний",
-                    "paragraphs": [
-                        (
-                            "Процесс нужен для подготовки заседания Совета директоров и фиксации "
-                            "планируемого события в календаре организации."
-                        ),
-                        (
-                            "После согласования повестки пользователь открывает календарь Outlook "
-                            "и создает событие для дальнейшего согласования участников."
-                        ),
-                    ],
-                    "items": [],
-                }
-            ],
-        },
-    }
-    state = merge_agent_payload({}, payload)
-
-    blocker = ready_blocker(payload, state)
-
-    assert blocker is not None
-    assert blocker.field == "outputs"
-    assert "что пользователь делает" in blocker.message
-
-
-def test_partial_answer_records_sufficiency_without_backend_question() -> None:
+def test_current_question_is_not_skipped_after_partial_answer() -> None:
     state = merge_agent_payload(
         {},
         {
@@ -319,11 +255,15 @@ def test_partial_answer_records_sufficiency_without_backend_question() -> None:
     }
     state = merge_agent_payload(state, agent_payload)
 
-    assert state["answerSufficiency"]["status"] == "partial"
+    blocker = followup_blocker(agent_payload, state)
+
+    assert blocker is not None
+    assert blocker.field == "tool"
+    assert "Где именно пользователь работает" in blocker.message
     assert state["askedQuestions"][-1]["sufficiency"] == "partial"
 
 
-def test_apply_agent_reply_keeps_sdk_need_more_question() -> None:
+def test_apply_agent_reply_overrides_next_question_after_partial_answer() -> None:
     from app.models.regulation import RegulationCreationMessage
 
     db = _session()
@@ -366,15 +306,7 @@ def test_apply_agent_reply_keeps_sdk_need_more_question() -> None:
         raw=json.dumps(
             {
                 "status": "need_more",
-                "message": "Кого пользователь добавляет в приглашение Outlook и какой результат должен получить?",
-                "nextQuestion": {
-                    "processId": "f1",
-                    "targetFact": "steps",
-                    "alreadyKnown": ["Место работы: 1С"],
-                    "missingFact": "кого добавляют в приглашение и какой результат создается",
-                    "whyThisQuestion": "Без этого нельзя описать действие пользователя.",
-                    "text": "Кого пользователь добавляет в приглашение и какой результат должен получить?",
-                },
+                "message": "Как часто вы формируете календарь заседаний?",
                 "answerSufficiency": {
                     "status": "partial",
                     "processId": "f1",
@@ -406,19 +338,85 @@ def test_apply_agent_reply_keeps_sdk_need_more_question() -> None:
         .one()
     )
     assert draft.status == "interview"
-    assert message.content == "Кого пользователь добавляет в приглашение и какой результат должен получить?"
-    assert not message.structured_json.get("blockedReady")
-    assert draft.interview_json["currentQuestion"]["field"] == "userAction"
+    assert "Где именно пользователь работает" in message.content
+    assert "Как часто" not in message.content
 
 
-def test_repeated_question_is_recorded_without_rewriting_sdk_text() -> None:
+def test_repeated_question_is_saved_as_deeper_followup() -> None:
     question = "В какой системе вы проверяете комплектность материалов?"
     state, first = remember_assistant_question({}, message=question, function_id="f1", field="tool")
     state, second = remember_assistant_question(state, message=question, function_id="f1", field="tool")
 
     assert first == question
-    assert second == question
-    assert state["askedQuestions"][-1]["duplicate"] is True
+    assert second.startswith(question)
+    assert "конкретный объект" in second or "файл/реестр" in second
+    assert len(state["askedQuestions"]) >= 2
+
+
+def test_periodicity_daily_answer_breaks_partial_loop() -> None:
+    state = merge_agent_payload(
+        {},
+        {
+            "interview": {
+                "functions": [
+                    {
+                        "id": "f1",
+                        "title": "Организация внеплановых служебных совещаний",
+                        "actor": "Помощник ПСД",
+                        "roleStatus": "belongs",
+                    }
+                ],
+                "processes": [
+                    {
+                        "id": "f1",
+                        "title": "Организация внеплановых служебных совещаний",
+                        "roleStatus": "belongs",
+                        "knownFacts": {},
+                        "sourceRefs": [],
+                    }
+                ],
+            }
+        },
+    )
+    state, _ = remember_assistant_question(
+        state,
+        message="По функции не указано, как часто она выполняется. Какая периодичность?",
+        function_id="f1",
+        field="periodicity",
+        process_id="f1",
+    )
+    state = append_user_turn(state, "Каждый рабочий день", [])
+    state = merge_agent_payload(
+        state,
+        {
+            "status": "need_more",
+            "message": "Уточните периодичность: ежедневно/еженедельно/по событию.",
+            "answerSufficiency": {
+                "status": "partial",
+                "processId": "f1",
+                "field": "periodicity",
+                "answerSummary": "Недостаточно конкретно",
+                "missingFacts": ["периодичность"],
+            },
+            "interview": {
+                "functions": [{"id": "f1", "periodicity": "Каждый рабочий день"}],
+                "processes": [{"id": "f1", "knownFacts": {"frequency": "Каждый рабочий день"}}],
+            },
+        },
+    )
+    blocker = followup_blocker(
+        {
+            "status": "need_more",
+            "answerSufficiency": {
+                "status": "partial",
+                "processId": "f1",
+                "field": "periodicity",
+                "missingFacts": ["периодичность"],
+            },
+        },
+        state,
+    )
+    assert blocker is None
 
 
 def test_notify_two_hours_is_not_concrete_trigger() -> None:
@@ -475,8 +473,63 @@ def test_document_from_interview_builds_sections() -> None:
     )
 
     assert document["title"] == "Регламент"
-    assert document["sections"][0]["title"] == "Сводка на неделю"
-    assert any("Excel" in item for item in document["sections"][0]["items"])
+    titles = [section["title"] for section in document["sections"]]
+    assert titles[0] == "Назначение и область применения"
+    assert titles[5] == "Организация работы"
+    work = document["sections"][5]["sections"][0]
+    assert work["title"] == "Сводка на неделю"
+    assert any("Excel" in item for item in work["items"])
+
+
+def test_source_document_renames_tz_and_keeps_sections() -> None:
+    source = (
+        "ТЕХНИЧЕСКОЕ ЗАДАНИЕ\n"
+        "на разработку ИИ-агента рабочего места\n"
+        "«Помощник ПСД»\n"
+        "\n"
+        "1. Назначение ИИ-агента\n"
+        "ИИ-агент контролирует календарь ПСД и готовит план дня.\n"
+        "2. Реестр подарков и представительских расходов\n"
+        "Секретарь ведет Excel-реестр подарков.\n"
+        "34. Согласование ТЗ\n"
+        "Документ согласовывает руководитель.\n"
+    )
+    assert "РЕГЛАМЕНТ" in rename_tz_to_regulation(source)
+    assert "Согласование Регламент" in rename_tz_to_regulation("34. Согласование ТЗ")
+    title = regulation_title_from_source(source)
+    assert title.startswith("РЕГЛАМЕНТ")
+    assert "ТЗ" not in title
+    assert "техническ" not in title.casefold()
+
+    document = document_from_interview(
+        {
+            "attachments": [{"name": "tz.docx", "text": source}],
+            "processes": [
+                {
+                    "id": "p1",
+                    "title": "Реестр подарков и представительских расходов",
+                    "roleStatus": "belongs",
+                    "knownFacts": {
+                        "steps": [
+                            "После устных сведений помощник сразу сама заводит строку в Excel-реестре"
+                        ]
+                    },
+                }
+            ],
+        }
+    )
+    titles = [str(section.get("title") or "") for section in document["sections"]]
+    assert document["title"].startswith("РЕГЛАМЕНТ")
+    assert "Назначение ИИ-агента" in titles
+    assert "Реестр подарков и представительских расходов" in titles
+    gifts = next(
+        section
+        for section in document["sections"]
+        if "подарков" in str(section.get("title") or "")
+    )
+    assert any("заводит строку в Excel-реестре" in str(item) for item in gifts.get("paragraphs") or [])
+    parsed = document_from_source_text(source)
+    assert parsed["sections"][0]["number"] == "1"
 
 
 def test_document_full_text_rejects_field_dump() -> None:
@@ -672,7 +725,9 @@ def test_foreign_function_is_excluded_from_document() -> None:
     )
 
     titles = [section["title"] for section in document["sections"]]
-    assert titles == ["Моя сводка"]
+    assert "Чужая функция" not in titles
+    work_titles = [item.get("title") for item in document["sections"][5].get("sections") or []]
+    assert work_titles == ["Моя сводка"]
 
 
 def test_matching_actor_becomes_belongs() -> None:
@@ -709,6 +764,37 @@ def _owned_function() -> dict:
         "periodicity": "Каждый понедельник",
         "triggerAction": "Наступил понедельник до 10:00",
         "userAction": "Обновляет сводный план",
+    }
+
+
+def _closed_process(process_id: str = "p1", title: str = "Темы совещаний") -> dict:
+    return {
+        "id": process_id,
+        "title": title,
+        "roleStatus": "belongs",
+        "knownFacts": {
+            "inputs": ["служебная записка в 1С"],
+            "outputs": ["тема в 1С"],
+            "deadlines": "в день поручения",
+            "workLocation": "1С ERP, раздел Темы совещаний",
+            "frequency": "по мере поручений",
+            "steps": ["открыть раздел", "завести тему"],
+        },
+        "unknowns": [
+            {
+                "field": "фамилия в повестке",
+                "critical": True,
+                "reason": "необязательное уточнение",
+            }
+        ],
+    }
+
+
+def _closed_interview() -> dict:
+    return {
+        "selectedProcessIds": ["p1"],
+        "position": "Помощник",
+        "processes": [_closed_process()],
     }
 
 
@@ -907,6 +993,120 @@ def test_finalize_document_writes_docx_and_regulation_row(tmp_path, monkeypatch)
     assert stored.file_name.endswith(".docx")
 
 
+def test_docx_ocr_includes_table_cells(tmp_path) -> None:
+    from docx import Document
+
+    from app.services.workflows.document import load_attachment_bytes
+
+    path = tmp_path / "table.docx"
+    doc = Document()
+    doc.add_paragraph("Шапка документа")
+    table = doc.add_table(rows=1, cols=2)
+    table.cell(0, 0).text = "Контрагент"
+    table.cell(0, 1).text = "ФИО"
+    doc.save(path)
+    loaded = load_attachment_bytes(path.name, path.read_bytes())
+    assert "Шапка документа" in loaded["text"]
+    assert "Контрагент" in loaded["text"]
+    assert "ФИО" in loaded["text"]
+
+
+def test_append_user_turn_keeps_source_path() -> None:
+    state = append_user_turn(
+        {},
+        "Разбери файл",
+        [
+            {
+                "name": "tz.docx",
+                "text": "ТЕХНИЧЕСКОЕ ЗАДАНИЕ",
+                "kind": "text",
+                "source_path": "C:/tmp/tz.docx",
+            }
+        ],
+    )
+    assert state["attachments"][0]["source_path"] == "C:/tmp/tz.docx"
+
+
+def test_finalize_keeps_source_tables(tmp_path, monkeypatch) -> None:
+    from docx import Document
+
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "regulation_storage_dir", tmp_path)
+    source = tmp_path / "creation-sources" / "draft-src" / "src.docx"
+    source.parent.mkdir(parents=True)
+    doc = Document()
+    doc.add_heading("ТЕХНИЧЕСКОЕ ЗАДАНИЕ", level=0)
+    doc.add_heading("1. Реестр подарков и представительских расходов", level=1)
+    doc.add_paragraph("Секретарь ведет Excel-реестр.")
+    table = doc.add_table(rows=2, cols=2)
+    table.cell(0, 0).text = "Поле"
+    table.cell(0, 1).text = "Значение"
+    table.cell(1, 0).text = "Контрагент"
+    table.cell(1, 1).text = "ФИО"
+    doc.add_heading("2. Календарь", level=1)
+    doc.add_paragraph("Помощник ведет календарь.")
+    doc.save(source)
+
+    db = _session()
+    db.add(AppUser(id="user-1", fio="Тест"))
+    draft = RegulationCreationDraft(
+        id="draft-src",
+        user_id="user-1",
+        status="interview",
+        interview_json={
+            "attachments": [
+                {
+                    "name": "src.docx",
+                    "text": "ТЕХНИЧЕСКОЕ ЗАДАНИЕ",
+                    "source_path": str(source),
+                }
+            ],
+            "processes": [
+                {
+                    "id": "p1",
+                    "title": "Реестр подарков и представительских расходов",
+                    "roleStatus": "belongs",
+                    "knownFacts": {
+                        "steps": [
+                            "После устных сведений помощник сразу сама заводит строку в Excel-реестре"
+                        ]
+                    },
+                }
+            ],
+        },
+    )
+    db.add(draft)
+    db.commit()
+
+    result = _finalize_document(
+        db,
+        user_id="user-1",
+        draft=draft,
+        document={
+            "title": "Регламент",
+            "sections": [{"title": "Порядок", "paragraphs": ["Текст"], "items": []}],
+        },
+    )
+    db.commit()
+
+    assert result.regulationId
+    out = Document(draft.result_document_path)
+    assert len(out.tables) == 1
+    assert out.tables[0].cell(1, 0).text == "Контрагент"
+    body = "\n".join(paragraph.text for paragraph in out.paragraphs)
+    assert "РЕГЛАМЕНТ" in body
+    assert "ТЕХНИЧЕСКОЕ ЗАДАНИЕ" not in body
+    assert "заводит строку в Excel-реестре" in body
+    added = next(
+        paragraph
+        for paragraph in out.paragraphs
+        if "заводит строку в Excel-реестре" in paragraph.text
+    )
+    assert added.runs
+    assert added.runs[0].font.highlight_color is not None
+
+
 def test_get_creation_document_rebuilds_missing_file(tmp_path, monkeypatch) -> None:
     from app.config import settings
 
@@ -964,81 +1164,6 @@ def test_start_creation_fresh_closes_previous_draft() -> None:
     assert old.status == "closed"
     assert active is not None
     assert active.draftId == second.draftId
-
-
-def test_creation_history_is_sorted_by_updated_at() -> None:
-    db = _session()
-    db.add(AppUser(id="user-1", fio="Тест"))
-    now = datetime.now(timezone.utc)
-    older = RegulationCreationDraft(
-        id="draft-old",
-        user_id="user-1",
-        status="closed",
-        interview_json={"functions": [{"id": "f1", "title": "Старый процесс"}]},
-        created_at=now - timedelta(days=2),
-        updated_at=now - timedelta(days=2),
-    )
-    newer = RegulationCreationDraft(
-        id="draft-new",
-        user_id="user-1",
-        status="interview",
-        draft_document_json={"title": "Новый регламент"},
-        created_at=now - timedelta(days=1),
-        updated_at=now,
-    )
-    db.add_all([older, newer])
-    db.commit()
-
-    history = list_creation_sessions(db, user_id="user-1")
-
-    assert [item.draftId for item in history.items] == ["draft-new", "draft-old"]
-    assert history.items[0].title == "Новый регламент"
-    assert history.items[1].title == "Старый процесс"
-    assert history.items[0].canContinue is True
-
-
-def test_creation_history_marks_finalized_as_not_continueable() -> None:
-    db = _session()
-    db.add(AppUser(id="user-1", fio="Тест"))
-    draft = RegulationCreationDraft(
-        id="draft-final",
-        user_id="user-1",
-        status="finalized",
-        result_regulation_id="reg-1",
-        draft_document_json={"title": "Готовый регламент"},
-    )
-    db.add(draft)
-    db.commit()
-
-    history = list_creation_sessions(db, user_id="user-1")
-
-    assert history.items[0].draftId == "draft-final"
-    assert history.items[0].hasResult is True
-    assert history.items[0].canContinue is False
-
-
-def test_resume_closed_creation_session_clears_archived_sdk_agent() -> None:
-    db = _session()
-    db.add(AppUser(id="user-1", fio="Тест"))
-    draft = RegulationCreationDraft(
-        id="draft-closed",
-        user_id="user-1",
-        status="closed",
-        cursor_agent_id="agent-archived",
-        latest_run_id="run-archived",
-        interview_json={"sdk_agent_id": "agent-archived", "functions": []},
-    )
-    db.add(draft)
-    db.commit()
-
-    session = resume_creation_session(db, user_id="user-1", draft_id="draft-closed")
-
-    db.refresh(draft)
-    assert session.draftId == "draft-closed"
-    assert session.status == "interview"
-    assert draft.cursor_agent_id == ""
-    assert draft.latest_run_id == ""
-    assert session.sdkAgentId == ""
 
 
 def test_apply_agent_reply_replaces_ascii_question_marks() -> None:
@@ -1143,8 +1268,11 @@ def test_followup_prompt_asks_for_plain_question_first() -> None:
     assert "строго по одному текущему процессу" in rules
     assert "Прочитай обновлённый interview.json" not in prompt
     assert not interview_write_document({"selectedProcessIds": ["p1"]})
+    assert not interview_facts_closed({"selectedProcessIds": ["p1"]})
     assert interview_write_document({"document_write_required": True})
     assert interview_write_document({}, force_create=True)
+    assert interview_facts_closed(_closed_interview())
+    assert interview_write_document(_closed_interview())
     assert interview_use_tools(
         {
             "attachments": [{"name": "a.txt", "text": "Календарь"}],
@@ -1163,6 +1291,86 @@ def test_followup_prompt_asks_for_plain_question_first() -> None:
         new_attachments=True,
     )
     assert interview_use_tools({}, force_create=True)
+
+
+def test_followup_prompt_writes_document_when_facts_closed() -> None:
+    prompt = build_followup_creation_prompt(
+        message="фамилия уже стоит",
+        force_create=False,
+        state=_closed_interview(),
+        write_document=False,
+    )
+    assert "Не задавай новый вопрос" in prompt
+    assert "status='ready'" in prompt
+    assert "необязательные unknowns" in prompt
+    assert "дописанный исходный файл" in prompt
+    assert "назови его регламентом, не ТЗ" in prompt
+    assert "только текст следующего вопроса" not in prompt
+
+
+def test_apply_extra_question_when_facts_closed_starts_document_write() -> None:
+    db = _session()
+    db.add(AppUser(id="user-1", fio="Тест"))
+    draft = RegulationCreationDraft(
+        id="draft-closed-write",
+        user_id="user-1",
+        status="interview",
+        interview_json=_closed_interview(),
+    )
+    db.add(draft)
+    db.commit()
+
+    _apply_agent_reply(
+        db,
+        user_id="user-1",
+        draft=draft,
+        raw=json.dumps(
+            {
+                "status": "need_more",
+                "message": "Фамилия уже стоит в пункте повестки или поле пустое?",
+                "nextQuestion": {"processId": "p1", "field": "outputs", "text": "Уточните фамилию"},
+            },
+            ensure_ascii=False,
+        ),
+    )
+    db.commit()
+    db.refresh(draft)
+
+    assert draft.status == "interview"
+    assert draft.result_regulation_id == ""
+    assert draft.interview_json["document_write_required"] is True
+    assert int(draft.interview_json["document_write_attempts"] or 0) == 1
+    messages = (
+        db.query(RegulationCreationMessage)
+        .filter(RegulationCreationMessage.draft_id == draft.id)
+        .all()
+    )
+    assert messages == []
+
+
+def test_persist_turn_writes_document_when_facts_closed() -> None:
+    db = _session()
+    db.add(AppUser(id="user-1", fio="Тест"))
+    db.commit()
+    session = start_creation_session(db, user_id="user-1")
+    draft = db.get(RegulationCreationDraft, session.draftId)
+    assert draft is not None
+    draft.interview_json = {
+        **_closed_interview(),
+        "sdk_agent_id": "local-agent-1",
+    }
+    db.add(draft)
+    db.commit()
+    turn = persist_creation_turn(
+        db,
+        user_id="user-1",
+        draft_id=session.draftId,
+        request=RegulationCreationSendRequest(message="фамилия уже стоит"),
+    )
+    assert turn.writeDocument is True
+    assert turn.useTools is True
+    assert "Не задавай новый вопрос" in turn.sdkPrompt
+    assert "Прочитай обновлённый interview.json" in turn.sdkPrompt
 
 
 def test_followup_turn_uses_short_interviewer_rules() -> None:
@@ -1192,7 +1400,10 @@ def test_followup_turn_uses_short_interviewer_rules() -> None:
     assert "без инструментов" in turn.sdkRules
 
 
-def test_first_file_turn_enables_read_tools() -> None:
+def test_first_file_turn_enables_read_tools(tmp_path, monkeypatch) -> None:
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "regulation_storage_dir", tmp_path)
     db = _session()
     db.add(AppUser(id="user-1", fio="Тест"))
     db.commit()
@@ -1209,6 +1420,13 @@ def test_first_file_turn_enables_read_tools() -> None:
     assert "materials/" in turn.sdkPrompt
     assert "Пользователь ведет календарь совещаний." not in turn.sdkPrompt
     assert "без инструментов" not in turn.sdkRules
+    draft = db.get(RegulationCreationDraft, session.draftId)
+    assert draft is not None
+    stored = (draft.interview_json or {}).get("attachments") or []
+    assert stored
+    source_path = Path(str(stored[0].get("source_path") or ""))
+    assert source_path.is_file()
+    assert source_path.read_text(encoding="utf-8") == "Пользователь ведет календарь совещаний."
 
 
 def test_parse_agent_response_keeps_first_interview_json() -> None:
@@ -1223,10 +1441,13 @@ def test_parse_agent_response_keeps_first_interview_json() -> None:
     assert parsed["status"] == "need_more"
 
 
-def test_unreadable_pdf_keeps_stub_and_does_not_abort_turn(monkeypatch) -> None:
+def test_unreadable_pdf_keeps_stub_and_does_not_abort_turn(tmp_path, monkeypatch) -> None:
     def boom(name: str, raw: bytes) -> dict:
         raise DocumentError("LM Studio OCR недоступен: connection refused")
 
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "regulation_storage_dir", tmp_path)
     monkeypatch.setattr(
         "app.services.regulation_creation.service._load_creation_attachment",
         boom,
@@ -1852,3 +2073,77 @@ def test_apply_agent_reply_keeps_current_process_question() -> None:
     assert progress["currentProcessId"] == "p1"
     current = (draft.interview_json or {}).get("currentQuestion") or {}
     assert str(current.get("processId") or current.get("functionId") or "") == "p1"
+
+
+def test_stale_rolestatus_unknown_does_not_keep_closed_process() -> None:
+    state = {
+        "selectedProcessIds": ["f3", "f4"],
+        "position": "Помощник Председателя совета директоров",
+        "processes": [
+            {
+                "id": "f3",
+                "title": "Ежедневный контроль поручений по 1С ERP и Excel",
+                "roleStatus": "belongs",
+                "roleConfirmedByUser": True,
+                "knownFacts": {
+                    "inputs": ["поручения из 1С ERP и записи Action Tracker"],
+                    "outputs": ["устный доклад руководителю к 07:50"],
+                    "deadlines": "устная сверка и доклад к 07:50",
+                    "workLocation": "1С ERP и Excel Action Tracker, реестр поручений",
+                    "frequency": "каждое рабочее утро и днём раз в час",
+                    "steps": ["открыть оба журнала", "сверить статусы", "доложить руководителю"],
+                },
+                "unknowns": [
+                    {
+                        "field": "roleStatus",
+                        "critical": True,
+                        "reason": "в тексте исполнитель сверки связан с Секретарём РК",
+                    }
+                ],
+            },
+            {
+                "id": "f4",
+                "title": "Проверка артефактов и предложение поручений к закрытию",
+                "roleStatus": "unclear",
+                "knownFacts": {},
+                "unknowns": [],
+            },
+        ],
+    }
+
+    progress = interview_progress(state)
+    assert progress["currentProcessId"] == "f4"
+    assert progress["currentProcessIndex"] == 2
+
+    blocker = question_for_selected_processes(state)
+    assert blocker is not None
+    assert blocker.function_id == "f4"
+    assert blocker.field == "roleStatus"
+
+    merged = merge_agent_payload(
+        state,
+        {
+            "status": "need_more",
+            "interview": {"processes": [{"id": "f3", "roleStatus": "belongs"}]},
+        },
+    )
+    f3 = next(item for item in merged["processes"] if item["id"] == "f3")
+    assert not any(str(item.get("field") or "") == "roleStatus" for item in f3.get("unknowns") or [])
+    assert interview_progress(merged)["currentProcessId"] == "f4"
+    updated = append_user_turn(
+        {
+            **state,
+            "currentQuestion": {
+                "id": "q-role",
+                "processId": "f3",
+                "field": "roleStatus",
+                "message": "Процесс относится к вашей должности?",
+            },
+        },
+        "Да, это моя обязанность",
+        [],
+    )
+    answered = next(item for item in updated["processes"] if item["id"] == "f3")
+    assert answered["roleStatus"] == "belongs"
+    assert not any(str(item.get("field") or "") == "roleStatus" for item in answered.get("unknowns") or [])
+    assert interview_progress(updated)["currentProcessId"] == "f4"

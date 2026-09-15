@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta
 
+import pytest
+
 from app.services.local_mcp import list_tools
 from app.services.turboproject import (
     GET_TOOL_NAME,
@@ -31,6 +33,8 @@ from app.services.turboproject import (
     invoke_turboproject,
     is_phrase_query,
     is_project_name_query,
+    turboproject_configured,
+    _payload_turbo_credentials,
     list_project_index,
     list_projects,
     unique_resource_names,
@@ -42,6 +46,14 @@ from app.services.workflows.cursor_tools import (
     tool_catalog_block,
 )
 from app.services.workflows.tool_result_validation import evaluate_tool_result
+
+
+@pytest.fixture(autouse=True)
+def _turbo_test_api_base(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        "app.services.turboproject.settings.turboproject_api_base",
+        "http://192.168.1.236:8000",
+    )
 
 
 def test_tool_registered() -> None:
@@ -156,6 +168,26 @@ def test_invoke_stub_when_not_configured(monkeypatch) -> None:
     assert result["total_projects"] == 0
 
 
+def test_payload_turbo_credentials_from_session_fields() -> None:
+    creds = _payload_turbo_credentials(
+        {"email": "user@turbo-don.ru", "password": "secret", "employee": "Иванов"}
+    )
+    assert creds == ("user@turbo-don.ru", "secret")
+
+
+def test_payload_turbo_credentials_from_name_mail_slug() -> None:
+    creds = _payload_turbo_credentials({"name_mail": "m.zhalybin", "password": "secret"})
+    assert creds == ("m.zhalybin@turbo-don.ru", "secret")
+
+
+def test_turboproject_configured_when_api_base_set(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "app.services.turboproject.settings.turboproject_api_base",
+        "http://192.168.1.236:8000",
+    )
+    assert turboproject_configured() is True
+
+
 def test_phrase_query_is_not_a_project_name() -> None:
     phrase = (
         "активные проекты участники Мангасарян Давид Каренович, "
@@ -184,7 +216,7 @@ def test_list_projects_ignores_phrase_query() -> None:
 def test_project_index_does_not_read_cards(monkeypatch) -> None:
     calls: list[str] = []
 
-    def fake_api_get(path: str, _token: str) -> dict:
+    def fake_api_get(path: str, _token: str, **_: object) -> dict:
         calls.append(path)
         assert path == "/api/projects/files"
         return {
@@ -199,9 +231,12 @@ def test_project_index_does_not_read_cards(monkeypatch) -> None:
             ]
         }
 
-    monkeypatch.setattr("app.services.turboproject._login", lambda: "token")
+    monkeypatch.setattr(
+        "app.services.turboproject._login_for_args",
+        lambda args=None, force=False: ("token", ("test@turbo-don.ru", "secret")),
+    )
     monkeypatch.setattr("app.services.turboproject._api_get", fake_api_get)
-    monkeypatch.setattr("app.services.turboproject._index_cache", None)
+    monkeypatch.setattr("app.services.turboproject._index_cache_by_key", {})
     monkeypatch.setattr("app.services.turboproject._card_cache", {})
 
     result = list_project_index({"limit": 50})
@@ -235,7 +270,7 @@ def test_project_index_does_not_read_cards(monkeypatch) -> None:
 def test_project_get_reads_single_card(monkeypatch) -> None:
     calls: list[str] = []
 
-    def fake_api_get(path: str, _token: str) -> dict:
+    def fake_api_get(path: str, _token: str, **_: object) -> dict:
         calls.append(path)
         assert path == "/api/projects/files/10"
         return {
@@ -245,7 +280,10 @@ def test_project_get_reads_single_card(monkeypatch) -> None:
             "data_1c": {"nomer_proekta": "ПР-10"},
         }
 
-    monkeypatch.setattr("app.services.turboproject._login", lambda: "token")
+    monkeypatch.setattr(
+        "app.services.turboproject._login_for_args",
+        lambda args=None, force=False: ("token", ("test@turbo-don.ru", "secret")),
+    )
     monkeypatch.setattr("app.services.turboproject._api_get", fake_api_get)
 
     result = get_project_card({"file_id": 10})
@@ -259,7 +297,7 @@ def test_project_get_reads_single_card(monkeypatch) -> None:
 def test_search_projects_does_not_read_cards(monkeypatch) -> None:
     calls: list[str] = []
 
-    def fake_api_get(path: str, _token: str) -> dict:
+    def fake_api_get(path: str, _token: str, **_: object) -> dict:
         calls.append(path)
         assert path == "/api/projects/files"
         return {
@@ -284,9 +322,12 @@ def test_search_projects_does_not_read_cards(monkeypatch) -> None:
             ]
         }
 
-    monkeypatch.setattr("app.services.turboproject._login", lambda: "token")
+    monkeypatch.setattr(
+        "app.services.turboproject._login_for_args",
+        lambda args=None, force=False: ("token", ("test@turbo-don.ru", "secret")),
+    )
     monkeypatch.setattr("app.services.turboproject._api_get", fake_api_get)
-    monkeypatch.setattr("app.services.turboproject._index_cache", None)
+    monkeypatch.setattr("app.services.turboproject._index_cache_by_key", {})
 
     result = invoke_turboproject(SEARCH_PROJECTS_TOOL_NAME, {"status": "Активный", "limit": 1})
 
@@ -322,7 +363,7 @@ def test_index_item_maps_live_people_fields() -> None:
 def test_get_user_portfolio_filters_index_without_cards(monkeypatch) -> None:
     calls: list[str] = []
 
-    def fake_api_get(path: str, _token: str) -> dict:
+    def fake_api_get(path: str, _token: str, **_: object) -> dict:
         calls.append(path)
         assert path == "/api/projects/files"
         return {
@@ -352,9 +393,12 @@ def test_get_user_portfolio_filters_index_without_cards(monkeypatch) -> None:
             ]
         }
 
-    monkeypatch.setattr("app.services.turboproject._login", lambda: "token")
+    monkeypatch.setattr(
+        "app.services.turboproject._login_for_args",
+        lambda args=None, force=False: ("token", ("test@turbo-don.ru", "secret")),
+    )
     monkeypatch.setattr("app.services.turboproject._api_get", fake_api_get)
-    monkeypatch.setattr("app.services.turboproject._index_cache", None)
+    monkeypatch.setattr("app.services.turboproject._index_cache_by_key", {})
 
     empty = get_user_portfolio({})
     assert empty["needs"] == "users.current"
@@ -373,7 +417,7 @@ def test_get_user_portfolio_filters_index_without_cards(monkeypatch) -> None:
 def test_get_project_reads_one_card_and_selects_fields(monkeypatch) -> None:
     calls: list[str] = []
 
-    def fake_api_get(path: str, _token: str) -> dict:
+    def fake_api_get(path: str, _token: str, **_: object) -> dict:
         calls.append(path)
         assert path == "/api/projects/files/10"
         return {
@@ -384,7 +428,10 @@ def test_get_project_reads_one_card_and_selects_fields(monkeypatch) -> None:
             "data_1c": {"rukovoditel": "Иванов", "nomer_proekta": "ПР-10"},
         }
 
-    monkeypatch.setattr("app.services.turboproject._login", lambda: "token")
+    monkeypatch.setattr(
+        "app.services.turboproject._login_for_args",
+        lambda args=None, force=False: ("token", ("test@turbo-don.ru", "secret")),
+    )
     monkeypatch.setattr("app.services.turboproject._api_get", fake_api_get)
     monkeypatch.setattr("app.services.turboproject._card_cache", {})
 
@@ -403,7 +450,7 @@ def test_get_project_tasks_filters_overdue_status_assignee_and_paginates(monkeyp
     yesterday = (datetime.now() - timedelta(days=3)).date().isoformat()
     tomorrow = (datetime.now() + timedelta(days=3)).date().isoformat()
 
-    def fake_api_get(path: str, _token: str) -> dict:
+    def fake_api_get(path: str, _token: str, **_: object) -> dict:
         assert path == "/api/projects/files/10"
         return {
             "tasks": [
@@ -441,7 +488,10 @@ def test_get_project_tasks_filters_overdue_status_assignee_and_paginates(monkeyp
             ]
         }
 
-    monkeypatch.setattr("app.services.turboproject._login", lambda: "token")
+    monkeypatch.setattr(
+        "app.services.turboproject._login_for_args",
+        lambda args=None, force=False: ("token", ("test@turbo-don.ru", "secret")),
+    )
     monkeypatch.setattr("app.services.turboproject._api_get", fake_api_get)
     monkeypatch.setattr("app.services.turboproject._card_cache", {})
 
@@ -461,11 +511,104 @@ def test_get_project_tasks_filters_overdue_status_assignee_and_paginates(monkeyp
     assert result["next_cursor"] == ""
 
 
+def test_get_project_tasks_filters_by_session_employee_fio(monkeypatch) -> None:
+    yesterday = (datetime.now() - timedelta(days=3)).date().isoformat()
+
+    def fake_api_get(path: str, _token: str, **_: object) -> dict:
+        assert path == "/api/projects/files/363"
+        return {
+            "tasks": [
+                {
+                    "id": 1,
+                    "name": "Чужая",
+                    "is_summary": False,
+                    "finish_date": yesterday,
+                    "percent_complete": 0,
+                    "assignments": [{"resource_name": "Мангасарян А. А."}],
+                },
+                {
+                    "id": 2,
+                    "name": "Моя",
+                    "is_summary": False,
+                    "finish_date": yesterday,
+                    "percent_complete": 0,
+                    "assignments": [{"resource_name": "Жалыбин М.Д."}],
+                },
+            ]
+        }
+
+    monkeypatch.setattr(
+        "app.services.turboproject._login_for_args",
+        lambda args=None, force=False: ("token", ("test@turbo-don.ru", "secret")),
+    )
+    monkeypatch.setattr("app.services.turboproject._api_get", fake_api_get)
+    monkeypatch.setattr("app.services.turboproject._card_cache", {})
+
+    result = get_project_tasks(
+        {
+            "project_id": 363,
+            "status": "open",
+            "employee": "Жалыбин Максим Дмитриевич",
+            "fio": "Жалыбин Максим Дмитриевич",
+        }
+    )
+
+    assert [item["id"] for item in result["tasks"]] == [2]
+
+
+def test_get_project_tasks_assignee_from_nested_resource(monkeypatch) -> None:
+    yesterday = (datetime.now() - timedelta(days=1)).date().isoformat()
+
+    def fake_api_get(path: str, _token: str, **_: object) -> dict:
+        assert path == "/api/projects/files/363"
+        return {
+            "tasks": [
+                {
+                    "id": 1,
+                    "name": "Open nested assignee",
+                    "is_summary": False,
+                    "finish_date": yesterday,
+                    "percent_complete": 0.2,
+                    "assignments": [{"resource": {"id": 7, "name": "Жалыбин М.Д."}}],
+                },
+                {
+                    "id": 2,
+                    "name": "Done",
+                    "is_summary": False,
+                    "finish_date": yesterday,
+                    "percent_complete": 1,
+                    "assignments": [{"resource_name": "Жалыбин М.Д."}],
+                },
+            ]
+        }
+
+    monkeypatch.setattr(
+        "app.services.turboproject._login_for_args",
+        lambda args=None, force=False: ("token", ("test@turbo-don.ru", "secret")),
+    )
+    monkeypatch.setattr("app.services.turboproject._api_get", fake_api_get)
+    monkeypatch.setattr("app.services.turboproject._card_cache", {})
+
+    result = get_project_tasks(
+        {
+            "project_id": 363,
+            "status": "open",
+            "employee": "Жалыбин Максим Дмитриевич",
+        }
+    )
+
+    assert result["matched_tasks_count"] == 1
+    task = result["tasks"][0]
+    assert task["id"] == 1
+    assert task["executors"] == ["Жалыбин М.Д."]
+    assert task["executor_resource_ids"] == ["7"]
+
+
 def test_get_overdue_projects_sorts_by_delay_days(monkeypatch) -> None:
     old_date = (datetime.now() - timedelta(days=20)).date().isoformat()
     recent_date = (datetime.now() - timedelta(days=5)).date().isoformat()
 
-    def fake_api_get(path: str, _token: str) -> dict:
+    def fake_api_get(path: str, _token: str, **_: object) -> dict:
         if path == "/api/projects/files":
             return {
                 "items": [
@@ -487,9 +630,12 @@ def test_get_overdue_projects_sorts_by_delay_days(monkeypatch) -> None:
             }
         raise AssertionError(path)
 
-    monkeypatch.setattr("app.services.turboproject._login", lambda: "token")
+    monkeypatch.setattr(
+        "app.services.turboproject._login_for_args",
+        lambda args=None, force=False: ("token", ("test@turbo-don.ru", "secret")),
+    )
     monkeypatch.setattr("app.services.turboproject._api_get", fake_api_get)
-    monkeypatch.setattr("app.services.turboproject._index_cache", None)
+    monkeypatch.setattr("app.services.turboproject._index_cache_by_key", {})
     monkeypatch.setattr("app.services.turboproject._card_cache", {})
 
     result = get_overdue_projects({"project_ids": [10, 11], "limit": 2})
@@ -500,7 +646,7 @@ def test_get_overdue_projects_sorts_by_delay_days(monkeypatch) -> None:
 
 
 def test_get_project_portfolio_summary_groups_by_status_department_owner(monkeypatch) -> None:
-    def fake_api_get(path: str, _token: str) -> dict:
+    def fake_api_get(path: str, _token: str, **_: object) -> dict:
         assert path == "/api/projects/files"
         return {
             "items": [
@@ -537,9 +683,12 @@ def test_get_project_portfolio_summary_groups_by_status_department_owner(monkeyp
             ]
         }
 
-    monkeypatch.setattr("app.services.turboproject._login", lambda: "token")
+    monkeypatch.setattr(
+        "app.services.turboproject._login_for_args",
+        lambda args=None, force=False: ("token", ("test@turbo-don.ru", "secret")),
+    )
     monkeypatch.setattr("app.services.turboproject._api_get", fake_api_get)
-    monkeypatch.setattr("app.services.turboproject._index_cache", None)
+    monkeypatch.setattr("app.services.turboproject._index_cache_by_key", {})
 
     by_status = get_project_portfolio_summary({"group_by": "status"})
     by_department = get_project_portfolio_summary({"group_by": "department"})

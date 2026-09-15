@@ -59,6 +59,122 @@ class ComBackedTool(BaseTool):
         )
 
 
+def _outlook_mail_entry_schema() -> dict:
+    return {
+        "type": "object",
+        "properties": {
+            "entry_id": {"type": "string", "description": "EntryID письма из outlook.search_mail"},
+        },
+        "required": ["entry_id"],
+    }
+
+
+class OutlookFetchMessageComTool(ComBackedTool):
+    """COM: прочитать письмо по entry_id."""
+
+    def __init__(self, worker: BaseWorker) -> None:
+        super().__init__(
+            ToolDefinition(
+                name="outlook.fetch_message",
+                title="Прочитать письмо Outlook",
+                description="Тело письма, флаг unread и список вложений по entry_id.",
+                side_effect_level=ToolSideEffectLevel.READ,
+                execution_mode=ToolExecutionMode.COM_WORKER,
+                requires_human_approval=False,
+                timeout_seconds=OUTLOOK_COM_TIMEOUT_SECONDS,
+                input_schema=_outlook_mail_entry_schema(),
+                output_schema={"type": "object"},
+            ),
+            worker,
+        )
+
+
+class OutlookMarkReadComTool(ComBackedTool):
+    """COM: пометить письмо прочитанным или непрочитанным."""
+
+    def __init__(self, worker: BaseWorker) -> None:
+        super().__init__(
+            ToolDefinition(
+                name="outlook.mark_read",
+                title="Статус прочтения Outlook",
+                description="unread=true — непрочитанное, false — прочитано.",
+                side_effect_level=ToolSideEffectLevel.CREATE_DRAFT,
+                execution_mode=ToolExecutionMode.COM_WORKER,
+                requires_human_approval=False,
+                timeout_seconds=60,
+                input_schema={
+                    "type": "object",
+                    "properties": {
+                        "entry_id": {"type": "string"},
+                        "unread": {"type": "boolean", "description": "true = непрочитанное"},
+                    },
+                    "required": ["entry_id"],
+                },
+                output_schema={"type": "object"},
+            ),
+            worker,
+        )
+
+
+class OutlookDisplayMessageComTool(ComBackedTool):
+    """COM: открыть письмо или черновик ответа в Outlook."""
+
+    def __init__(self, worker: BaseWorker) -> None:
+        super().__init__(
+            ToolDefinition(
+                name="outlook.display_message",
+                title="Открыть письмо в Outlook",
+                description="mode: open | reply | reply_all | forward — окно Outlook.",
+                side_effect_level=ToolSideEffectLevel.CREATE_DRAFT,
+                execution_mode=ToolExecutionMode.COM_WORKER,
+                requires_human_approval=False,
+                timeout_seconds=60,
+                input_schema={
+                    "type": "object",
+                    "properties": {
+                        "entry_id": {"type": "string"},
+                        "mode": {
+                            "type": "string",
+                            "description": "open, reply, reply_all или forward",
+                        },
+                    },
+                    "required": ["entry_id"],
+                },
+                output_schema={"type": "object"},
+            ),
+            worker,
+        )
+
+
+class OutlookSaveAttachmentComTool(ComBackedTool):
+    """COM: сохранить вложение письма на диск."""
+
+    def __init__(self, worker: BaseWorker) -> None:
+        super().__init__(
+            ToolDefinition(
+                name="outlook.save_attachment",
+                title="Сохранить вложение Outlook",
+                description="attachment_index — номер вложения (1…N), save_dir опционален.",
+                side_effect_level=ToolSideEffectLevel.READ,
+                execution_mode=ToolExecutionMode.COM_WORKER,
+                requires_human_approval=False,
+                timeout_seconds=120,
+                input_schema={
+                    "type": "object",
+                    "properties": {
+                        "entry_id": {"type": "string"},
+                        "attachment_index": {"type": "integer"},
+                        "index": {"type": "integer"},
+                        "save_dir": {"type": "string"},
+                    },
+                    "required": ["entry_id", "attachment_index"],
+                },
+                output_schema={"type": "object"},
+            ),
+            worker,
+        )
+
+
 class OutlookSearchMailComTool(ComBackedTool):
     """COM-backed инструмент поиска писем Outlook через worker."""
 
@@ -68,7 +184,12 @@ class OutlookSearchMailComTool(ComBackedTool):
             ToolDefinition(
                 name="outlook.search_mail",
                 title="Поиск писем Outlook",
-                description="Ищет письма Outlook через COM Worker.",
+                description=(
+                    "Ищет письма Outlook через COM. Для отсутствий один вызов: "
+                    "query=отпуск, folder=Inbox, date=сегодня. "
+                    "count=0 значит писем нет — не повторять с другими словами. "
+                    "query — короткая подстрока темы/отправителя, не список ФИО."
+                ),
                 side_effect_level=ToolSideEffectLevel.READ,
                 execution_mode=ToolExecutionMode.COM_WORKER,
                 requires_human_approval=False,
@@ -103,7 +224,8 @@ class OutlookReadCalendarComTool(ComBackedTool):
                 name="outlook.read_calendar",
                 title="Чтение календаря Outlook",
                 description=(
-                    "Встречи Outlook за период. Без дат - год вперёд. "
+                    "Встречи Outlook за период. Без дат — год вперёд, так не делай на планёрке. "
+                    "Утро: date=сегодня. Вечер: date=завтра. "
                     "people[] — календари этих сотрудников (ФИО как в Outlook), если есть доступ. "
                     "Без people — свой календарь. В ответе events, calendars и free_slots."
                 ),
@@ -274,11 +396,20 @@ class EmailSendComTool(ComBackedTool):
         )
 
 
-def register_outlook_com_tools(registry: ToolRegistry, worker: BaseWorker) -> None:
+def register_outlook_com_tools(
+    registry: ToolRegistry,
+    read_worker: BaseWorker,
+    write_worker: BaseWorker | None = None,
+) -> None:
     """Зарегистрировать Outlook COM-backed инструменты в ToolRegistry."""
-    registry.register(OutlookSearchMailComTool(worker))
-    registry.register(OutlookReadCalendarComTool(worker))
-    registry.register(OutlookCreateEventComTool(worker))
-    registry.register(OutlookReadTasksComTool(worker))
-    registry.register(EmailCreateDraftComTool(worker))
-    registry.register(EmailSendComTool(worker))
+    write_worker = write_worker or read_worker
+    registry.register(OutlookSearchMailComTool(read_worker))
+    registry.register(OutlookFetchMessageComTool(read_worker))
+    registry.register(OutlookSaveAttachmentComTool(read_worker))
+    registry.register(OutlookReadCalendarComTool(read_worker))
+    registry.register(OutlookMarkReadComTool(write_worker))
+    registry.register(OutlookDisplayMessageComTool(write_worker))
+    registry.register(OutlookCreateEventComTool(write_worker))
+    registry.register(OutlookReadTasksComTool(read_worker))
+    registry.register(EmailCreateDraftComTool(write_worker))
+    registry.register(EmailSendComTool(write_worker))

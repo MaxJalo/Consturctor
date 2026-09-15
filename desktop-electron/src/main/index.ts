@@ -60,6 +60,23 @@ function parseEnvFile(path: string): Record<string, string> {
   return out
 }
 
+/** Profile .env often keeps stale 127.0.0.1; in dev prefer cwd `.env` and process env. */
+function resolveBackendUrl(env: Record<string, string>): string {
+  const fromProcess = (process.env.BACKEND_URL || '').trim()
+  if (fromProcess) return fromProcess.replace(/\/+$/, '')
+
+  const cwdEnvPath = join(process.cwd(), '.env')
+  if (!app.isPackaged && existsSync(cwdEnvPath)) {
+    const fromCwd = (parseEnvFile(cwdEnvPath).BACKEND_URL || '').trim()
+    if (fromCwd) return fromCwd.replace(/\/+$/, '')
+  }
+
+  const fromProfile = (env.BACKEND_URL || '').trim()
+  if (fromProfile) return fromProfile.replace(/\/+$/, '')
+
+  return 'http://192.168.1.157:7812'
+}
+
 function loadConfig(): {
   backendUrl: string
   testUser: boolean
@@ -93,11 +110,7 @@ function loadConfig(): {
       env = { ...parseEnvFile(candidate), ...env }
     }
   }
-  const backendUrl = (
-    process.env.BACKEND_URL ||
-    env.BACKEND_URL ||
-    'http://127.0.0.1:7812'
-  ).replace(/\/+$/, '')
+  const backendUrl = resolveBackendUrl(env)
   const flag = (process.env.CONSTRUCTOR_TEST_USER || env.CONSTRUCTOR_TEST_USER || '')
     .trim()
     .toLowerCase()
@@ -237,6 +250,23 @@ function registerWindowsLaunchers(): void {
   }
 }
 
+function isBenignStreamError(err: unknown): boolean {
+  if (!err || typeof err !== 'object') return false
+  const code = String((err as { code?: string }).code || '')
+  return code === 'ERR_STREAM_DESTROYED' || code === 'EPIPE'
+}
+
+process.on('uncaughtException', (err) => {
+  if (isBenignStreamError(err)) {
+    console.error(
+      `Constructor ignored stream error: ${err instanceof Error ? err.message : String(err)}`
+    )
+    return
+  }
+  console.error(err)
+  dialog.showErrorBox('Error', err instanceof Error ? `${err.message}\n${err.stack || ''}` : String(err))
+})
+
 const isPrimaryInstance = app.requestSingleInstanceLock()
 if (!isPrimaryInstance) {
   app.quit()
@@ -367,6 +397,18 @@ function buildUrl(path: string, params?: RequestOptions['params']): string {
   return query ? `${base}?${query}` : base
 }
 
+function connectionErrorMessage(err: unknown): string {
+  const base = CONFIG.backendUrl
+  if (err instanceof Error && err.name === 'AbortError') {
+    return `Backend не ответил вовремя (${base}). Запустите orchestrator\\backend\\run_dev.bat и повторите вход.`
+  }
+  const cause = err instanceof Error ? err.message : String(err)
+  if (/ECONNREFUSED|ECONNRESET|fetch failed|Failed to fetch|NetworkError/i.test(cause)) {
+    return `Backend не запущен (${base}). Запустите orchestrator\\backend\\run_dev.bat и повторите вход.`
+  }
+  return `Не удалось подключиться к backend (${base})`
+}
+
 function extractDetail(status: number, data: unknown): string {
   if (data && typeof data === 'object') {
     const detail = (data as Record<string, unknown>).detail
@@ -430,10 +472,7 @@ async function handleRequest(_evt: unknown, opts: RequestOptions) {
     }
     return { ok: true, status: response.status, data }
   } catch (err) {
-    const message =
-      err instanceof Error && err.name === 'AbortError'
-        ? 'Превышено время ожидания ответа backend'
-        : `Не удалось подключиться к backend (${CONFIG.backendUrl})`
+    const message = connectionErrorMessage(err)
     return { ok: false, status: 0, error: message }
   } finally {
     clearTimeout(timer)
@@ -478,10 +517,7 @@ async function handleUpload(_evt: unknown, opts: UploadOptions) {
     }
     return { ok: true, status: response.status, data }
   } catch (err) {
-    const message =
-      err instanceof Error && err.name === 'AbortError'
-        ? 'Превышено время ожидания ответа backend'
-        : `Не удалось подключиться к backend (${CONFIG.backendUrl})`
+    const message = connectionErrorMessage(err)
     return { ok: false, status: 0, error: message }
   } finally {
     clearTimeout(timer)
@@ -636,7 +672,7 @@ async function handleCreateWorkflow(
     }
     return { ok: true, status: response.status, data }
   } catch {
-    return { ok: false, status: 0, error: `Не удалось подключиться к backend (${CONFIG.backendUrl})` }
+    return { ok: false, status: 0, error: connectionErrorMessage(err) }
   }
 }
 
@@ -738,8 +774,121 @@ async function handleStream(
     }
     return { ok: true, status: 200, data: finalPayload }
   } catch {
-    return { ok: false, status: 0, error: `Не удалось подключиться к backend (${CONFIG.backendUrl})` }
+    return { ok: false, status: 0, error: connectionErrorMessage(err) }
   }
+}
+
+type IpcHandler = (...args: Parameters<Parameters<typeof ipcMain.handle>[1]>) => unknown
+
+/** Re-register safely on electron-vite main HMR (avoid partial handler sets). */
+function ipcHandle(channel: string, handler: IpcHandler): void {
+  ipcMain.removeHandler(channel)
+  ipcMain.handle(channel, handler)
+}
+
+function registerMainIpcHandlers(): void {
+  ipcHandle('app:getConfig', () => ({
+    backendUrl: CONFIG.backendUrl,
+    testUser: CONFIG.testUser
+  }))
+  ipcHandle('api:request', handleRequest)
+  ipcHandle('api:upload', handleUpload)
+  ipcHandle('api:fetchDataUrl', handleFetchDataUrl)
+  ipcHandle('api:download', handleDownload)
+  ipcHandle('api:createWorkflow', handleCreateWorkflow)
+  ipcHandle('api:stream', handleStream)
+  ipcHandle(
+    'agent:ready',
+    (_evt, token: string | null, credentials?: { login?: string; password?: string }) => {
+      agentSidecar.ready(token ?? null, credentials)
+      return { ok: true }
+    }
+  )
+  ipcHandle('agent:status', () => agentSidecar.status())
+  ipcHandle('agent:start', (_evt, command: AgentSidecarMessage) => agentSidecar.send(command))
+  ipcHandle('agent:answer', (_evt, command: AgentSidecarMessage) =>
+    agentSidecar.send({ ...command, type: 'answer' })
+  )
+  ipcHandle('agent:hitl', (_evt, command: AgentSidecarMessage) =>
+    agentSidecar.send({ ...command, type: 'hitl' })
+  )
+  ipcHandle('agent:skip', (_evt, command: AgentSidecarMessage) =>
+    agentSidecar.send({ ...command, type: 'skip' })
+  )
+  ipcHandle('agent:cancel', (_evt, command: AgentSidecarMessage) =>
+    agentSidecar.send({ ...command, type: 'cancel' })
+  )
+  ipcHandle('agent:read-calendar', (_evt, command: AgentSidecarMessage) =>
+    agentSidecar.send({ ...command, type: 'read_calendar' })
+  )
+  ipcHandle('agent:search-mail', (_evt, command: AgentSidecarMessage) =>
+    agentSidecar.send({ ...command, type: 'search_mail' })
+  )
+  ipcHandle('agent:invoke-ac-tool', (_evt, command: AgentSidecarMessage) =>
+    agentSidecar.send({ ...command, type: 'invoke_ac_tool' })
+  )
+  ipcHandle('notifications:start', (_evt, token: string) => {
+    if (typeof token === 'string' && token.trim()) {
+      notifyGuard.start(token.trim())
+    }
+    return { ok: true }
+  })
+  ipcHandle('notifications:stop', () => {
+    notifyGuard.stop()
+    return { ok: true }
+  })
+  ipcHandle('notify:show', (_evt, payload: ToastPayload) => {
+    showToast(payload || { title: '' })
+    return { ok: true }
+  })
+  ipcHandle('dialog:openFile', async (evt, options: Electron.OpenDialogOptions) => {
+    const win = BrowserWindow.fromWebContents(evt.sender) || BrowserWindow.getFocusedWindow()
+    const filters = (options?.filters || [])
+      .map((item) => ({
+        name: item.name || 'Files',
+        extensions: (item.extensions || [])
+          .map((ext) => String(ext || '').replace(/^\./, ''))
+          .filter(Boolean)
+      }))
+      .filter((item) => item.extensions.length)
+    const dialogOptions: Electron.OpenDialogOptions = {
+      ...options,
+      filters: filters.length ? filters : undefined
+    }
+    const result = win
+      ? await dialog.showOpenDialog(win, dialogOptions)
+      : await dialog.showOpenDialog(dialogOptions)
+    return result.canceled ? [] : result.filePaths
+  })
+  ipcHandle('clipboard:saveImage', async () => {
+    try {
+      const items = await clipboard.read()
+      for (const item of items) {
+        const mime = item.types.find((type) => type.toLowerCase().startsWith('image/'))
+        if (!mime) continue
+        const payload = await item.getType(mime)
+        if (!(payload instanceof Blob)) continue
+        const buffer = Buffer.from(await payload.arrayBuffer())
+        if (!buffer.length) continue
+        const subtype = mime.split('/')[1]?.split(';')[0] || 'png'
+        const ext = subtype === 'jpeg' ? 'jpg' : subtype.replace(/[^a-z0-9]/g, '') || 'png'
+        const dir = join(app.getPath('temp'), 'constructor-pastes')
+        mkdirSync(dir, { recursive: true })
+        const file = join(dir, `screenshot-${Date.now()}.${ext}`)
+        writeFileSync(file, buffer)
+        return file
+      }
+    } catch {
+      return ''
+    }
+    return ''
+  })
+  ipcHandle('updater:getStatus', () => getUpdateStatus())
+  ipcHandle('updater:install', () => installAvailableUpdate())
+}
+
+if (isPrimaryInstance) {
+  registerMainIpcHandlers()
 }
 
 function createWindow(): void {
@@ -792,97 +941,8 @@ app.whenReady().then(() => {
   registerWindowsLaunchers()
   installToastActivation()
   console.log(`Constructor backend: ${CONFIG.backendUrl}`)
-  ipcMain.handle('app:getConfig', () => ({
-    backendUrl: CONFIG.backendUrl,
-    testUser: CONFIG.testUser
-  }))
-  ipcMain.handle('api:request', handleRequest)
-  ipcMain.handle('api:upload', handleUpload)
-  ipcMain.handle('api:fetchDataUrl', handleFetchDataUrl)
-  ipcMain.handle('api:download', handleDownload)
-  ipcMain.handle('api:createWorkflow', handleCreateWorkflow)
-  ipcMain.handle('api:stream', handleStream)
-  ipcMain.handle(
-    'agent:ready',
-    (_evt, token: string | null, credentials?: { login?: string; password?: string }) => {
-      agentSidecar.ready(token ?? null, credentials)
-      return { ok: true }
-    }
-  )
-  ipcMain.handle('agent:start', (_evt, command: AgentSidecarMessage) => {
-    const ok = agentSidecar.send(command)
-    return { ok }
-  })
-  ipcMain.handle('agent:answer', (_evt, command: AgentSidecarMessage) => {
-    return { ok: agentSidecar.send({ ...command, type: 'answer' }) }
-  })
-  ipcMain.handle('agent:hitl', (_evt, command: AgentSidecarMessage) => {
-    return { ok: agentSidecar.send({ ...command, type: 'hitl' }) }
-  })
-  ipcMain.handle('agent:skip', (_evt, command: AgentSidecarMessage) => {
-    return { ok: agentSidecar.send({ ...command, type: 'skip' }) }
-  })
-  ipcMain.handle('agent:cancel', (_evt, command: AgentSidecarMessage) => {
-    return { ok: agentSidecar.send({ ...command, type: 'cancel' }) }
-  })
-  ipcMain.handle('notifications:start', (_evt, token: string) => {
-    if (typeof token === 'string' && token.trim()) {
-      notifyGuard.start(token.trim())
-    }
-    return { ok: true }
-  })
-  ipcMain.handle('notifications:stop', () => {
-    notifyGuard.stop()
-    return { ok: true }
-  })
-  ipcMain.handle('notify:show', (_evt, payload: ToastPayload) => {
-    showToast(payload || { title: '' })
-    return { ok: true }
-  })
-  ipcMain.handle('dialog:openFile', async (evt, options: Electron.OpenDialogOptions) => {
-    const win = BrowserWindow.fromWebContents(evt.sender) || BrowserWindow.getFocusedWindow()
-    const filters = (options?.filters || [])
-      .map((item) => ({
-        name: item.name || 'Files',
-        extensions: (item.extensions || [])
-          .map((ext) => String(ext || '').replace(/^\./, ''))
-          .filter(Boolean)
-      }))
-      .filter((item) => item.extensions.length)
-    const dialogOptions: Electron.OpenDialogOptions = {
-      ...options,
-      filters: filters.length ? filters : undefined
-    }
-    const result = win
-      ? await dialog.showOpenDialog(win, dialogOptions)
-      : await dialog.showOpenDialog(dialogOptions)
-    return result.canceled ? [] : result.filePaths
-  })
-  ipcMain.handle('clipboard:saveImage', async () => {
-    try {
-      const items = await clipboard.read()
-      for (const item of items) {
-        const mime = item.types.find((type) => type.toLowerCase().startsWith('image/'))
-        if (!mime) continue
-        const payload = await item.getType(mime)
-        if (!(payload instanceof Blob)) continue
-        const buffer = Buffer.from(await payload.arrayBuffer())
-        if (!buffer.length) continue
-        const subtype = mime.split('/')[1]?.split(';')[0] || 'png'
-        const ext = subtype === 'jpeg' ? 'jpg' : subtype.replace(/[^a-z0-9]/g, '') || 'png'
-        const dir = join(app.getPath('temp'), 'constructor-pastes')
-        mkdirSync(dir, { recursive: true })
-        const file = join(dir, `screenshot-${Date.now()}.${ext}`)
-        writeFileSync(file, buffer)
-        return file
-      }
-    } catch {
-      return ''
-    }
-    return ''
-  })
-  ipcMain.handle('updater:getStatus', () => getUpdateStatus())
-  ipcMain.handle('updater:install', () => installAvailableUpdate())
+  registerMainIpcHandlers()
+  agentSidecar.warmup()
   startUpdater({
     owner: CONFIG.updateOwner,
     repo: CONFIG.updateRepo,

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from datetime import date, datetime, timedelta
 from typing import Any, Sequence
 
@@ -14,6 +15,21 @@ _TASK_TABLES = ("dbo._Task39X1", "dbo._Task39")
 
 class ErpTaskError(RuntimeError):
     pass
+
+
+_CONSTRUCTOR_PROBE_RE = re.compile(
+    r"constructor|проб[аы]\s+constructor|тестов\w*\s+проб",
+    re.IGNORECASE,
+)
+
+
+def is_constructor_test_probe(task: dict[str, Any]) -> bool:
+    """Drop Constructor integration test tasks from RK and production reports."""
+    blob = " ".join(
+        str(task.get(key) or "")
+        for key in ("number", "title", "comment", "approval")
+    )
+    return bool(_CONSTRUCTOR_PROBE_RE.search(blob))
 
 
 def from_1c_datetime(value: datetime | None) -> datetime | None:
@@ -114,7 +130,7 @@ def resolve_actor(*, fio: str = "", user_id: str = "") -> tuple[str, str]:
         fio = _constructor_session_fio(user_id)
     if fio:
         try:
-            row = erp_sql.find_user_by_fio(fio)
+            row = erp_sql.find_user_by_fio_relaxed(fio)
             return row.fio, row.id
         except (erp_sql.UserNotFoundError, erp_sql.AmbiguousUserError):
             return fio, user_id
@@ -170,17 +186,23 @@ def list_current_tasks(
     fio: str = "",
     user_id: str = "",
     limit: int = 50,
+    auth_args: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     actor_fio, actor_id = resolve_actor(fio=fio, user_id=user_id)
     rows = _query_tasks(fio=actor_fio, only_open=True, limit=limit)
     merged = {actor_fio: rows}
-    warning = _attach_docflow(
-        merged,
-        date_from=None,
-        date_to=None,
-        only_open=True,
-        limit_per_person=limit,
-    )
+    warning = ""
+    try:
+        warning = _attach_docflow(
+            merged,
+            date_from=None,
+            date_to=None,
+            only_open=True,
+            limit_per_person=limit,
+            auth_args=auth_args,
+        )
+    except Exception as exc:  # noqa: BLE001 — docflow must not hide erp_pm SQL tasks
+        warning = str(exc).strip() or "Документооборот: ошибка слияния"
     rows = merged[actor_fio]
     return {
         "summary": f"Текущие задачи: {len(rows)} ({actor_fio})",
@@ -201,6 +223,7 @@ def list_tasks_for_period(
     date_to: str = "",
     include_done: bool = True,
     limit: int = 100,
+    auth_args: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     actor_fio, actor_id = resolve_actor(fio=fio, user_id=user_id)
     start = parse_date(date_from)
@@ -215,13 +238,18 @@ def list_tasks_for_period(
         limit=limit,
     )
     merged = {actor_fio: rows}
-    warning = _attach_docflow(
-        merged,
-        date_from=start,
-        date_to=finish,
-        only_open=not include_done,
-        limit_per_person=limit,
-    )
+    warning = ""
+    try:
+        warning = _attach_docflow(
+            merged,
+            date_from=start,
+            date_to=finish,
+            only_open=not include_done,
+            limit_per_person=limit,
+            auth_args=auth_args,
+        )
+    except Exception as exc:  # noqa: BLE001
+        warning = str(exc).strip() or "Документооборот: ошибка слияния"
     rows = merged[actor_fio]
     return {
         "summary": (
@@ -239,6 +267,136 @@ def list_tasks_for_period(
     }
 
 
+_EMPTY_CATALOG_REF = bytes(16)
+
+
+def _catalog_ref_for_fio(cur: Any, fio: str) -> bytes | None:
+    """Catalog_Пользователи (_Reference366) ref for task role fields."""
+
+    def fetch_exact(text: str) -> bytes | None:
+        cur.execute(
+            """
+            SELECT TOP 1 _IDRRef
+            FROM dbo._Reference366 WITH (NOLOCK)
+            WHERE LTRIM(RTRIM(_Description)) = ?
+            """,
+            (text,),
+        )
+        row = cur.fetchone()
+        if row and row[0] and row[0] != _EMPTY_CATALOG_REF:
+            return row[0]
+        return None
+
+    ref = fetch_exact(fio)
+    if ref is not None:
+        return ref
+    try:
+        user = erp_sql.find_user_by_fio(fio)
+        ref = fetch_exact(user.fio)
+        if ref is not None:
+            return ref
+    except (erp_sql.UserNotFoundError, erp_sql.AmbiguousUserError):
+        pass
+    try:
+        rows = erp_sql.find_users_by_fio(fio)
+        if len(rows) == 1:
+            for candidate in (rows[0].descr, rows[0].name, rows[0].fio):
+                text = (candidate or "").strip()
+                if not text:
+                    continue
+                ref = fetch_exact(text)
+                if ref is not None:
+                    return ref
+    except erp_sql.ErpSqlError:
+        pass
+    parts = fio.split()
+    if parts:
+        cur.execute(
+            """
+            SELECT TOP 2 _IDRRef
+            FROM dbo._Reference366 WITH (NOLOCK)
+            WHERE _Description LIKE ?
+            """,
+            (f"%{parts[0]}%",),
+        )
+        hits = [
+            row[0]
+            for row in cur.fetchall()
+            if row[0] and row[0] != _EMPTY_CATALOG_REF
+        ]
+        if len(hits) == 1:
+            return hits[0]
+    return None
+
+
+def _resolve_catalog_refs(cur: Any, unique_names: Sequence[str]) -> list[bytes]:
+    refs: list[bytes] = []
+    seen: set[bytes] = set()
+    for name in unique_names:
+        ref = _catalog_ref_for_fio(cur, name)
+        if ref is None or ref in seen:
+            continue
+        seen.add(ref)
+        refs.append(ref)
+    return refs
+
+
+def _title_fio_like_patterns(fio: str) -> list[str]:
+    """Full FIO and «Фамилия И.О.» variants for title/comment (aligned with OData title scan)."""
+    normalized = " ".join(str(fio or "").split())
+    if not normalized:
+        return []
+    patterns: list[str] = []
+    seen: set[str] = set()
+
+    def add(pattern: str) -> None:
+        if pattern in seen:
+            return
+        seen.add(pattern)
+        patterns.append(pattern)
+
+    add(f"%{normalized}%")
+    parts = normalized.split()
+    if len(parts) >= 2:
+        surname = parts[0]
+        initials = ".".join(part[0] for part in parts[1:] if part)
+        if initials:
+            add(f"%{surname} {initials}.%")
+            add(f"%{surname} {initials}%")
+    return patterns
+
+
+def build_task_user_relevance_clause(
+    *,
+    unique_names: Sequence[str],
+    catalog_refs: Sequence[bytes],
+    include_bp_addressee: bool = False,
+) -> tuple[str, list[Any]]:
+    """SQL fragment: executor, ответственный (_Fld2510), or FIO in title/comment."""
+    parts: list[str] = []
+    params: list[Any] = []
+    for ref in catalog_refs:
+        ref_match = ["t._Fld2503_RRRef = ?", "t._Fld2510_RRRef = ?"]
+        ref_params: list[Any] = [ref, ref]
+        if include_bp_addressee:
+            ref_match.append("t._Fld2518_RRRef = ?")
+            ref_params.append(ref)
+        parts.append("(" + " OR ".join(ref_match) + ")")
+        params.extend(ref_params)
+    for name in unique_names:
+        for pattern in _title_fio_like_patterns(name):
+            parts.append(
+                "(CAST(t._Name AS nvarchar(500)) LIKE ?"
+                " OR CAST(t._Fld2509 AS nvarchar(1000)) LIKE ?)"
+            )
+            params.extend([pattern, pattern])
+    if not parts:
+        return ("1 = 0", [])
+    if len(parts) == 1:
+        return (parts[0], params)
+    return ("(" + " OR ".join(parts) + ")", params)
+
+
 def _query_tasks(
     *,
     fio: str = "",
@@ -248,6 +406,7 @@ def _query_tasks(
     date_from: datetime | None = None,
     date_to: datetime | None = None,
     match_due: bool = False,
+    include_bp_addressee: bool = False,
 ) -> list[dict[str, Any]]:
     names = [item.strip() for item in (*(fios or ()), fio) if item and item.strip()]
     unique_names: list[str] = []
@@ -262,13 +421,6 @@ def _query_tasks(
     limit = max(1, min(int(limit or 50), 2000))
     clauses = ["t._Marked = 0x00"]
     params: list[Any] = []
-    if len(unique_names) == 1:
-        clauses.append("LTRIM(RTRIM(u._Description)) = ?")
-        params.append(unique_names[0])
-    else:
-        placeholders = ",".join("?" * len(unique_names))
-        clauses.append(f"LTRIM(RTRIM(u._Description)) IN ({placeholders})")
-        params.extend(unique_names)
     if only_open:
         clauses.append("t._Executed = 0x00")
     if date_from is not None and date_to is not None and match_due:
@@ -288,32 +440,40 @@ def _query_tasks(
         if date_to is not None:
             clauses.append("t._Date_Time <= ?")
             params.append(to_1c_datetime(date_to))
-    where = " AND ".join(clauses)
-    sql_parts = [
-        f"""
+    conn = erp_sql._connect()
+    try:
+        cur = conn.cursor()
+        cur.execute("SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED")
+        catalog_refs = _resolve_catalog_refs(cur, unique_names)
+        relevance_sql, relevance_params = build_task_user_relevance_clause(
+            unique_names=unique_names,
+            catalog_refs=catalog_refs,
+            include_bp_addressee=include_bp_addressee,
+        )
+        clauses.append(relevance_sql)
+        params.extend(relevance_params)
+        where = " AND ".join(clauses)
+        sql_parts = [
+            f"""
         SELECT
             CAST(t._Number AS nvarchar(32)) AS number,
-            t._Date_Time AS created_raw,
-            t._Fld2515 AS due_raw,
-            t._Fld2506 AS completed_raw,
+            CAST(t._Date_Time AS datetime) AS created_raw,
+            CAST(t._Fld2515 AS datetime) AS due_raw,
+            CAST(t._Fld2506 AS datetime) AS completed_raw,
             t._Executed AS executed,
             CAST(t._Name AS nvarchar(500)) AS title,
             CAST(t._Fld2509 AS nvarchar(1000)) AS comment,
             CAST(t._Fld2513 AS nvarchar(300)) AS approval,
             CAST(u._Description AS nvarchar(256)) AS performer
         FROM {table} t WITH (NOLOCK)
-        INNER JOIN dbo._Reference366 u WITH (NOLOCK)
+        LEFT JOIN dbo._Reference366 u WITH (NOLOCK)
             ON t._Fld2503_RRRef = u._IDRRef
         WHERE {where}
         """
-        for table in _TASK_TABLES
-    ]
-    inner = " UNION ALL ".join(sql_parts)
-    sql = f"SELECT TOP ({limit}) * FROM ({inner}) AS tasks ORDER BY created_raw DESC"
-    conn = erp_sql._connect()
-    try:
-        cur = conn.cursor()
-        cur.execute("SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED")
+            for table in _TASK_TABLES
+        ]
+        inner = " UNION ALL ".join(sql_parts)
+        sql = f"SELECT TOP ({limit}) * FROM ({inner}) AS tasks ORDER BY created_raw DESC"
         cur.execute(sql, params * len(_TASK_TABLES))
         columns = [col[0] for col in cur.description]
         items: list[dict[str, Any]] = []
@@ -334,23 +494,24 @@ def _query_tasks(
             comment = " ".join(str(data.get("comment") or "").split())
             approval = " ".join(str(data.get("approval") or "").split())
             late = task_is_late(done=done, completed_at=completed, due_at=due)
-            items.append(
-                {
-                    "number": number,
-                    "title": " ".join(str(data.get("title") or "").split()),
-                    "status": "выполнена" if done else "открыта",
-                    "done": done,
-                    "late": late,
-                    "created_at": created.isoformat(sep=" ") if created else "",
-                    "due_at": due.isoformat(sep=" ") if due else "",
-                    "completed_at": completed.isoformat(sep=" ") if completed else "",
-                    "comment": comment,
-                    "approval": approval or ("завершена" if done else "не согласовано"),
-                    "exported_at": exported_at,
-                    "performer": str(data.get("performer") or "").strip(),
-                    "source": "erp_pm",
-                }
-            )
+            row = {
+                "number": number,
+                "title": " ".join(str(data.get("title") or "").split()),
+                "status": "выполнена" if done else "открыта",
+                "done": done,
+                "late": late,
+                "created_at": created.isoformat(sep=" ") if created else "",
+                "due_at": due.isoformat(sep=" ") if due else "",
+                "completed_at": completed.isoformat(sep=" ") if completed else "",
+                "comment": comment,
+                "approval": approval or ("завершена" if done else "не согласовано"),
+                "exported_at": exported_at,
+                "performer": str(data.get("performer") or "").strip(),
+                "source": "erp_pm",
+            }
+            if is_constructor_test_probe(row):
+                continue
+            items.append(row)
         return items
     except ErpSqlError:
         raise
@@ -393,6 +554,7 @@ def _attach_docflow(
     date_to: datetime | None,
     only_open: bool,
     limit_per_person: int,
+    auth_args: dict[str, Any] | None = None,
 ) -> str:
     from app.services.docflow_tasks import list_docflow_for_people
 
@@ -402,6 +564,7 @@ def _attach_docflow(
         date_to=date_to,
         only_open=only_open,
         limit_per_person=limit_per_person,
+        auth_args=auth_args,
     )
     for name, items in extra.items():
         bucket = tasks_by_fio.setdefault(name, [])
@@ -571,6 +734,7 @@ def list_subordinate_tasks(
     date_to: str = "",
     full_range: bool = False,
     include_self: bool = True,
+    auth_args: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     actor_fio, actor_id = resolve_actor(fio=fio, user_id=user_id)
     try:
@@ -621,6 +785,7 @@ def list_subordinate_tasks(
         date_to=finish,
         only_open=only_open,
         limit_per_person=per_person,
+        auth_args=auth_args,
     )
     tree = build_subordinate_task_tree(
         manager=manager,
@@ -677,6 +842,7 @@ def handle_current(
         fio=fio,
         user_id=user_id,
         limit=int(args.get("limit") or 50),
+        auth_args=args,
     )
 
 
@@ -705,6 +871,7 @@ def handle_subordinate_tasks(
         date_to=str(args.get("date_to") or args.get("dateTo") or ""),
         full_range=bool(args.get("full_range") or args.get("fullRange")),
         include_self=bool(include_self),
+        auth_args=args,
     )
 
 
@@ -725,6 +892,7 @@ def handle_period(
         date_to=str(args.get("date_to") or args.get("dateTo") or ""),
         include_done=bool(include_done),
         limit=int(args.get("limit") or 100),
+        auth_args=args,
     )
 
 

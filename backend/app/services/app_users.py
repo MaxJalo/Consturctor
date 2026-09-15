@@ -14,6 +14,19 @@ from app.schemas.auth import UserOut
 logger = logging.getLogger(__name__)
 
 DEPARTMENT_CHANGE_COOLDOWN = timedelta(days=14)
+ADMIN_FIO_KEYS = {
+    "уставицкий андрей алексеевич",
+    "жалыбин максим дмитриевич",
+    "жалыбин максим димитриевич",
+}
+
+
+def _fio_key(value: str) -> str:
+    return " ".join((value or "").casefold().replace("ё", "е").split())
+
+
+def is_admin_user(fio: str) -> bool:
+    return _fio_key(fio) in ADMIN_FIO_KEYS
 
 
 def avatar_url_for(user: AppUser | None) -> str | None:
@@ -51,11 +64,14 @@ def department_change_state(user: AppUser) -> tuple[bool, datetime | None]:
 
 def to_user_out(user: AppUser) -> UserOut:
     can_change, available_at = department_change_state(user)
+    is_admin = is_admin_user(user.fio)
     return UserOut(
         id=user.id,
         fio=user.fio,
         department=user.department or "",
         position=user.position or "",
+        role="admin" if is_admin else "user",
+        is_admin=is_admin,
         avatar_url=avatar_url_for(user),
         can_change_department=can_change,
         department_change_available_at=available_at,
@@ -83,12 +99,19 @@ def upsert_app_user(
             db.add(user)
             logger.info("Created app user id=%s", user_id)
         else:
+            changed = (user.fio or "") != fio
             user.fio = fio
             # Keep app department and position as source of truth after first login.
             if not (user.department or "").strip() and department:
                 user.department = department
+                changed = True
             if not (user.position or "").strip() and position:
                 user.position = position
+                changed = True
+            if not changed:
+                # /auth/me runs on every app open; skip the write when nothing moved.
+                db.expunge(user)
+                return user
             logger.info("Updated app user id=%s", user_id)
         db.commit()
         db.refresh(user)
@@ -110,7 +133,13 @@ def find_app_user_by_fio(fio: str) -> AppUser | None:
     if not needle:
         return None
     with SessionLocal() as db:
-        user = db.execute(select(AppUser).where(AppUser.fio == needle)).scalar_one_or_none()
+        exact_matches = db.execute(
+            select(AppUser).where(AppUser.fio == needle).order_by(AppUser.updated_at.desc()).limit(2)
+        ).scalars().all()
+        user = exact_matches[0] if len(exact_matches) == 1 else None
+        if len(exact_matches) > 1:
+            logger.warning("Multiple app users with exact FIO %r; using latest", needle)
+            user = exact_matches[0]
         if user is None:
             matches = db.execute(
                 select(AppUser).where(AppUser.fio.ilike(f"%{needle}%")).limit(3)

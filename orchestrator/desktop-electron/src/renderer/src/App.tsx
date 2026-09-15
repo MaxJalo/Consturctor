@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { Sidebar, type PageKey } from './components/Sidebar'
+import { APP_TITLE, PAGE_LABELS, Sidebar, type PageKey } from './components/Sidebar'
 import { UserMenu } from './components/UserMenu'
 import { LoginPage } from './pages/LoginPage'
 import { MessengerPage } from './pages/MessengerPage'
@@ -11,31 +11,88 @@ import {
   clearComCredentials,
   comCredentials,
   clearSession,
+  hasComPassword,
   loadSession,
   saveSession,
-  setComCredentials
+  setComCredentials,
+  setDevGatewayCredentials,
+  syncComProfileFromUser
 } from './store/session'
+import { formatGatewayToolError, shouldForceReLogin } from './workplace/onecSessionHints'
+import { fetchMyErpTasksOData } from './workplace/fetchMyErpTasksOData'
+import { erpActorFio } from './workplace/userContext'
 import { AgentRunPage } from './pages/AgentRunPage'
 import { AgentHistoryPage } from './pages/AgentHistoryPage'
 import { AgentSchedulePage } from './pages/AgentSchedulePage'
-import { AgentsPage } from './pages/AgentsPage'
 import { AgentPassportPage, type PassportTab } from './pages/AgentPassportPage'
-import { ProcessesWorkplace } from './workplace/ProcessesWorkplace'
 import { FilesPage } from './pages/FilesPage'
-import { KpiPage } from './pages/KpiPage'
-import { RunBannerCarousel, type BannerEntry } from './components/RunBannerCarousel'
-import { useRuns, deriveLatestOutput } from './store/runs'
+import { OrchGridShell } from './layout/OrchGridShell'
+import type { WorkplaceTabKey } from './layout/tabRegistry'
+import { ProcessesGridTab } from './tabs/grid/ProcessesGridTab'
+import { TasksGridTab } from './tabs/grid/TasksGridTab'
+import { ProjectsGridTab } from './tabs/grid/ProjectsGridTab'
+import { MailGridTab } from './tabs/grid/MailGridTab'
+import { MeetingsGridTab } from './tabs/grid/MeetingsGridTab'
+import { KnowledgeGridTab } from './tabs/grid/KnowledgeGridTab'
+import { TodayGridTab } from './tabs/grid/TodayGridTab'
+import { KpiGridTab } from './tabs/grid/KpiGridTab'
+import { DecisionsGridTab } from './tabs/grid/DecisionsGridTab'
+import { HistoryGridTab } from './tabs/grid/HistoryGridTab'
+import { RunProvider, useRuns } from './store/runs'
 import { isInFlightRunStatus, isLiveRunState } from './store/liveRun'
 import { ChatDock } from './workplace/ChatDock'
-import { isPersonalAgentWorkflowId } from './workplace/personalAgent'
+import { isPersonalAgentWorkflowId, personalAgentWorkflowId } from './workplace/personalAgent'
+import { DiagnosticsPage, SettingsTab, TicketsPage } from './workplace/WorkplaceTabs'
+import { GridDataRefreshProvider } from './workplace/GridDataRefreshContext'
+import { SpecV04SourcesProvider } from './workplace/SpecV04SourcesProvider'
 import {
-  DecisionsTab,
-  DiagnosticsPage,
-  HistoryTab,
-  SettingsTab,
-  TicketsPage,
-  TodayTab
-} from './workplace/WorkplaceTabs'
+  ComCredentialsRevisionProvider,
+  useBumpComCredentialsRevision,
+  useComCredentialsRevision
+} from './workplace/ComCredentialsRevisionContext'
+import { OverviewPage } from './admin/pages/OverviewPage'
+import { HistoryPage } from './admin/pages/HistoryPage'
+import { LaunchCalendarPage } from './admin/pages/LaunchCalendarPage'
+import { KpiAdminPage } from './admin/pages/KpiAdminPage'
+import { UsersPage } from './admin/pages/UsersPage'
+import { AiAgentsPage } from './admin/pages/AiAgentsPage'
+import { KnowledgeBasePage } from './admin/pages/KnowledgeBasePage'
+import { SettingsPage } from './admin/pages/SettingsPage'
+
+const ADMIN_TAB_KEYS: PageKey[] = [
+  'overview',
+  'history',
+  'launch_calendar',
+  'kpi',
+  'users',
+  'ai_agents',
+  'knowledge_base',
+  'settings'
+]
+
+const WORKPLACE_TAB_KEYS: WorkplaceTabKey[] = [
+  'today',
+  'processes',
+  'tasks',
+  'projects',
+  'mail',
+  'meetings',
+  'decisions',
+  'kpi',
+  'history',
+  'knowledge'
+]
+
+type View =
+  | { kind: 'tab'; key: PageKey }
+  | { kind: 'chat'; thread: ChatThread }
+  | { kind: 'tickets' }
+  | { kind: 'diagnostics' }
+  | { kind: 'files'; workflowId?: string; title?: string }
+  | { kind: 'passport'; workflowId: string; title: string; tab?: PassportTab }
+  | { kind: 'agentrun'; workflowId: string; title: string; autoStart?: boolean; initialMessage?: string; appContext?: string }
+  | { kind: 'history'; workflowId: string; title: string; runId?: string }
+  | { kind: 'schedule'; workflowId: string; title: string; published?: boolean }
 
 function decodeJwtPart(part: string): string {
   const normalized = part.replace(/-/g, '+').replace(/_/g, '/')
@@ -66,17 +123,6 @@ function isOrchestratorToken(token: string): boolean {
   }
 }
 
-type View =
-  | { kind: 'tab'; key: PageKey }
-  | { kind: 'chat'; thread: ChatThread }
-  | { kind: 'tickets' }
-  | { kind: 'diagnostics' }
-  | { kind: 'files'; workflowId?: string; title?: string }
-  | { kind: 'passport'; workflowId: string; title: string; tab?: PassportTab }
-  | { kind: 'agentrun'; workflowId: string; title: string; autoStart?: boolean }
-  | { kind: 'history'; workflowId: string; title: string; runId?: string }
-  | { kind: 'schedule'; workflowId: string; title: string }
-
 function fioKey(value: string): string {
   return value.trim().toLowerCase().replace(/\s+/g, ' ')
 }
@@ -85,6 +131,28 @@ function fioEquals(left: string, right: string): boolean {
   const a = fioKey(left)
   const b = fioKey(right)
   return Boolean(a) && Boolean(b) && (a === b || a.startsWith(b) || b.startsWith(a))
+}
+
+function isAdminTabKey(key: PageKey): boolean {
+  return ADMIN_TAB_KEYS.includes(key)
+}
+
+function isWorkplaceTabKey(key: PageKey): key is WorkplaceTabKey {
+  return (WORKPLACE_TAB_KEYS as PageKey[]).includes(key)
+}
+
+function windowTitle(view: View, signedIn: boolean): string {
+  if (!signedIn) return APP_TITLE
+  if (view.kind === 'tab') return `${PAGE_LABELS[view.key]} — ${APP_TITLE}`
+  if (view.kind === 'chat') return `${view.thread.title || 'Чат'} — ${APP_TITLE}`
+  if (view.kind === 'tickets') return `Заявки — ${APP_TITLE}`
+  if (view.kind === 'diagnostics') return `Диагностика — ${APP_TITLE}`
+  if (view.kind === 'files') return `${view.title ? `${view.title}: файлы` : 'Файлы'} — ${APP_TITLE}`
+  if (view.kind === 'passport') return `Паспорт: ${view.title || 'агент'} — ${APP_TITLE}`
+  if (view.kind === 'agentrun') return `${view.title || 'Запуск'} — ${APP_TITLE}`
+  if (view.kind === 'history') return `История: ${view.title || 'агент'} — ${APP_TITLE}`
+  if (view.kind === 'schedule') return `Расписание: ${view.title || 'агент'} — ${APP_TITLE}`
+  return APP_TITLE
 }
 
 function findExistingChat(threads: ChatThread[], name: string, peerId?: string): ChatThread | undefined {
@@ -96,17 +164,36 @@ function findExistingChat(threads: ChatThread[], name: string, peerId?: string):
 }
 
 export function App(): React.JSX.Element {
+  return (
+    <RunProvider>
+      <ComCredentialsRevisionProvider>
+        <AppShell />
+      </ComCredentialsRevisionProvider>
+    </RunProvider>
+  )
+}
+
+function AppShell(): React.JSX.Element {
   const [booting, setBooting] = useState(true)
   const [user, setUser] = useState<UserProfile | null>(null)
   const [showLogout, setShowLogout] = useState(true)
-  const [view, setView] = useState<View>({ kind: 'tab', key: 'today' })
-  const [lastTab, setLastTab] = useState<PageKey>('today')
+  const [view, setView] = useState<View>({ kind: 'tab', key: 'overview' })
+  const [lastTab, setLastTab] = useState<PageKey>('overview')
+  const [adminViewMode, setAdminViewMode] = useState<'admin' | 'user'>('user')
   const [unread, setUnread] = useState(0)
   const [avatarUrl, setAvatarUrl] = useState<string | null>(null)
   const [toast, setToast] = useState('')
+  /** JWT restored from localStorage but 1C password is only in memory after login form. */
+  const [requireComLogin, setRequireComLogin] = useState(false)
   const kickedRef = useRef(false)
+  const comCredsRevision = useComCredentialsRevision()
+  const bumpComCredentialsRevision = useBumpComCredentialsRevision()
   const [chatRefreshAt, setChatRefreshAt] = useState(0)
   const runs = useRuns()
+
+  useEffect(() => {
+    document.title = booting ? APP_TITLE : windowTitle(view, Boolean(user))
+  }, [booting, user, view])
 
   useEffect(() => {
     let done = false
@@ -120,6 +207,15 @@ export function App(): React.JSX.Element {
       try {
         const config = await window.api.getConfig()
         setShowLogout(!config.testUser)
+        const dev = config.devGatewaySecrets
+        if (dev) {
+          setDevGatewayCredentials({
+            fio: dev.fio,
+            nameMail: dev.nameMail,
+            password: dev.password
+          })
+          bumpComCredentialsRevision()
+        }
         const stored = loadSession()
         if (stored?.accessToken) {
           if (!isOrchestratorToken(stored.accessToken)) {
@@ -129,6 +225,8 @@ export function App(): React.JSX.Element {
             try {
               const profile = await api.me(8_000)
               setUser(profile)
+              setRequireComLogin(!hasComPassword())
+              setModeForUser(profile)
             } catch {
               clearSession(true)
               api.setToken(null)
@@ -168,11 +266,23 @@ export function App(): React.JSX.Element {
     return subscribe((payload) => {
       if (kickedRef.current) return
       kickedRef.current = true
-      window.alert(
-        (payload.message || '').trim() || 'Выполнен вход на другом устройстве. Этот сеанс завершён.'
-      )
+      window.alert((payload.message || '').trim() || 'Выполнен вход на другом устройстве. Этот сеанс завершён.')
       void resetToLogin()
     })
+  }, [])
+
+  useEffect(() => {
+    api.setUnauthorizedHandler((message, status) => {
+      if (!shouldForceReLogin(message, status)) return
+      if (kickedRef.current) return
+      kickedRef.current = true
+      const hint = formatGatewayToolError(message, status)
+      void resetToLogin().then(() => {
+        setRequireComLogin(true)
+        if (hint) flash(hint)
+      })
+    })
+    return () => api.setUnauthorizedHandler(null)
   }, [])
 
   useEffect(() => {
@@ -184,11 +294,29 @@ export function App(): React.JSX.Element {
     }
     const token = api.getToken()
     if (token) void window.api.startNotifications?.(token)
+    syncComProfileFromUser(user)
     const creds = comCredentials()
     void agentClient
-      .ready(token, { login: creds.login || user.fio, password: creds.password || '' })
+      .ready(token, {
+        login: creds.login || user.fio,
+        password: creds.password || ''
+      })
       .catch(() => undefined)
-  }, [user?.id])
+  }, [user?.id ?? '', user?.nameMail ?? '', user?.fio ?? '', comCredsRevision])
+
+  useEffect(() => {
+    if (!import.meta.env.DEV || !user) {
+      delete window.__ORCH_DEV__
+      return
+    }
+    window.__ORCH_DEV__ = {
+      fetchMyErpTasksOData: (limit?: number) =>
+        fetchMyErpTasksOData(user, erpActorFio(user), { limit })
+    }
+    return () => {
+      delete window.__ORCH_DEV__
+    }
+  }, [user])
 
   useEffect(() => {
     if (!user) return
@@ -210,17 +338,27 @@ export function App(): React.JSX.Element {
   }, [user])
 
   useEffect(() => {
-    const unsubscribe = window.api.onChatEvent?.(() => {
-      setChatRefreshAt(Date.now())
-    })
+    const unsubscribe = window.api.onChatEvent?.(() => setChatRefreshAt(Date.now()))
     return () => unsubscribe?.()
   }, [])
 
+  function setModeForUser(profile: UserProfile): void {
+    const mode = profile.isAdmin ? 'admin' : 'user'
+    setAdminViewMode(mode)
+    setLastTab(mode === 'admin' ? 'overview' : 'today')
+    setView({ kind: 'tab', key: mode === 'admin' ? 'overview' : 'today' })
+  }
+
   function onLoggedIn(result: LoginResult, remember: boolean, password = ''): void {
     api.setToken(result.accessToken || null)
-    setComCredentials(result.user.fio, password)
+    setComCredentials(result.user.fio, password, result.user.nameMail)
+    bumpComCredentialsRevision()
+    setRequireComLogin(false)
     void agentClient
-      .ready(result.accessToken || null, { login: result.user.fio, password })
+      .ready(result.accessToken || null, {
+        login: result.user.fio,
+        password
+      })
       .catch(() => undefined)
     if (remember && result.accessToken) {
       saveSession({ accessToken: result.accessToken, fio: result.user.fio })
@@ -228,21 +366,39 @@ export function App(): React.JSX.Element {
       clearSession(true)
     }
     setUser(result.user)
-    setView({ kind: 'tab', key: 'today' })
+    setModeForUser(result.user)
     if (result.accessToken) {
-      void api.me().then(setUser).catch(() => undefined)
+      void api.me().then((profile) => {
+        setUser(profile)
+        setModeForUser(profile)
+      }).catch(() => undefined)
     }
   }
 
   async function resetToLogin(): Promise<void> {
     void window.api.stopNotifications?.()
+    runs.clearAll()
     clearSession(true)
     clearComCredentials()
     api.setToken(null)
     clearAvatarCache()
     setAvatarUrl(null)
-    setView({ kind: 'tab', key: 'today' })
+    setView({ kind: 'tab', key: 'overview' })
+    setLastTab('overview')
+    setAdminViewMode('user')
     setUser(null)
+    setRequireComLogin(false)
+  }
+
+  function onLogout(): void {
+    void resetToLogin()
+  }
+
+  function switchAdminView(mode: 'admin' | 'user'): void {
+    setAdminViewMode(mode)
+    const key: PageKey = mode === 'admin' ? 'overview' : 'today'
+    setLastTab(key)
+    setView({ kind: 'tab', key })
   }
 
   function flash(text: string): void {
@@ -354,37 +510,38 @@ export function App(): React.JSX.Element {
     flash('Обращение зарегистрировано в журнале заявок')
   }
 
-  function openAgentFiles(workflowId: string, title = ''): void {
-    const wid = (workflowId || '').trim()
-    if (!wid) {
-      setView({ kind: 'files' })
-      return
-    }
-    setView({ kind: 'files', workflowId: wid, title: title || '' })
-  }
-
   if (booting) {
     return (
       <div className="app-root boot-screen">
         <div className="spinner spinner-on-dark" />
-        <div className="boot-label">Загрузка Orchestrator...</div>
+        <div className="boot-label">Загрузка оркестратора...</div>
       </div>
     )
   }
 
-  if (!user) {
-    return <LoginPage onLoggedIn={onLoggedIn} />
+  if (!user || requireComLogin) {
+    return (
+      <LoginPage
+        onLoggedIn={onLoggedIn}
+        banner={
+          requireComLogin
+            ? 'Сеанс Orchestrator восстановлен по сохранённому токену. Введите пароль 1С для загрузки задач и OData.'
+            : undefined
+        }
+      />
+    )
   }
-  const activeUser = user
 
+  const activeUser = user
+  const isAdminMode = Boolean(activeUser.isAdmin && adminViewMode === 'admin')
   const activeKey: PageKey | null =
     view.kind === 'tab'
       ? view.key
       : view.kind === 'chat'
         ? null
-        : view.kind === 'agentrun' || view.kind === 'history' || view.kind === 'schedule' || view.kind === 'passport'
-          ? 'processes'
-          : 'settings'
+        : isAdminMode && (view.kind === 'agentrun' || view.kind === 'history' || view.kind === 'schedule' || view.kind === 'passport')
+          ? 'ai_agents'
+          : lastTab
 
   async function openAgentRun(workflowId: string, runId = '', _autoStart = false, title = ''): Promise<void> {
     if (!workflowId) {
@@ -392,7 +549,7 @@ export function App(): React.JSX.Element {
       return
     }
     if (isPersonalAgentWorkflowId(workflowId)) {
-      setView({ kind: 'agentrun', workflowId, title: title || 'Базовый агент', autoStart: false })
+      setView({ kind: 'agentrun', workflowId, title: title || 'Оркестратор', autoStart: false })
       return
     }
     const nextTitle = title || 'ИИ-агент'
@@ -402,8 +559,6 @@ export function App(): React.JSX.Element {
       return
     }
     if (runId) {
-      // Открываем историю сразу, чтобы кнопка "Открыть прогон" реагировала
-      // мгновенно даже при медленном backend. Детали проверим в фоне.
       setView({ kind: 'history', workflowId, title: nextTitle, runId })
       void (async () => {
         try {
@@ -428,202 +583,241 @@ export function App(): React.JSX.Element {
     setView({ kind: 'agentrun', workflowId, title: nextTitle || 'ИИ-агент', autoStart: false })
   }
 
-  function renderContent(): React.JSX.Element {
+  function askOrchestratorFromTab(message: string, appContext: string): void {
+    const workflowId = personalAgentWorkflowId(activeUser.id || '')
+    setView({
+      kind: 'agentrun',
+      workflowId,
+      title: 'Оркестратор',
+      autoStart: false,
+      initialMessage: message,
+      appContext
+    })
+  }
+
+  function renderAdminContent(): React.JSX.Element {
     if (view.kind === 'chat') {
       return (
         <MessengerPage
           thread={view.thread}
-          me={user!}
+          me={activeUser}
           onThreadChange={(thread) => setView({ kind: 'chat', thread })}
-          onOpenAgent={() => setView({ kind: 'tab', key: 'processes' })}
+          onOpenAgent={() => setView({ kind: 'tab', key: 'ai_agents' })}
         />
       )
     }
     if (view.kind === 'tickets') {
-      return (
-        <TicketsPage
-          user={user!}
-          onBack={() => setView({ kind: 'tab', key: 'settings' })}
-          onOpenThread={openChat}
-        />
-      )
+      return <TicketsPage user={activeUser} onBack={() => setView({ kind: 'tab', key: 'settings' })} onOpenThread={openChat} />
     }
     if (view.kind === 'diagnostics') {
-      return (
-        <DiagnosticsPage
-          onBack={() => setView({ kind: 'tab', key: 'settings' })}
-          onOpenRun={(workflowId, title, runId) => void openAgentRun(workflowId, runId || '', false, title)}
-        />
-      )
+      return <DiagnosticsPage onBack={() => setView({ kind: 'tab', key: 'settings' })} onOpenRun={(workflowId, title, runId) => void openAgentRun(workflowId, runId || '', false, title)} />
     }
     if (view.kind === 'files') {
-      return (
-        <FilesPage
-          ownerName={user?.fio || ''}
-          initialWorkflowId={view.workflowId || ''}
-          initialAgentTitle={view.title || ''}
-          onOpenRun={(workflowId, runId) => void openAgentRun(workflowId, runId)}
-        />
-      )
+      return <FilesPage ownerName={activeUser.fio || ''} initialWorkflowId={view.workflowId || ''} initialAgentTitle={view.title || ''} onOpenRun={(workflowId, runId) => void openAgentRun(workflowId, runId)} />
     }
     if (view.kind === 'agentrun') {
-      return (
-        <AgentRunPage
-          workflowId={view.workflowId}
-          title={view.title}
-          autoStart={view.autoStart}
-          onBack={() => setView({ kind: 'tab', key: lastTab })}
-          onOpenHistory={(workflowId, title) => setView({ kind: 'history', workflowId, title })}
-        />
-      )
+      return <AgentRunPage workflowId={view.workflowId} title={view.title} autoStart={view.autoStart} initialMessage={view.initialMessage} appContext={view.appContext} onBack={() => setView({ kind: 'tab', key: lastTab })} onOpenHistory={(workflowId, title) => setView({ kind: 'history', workflowId, title })} />
     }
     if (view.kind === 'passport') {
-      return (
-        <AgentPassportPage
-          workflowId={view.workflowId}
-          title={view.title}
-          initialTab={view.tab || 'info'}
-          onBack={() => setView({ kind: 'tab', key: 'today' })}
-          onRun={(workflowId, title) => void openAgentRun(workflowId, '', true, title)}
-          onOpenRun={(workflowId, title, runId) => void openAgentRun(workflowId, runId || '', false, title)}
-        />
-      )
+      return <AgentPassportPage workflowId={view.workflowId} title={view.title} initialTab={view.tab || 'info'} onBack={() => setView({ kind: 'tab', key: 'overview' })} onRun={(workflowId, title) => void openAgentRun(workflowId, '', true, title)} onOpenRun={(workflowId, title, runId) => void openAgentRun(workflowId, runId || '', false, title)} />
     }
     if (view.kind === 'history') {
-      return (
-        <AgentHistoryPage
-          workflowId={view.workflowId}
-          title={view.title}
-          initialRunId={view.runId}
-          onBack={() => setView({ kind: 'tab', key: lastTab })}
-          onOpenLive={() =>
-            setView({ kind: 'agentrun', workflowId: view.workflowId, title: view.title })
-          }
-        />
-      )
+      return <AgentHistoryPage workflowId={view.workflowId} title={view.title} initialRunId={view.runId} onBack={() => setView({ kind: 'tab', key: lastTab })} onOpenLive={() => setView({ kind: 'agentrun', workflowId: view.workflowId, title: view.title })} />
     }
     if (view.kind === 'schedule') {
-      return (
-        <AgentSchedulePage
-          workflowId={view.workflowId}
-          title={view.title}
-          onBack={() => setView({ kind: 'tab', key: lastTab })}
-          onNext={() => setView({ kind: 'tab', key: lastTab })}
-        />
-      )
+      return <AgentSchedulePage workflowId={view.workflowId} title={view.title} published={Boolean(view.published)} onBack={() => setView({ kind: 'tab', key: lastTab })} onNext={() => setView({ kind: 'tab', key: lastTab })} />
+    }
+    if (!isAdminTabKey(view.key)) {
+      return <OverviewPage />
     }
     switch (view.key) {
-      case 'processes':
-        return (
-          <ProcessesWorkplace
-            userId={activeUser.id || ''}
-            userFio={activeUser.fio || ''}
-            onOpen={(workflowId, title, tab) => setView({ kind: 'passport', workflowId, title, tab: tab || 'info' })}
-            onOpenRun={(workflowId, title, runId) => void openAgentRun(workflowId, runId || '', false, title)}
-            onFiles={(workflowId, title) => openAgentFiles(workflowId, title)}
-            onHistory={(workflowId, title) => setView({ kind: 'history', workflowId, title })}
-            onSchedule={(workflowId, title) => setView({ kind: 'schedule', workflowId, title })}
-          />
-        )
-      case 'calendar':
-        return (
-          <AgentsPage
-            variant="calendar"
-            onOpenRun={(workflowId, runId, autoStart) =>
-              void openAgentRun(workflowId, runId, Boolean(autoStart))
-            }
-            onOpenSchedule={(workflowId, title) => setView({ kind: 'schedule', workflowId, title })}
-            onOpenHistory={(workflowId, title) => setView({ kind: 'history', workflowId, title })}
-          />
-        )
-      case 'decisions':
-        return (
-          <DecisionsTab
-            onOpenRun={(workflowId, title, runId) => void openAgentRun(workflowId, runId || '', Boolean(!runId), title)}
-          />
-        )
-      case 'metrics':
-        return <KpiPage onOpenProcesses={() => setView({ kind: 'tab', key: 'processes' })} onOpenDecisions={() => setView({ kind: 'tab', key: 'decisions' })} />
+      case 'overview':
+        return <OverviewPage />
       case 'history':
-        return (
-          <HistoryTab
-            onOpenRun={(workflowId, title, runId) => void openAgentRun(workflowId, runId || '', false, title)}
-          />
-        )
+        return <HistoryPage />
+      case 'launch_calendar':
+        return <LaunchCalendarPage />
+      case 'kpi':
+        return <KpiAdminPage />
+      case 'users':
+        return <UsersPage />
+      case 'ai_agents':
+        return <AiAgentsPage />
+      case 'knowledge_base':
+        return <KnowledgeBasePage />
       case 'settings':
-        return (
-          <SettingsTab
-            user={activeUser}
-            onDiagnostics={() => setView({ kind: 'diagnostics' })}
-            onTickets={() => setView({ kind: 'tickets' })}
-            onFiles={() => setView({ kind: 'files' })}
-            onSupport={openSupport}
-          />
-        )
+        return <SettingsPage />
+      default:
+        return <OverviewPage />
+    }
+  }
+
+  function renderWorkplaceGridTab(key: WorkplaceTabKey): React.JSX.Element {
+    switch (key) {
+      case 'processes':
+        return <ProcessesGridTab user={activeUser} onOpen={(workflowId, title) => setView({ kind: 'passport', workflowId, title, tab: 'info' })} onOpenRun={(workflowId, title, runId) => void openAgentRun(workflowId, runId || '', false, title)} onAskOrchestrator={askOrchestratorFromTab} />
+      case 'tasks':
+        return <TasksGridTab user={activeUser} onAskOrchestrator={askOrchestratorFromTab} />
+      case 'projects':
+        return <ProjectsGridTab user={activeUser} onAskOrchestrator={askOrchestratorFromTab} />
+      case 'mail':
+        return <MailGridTab user={activeUser} onAskOrchestrator={askOrchestratorFromTab} />
+      case 'meetings':
+        return <MeetingsGridTab user={activeUser} onAskOrchestrator={askOrchestratorFromTab} />
+      case 'decisions':
+        return <DecisionsGridTab onOpenRun={(workflowId, title, runId) => void openAgentRun(workflowId, runId || '', Boolean(!runId), title)} />
+      case 'kpi':
+        return <KpiGridTab onOpenProcesses={() => setView({ kind: 'tab', key: 'processes' })} onOpenDecisions={() => setView({ kind: 'tab', key: 'decisions' })} />
+      case 'knowledge':
+        return <KnowledgeGridTab user={activeUser} onAskOrchestrator={askOrchestratorFromTab} />
+      case 'history':
+        return <HistoryGridTab onOpenRun={(workflowId, title, runId) => void openAgentRun(workflowId, runId || '', false, title)} />
+      case 'today':
       default:
         return (
-          <TodayTab
+          <TodayGridTab
             user={activeUser}
             onOpenDecisions={() => setView({ kind: 'tab', key: 'decisions' })}
-            onOpenMetrics={() => setView({ kind: 'tab', key: 'metrics' })}
+            onOpenMetrics={() => setView({ kind: 'tab', key: 'kpi' })}
             onOpenPassport={(workflowId, title, tab) => setView({ kind: 'passport', workflowId, title, tab })}
             onRun={(workflowId, title) => void openAgentRun(workflowId, '', true, title)}
+            onOpenRun={(workflowId, title, runId) => void openAgentRun(workflowId, runId || '', false, title)}
+            onAskOrchestrator={askOrchestratorFromTab}
           />
         )
     }
   }
 
-  const bannerEntries: BannerEntry[] = []
-  for (const entry of Object.values(runs.entries)) {
-    if (entry.background) continue
-    const active =
-      entry.state.running || Boolean(entry.state.pendingQuestion) || Boolean(entry.state.pendingHitl)
-    if (!active) continue
-    if (view.kind === 'agentrun' && view.workflowId === entry.workflowId) continue
-    bannerEntries.push({
-      id: `run:${entry.workflowId}`,
-      title: entry.title,
-      output: deriveLatestOutput(entry.state.items),
-      running: entry.state.running,
-      awaiting: Boolean(entry.state.pendingQuestion || entry.state.pendingHitl),
-      mode: 'run',
-      onOpen: () => setView({ kind: 'agentrun', workflowId: entry.workflowId, title: entry.title })
-    })
+  function renderUserFullscreen(): React.JSX.Element {
+    if (view.kind === 'chat') {
+      return <MessengerPage thread={view.thread} me={activeUser} onThreadChange={(thread) => setView({ kind: 'chat', thread })} onOpenAgent={() => setView({ kind: 'tab', key: 'processes' })} />
+    }
+    if (view.kind === 'tickets') {
+      return <TicketsPage user={activeUser} onBack={() => setView({ kind: 'tab', key: 'settings' })} onOpenThread={openChat} />
+    }
+    if (view.kind === 'diagnostics') {
+      return <DiagnosticsPage onBack={() => setView({ kind: 'tab', key: 'settings' })} onOpenRun={(workflowId, title, runId) => void openAgentRun(workflowId, runId || '', false, title)} />
+    }
+    if (view.kind === 'files') {
+      return <FilesPage ownerName={activeUser.fio || ''} initialWorkflowId={view.workflowId || ''} initialAgentTitle={view.title || ''} onOpenRun={(workflowId, runId) => void openAgentRun(workflowId, runId)} />
+    }
+    if (view.kind === 'agentrun') {
+      return <AgentRunPage workflowId={view.workflowId} title={view.title} autoStart={view.autoStart} initialMessage={view.initialMessage} appContext={view.appContext} onBack={() => setView({ kind: 'tab', key: lastTab })} onOpenHistory={(workflowId, title) => setView({ kind: 'history', workflowId, title })} />
+    }
+    if (view.kind === 'passport') {
+      return <AgentPassportPage workflowId={view.workflowId} title={view.title} initialTab={view.tab || 'info'} onBack={() => setView({ kind: 'tab', key: 'today' })} onRun={(workflowId, title) => void openAgentRun(workflowId, '', true, title)} onOpenRun={(workflowId, title, runId) => void openAgentRun(workflowId, runId || '', false, title)} />
+    }
+    if (view.kind === 'history') {
+      return <AgentHistoryPage workflowId={view.workflowId} title={view.title} initialRunId={view.runId} onBack={() => setView({ kind: 'tab', key: lastTab })} onOpenLive={() => setView({ kind: 'agentrun', workflowId: view.workflowId, title: view.title })} />
+    }
+    if (view.kind === 'schedule') {
+      return <AgentSchedulePage workflowId={view.workflowId} title={view.title} published={Boolean(view.published)} onBack={() => setView({ kind: 'tab', key: lastTab })} onNext={() => setView({ kind: 'tab', key: lastTab })} />
+    }
+    return (
+      <SettingsTab
+        user={activeUser}
+        onDiagnostics={() => setView({ kind: 'diagnostics' })}
+        onTickets={() => setView({ kind: 'tickets' })}
+        onFiles={() => setView({ kind: 'files' })}
+        onSupport={openSupport}
+      />
+    )
   }
 
-  return (
-    <div className="app-root">
-      <Sidebar
-        active={activeKey}
-        activeThreadId={view.kind === 'chat' ? view.thread.id : ''}
-        currentUserId={user.id || ''}
-        onNavigate={(key) => {
-          setLastTab(key)
-          setView({ kind: 'tab', key })
-        }}
-        onOpenThread={openChat}
-        onOpenFio={(fio, picked) => void openChatByFio(fio, picked)}
-        refreshAt={chatRefreshAt}
-      />
-      <main className="content">
-        <div className={view.kind === 'chat' ? 'content-inner messenger-mode' : 'content-inner'}>
-          <div className="app-page-header">
-            <UserMenu
-              user={user}
+  function renderUserContent(): React.JSX.Element {
+    if (view.kind === 'tab' && isWorkplaceTabKey(view.key)) {
+      return renderWorkplaceGridTab(view.key)
+    }
+    return renderUserFullscreen()
+  }
+
+  if (!isAdminMode && view.kind === 'tab' && isWorkplaceTabKey(view.key)) {
+    const tabKey = view.key
+    return (
+      <GridDataRefreshProvider userId={activeUser.id}>
+        <SpecV04SourcesProvider user={activeUser} comCredsRevision={comCredsRevision}>
+          <div className="app-root orch-app-root">
+            <OrchGridShell
+              activeKey={tabKey}
+              gridClassName={
+                tabKey === 'today' ? 'orch-grid-today' : tabKey === 'kpi' ? 'orch-grid-kpi' : ''
+              }
+              user={activeUser}
               avatarUrl={avatarUrl}
               unread={unread}
               onUnreadChange={setUnread}
-              onLogout={() => void resetToLogin()}
+              onLogout={onLogout}
               showLogout={showLogout}
+              lightSidebar={tabKey === 'today'}
+              activeThreadId=""
+              chatRefreshAt={chatRefreshAt}
+              onNavigate={(key) => {
+                setLastTab(key)
+                setView({ kind: 'tab', key })
+              }}
+              onOpenThread={openChat}
+              onOpenFio={(fio, picked) => void openChatByFio(fio, picked)}
+              onOpenSettings={() => setView({ kind: 'tab', key: 'settings' })}
               onOpenAgent={(workflowId, runId) => void openAgentRun(workflowId, runId)}
-            />
+              canSwitchAdminView={Boolean(activeUser.isAdmin)}
+              onSwitchAdminView={switchAdminView}
+              toast={toast ? <div className="wp-toast">{toast}</div> : null}
+            >
+              {renderUserContent()}
+            </OrchGridShell>
+            <ChatDock onOpenThread={openChat} onOpenSupport={openSupport} />
           </div>
-          {toast && <div className="wp-toast">{toast}</div>}
-          <RunBannerCarousel entries={bannerEntries} />
-          {renderContent()}
+        </SpecV04SourcesProvider>
+      </GridDataRefreshProvider>
+    )
+  }
+
+  const content = isAdminMode ? renderAdminContent() : renderUserContent()
+
+  return (
+    <GridDataRefreshProvider userId={activeUser.id}>
+      <SpecV04SourcesProvider user={activeUser} comCredsRevision={comCredsRevision}>
+        <div className="app-root">
+          <Sidebar
+            active={activeKey}
+            light={false}
+            showAdminNav={isAdminMode}
+            activeThreadId={view.kind === 'chat' ? view.thread.id : ''}
+            currentUserId={activeUser.id || ''}
+            onNavigate={(key) => {
+              if (isAdminMode && !isAdminTabKey(key)) return
+              if (!isAdminMode && !isWorkplaceTabKey(key) && key !== 'settings') return
+              setLastTab(key)
+              setView({ kind: 'tab', key })
+            }}
+            onOpenThread={openChat}
+            onOpenFio={(fio, picked) => void openChatByFio(fio, picked)}
+            refreshAt={chatRefreshAt}
+          />
+          <main className={isAdminMode ? 'content' : 'content orch-legacy-fullpage'}>
+            <div className={view.kind === 'chat' ? 'content-inner messenger-mode' : 'content-inner'}>
+              <div className="app-page-header">
+                <UserMenu
+                  user={activeUser}
+                  avatarUrl={avatarUrl}
+                  unread={unread}
+                  onUnreadChange={setUnread}
+                  onLogout={onLogout}
+                  showLogout={showLogout}
+                  onOpenAgent={(workflowId, runId) => void openAgentRun(workflowId, runId)}
+                  onOpenSettings={() => setView({ kind: 'tab', key: 'settings' })}
+                  canSwitchAdminView={Boolean(activeUser.isAdmin)}
+                  onSwitchAdminView={switchAdminView}
+                  variant={isAdminMode ? 'admin' : 'default'}
+                />
+              </div>
+              {toast && <div className="wp-toast">{toast}</div>}
+              {content}
+            </div>
+          </main>
+          <ChatDock onOpenThread={openChat} onOpenSupport={openSupport} />
         </div>
-      </main>
-      <ChatDock onOpenThread={openChat} onOpenSupport={openSupport} />
-    </div>
+      </SpecV04SourcesProvider>
+    </GridDataRefreshProvider>
   )
 }

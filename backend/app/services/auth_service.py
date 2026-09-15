@@ -119,7 +119,29 @@ def _login_via_bypass(fio: str, password: str, client: str = DEFAULT_CLIENT) -> 
     return LoginResponse(access_token=token, user=user_out)
 
 
-def _to_user_out(*, user_id: str, fio: str, department: str, position: str = "") -> UserOut:
+def _name_mail_from_erp_login(raw: str) -> str:
+    """v8users.Name — латинский логин для корпоративной почты."""
+    text = (raw or "").strip().lower()
+    if not text:
+        return ""
+    if "@" in text:
+        text = text.split("@", 1)[0].strip()
+    if any("\u0400" <= ch <= "\u04ff" for ch in text):
+        return ""
+    allowed = set("abcdefghijklmnopqrstuvwxyz0123456789._-")
+    if not text or any(ch not in allowed for ch in text):
+        return ""
+    return text
+
+
+def _to_user_out(
+    *,
+    user_id: str,
+    fio: str,
+    department: str,
+    position: str = "",
+    name_mail: str = "",
+) -> UserOut:
     try:
         app_user = app_users.upsert_app_user(
             user_id=user_id,
@@ -130,7 +152,10 @@ def _to_user_out(*, user_id: str, fio: str, department: str, position: str = "")
     except Exception as exc:
         logger.exception("Failed to upsert app user id=%s", user_id)
         raise AuthError("Не удалось сохранить пользователя в базе", status_code=503) from exc
-    return app_users.to_user_out(app_user)
+    out = app_users.to_user_out(app_user)
+    if name_mail:
+        return out.model_copy(update={"name_mail": name_mail})
+    return out
 
 
 class AuthError(Exception):
@@ -158,7 +183,16 @@ async def login(fio: str, password: str, client: str = DEFAULT_CLIENT) -> LoginR
         raise AuthError("Найдено несколько пользователей с таким ФИО", status_code=409) from exc
     except ErpSqlError as exc:
         logger.exception("ERP SQL error during login")
-        raise AuthError("Сервис аутентификации недоступен", status_code=503) from exc
+        if settings.erp_login.strip() and settings.erp_password:
+            try:
+                return await asyncio.to_thread(_login_via_bypass, fio, password, client)
+            except AuthError:
+                pass
+        raise AuthError(
+            "Сервис аутентификации 1С недоступен. Проверьте VPN и ERP_SQL_SERVER=ii1 "
+            "(не IP). Либо задайте ERP_LOGIN и ERP_PASSWORD в backend/.env для входа без SQL.",
+            status_code=503,
+        ) from exc
 
     data = erp_user.data or b""
     if not data or not verify_password(data, password):
@@ -191,6 +225,7 @@ async def login(fio: str, password: str, client: str = DEFAULT_CLIENT) -> LoginR
         fio=erp_user.fio,
         department=department or "",
         position=position or "",
+        name_mail=_name_mail_from_erp_login(erp_user.name),
     )
     _trace(
         f"Auth login ok id={erp_user.id} fio={erp_user.fio} "
@@ -258,6 +293,11 @@ async def get_current_user_profile(user_id: str, fio_hint: str | None = None) ->
         erp_user = await asyncio.to_thread(find_user_by_id, user_id)
     except ErpSqlError as exc:
         logger.exception("ERP SQL error loading profile")
+        app_user = app_users.get_app_user(user_id)
+        if app_user is None and fio_hint:
+            app_user = app_users.find_app_user_by_fio(fio_hint)
+        if app_user is not None:
+            return app_users.to_user_out(app_user)
         raise AuthError("Сервис аутентификации недоступен", status_code=503) from exc
 
     if erp_user is None:
@@ -287,4 +327,5 @@ async def get_current_user_profile(user_id: str, fio_hint: str | None = None) ->
         fio=erp_user.fio,
         department=department or "",
         position=position or "",
+        name_mail=_name_mail_from_erp_login(erp_user.name),
     )

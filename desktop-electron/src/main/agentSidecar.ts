@@ -1,9 +1,107 @@
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process'
 import { delimiter, dirname, join, resolve } from 'node:path'
-import { existsSync } from 'node:fs'
+import { existsSync, readFileSync } from 'node:fs'
 import { app } from 'electron'
 
+const CURSOR_ENV_KEYS = ['CURSOR_API_KEY', 'CURSOR_API_BASE_URL', 'CURSOR_SDK_MODEL'] as const
+
+function parseEnvFile(path: string): Record<string, string> {
+  const out: Record<string, string> = {}
+  if (!existsSync(path)) return out
+  const text = readFileSync(path, 'utf-8')
+  for (const rawLine of text.split(/\r?\n/)) {
+    const line = rawLine.trim()
+    if (!line || line.startsWith('#')) continue
+    const eq = line.indexOf('=')
+    if (eq < 0) continue
+    const key = line.slice(0, eq).trim()
+    let value = line.slice(eq + 1).trim()
+    if (
+      (value.startsWith('"') && value.endsWith('"')) ||
+      (value.startsWith("'") && value.endsWith("'"))
+    ) {
+      value = value.slice(1, -1)
+    }
+    out[key] = value
+  }
+  return out
+}
+
+function isDesktopRoot(path: string): boolean {
+  return existsSync(join(path, 'app', 'config.py'))
+}
+
+function walkParents(start: string, depth = 6): string[] {
+  const rows: string[] = []
+  let current = resolve(start)
+  for (let i = 0; i < depth; i += 1) {
+    rows.push(current)
+    const parent = resolve(current, '..')
+    if (parent === current) break
+    current = parent
+  }
+  return rows
+}
+
+function collectDesktopCandidates(starts: string[]): string[] {
+  const rows: string[] = []
+  const push = (value: string): void => {
+    const path = resolve(value)
+    if (!rows.includes(path)) rows.push(path)
+  }
+  for (const start of starts) {
+    push(resolve(start, '..', 'desktop'))
+    push(resolve(start, '..', '..', 'desktop'))
+    push(resolve(start, 'desktop'))
+  }
+  return rows.filter((path) => isDesktopRoot(path))
+}
+
+function resolveDesktopRoot(starts: string[], fallback: string): string {
+  const envDesktop = process.env.CONSTRUCTOR_DESKTOP_ROOT
+  if (envDesktop && isDesktopRoot(envDesktop)) return envDesktop
+  const found = collectDesktopCandidates(starts)
+  return found[0] || fallback
+}
+
+function cursorEnvFromDesktop(desktopRoot: string): Record<string, string> {
+  const appData = process.env.APPDATA || ''
+  const files = [
+    appData ? join(appData, 'constructor-desktop-electron', '.env') : '',
+    appData ? join(appData, 'Orchestrator', '.env') : '',
+    join(process.cwd(), '.env'),
+    join(desktopRoot, '.env'),
+    ...walkParents(desktopRoot).map((root) => join(root, 'backend', '.env'))
+  ].filter(Boolean)
+  const out: Record<string, string> = {}
+  for (const file of files) {
+    const parsed = parseEnvFile(file)
+    for (const key of CURSOR_ENV_KEYS) {
+      if (!out[key] && parsed[key]?.trim()) out[key] = parsed[key].trim()
+    }
+  }
+  return out
+}
+
 export type AgentSidecarMessage = Record<string, unknown>
+
+export type AgentSidecarSendResult = {
+  ok: boolean
+  queued?: boolean
+  error?: string
+  reason?: 'not_ready' | 'start_failed' | 'stopped' | 'write_failed'
+}
+
+export type AgentSidecarStatus = {
+  ready: boolean
+  starting: boolean
+  queuedCommands: number
+  error: string
+  sidecarPath: string
+  desktopRoot: string
+  python: string
+  cwd: string
+}
 
 type EventSink = (message: AgentSidecarMessage) => void
 
@@ -39,6 +137,13 @@ export class AgentSidecar {
   private isReady = false
   private pending: AgentSidecarMessage[] = []
   private lastStart: AgentSidecarMessage | null = null
+  private lastStartError = ''
+  private lastPaths: { sidecar: string; desktopRoot: string; python: string; cwd: string } = {
+    sidecar: '',
+    desktopRoot: '',
+    python: '',
+    cwd: ''
+  }
   private readonly runMeta = new Map<string, { workflowId: string; kind: string }>()
 
   constructor(
@@ -70,22 +175,7 @@ export class AgentSidecar {
     if (!sidecar) {
       sidecar = join(appPath, 'pybridge', 'agent_sidecar.py')
     }
-    let desktopRoot = envDesktop || ''
-    if (!desktopRoot) {
-      for (const base of candidates) {
-        const guesses = [resolve(base, 'desktop'), resolve(base, '..', 'desktop')]
-        for (const guess of guesses) {
-          if (existsSync(join(guess, 'app', 'config.py'))) {
-            desktopRoot = guess
-            break
-          }
-        }
-        if (desktopRoot) break
-      }
-    }
-    if (!desktopRoot) {
-      desktopRoot = resolve(appPath, '..', 'desktop')
-    }
+    let desktopRoot = resolveDesktopRoot(candidates, envDesktop || resolve(appPath, '..', 'desktop'))
     return { sidecar, desktopRoot }
   }
 
@@ -104,14 +194,28 @@ export class AgentSidecar {
     const nodeDir = existsSync(node) ? dirname(node) : ''
     const pathParts = [nodeDir, process.env.PATH || process.env.Path || ''].filter(Boolean)
     const browsersPath = join(desktopRoot, 'ms-playwright')
+    const cursorEnv = cursorEnvFromDesktop(desktopRoot)
     const pythonPathParts = [desktopRoot, process.env.PYTHONPATH].filter(Boolean)
+    const localAppData = process.env.LOCALAPPDATA || process.env.APPDATA || ''
+    const orchestratorWorkspacesRoot = localAppData
+      ? join(localAppData, 'Orchestrator', 'agent_workspaces')
+      : ''
+    if (!cursorEnv.CURSOR_API_KEY) {
+      console.error('[agent-sidecar] CURSOR_API_KEY не найден в desktop/.env или backend/.env')
+    } else {
+      console.log(`[agent-sidecar] desktop root: ${desktopRoot}`)
+    }
     return {
       ...process.env,
+      ...cursorEnv,
       PYTHONUNBUFFERED: '1',
       PYTHONIOENCODING: 'utf-8',
       PYTHONPATH: pythonPathParts.join(delimiter),
       CONSTRUCTOR_SIDECAR: sidecar,
       CONSTRUCTOR_DESKTOP_ROOT: desktopRoot,
+      CONSTRUCTOR_INSTANCE: process.env.CONSTRUCTOR_INSTANCE || 'orchestrator',
+      CONSTRUCTOR_AGENT_WORKSPACES_ROOT:
+        process.env.CONSTRUCTOR_AGENT_WORKSPACES_ROOT || orchestratorWorkspacesRoot,
       CONSTRUCTOR_PYTHON: this.pythonCommand(),
       CONSTRUCTOR_NODE: node,
       PLAYWRIGHT_BROWSERS_PATH:
@@ -121,30 +225,63 @@ export class AgentSidecar {
     }
   }
 
+  warmup(): void {
+    this.start()
+    this.configure(this.lastToken)
+  }
+
+  status(): AgentSidecarStatus {
+    const { sidecar, desktopRoot } = this.resolvePaths()
+    const python = this.lastPaths.python || this.pythonCommand()
+    const cwd =
+      this.lastPaths.cwd ||
+      (existsSync(desktopRoot) ? desktopRoot : existsSync(sidecar) ? dirname(sidecar) : '')
+    return {
+      ready: this.isReady,
+      starting: Boolean(this.child) && !this.isReady,
+      queuedCommands: this.pending.length,
+      error: this.lastStartError,
+      sidecarPath: this.lastPaths.sidecar || sidecar,
+      desktopRoot: this.lastPaths.desktopRoot || desktopRoot,
+      python,
+      cwd
+    }
+  }
+
   start(): void {
     if (this.child) return
     const { sidecar, desktopRoot } = this.resolvePaths()
+    const python = process.env.CONSTRUCTOR_PYTHON || this.pythonCommand()
+    const cwd = existsSync(desktopRoot) ? desktopRoot : dirname(sidecar)
+    this.lastPaths = { sidecar, desktopRoot, python, cwd }
     if (!existsSync(sidecar)) {
+      this.lastStartError = `Файл sidecar не найден: ${sidecar}`
       this.onEvent({
         type: 'error',
-        message: `Agent sidecar not found at ${sidecar}`
+        message: this.lastStartError
       })
       return
     }
+    this.lastStartError = ''
     const env = this.runtimeEnv(sidecar, desktopRoot)
     let child: ChildProcessWithoutNullStreams
     try {
-      child = spawn(env.CONSTRUCTOR_PYTHON || this.pythonCommand(), ['-u', sidecar], {
-        cwd: existsSync(desktopRoot) ? desktopRoot : undefined,
-        env
+      child = spawn(env.CONSTRUCTOR_PYTHON || python, ['-u', sidecar], {
+        cwd: existsSync(cwd) ? cwd : undefined,
+        env,
+        windowsHide: true
       })
     } catch (err) {
+      this.lastStartError = `Не удалось запустить sidecar: ${err instanceof Error ? err.message : String(err)}`
       this.onEvent({
         type: 'error',
-        message: `Failed to start agent sidecar: ${err instanceof Error ? err.message : String(err)}`
+        message: this.lastStartError
       })
       return
     }
+    console.log(
+      `[agent-sidecar] spawn python=${python} sidecar=${sidecar} cwd=${cwd} desktop=${desktopRoot}`
+    )
     this.child = child
     this.isReady = false
     this.stdoutBuffer = ''
@@ -155,13 +292,28 @@ export class AgentSidecar {
       const text = String(chunk).trim()
       if (text) console.error(`[agent-sidecar] ${text}`)
     })
+    // Windows pipes use fs WriteStream under the hood. A write after the
+    // child exits becomes ERR_STREAM_DESTROYED and kills the Electron main
+    // process unless these streams have an error listener.
+    const ignorePipeError = (err: Error): void => {
+      console.error(`[agent-sidecar] pipe: ${err.message}`)
+    }
+    child.stdin.on('error', ignorePipeError)
+    child.stdout.on('error', ignorePipeError)
+    child.stderr.on('error', ignorePipeError)
     child.on('error', (err) => {
+      this.lastStartError = `Sidecar process error: ${err instanceof Error ? err.message : String(err)}`
       this.onEvent({
         type: 'error',
-        message: `Agent sidecar error: ${err instanceof Error ? err.message : String(err)}`
+        message: this.lastStartError
       })
     })
     child.on('exit', (code) => {
+      try {
+        if (!child.stdin.destroyed) child.stdin.destroy()
+      } catch {
+        /* already closed */
+      }
       this.child = null
       this.isReady = false
       if (this.stopping) return
@@ -204,6 +356,7 @@ export class AgentSidecar {
         if (message.type === 'ready') {
           this.restarts = 0
           this.isReady = true
+          this.lastStartError = ''
           this.flushPending()
         }
         // Opt-in diagnostics (set AGENT_SIDECAR_DEBUG=1) to confirm that runner
@@ -233,6 +386,14 @@ export class AgentSidecar {
   }
 
   private stampRunMeta(message: AgentSidecarMessage): AgentSidecarMessage {
+    if (message.type === 'run_adopted') {
+      const requested = String(message.runId || '')
+      const linked = String(message.linkedRunId || '')
+      if (requested && linked) {
+        const meta = this.runMeta.get(requested)
+        if (meta) this.runMeta.set(linked, meta)
+      }
+    }
     const runId = String(message.runId || message.id || '')
     const meta = runId ? this.runMeta.get(runId) : undefined
     if (!meta) return message
@@ -247,7 +408,10 @@ export class AgentSidecar {
     return next
   }
 
-  send(command: AgentSidecarMessage): boolean {
+  send(command: AgentSidecarMessage): AgentSidecarSendResult {
+    if (this.stopping) {
+      return { ok: false, error: 'Sidecar останавливается', reason: 'stopped' }
+    }
     const type = String(command.type || '')
     if (isStartCommand(command)) {
       this.lastStart = command
@@ -259,11 +423,21 @@ export class AgentSidecar {
     if (!this.child) {
       this.start()
     }
-    if (!this.isReady || !this.child || !this.child.stdin.writable) {
+    if (this.lastStartError && !this.child) {
+      return { ok: false, error: this.lastStartError, reason: 'start_failed' }
+    }
+    if (!this.isReady || !this.stdinOpen()) {
       this.enqueue(command)
-      return true
+      return { ok: true, queued: true, reason: 'not_ready' }
     }
     return this.write(command)
+      ? { ok: true }
+      : { ok: false, error: 'Не удалось записать в sidecar', reason: 'write_failed' }
+  }
+
+  private stdinOpen(): boolean {
+    const stdin = this.child?.stdin
+    return Boolean(stdin && stdin.writable && !stdin.destroyed && !stdin.writableEnded)
   }
 
   private enqueue(command: AgentSidecarMessage): void {
@@ -280,15 +454,22 @@ export class AgentSidecar {
   }
 
   private write(command: AgentSidecarMessage): boolean {
-    if (!this.child || !this.child.stdin.writable) {
+    if (!this.stdinOpen()) {
       this.enqueue(command)
       return true
     }
     try {
-      this.child.stdin.write(JSON.stringify(command) + '\n')
+      const stdin = this.child!.stdin
+      const line = JSON.stringify(command) + '\n'
+      stdin.write(line, (err) => {
+        if (err) console.error(`[agent-sidecar] stdin write failed: ${err.message}`)
+      })
       console.log(`[agent-sidecar] sent ${String(command.type || '')}`)
       return true
-    } catch {
+    } catch (err) {
+      console.error(
+        `[agent-sidecar] stdin write failed: ${err instanceof Error ? err.message : String(err)}`
+      )
       this.enqueue(command)
       return false
     }
@@ -330,13 +511,17 @@ export class AgentSidecar {
       this.restartTimer = null
     }
     if (this.child) {
+      const child = this.child
+      this.child = null
+      this.isReady = false
       try {
-        this.child.stdin.write(JSON.stringify({ type: 'shutdown' }) + '\n')
+        if (child.stdin.writable && !child.stdin.destroyed && !child.stdin.writableEnded) {
+          child.stdin.write(JSON.stringify({ type: 'shutdown' }) + '\n')
+          child.stdin.end()
+        }
       } catch {
         /* ignore */
       }
-      const child = this.child
-      this.child = null
       setTimeout(() => {
         if (!child.killed) child.kill()
       }, 500)

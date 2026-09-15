@@ -5,11 +5,58 @@ from __future__ import annotations
 from datetime import datetime
 from types import SimpleNamespace
 
+from app.services.docflow_document_tasks import (
+    fio_matches,
+    map_document_executor_row,
+    odata_executor_filter_clauses,
+)
 from app.services.docflow_tasks import (
+    _credentials_from_args,
     _map_task,
     _parse_odata_dt,
+    docflow_auth,
     docflow_base_url,
+    docflow_env_auth,
+    odata_entity,
 )
+
+
+def test_docflow_auth_prefers_session_fio_password(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "app.services.docflow_tasks.settings",
+        SimpleNamespace(
+            docflow_odata_username="env-user",
+            docflow_odata_password="env-pass",
+            odata_username="odata-only",
+            odata_password="odata-pass",
+            erp_login="",
+            erp_password="",
+        ),
+    )
+    assert docflow_env_auth() == ("env-user", "env-pass")
+    assert docflow_auth({"fio": "Иванов И.И.", "password": "secret"}) == (
+        "Иванов И.И.",
+        "secret",
+    )
+    assert docflow_auth(
+        {"username": "name_mail_slug", "fio": "Иванов И.И.", "password": "secret"}
+    ) == ("Иванов И.И.", "secret")
+    assert _credentials_from_args({"username": "u", "erp_password": "p"}) == ("u", "p")
+
+
+def test_docflow_env_auth_falls_back_to_odata_when_no_docflow_or_erp(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "app.services.docflow_tasks.settings",
+        SimpleNamespace(
+            docflow_odata_username="",
+            docflow_odata_password="",
+            odata_username="odata-only",
+            odata_password="odata-pass",
+            erp_login="",
+            erp_password="",
+        ),
+    )
+    assert docflow_env_auth() == ("odata-only", "odata-pass")
 
 
 def test_docflow_base_url_from_erp(monkeypatch) -> None:
@@ -36,6 +83,34 @@ def test_parse_odata_dt_skips_empty() -> None:
     assert _parse_odata_dt("0001-01-01T00:00:00") is None
     parsed = _parse_odata_dt("2026-08-17T12:00:00")
     assert parsed == datetime(2026, 8, 17, 12, 0, 0)
+
+
+def test_odata_entity_and_executor_filters() -> None:
+    assert odata_entity() == "Task_ЗадачаИсполнителя"
+    clauses = odata_executor_filter_clauses("41290a43-1111-2222-3333-444455556666")
+    assert len(clauses) == 2
+    assert "Исполнитель_Key eq guid'" in clauses[0][0]
+
+
+def test_fio_matches_executor_column() -> None:
+    assert fio_matches("Жалыбин Максим Дмитриевич", "Жалыбин Максим Дмитриевич")
+    assert fio_matches("  жалыбин   максим  ", "Жалыбин Максим")
+
+
+def test_map_document_executor_row_subject_and_action() -> None:
+    row = {
+        "Number": "DO-12",
+        "Description": "Исполнить",
+        "ПредметСтрокой": "Заявка в службу развития…",
+        "Executed": False,
+        "СрокИсполнения": "2025-09-15T00:00:00",
+        "Исполнитель_Name": "Жалыбин Максим Дмитриевич",
+    }
+    item = map_document_executor_row(row, fio="Жалыбин Максим Дмитриевич")
+    assert "Заявка в службу развития" in item["title"]
+    assert "Исполнить" in item["title"]
+    assert item["due_at"].startswith("2025-09-15")
+    assert item["performer"] == "Жалыбин Максим Дмитриевич"
 
 
 def test_map_task_marks_source_and_late() -> None:
