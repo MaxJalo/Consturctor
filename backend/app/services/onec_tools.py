@@ -46,6 +46,10 @@ from app.services.erp_tasks import (
     stub_period as _stub_erp_tasks_period,
     stub_subordinate_tasks as _stub_erp_subordinate_tasks,
 )
+from app.services.erp_tasks_odata import (
+    handle_odata_current as _erp_tasks_odata,
+    stub_odata_current as _stub_erp_tasks_odata,
+)
 from app.services.odata_local_catalog import (
     compact_structure,
     entity_search_score,
@@ -141,6 +145,7 @@ ONEC_TOOLS = frozenset(
         "onec.odata_get",
         "onec.sql_query",
         "onec.erp_tasks_current",
+        "onec.erp_tasks_odata",
         "onec.erp_tasks_period",
         "onec.erp_subordinate_tasks",
         "onec.erp_assignments",
@@ -167,6 +172,7 @@ _ERP_TASK_TOOLS = frozenset(
     }
 )
 _JWT_ONEC_TOOLS = _ERP_TASK_TOOLS | {
+    "onec.erp_tasks_odata",
     "onec.docflow_tasks",
     "onec.erp_write_probe",
 }
@@ -225,12 +231,20 @@ def _enforce_actor_access(
         raise OnecToolError(str(exc)) from exc
 
 
-def odata_configured() -> bool:
-    has_url = bool(settings.odata_base_url.strip())
-    has_creds = bool(
-        (settings.erp_login.strip() and settings.erp_password.strip())
-        or (settings.odata_username.strip() and settings.odata_password.strip())
-    )
+def _odata_base_url(args: dict[str, Any] | None = None) -> str:
+    payload = args or {}
+    for key in ("odata_base_url", "ODATA_BASE_URL"):
+        value = str(payload.get(key) or "").strip()
+        if value:
+            return value.rstrip("/")
+    return settings.odata_base_url.strip().rstrip("/")
+
+
+def odata_configured(args: dict[str, Any] | None = None) -> bool:
+    """True when OData URL + credentials exist in settings or invoke args."""
+    payload = args or {}
+    has_url = bool(_odata_base_url(payload))
+    has_creds = _odata_auth(payload) is not None
     return has_url and has_creds
 
 
@@ -271,9 +285,9 @@ def invoke_onec(
         handlers = {**STUB_HANDLERS, **extra}
     elif _erp_sql_ready():
         handlers = {**handlers, **{name: REAL_HANDLERS[name] for name in _ERP_TASK_TOOLS}}
-    from app.services.docflow_tasks import docflow_configured
+    from app.services.docflow_tasks import docflow_url_ready
 
-    if docflow_configured():
+    if docflow_url_ready():
         handlers = {**handlers, "onec.docflow_tasks": REAL_HANDLERS["onec.docflow_tasks"]}
     handler = handlers.get(tool)
     if handler is None:
@@ -445,9 +459,23 @@ def _ensure_odata_query(
 
 def _payload_credentials(payload: dict[str, Any]) -> tuple[str, str] | None:
     username = str(
-        payload.get("username") or payload.get("erp_login") or payload.get("user") or ""
+        payload.get("odata_username")
+        or payload.get("ODATA_USERNAME")
+        or payload.get("username")
+        or payload.get("erp_login")
+        or payload.get("ERP_LOGIN")
+        or payload.get("user")
+        or payload.get("fio")
+        or ""
     ).strip()
-    password = str(payload.get("password") or payload.get("erp_password") or "").strip()
+    password = str(
+        payload.get("odata_password")
+        or payload.get("ODATA_PASSWORD")
+        or payload.get("password")
+        or payload.get("erp_password")
+        or payload.get("ERP_PASSWORD")
+        or ""
+    ).strip()
     if username and password:
         return username, password
     return None
@@ -798,10 +826,11 @@ def _fetch_odata_list(args: dict[str, Any]) -> dict[str, Any]:
         ):
             odata_path = _append_odata_query(odata_path, **{"$orderby": "Date%20desc"})
 
-    if not settings.odata_base_url:
+    if not _odata_base_url(args):
         raise OnecToolError(
             "ODATA_BASE_URL не настроен. Добавьте ODATA_BASE_URL, "
-            "ODATA_USERNAME/ODATA_PASSWORD (или ERP_LOGIN/ERP_PASSWORD) в backend/.env."
+            "ODATA_USERNAME/ODATA_PASSWORD (или ERP_LOGIN/ERP_PASSWORD) в backend/.env "
+            "или передайте odata_base_url / odata_username / odata_password в invoke."
         )
 
     raw = _odata_get(
@@ -945,8 +974,8 @@ def _stub_sql_query(args: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _odata_url(path: str) -> str:
-    base = settings.odata_base_url.rstrip("/")
+def _odata_url(path: str, args: dict[str, Any] | None = None) -> str:
+    base = _odata_base_url(args)
     cleaned = path.lstrip("/")
     safe = "/()'=,:$"
     if "?" in cleaned:
@@ -970,7 +999,7 @@ def _odata_get(args: dict[str, Any]) -> dict[str, Any]:
         top=top if top is not None and "$top" not in path.lower() else None,
         skip=skip if skip and "$skip" not in path.lower() else None,
     )
-    if not settings.odata_base_url:
+    if not _odata_base_url(args):
         raise OnecToolError("ODATA_BASE_URL not configured")
     auth = _odata_auth(args)
     if not auth:
@@ -978,7 +1007,7 @@ def _odata_get(args: dict[str, Any]) -> dict[str, Any]:
             "OData credentials not configured: set ERP_LOGIN/ERP_PASSWORD "
             "или ODATA_USERNAME/ODATA_PASSWORD"
         )
-    url = _odata_url(path)
+    url = _odata_url(path, args)
     with httpx.Client(timeout=settings.odata_timeout_sec, auth=auth) as client:
         response = client.get(url, headers={"Accept": "application/json"})
         if response.status_code >= 400:
@@ -1032,6 +1061,41 @@ def _odata_patch(args: dict[str, Any]) -> dict[str, Any]:
         if response.status_code >= 400:
             raise OnecToolError(_parse_onec_http_error(response))
     return {"summary": "odata patch ok", "updated": True, "ref_key": ref_key, "source": "odata"}
+
+
+def _odata_delete(args: dict[str, Any]) -> dict[str, Any]:
+    entity = validate_odata_entity(
+        str(args.get("entity", "")),
+        allowlist=_odata_allowlist(),
+        extra_allowed=_odata_extra_entities(),
+    )
+    ref_key = str(args.get("ref_key", "")).strip()
+    if not ref_key:
+        raise OnecToolError("ref_key required")
+    url = _odata_url(f"{entity}(guid'{ref_key}')")
+    auth = _odata_auth(args)
+    if not auth:
+        raise OnecToolError("OData credentials not configured")
+    with httpx.Client(timeout=settings.odata_timeout_sec, auth=auth) as client:
+        response = client.delete(
+            url,
+            headers={"Accept": "application/json", "If-Match": "*"},
+        )
+        if response.status_code == 404:
+            return {
+                "summary": "odata delete already gone",
+                "deleted": True,
+                "ref_key": ref_key,
+                "source": "odata",
+            }
+        if response.status_code >= 400:
+            raise OnecToolError(_parse_onec_http_error(response))
+    return {
+        "summary": "odata delete ok",
+        "deleted": True,
+        "ref_key": ref_key,
+        "source": "odata",
+    }
 
 
 def _attach_file(_args: dict[str, Any]) -> dict[str, Any]:
@@ -1412,6 +1476,7 @@ STUB_HANDLERS = {
     "onec.attach_file": _stub_attach_file,
     "onec.sql_query": _stub_sql_query,
     "onec.erp_tasks_current": _stub_erp_tasks_current,
+    "onec.erp_tasks_odata": _stub_erp_tasks_odata,
     "onec.erp_tasks_period": _stub_erp_tasks_period,
     "onec.erp_subordinate_tasks": _stub_erp_subordinate_tasks,
     "onec.erp_assignments": _stub_erp_assignments,
@@ -1430,6 +1495,7 @@ REAL_HANDLERS = {
     "onec.attach_file": _attach_file,
     "onec.sql_query": _sql_query,
     "onec.erp_tasks_current": _erp_tasks_current,
+    "onec.erp_tasks_odata": _erp_tasks_odata,
     "onec.erp_tasks_period": _erp_tasks_period,
     "onec.erp_subordinate_tasks": _erp_subordinate_tasks,
     "onec.erp_assignments": _erp_assignments,

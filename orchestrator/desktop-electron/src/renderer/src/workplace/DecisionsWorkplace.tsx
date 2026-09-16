@@ -1,4 +1,6 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { Fragment, useEffect, useMemo, useRef, useState } from 'react'
+import { StandardTabChrome, type ChromeTileSpec } from '../tabs/grid/TabChromeGrid'
+import { DEFAULT_DECISIONS_LAYOUT } from '../tabs/grid/useTabChromeLayout'
 import { api } from '../api/client'
 import type { AgentRunHistoryItem, AgentRunnerEvent, WorkflowFileItem } from '../api/types'
 import { FilterBar } from './FilterBar'
@@ -17,6 +19,8 @@ import {
   toolIntent,
   type ToolDecisionItem
 } from './decisionTools'
+import { agentResultToToolDecision } from './agentResultDecisions'
+import { agentAccentStyle } from './agentAccent'
 
 function pad(value: number): string {
   return String(value).padStart(2, '0')
@@ -462,9 +466,14 @@ function DecisionDetail({
 }
 
 export function DecisionsTab({
-  onOpenRun
+  onOpenRun,
+  inGridShell = false,
+  userId = ''
 }: {
   onOpenRun: (workflowId: string, title: string, runId?: string) => void
+  /** Разметка OrchGridShell (метрики / фильтры / main+side / нижняя панель). */
+  inGridShell?: boolean
+  userId?: string
 }): React.JSX.Element {
   const today = todayKey()
   const [query, setQuery] = useState('')
@@ -643,6 +652,19 @@ export function DecisionsTab({
                 status: run.status,
                 meetings: plan
               })
+            }
+            if (!extracted.length) {
+              const asDecision = agentResultToToolDecision({
+                workflowId: agent.workflowId,
+                agentName: agent.name,
+                agentCode: agent.code,
+                runId: run.runId,
+                at,
+                text: cleaned.text || run.summary || '',
+                status: run.status,
+                hasFile: visibleFiles.some((file) => file.runId === run.runId)
+              })
+              if (asDecision) collectedTools.push(asDecision)
             }
           }
         })
@@ -933,20 +955,11 @@ export function DecisionsTab({
     }
   ].filter((item) => Boolean(item.label))
 
-  return (
-    <div className="wp-page spec-v04-page spec-decisions-page">
-      <div className="wp-head spec-v04-head">
-        <div>
-          <h1 className="page-title">Решения</h1>
-          <div className="wp-sub">Подтверждение решений, подготовленных ИИ и сотрудниками</div>
-        </div>
-        <div className="spec-v04-head-actions">
-          <button type="button" className="btn-primary spec-quick-launch">
-            ▶ Быстрый запуск
-          </button>
-        </div>
-      </div>
-      <section className="wp-decisions-kpi">
+  const decisionChromeTiles: ChromeTileSpec[] = [
+    {
+      id: 'awaiting',
+      label: 'Ожидают меня',
+      node: (
         <article className="wp-decisions-kpi-card wait">
           <div className="wp-decisions-kpi-icon" aria-hidden>
             !
@@ -956,6 +969,12 @@ export function DecisionsTab({
             <strong>{awaitingMe.length}</strong>
           </div>
         </article>
+      )
+    },
+    {
+      id: 'review',
+      label: 'На рассмотрении',
+      node: (
         <article className="wp-decisions-kpi-card review">
           <div className="wp-decisions-kpi-icon nf-review" aria-hidden>
             <svg viewBox="0 0 24 24" width="20" height="20" focusable="false">
@@ -970,6 +989,12 @@ export function DecisionsTab({
             <strong>{underReview.length}</strong>
           </div>
         </article>
+      )
+    },
+    {
+      id: 'confirmed',
+      label: 'Подтверждено сегодня',
+      node: (
         <article className="wp-decisions-kpi-card done">
           <div className="wp-decisions-kpi-icon" aria-hidden>
             ✓
@@ -979,6 +1004,12 @@ export function DecisionsTab({
             <strong>{confirmedToday.length}</strong>
           </div>
         </article>
+      )
+    },
+    {
+      id: 'returned',
+      label: 'Возвращено',
+      node: (
         <article className="wp-decisions-kpi-card returned">
           <div className="wp-decisions-kpi-icon" aria-hidden>
             ↻
@@ -988,8 +1019,20 @@ export function DecisionsTab({
             <strong>{returned.length}</strong>
           </div>
         </article>
-      </section>
-      <FilterBar
+      )
+    }
+  ]
+
+  const kpiTiles = (
+    <section className="wp-decisions-kpi">
+      {decisionChromeTiles.map((tile) => (
+        <Fragment key={tile.id}>{tile.node}</Fragment>
+      ))}
+    </section>
+  )
+
+  const filtersBar = (
+    <FilterBar
         query={query}
         onQuery={setQuery}
         queryPlaceholder="Найти решение"
@@ -1075,7 +1118,10 @@ export function DecisionsTab({
           </select>
         </label>
       </FilterBar>
-      {duePanelOpen || due === 'period' ? (
+  )
+
+  const duePanel =
+    duePanelOpen || due === 'period' ? (
         <section className="wp-card wp-deadline-panel">
           <div className="wp-deadline-head">
             <button
@@ -1123,9 +1169,9 @@ export function DecisionsTab({
             })}
           </div>
         </section>
-      ) : null}
-      {error ? <div className="wp-banner wp-banner-warn">{error}</div> : null}
-      <div className="wp-decisions-columns wp-decisions-master">
+      ) : null
+
+  const toolsList = (
             <section className="wp-card wp-decisions-col">
               <h2>Подтверждение инструментов</h2>
               <p>
@@ -1150,6 +1196,7 @@ export function DecisionsTab({
                       key={item.id}
                       type="button"
                       className={`wp-decision-pick${selectedItem ? ' selected' : ''}${due.overdue && item.status === 'pending' ? ' overdue' : ''}`}
+                      style={agentAccentStyle(item.workflowId)}
                       onClick={() => setSelectedId(item.id)}
                     >
                       <span className={`wp-decision-pick-radio${selectedItem ? ' on' : ''}`} aria-hidden />
@@ -1177,6 +1224,9 @@ export function DecisionsTab({
                 })}
               </div>
             </section>
+  )
+
+  const detailPanel = (
             <section className="wp-card wp-decisions-col wp-decision-detail">
               {!selected ? (
                 <article className="wp-decisions-mini">
@@ -1204,7 +1254,9 @@ export function DecisionsTab({
                 />
               )}
             </section>
-          </div>
+  )
+
+  const agentResults = (
           <section className="wp-card wp-decisions-col">
             <h2>Результаты агентов</h2>
             <p>Итог работы, без хода выполнения.</p>
@@ -1246,6 +1298,57 @@ export function DecisionsTab({
               ))}
             </div>
           </section>
+  )
+
+  if (inGridShell) {
+    return (
+      <StandardTabChrome
+        tabId="decisions"
+        userId={userId}
+        defaults={DEFAULT_DECISIONS_LAYOUT}
+        chromeTiles={decisionChromeTiles}
+        widgets={{
+          filters: (
+            <>
+              {filtersBar}
+              {duePanel}
+            </>
+          ),
+          main: (
+            <>
+              {error ? <div className="wp-banner wp-banner-warn">{error}</div> : null}
+              {toolsList}
+            </>
+          ),
+          side: detailPanel,
+          botC: agentResults
+        }}
+      />
+    )
+  }
+
+  return (
+    <div className="wp-page spec-v04-page spec-decisions-page">
+      <div className="wp-head spec-v04-head">
+        <div>
+          <h1 className="page-title">Решения</h1>
+          <div className="wp-sub">Подтверждение решений, подготовленных ИИ и сотрудниками</div>
+        </div>
+        <div className="spec-v04-head-actions">
+          <button type="button" className="btn-primary spec-quick-launch">
+            ▶ Быстрый запуск
+          </button>
+        </div>
+      </div>
+      {kpiTiles}
+      {filtersBar}
+      {duePanel}
+      {error ? <div className="wp-banner wp-banner-warn">{error}</div> : null}
+      <div className="wp-decisions-columns wp-decisions-master">
+        {toolsList}
+        {detailPanel}
+      </div>
+      {agentResults}
     </div>
   )
 }

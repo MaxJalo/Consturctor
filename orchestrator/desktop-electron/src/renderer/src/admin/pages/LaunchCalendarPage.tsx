@@ -1,8 +1,10 @@
-import { useMemo, useState } from 'react'
-import { adminLaunchCalendarMock } from '../../mocks/adminMocks'
+import { useEffect, useMemo, useState } from 'react'
+import { emptyAdminCalendar } from '../adminEmpty'
+import { fetchAdminLaunchCalendar } from '../adminApi'
+import { useAdminTabLoad } from '../hooks/useAdminTabLoad'
 import {
   addDays,
-  ADMIN_MOCK_TODAY,
+  adminToday,
   buildMonthGrid,
   dayIsoKey,
   enumerateRangeDays,
@@ -33,7 +35,9 @@ const EVENT_TONE: Record<string, string> = {
   red: 'admin-cal-event--red'
 }
 
-const MOCK_EVENT_WEEK_START = getWeekRange(ADMIN_MOCK_TODAY).start
+function currentWeekStart(): Date {
+  return getWeekRange(adminToday()).start
+}
 const MONTH_WEEKDAYS = ['Понедельник', 'Вторник', 'Среда', 'Четверг', 'Пятница', 'Суббота', 'Воскресенье']
 const MONTH_VISIBLE_EVENTS = 3
 
@@ -52,7 +56,7 @@ function rangeForView(view: string, anchor: Date): AdminDateRange {
   if (view === 'День') return { start: day, end: day }
   if (view === 'Месяц') return getMonthRange(day)
   if (view === 'Сегодня') {
-    const today = ADMIN_MOCK_TODAY
+    const today = adminToday()
     return { start: today, end: today }
   }
   return getWeekRange(day)
@@ -103,7 +107,7 @@ function LaunchMonthGrid({ anchor, selectedDay, events, onSelectDay }: LaunchMon
           const dayEvents = eventsByDay.get(dayIsoKey(date)) ?? []
           const shown = dayEvents.slice(0, MONTH_VISIBLE_EVENTS)
           const leftover = dayEvents.length - shown.length
-          const isToday = isSameDay(date, ADMIN_MOCK_TODAY)
+          const isToday = isSameDay(date, adminToday())
           const isSelected = isSameDay(date, selectedDay)
           return (
             <button
@@ -136,19 +140,23 @@ function LaunchMonthGrid({ anchor, selectedDay, events, onSelectDay }: LaunchMon
 }
 
 export function LaunchCalendarPage(): React.JSX.Element {
-  const mock = adminLaunchCalendarMock
+  const { data, loading, error } = useAdminTabLoad(emptyAdminCalendar, fetchAdminLaunchCalendar)
   const rowHeight = 56
-  const [activeView, setActiveView] = useState(mock.activeView)
-  const [selectedDay, setSelectedDay] = useState(ADMIN_MOCK_TODAY)
-  const [range, setRange] = useState<AdminDateRange>(() => getWeekRange(ADMIN_MOCK_TODAY))
-  const [miniMonth, setMiniMonth] = useState(ADMIN_MOCK_TODAY.getMonth())
-  const [miniYear, setMiniYear] = useState(ADMIN_MOCK_TODAY.getFullYear())
+  const [activeView, setActiveView] = useState(data.activeView)
+  const [selectedDay, setSelectedDay] = useState(() => adminToday())
+  const [range, setRange] = useState<AdminDateRange>(() => getWeekRange(adminToday()))
+  const [miniMonth, setMiniMonth] = useState(() => adminToday().getMonth())
+  const [miniYear, setMiniYear] = useState(() => adminToday().getFullYear())
   const [agentChecked, setAgentChecked] = useState<Record<string, boolean>>(() =>
-    Object.fromEntries(mock.agentFilters.map((item) => [item.id, item.checked]))
+    Object.fromEntries(data.agentFilters.map((item) => [item.id, item.checked]))
   )
 
+  useEffect(() => {
+    setAgentChecked(Object.fromEntries(data.agentFilters.map((item) => [item.id, item.checked])))
+  }, [data.agentFilters])
+
   const visibleDays = useMemo(() => {
-    if (activeView === 'Сегодня') return [ADMIN_MOCK_TODAY]
+    if (activeView === 'Сегодня') return [adminToday()]
     return enumerateRangeDays(range)
   }, [activeView, range])
 
@@ -157,19 +165,19 @@ export function LaunchCalendarPage(): React.JSX.Element {
   const gridColumns = { gridTemplateColumns: `56px repeat(${columnCount}, minmax(${columnCount > 7 ? 52 : 0}, 1fr))` }
 
   const activeAgentIds = useMemo(
-    () => mock.agentFilters.filter((item) => item.id !== 'all' && agentChecked[item.id]).map((item) => item.id),
-    [agentChecked, mock.agentFilters]
+    () => data.agentFilters.filter((item) => item.id !== 'all' && agentChecked[item.id]).map((item) => item.id),
+    [agentChecked, data.agentFilters]
   )
 
   const isMonthView = activeView === 'Месяц'
 
   const datedEvents = useMemo(() => {
-    const base = isMonthView ? getMonthRange(selectedDay).start : MOCK_EVENT_WEEK_START
-    return mock.events.map((event) => ({
+    const base = isMonthView ? getMonthRange(selectedDay).start : currentWeekStart()
+    return data.events.map((event) => ({
       ...event,
       date: addDays(base, event.dayIndex)
     }))
-  }, [isMonthView, mock.events, selectedDay])
+  }, [isMonthView, data.events, selectedDay])
 
   const visibleEvents = useMemo(
     () => datedEvents.filter((event) => activeAgentIds.includes(event.agentId)),
@@ -189,10 +197,10 @@ export function LaunchCalendarPage(): React.JSX.Element {
 
   function handleViewChange(mode: string): void {
     if (mode === 'Сегодня') {
-      syncSelection(ADMIN_MOCK_TODAY, { start: ADMIN_MOCK_TODAY, end: ADMIN_MOCK_TODAY }, mode)
+      syncSelection(adminToday(), { start: adminToday(), end: adminToday() }, mode)
       return
     }
-    const anchor = mode === 'День' || mode === 'Неделя' || mode === 'Месяц' ? selectedDay : ADMIN_MOCK_TODAY
+    const anchor = mode === 'День' || mode === 'Неделя' || mode === 'Месяц' ? selectedDay : adminToday()
     syncSelection(anchor, rangeForView(mode, anchor), mode)
   }
 
@@ -207,7 +215,7 @@ export function LaunchCalendarPage(): React.JSX.Element {
 
   function shiftPeriod(delta: number): void {
     if (activeView === 'День' || activeView === 'Сегодня') {
-      const anchor = activeView === 'Сегодня' ? ADMIN_MOCK_TODAY : selectedDay
+      const anchor = activeView === 'Сегодня' ? adminToday() : selectedDay
       const next = addDays(anchor, delta)
       syncSelection(next, { start: next, end: next }, activeView === 'Сегодня' ? 'День' : activeView)
       return
@@ -224,29 +232,35 @@ export function LaunchCalendarPage(): React.JSX.Element {
 
   function toggleAgent(id: string, checked: boolean): void {
     if (id === 'all') {
-      setAgentChecked(Object.fromEntries(mock.agentFilters.map((item) => [item.id, checked])))
+      setAgentChecked(Object.fromEntries(data.agentFilters.map((item) => [item.id, checked])))
       return
     }
     setAgentChecked((prev) => {
       const next = { ...prev, [id]: checked }
-      next.all = mock.agentFilters.filter((item) => item.id !== 'all').every((item) => next[item.id])
+      next.all = data.agentFilters.filter((item) => item.id !== 'all').every((item) => next[item.id])
       return next
     })
   }
 
   return (
-    <AdminPageShell breadcrumb={mock.breadcrumb} className="admin-page--fill">
+    <AdminPageShell breadcrumb={data.breadcrumb} className="admin-page--fill">
       <AdminPageHeader
-        title={mock.title}
-        subtitle={mock.subtitle}
-        actions={<AdminPrimaryButton label={mock.createLabel} icon="plus" />}
+        title={data.title}
+        subtitle={data.subtitle}
+        actions={<AdminPrimaryButton label={data.createLabel} icon="plus" />}
       />
+      {loading ? <p className="admin-kb-sub">Загрузка…</p> : null}
+      {error ? (
+        <p className="admin-kb-sub" role="alert">
+          {error}
+        </p>
+      ) : null}
       <div className="admin-calendar-layout">
         <div className="admin-calendar-col">
         <section className="admin-panel admin-calendar-main">
           <div className="admin-calendar-toolbar">
             <div className="admin-view-toggle">
-              {mock.viewModes.map((mode) => (
+              {data.viewModes.map((mode) => (
                 <button
                   key={mode}
                   type="button"
@@ -279,7 +293,7 @@ export function LaunchCalendarPage(): React.JSX.Element {
                 ))}
               </div>
               <div className="admin-calendar-grid__body">
-                {mock.hours.map((hour) => (
+                {data.hours.map((hour) => (
                   <div key={hour} className="admin-calendar-grid__row" style={gridColumns}>
                     <div className="admin-calendar-grid__time">{hour}</div>
                     {visibleDays.map((day) => (
@@ -313,10 +327,10 @@ export function LaunchCalendarPage(): React.JSX.Element {
               <h3>Незапланированные запуски</h3>
               <p>Задачи, ожидающие планирования</p>
             </div>
-            <AdminOutlineButton label={mock.scheduleAllLabel} icon="calendar" />
+            <AdminOutlineButton label={data.scheduleAllLabel} icon="calendar" />
           </div>
           <div className="admin-unscheduled__list">
-            {mock.unscheduled.map((item) => (
+            {data.unscheduled.map((item) => (
               <article key={item.id} className={`admin-unscheduled__item admin-unscheduled__item--${item.tone}`}>
                 <div>
                   <strong>{item.title}</strong>
@@ -332,7 +346,7 @@ export function LaunchCalendarPage(): React.JSX.Element {
           <section className="admin-panel admin-panel--overflow-visible">
             <h3 className="admin-side-title">ИИ-агенты</h3>
             <ul className="admin-check-list">
-              {mock.agentFilters.map((item) => (
+              {data.agentFilters.map((item) => (
                 <li key={item.id}>
                   <label>
                     <input
@@ -380,7 +394,7 @@ export function LaunchCalendarPage(): React.JSX.Element {
               {miniCells.map(({ date, muted }) => {
                 const inRange = isDateInRange(date, range)
                 const edge = isRangeEdge(date, range)
-                const today = isSameDay(date, ADMIN_MOCK_TODAY)
+                const today = isSameDay(date, adminToday())
                 return (
                   <button
                     key={date.toISOString()}

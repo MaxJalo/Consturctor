@@ -1,4 +1,5 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
+import { MailDetailPanel } from '../tabs/grid/MailDetailPanel'
 import { AgentsPage } from '../pages/AgentsPage'
 import { api } from '../api/client'
 import type { UserProfile } from '../api/types'
@@ -19,6 +20,7 @@ import {
 } from './specV04Components'
 import { ASK_CHIPS, type SpecKnowledgeRow } from './specV04DemoData'
 import { buildTaskTiles, useSpecV04Sources } from './useSpecV04Data'
+import { useTurboProjectOpenTasks } from './useTurboProjectOpenTasks'
 
 function standardFilters(): React.JSX.Element {
   return (
@@ -100,7 +102,7 @@ export function TasksTabWorkplace({
                 {!taskRows.length ? (
                   <tr>
                     <td colSpan={12} className="spec-v04-empty">
-                      {data.loading
+                      {data.erpLoading
                         ? 'Загружаем задачи из 1С…'
                         : `Нет открытых задач 1С для ${data.erpFio || 'пользователя'}.`}
                     </td>
@@ -233,6 +235,13 @@ export function ProjectsTabWorkplace({
   const [selectedId, setSelectedId] = useState('')
   const effectiveId = selectedId || projectRows[0]?.id || ''
   const selected = projectRows.find((item) => item.id === effectiveId)
+  const projectTasks = useTurboProjectOpenTasks(
+    effectiveId,
+    user,
+    data.erpFio,
+    Boolean(effectiveId) && projectRows.length > 0,
+    { openOnly: true, assigneeOnly: true, limit: 200 }
+  )
   const tiles: SpecSummaryTile[] = [
     { id: 'a', label: 'Активные проекты', value: String(projectRows.length || '—'), tone: 'purple' },
     {
@@ -283,7 +292,7 @@ export function ProjectsTabWorkplace({
                 {!projectRows.length ? (
                   <tr>
                     <td colSpan={9} className="spec-v04-empty">
-                      {data.loading
+                      {data.turboLoading
                         ? 'Загружаем портфель TurboProject…'
                         : `Нет проектов для ${data.erpFio}. Проверьте turboproject.get_user_portfolio.`}
                     </td>
@@ -327,8 +336,36 @@ export function ProjectsTabWorkplace({
                 <SpecPill tone={selected.riskTone}>{selected.risk}</SpecPill>
               </div>
               <p className="spec-v04-muted">Роль: {selected.role}. Срок: {selected.deadline}.</p>
-              <h4>Открытых задач в MPP: {selected.tasks}</h4>
+              <h4>
+                Открытых задач в MPP: {selected.tasks}
+                {projectTasks.showingAllAssignees ? ' · все исполнители' : ''}
+              </h4>
               <SpecProgress value={selected.progress} />
+              {projectTasks.loading ? (
+                <p className="spec-v04-muted">Загружаем задачи…</p>
+              ) : projectTasks.error ? (
+                <p className="spec-v04-muted">{projectTasks.error}</p>
+              ) : projectTasks.rows.length ? (
+                <table className="spec-v04-table spec-v04-table-compact">
+                  <tbody>
+                    {projectTasks.rows.map((task) => (
+                      <tr key={task.id}>
+                        <td>
+                          <strong>{task.title}</strong>
+                        </td>
+                        <td className={task.status === 'Просрочена' ? 'spec-deadline-urgent' : undefined}>
+                          {task.deadline}
+                        </td>
+                        <td>
+                          <SpecPill tone={task.statusTone}>{task.status}</SpecPill>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              ) : (
+                <p className="spec-v04-muted">Нет задач в MPP по фильтру</p>
+              )}
               <footer className="spec-detail-actions">
                 <button type="button" className="btn-ghost">
                   Открыть в проекте
@@ -373,13 +410,20 @@ export function MailTabWorkplace({
   onAskOrchestrator: (message: string, context: string) => void
 }): React.JSX.Element {
   const data = useSpecV04Sources(user)
-  const mailRows = data.mailRows
+  const [rowPatches, setRowPatches] = useState<Record<string, Partial<import('./specV04DemoData').SpecMailRow>>>({})
+  const mailRows = useMemo(
+    () => data.mailRows.map((row) => ({ ...row, ...rowPatches[row.id] })),
+    [data.mailRows, rowPatches]
+  )
   const [selectedId, setSelectedId] = useState('')
   const effectiveId = selectedId || mailRows[0]?.id || ''
   const selected = mailRows.find((item) => item.id === effectiveId)
+  const patchRow = useCallback((id: string, patch: Partial<(typeof mailRows)[0]>) => {
+    setRowPatches((prev) => ({ ...prev, [id]: { ...prev[id], ...patch } }))
+  }, [])
   const tiles: SpecSummaryTile[] = [
     { id: 'p', label: 'К обработке', value: String(mailRows.length || '—'), tone: 'blue' },
-    { id: 'box', label: 'Ящик Outlook', value: data.outlookMailbox || 'локальный профиль', tone: 'orange' },
+    { id: 'box', label: data.mailImapPrimary ? 'Ящик IMAP' : 'Ящик Outlook', value: data.outlookMailbox || 'локальный профиль', tone: 'orange' },
     { id: 'src', label: 'Источник списка', value: data.sources.mail, tone: 'purple' }
   ]
   const ask = (m: string) => onAskOrchestrator(m, 'Вкладка «Письма»')
@@ -389,9 +433,11 @@ export function MailTabWorkplace({
       <SpecPageHead
         title="Письма"
         subtitle={
-          data.outlookMailbox
-            ? `Почта Outlook: ${data.outlookMailbox} · список через ${data.sources.mail}`
-            : 'Единый центр обработки рабочей почты Outlook'
+          data.mailImapPrimary
+            ? `Почта IMAP (primary) · ${data.sources.mail}${data.outlookMailbox ? ` · COM fallback: ${data.outlookMailbox}` : ''}`
+            : data.outlookMailbox
+              ? `Почта Outlook: ${data.outlookMailbox} · список через ${data.sources.mail} · ${data.mailImapStatus}`
+              : `Единый центр обработки рабочей почты · ${data.mailImapStatus || data.sources.mail}`
         }
         actions={<SpecQuickLaunchButton />}
       />
@@ -401,6 +447,11 @@ export function MailTabWorkplace({
         main={
           <div className="spec-v04-table-wrap wp-card">
             <h3 className="spec-table-caption">Письма ({mailRows.length})</h3>
+            {data.mailComError || data.mailImapError ? (
+              <p className="spec-v04-muted">
+                {[data.mailComError, data.mailImapError].filter(Boolean).join(' · ')}
+              </p>
+            ) : null}
             <table className="spec-v04-table">
               <thead>
                 <tr>
@@ -419,9 +470,11 @@ export function MailTabWorkplace({
                 {!mailRows.length ? (
                   <tr>
                     <td colSpan={9} className="spec-v04-empty">
-                      {data.loading
+                      {data.mailLoading
                         ? 'Загружаем письма…'
-                        : `Нет непрочитанных через IMAP. Outlook: ${data.outlookMailbox || 'проверьте профиль'}.`}
+                        : data.mailImapPrimary
+                          ? `Нет писем в IMAP. ${data.mailImapStatus}`
+                          : `Нет писем за неделю (Outlook COM). Ящик: ${data.outlookMailbox || 'проверьте профиль'}. ${data.mailImapStatus}`}
                     </td>
                   </tr>
                 ) : null}
@@ -458,29 +511,11 @@ export function MailTabWorkplace({
         }
         side={
           selected ? (
-            <div className="spec-detail-card spec-mail-preview">
-              <h2>{selected.subject}</h2>
-              <p className="spec-v04-muted">
-                От: {selected.sender} · {selected.time}
-              </p>
-              <div className="spec-detail-tags">
-                <SpecPill tone={selected.priTone}>{selected.priority}</SpecPill>
-                <SpecPill tone={selected.stTone}>{selected.status}</SpecPill>
-                <SpecPill tone="purple">CRM</SpecPill>
-              </div>
-              <p className="spec-v04-muted">Просмотр тела письма — через агента Outlook или imap.fetch_message.</p>
-              <footer className="spec-detail-actions">
-                <button type="button" className="btn-ghost">
-                  Ответить
-                </button>
-                <button type="button" className="btn-ghost">
-                  Передать ИИ
-                </button>
-                <button type="button" className="btn-primary">
-                  Привязать к процессу
-                </button>
-              </footer>
-            </div>
+            <MailDetailPanel
+              mail={selected}
+              onPatchRow={patchRow}
+              onAskOrchestrator={(message) => ask(message)}
+            />
           ) : null
         }
       />

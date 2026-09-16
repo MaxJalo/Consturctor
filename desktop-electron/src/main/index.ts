@@ -524,7 +524,7 @@ async function handleUpload(_evt: unknown, opts: UploadOptions) {
   }
 }
 
-function resolveBackendUrl(pathOrUrl: string): string {
+function toAbsoluteBackendUrl(pathOrUrl: string): string {
   if (pathOrUrl.startsWith('http://') || pathOrUrl.startsWith('https://')) {
     return pathOrUrl
   }
@@ -564,7 +564,7 @@ async function handleFetchDataUrl(
   _evt: unknown,
   opts: { url: string; token?: string | null }
 ) {
-  const url = resolveBackendUrl(opts.url)
+  const url = toAbsoluteBackendUrl(opts.url)
   const headers: Record<string, string> = {}
   if (opts.token) headers.Authorization = `Bearer ${opts.token}`
   try {
@@ -606,7 +606,7 @@ async function handleDownload(
     : await dialog.showSaveDialog(saveOptions)
   if (result.canceled || !result.filePath) return { ok: false, canceled: true }
   const target = ensureDocxPath(result.filePath)
-  const url = resolveBackendUrl(opts.url)
+  const url = toAbsoluteBackendUrl(opts.url)
   const headers: Record<string, string> = {}
   if (opts.token) headers.Authorization = `Bearer ${opts.token}`
   try {
@@ -778,6 +778,119 @@ async function handleStream(
   }
 }
 
+type IpcHandler = (...args: Parameters<Parameters<typeof ipcMain.handle>[1]>) => unknown
+
+/** Re-register safely on electron-vite main HMR (avoid partial handler sets). */
+function ipcHandle(channel: string, handler: IpcHandler): void {
+  ipcMain.removeHandler(channel)
+  ipcMain.handle(channel, handler)
+}
+
+function registerMainIpcHandlers(): void {
+  ipcHandle('app:getConfig', () => ({
+    backendUrl: CONFIG.backendUrl,
+    testUser: CONFIG.testUser
+  }))
+  ipcHandle('api:request', handleRequest)
+  ipcHandle('api:upload', handleUpload)
+  ipcHandle('api:fetchDataUrl', handleFetchDataUrl)
+  ipcHandle('api:download', handleDownload)
+  ipcHandle('api:createWorkflow', handleCreateWorkflow)
+  ipcHandle('api:stream', handleStream)
+  ipcHandle(
+    'agent:ready',
+    (_evt, token: string | null, credentials?: { login?: string; password?: string }) => {
+      agentSidecar.ready(token ?? null, credentials)
+      return { ok: true }
+    }
+  )
+  ipcHandle('agent:status', () => agentSidecar.status())
+  ipcHandle('agent:start', (_evt, command: AgentSidecarMessage) => agentSidecar.send(command))
+  ipcHandle('agent:answer', (_evt, command: AgentSidecarMessage) =>
+    agentSidecar.send({ ...command, type: 'answer' })
+  )
+  ipcHandle('agent:hitl', (_evt, command: AgentSidecarMessage) =>
+    agentSidecar.send({ ...command, type: 'hitl' })
+  )
+  ipcHandle('agent:skip', (_evt, command: AgentSidecarMessage) =>
+    agentSidecar.send({ ...command, type: 'skip' })
+  )
+  ipcHandle('agent:cancel', (_evt, command: AgentSidecarMessage) =>
+    agentSidecar.send({ ...command, type: 'cancel' })
+  )
+  ipcHandle('agent:read-calendar', (_evt, command: AgentSidecarMessage) =>
+    agentSidecar.send({ ...command, type: 'read_calendar' })
+  )
+  ipcHandle('agent:search-mail', (_evt, command: AgentSidecarMessage) =>
+    agentSidecar.send({ ...command, type: 'search_mail' })
+  )
+  ipcHandle('agent:invoke-ac-tool', (_evt, command: AgentSidecarMessage) =>
+    agentSidecar.send({ ...command, type: 'invoke_ac_tool' })
+  )
+  ipcHandle('notifications:start', (_evt, token: string) => {
+    if (typeof token === 'string' && token.trim()) {
+      notifyGuard.start(token.trim())
+    }
+    return { ok: true }
+  })
+  ipcHandle('notifications:stop', () => {
+    notifyGuard.stop()
+    return { ok: true }
+  })
+  ipcHandle('notify:show', (_evt, payload: ToastPayload) => {
+    showToast(payload || { title: '' })
+    return { ok: true }
+  })
+  ipcHandle('dialog:openFile', async (evt, options: Electron.OpenDialogOptions) => {
+    const win = BrowserWindow.fromWebContents(evt.sender) || BrowserWindow.getFocusedWindow()
+    const filters = (options?.filters || [])
+      .map((item) => ({
+        name: item.name || 'Files',
+        extensions: (item.extensions || [])
+          .map((ext) => String(ext || '').replace(/^\./, ''))
+          .filter(Boolean)
+      }))
+      .filter((item) => item.extensions.length)
+    const dialogOptions: Electron.OpenDialogOptions = {
+      ...options,
+      filters: filters.length ? filters : undefined
+    }
+    const result = win
+      ? await dialog.showOpenDialog(win, dialogOptions)
+      : await dialog.showOpenDialog(dialogOptions)
+    return result.canceled ? [] : result.filePaths
+  })
+  ipcHandle('clipboard:saveImage', async () => {
+    try {
+      const items = await clipboard.read()
+      for (const item of items) {
+        const mime = item.types.find((type) => type.toLowerCase().startsWith('image/'))
+        if (!mime) continue
+        const payload = await item.getType(mime)
+        if (!(payload instanceof Blob)) continue
+        const buffer = Buffer.from(await payload.arrayBuffer())
+        if (!buffer.length) continue
+        const subtype = mime.split('/')[1]?.split(';')[0] || 'png'
+        const ext = subtype === 'jpeg' ? 'jpg' : subtype.replace(/[^a-z0-9]/g, '') || 'png'
+        const dir = join(app.getPath('temp'), 'constructor-pastes')
+        mkdirSync(dir, { recursive: true })
+        const file = join(dir, `screenshot-${Date.now()}.${ext}`)
+        writeFileSync(file, buffer)
+        return file
+      }
+    } catch {
+      return ''
+    }
+    return ''
+  })
+  ipcHandle('updater:getStatus', () => getUpdateStatus())
+  ipcHandle('updater:install', () => installAvailableUpdate())
+}
+
+if (isPrimaryInstance) {
+  registerMainIpcHandlers()
+}
+
 function createWindow(): void {
   const mainWindow = new BrowserWindow({
     width: 1480,
@@ -828,106 +941,8 @@ app.whenReady().then(() => {
   registerWindowsLaunchers()
   installToastActivation()
   console.log(`Constructor backend: ${CONFIG.backendUrl}`)
-  ipcMain.handle('app:getConfig', () => ({
-    backendUrl: CONFIG.backendUrl,
-    testUser: CONFIG.testUser
-  }))
-  ipcMain.handle('api:request', handleRequest)
-  ipcMain.handle('api:upload', handleUpload)
-  ipcMain.handle('api:fetchDataUrl', handleFetchDataUrl)
-  ipcMain.handle('api:download', handleDownload)
-  ipcMain.handle('api:createWorkflow', handleCreateWorkflow)
-  ipcMain.handle('api:stream', handleStream)
-  ipcMain.handle(
-    'agent:ready',
-    (_evt, token: string | null, credentials?: { login?: string; password?: string }) => {
-      agentSidecar.ready(token ?? null, credentials)
-      return { ok: true }
-    }
-  )
-  ipcMain.handle('agent:start', (_evt, command: AgentSidecarMessage) => {
-    const ok = agentSidecar.send(command)
-    return { ok }
-  })
-  ipcMain.handle('agent:answer', (_evt, command: AgentSidecarMessage) => {
-    return { ok: agentSidecar.send({ ...command, type: 'answer' }) }
-  })
-  ipcMain.handle('agent:hitl', (_evt, command: AgentSidecarMessage) => {
-    return { ok: agentSidecar.send({ ...command, type: 'hitl' }) }
-  })
-  ipcMain.handle('agent:skip', (_evt, command: AgentSidecarMessage) => {
-    return { ok: agentSidecar.send({ ...command, type: 'skip' }) }
-  })
-  ipcMain.handle('agent:cancel', (_evt, command: AgentSidecarMessage) => {
-    return { ok: agentSidecar.send({ ...command, type: 'cancel' }) }
-  })
-  ipcMain.handle('agent:read-calendar', (_evt, command: AgentSidecarMessage) => {
-    return { ok: agentSidecar.send({ ...command, type: 'read_calendar' }) }
-  })
-  ipcMain.handle('agent:search-mail', (_evt, command: AgentSidecarMessage) => {
-    return { ok: agentSidecar.send({ ...command, type: 'search_mail' }) }
-  })
-  ipcMain.handle('agent:invoke-ac-tool', (_evt, command: AgentSidecarMessage) => {
-    return { ok: agentSidecar.send({ ...command, type: 'invoke_ac_tool' }) }
-  })
-  ipcMain.handle('notifications:start', (_evt, token: string) => {
-    if (typeof token === 'string' && token.trim()) {
-      notifyGuard.start(token.trim())
-    }
-    return { ok: true }
-  })
-  ipcMain.handle('notifications:stop', () => {
-    notifyGuard.stop()
-    return { ok: true }
-  })
-  ipcMain.handle('notify:show', (_evt, payload: ToastPayload) => {
-    showToast(payload || { title: '' })
-    return { ok: true }
-  })
-  ipcMain.handle('dialog:openFile', async (evt, options: Electron.OpenDialogOptions) => {
-    const win = BrowserWindow.fromWebContents(evt.sender) || BrowserWindow.getFocusedWindow()
-    const filters = (options?.filters || [])
-      .map((item) => ({
-        name: item.name || 'Files',
-        extensions: (item.extensions || [])
-          .map((ext) => String(ext || '').replace(/^\./, ''))
-          .filter(Boolean)
-      }))
-      .filter((item) => item.extensions.length)
-    const dialogOptions: Electron.OpenDialogOptions = {
-      ...options,
-      filters: filters.length ? filters : undefined
-    }
-    const result = win
-      ? await dialog.showOpenDialog(win, dialogOptions)
-      : await dialog.showOpenDialog(dialogOptions)
-    return result.canceled ? [] : result.filePaths
-  })
-  ipcMain.handle('clipboard:saveImage', async () => {
-    try {
-      const items = await clipboard.read()
-      for (const item of items) {
-        const mime = item.types.find((type) => type.toLowerCase().startsWith('image/'))
-        if (!mime) continue
-        const payload = await item.getType(mime)
-        if (!(payload instanceof Blob)) continue
-        const buffer = Buffer.from(await payload.arrayBuffer())
-        if (!buffer.length) continue
-        const subtype = mime.split('/')[1]?.split(';')[0] || 'png'
-        const ext = subtype === 'jpeg' ? 'jpg' : subtype.replace(/[^a-z0-9]/g, '') || 'png'
-        const dir = join(app.getPath('temp'), 'constructor-pastes')
-        mkdirSync(dir, { recursive: true })
-        const file = join(dir, `screenshot-${Date.now()}.${ext}`)
-        writeFileSync(file, buffer)
-        return file
-      }
-    } catch {
-      return ''
-    }
-    return ''
-  })
-  ipcMain.handle('updater:getStatus', () => getUpdateStatus())
-  ipcMain.handle('updater:install', () => installAvailableUpdate())
+  registerMainIpcHandlers()
+  agentSidecar.warmup()
   startUpdater({
     owner: CONFIG.updateOwner,
     repo: CONFIG.updateRepo,

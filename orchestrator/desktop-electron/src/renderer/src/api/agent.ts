@@ -73,7 +73,7 @@ function newRunId(): string {
 export const agentClient = {
   ready(
     token: string | null,
-    credentials?: { login?: string; password?: string }
+    credentials?: { login?: string; password?: string; onecComUsr?: string }
   ): Promise<{ ok: boolean }> {
     if (!window.agent?.ready) return Promise.resolve({ ok: false })
     return window.agent.ready(token, credentials)

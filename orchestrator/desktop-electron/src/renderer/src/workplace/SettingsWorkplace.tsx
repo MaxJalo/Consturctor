@@ -26,6 +26,85 @@ interface EventChannelRow {
   escalate: Escalate
 }
 
+interface UpdateStatus {
+  state: 'idle' | 'available' | 'downloading' | 'installing' | 'error'
+  currentVersion: string
+  availableVersion: string
+  percent: number
+  error: string
+  source: string
+  devMode: boolean
+}
+
+const IDLE_UPDATE: UpdateStatus = {
+  state: 'idle',
+  currentVersion: '',
+  availableVersion: '',
+  percent: 0,
+  error: '',
+  source: '',
+  devMode: false
+}
+
+function SettingsUpdateBlock(): React.JSX.Element {
+  const [update, setUpdate] = useState<UpdateStatus>(IDLE_UPDATE)
+  const [checking, setChecking] = useState(false)
+
+  useEffect(() => {
+    let alive = true
+    void window.api.getUpdateStatus?.().then((payload) => {
+      if (alive && payload) setUpdate(payload)
+    })
+    const unsubscribe = window.api.onUpdateStatus?.((payload) => {
+      setUpdate(payload)
+    })
+    return () => {
+      alive = false
+      unsubscribe?.()
+    }
+  }, [])
+
+  const runCheck = (): void => {
+    if (checking) return
+    setChecking(true)
+    void window.api
+      .checkUpdate?.()
+      .then((payload) => {
+        if (payload) setUpdate(payload)
+      })
+      .finally(() => setChecking(false))
+  }
+
+  const canInstall = update.state === 'available' && !update.devMode
+
+  return (
+    <>
+      <p className="set-muted">
+        Источник релиза: {update.source || 'Turbulentnost/Consturctor'}. Это обновление приложения, не
+        перезагрузка данных сеток (TTL 10 мин).
+      </p>
+      <p className="set-muted">
+        Текущая версия: {update.currentVersion || '—'}. Доступная:{' '}
+        {update.availableVersion || (update.devMode ? 'проверка недоступна в dev' : '—')}.
+      </p>
+      {update.error ? <p className="set-muted">{update.error}</p> : null}
+      {update.devMode ? (
+        <p className="set-muted">Режим разработки: установка exe не предлагается.</p>
+      ) : null}
+      <div className="wp-actions">
+        <button className="btn-primary" type="button" disabled={checking} onClick={runCheck}>
+          {checking ? 'Проверяем…' : 'Проверить обновление'}
+        </button>
+        {canInstall ? (
+          <button className="btn-ghost" type="button" onClick={() => void window.api.installUpdate?.()}>
+            Установить
+          </button>
+        ) : null}
+      </div>
+    </>
+  )
+}
+
 interface NotifyPrefs {
   events: EventChannelRow[]
   popupCritical: boolean
@@ -359,18 +438,7 @@ export function SettingsWorkplace({
           </section>
           <section className="set-card">
             <h2>Обновления</h2>
-            <p className="set-muted">Одно обновление ставит и Конструктор, и Оркестратор.</p>
-            <div className="wp-actions">
-              <button
-                className="btn-primary"
-                type="button"
-                onClick={() => {
-                  void window.api.installUpdate?.()
-                }}
-              >
-                Проверить и установить
-              </button>
-            </div>
+            <SettingsUpdateBlock />
           </section>
           <section className="set-card">
             <h2>Файлы агентов</h2>

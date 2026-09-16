@@ -11,9 +11,16 @@ import {
   historyRunStatus,
   statusPillClass
 } from '../utils/historyDisplay'
-import { parseIso } from '../utils/calendar'
 import { SpecSummaryTiles } from './specV04Components'
-import type { SpecSummaryTile } from './specV04Shell'
+import {
+  runEventType,
+  runInitiator,
+  todayDayKey,
+  type HistoryEventTypeKey,
+  type HistoryStatusFilter
+} from './historyRunFilters'
+import { useHistoryKpiMetrics } from './useHistoryKpiMetrics'
+import { useGridRefreshGeneration } from './GridDataRefreshContext'
 
 const PAGE_SIZE_OPTIONS = [10, 20, 50] as const
 
@@ -23,19 +30,9 @@ const EMPTY_BOARD: WorkflowBoard = {
   events: []
 }
 
-type StatusFilter = '' | 'ok' | 'error' | 'canceled' | 'started'
 type SortKey = 'newest' | 'oldest'
-type EventTypeKey = 'schedule' | 'event' | 'manual' | 'chat' | 'hitl'
 
-function dayKey(stamp: Date): string {
-  return `${stamp.getFullYear()}-${String(stamp.getMonth() + 1).padStart(2, '0')}-${String(stamp.getDate()).padStart(2, '0')}`
-}
-
-function todayKey(): string {
-  return dayKey(new Date())
-}
-
-const EVENT_TYPE_LABELS: Record<EventTypeKey, string> = {
+const EVENT_TYPE_LABELS: Record<HistoryEventTypeKey, string> = {
   schedule: 'Расписание',
   event: 'Событие',
   manual: 'Вручную',
@@ -48,25 +45,6 @@ const INITIATOR_LABELS: Record<string, string> = {
   agent: 'ИИ-агент',
   schedule: 'Расписание',
   system: 'Система'
-}
-
-function runEventType(run: AgentRunHistoryItem): EventTypeKey {
-  const source = (run.source || '').toLowerCase()
-  const kind = (run.triggerKind || '').toLowerCase()
-  if (source === 'chat' || kind === 'chat') return 'chat'
-  if (source === 'manual' || kind === 'manual') return 'manual'
-  if (source === 'event' || kind === 'event') return 'event'
-  if (source.includes('hitl') || kind.includes('hitl') || source.includes('human')) return 'hitl'
-  return 'schedule'
-}
-
-function runInitiator(run: AgentRunHistoryItem): string {
-  const source = (run.source || '').toLowerCase()
-  const kind = (run.triggerKind || '').toLowerCase()
-  if (source === 'manual' || source === 'chat' || kind === 'manual' || kind === 'chat') return 'employee'
-  if (source === 'schedule' || kind === 'schedule') return 'schedule'
-  if (source === 'event') return 'system'
-  return 'agent'
 }
 
 function processCode(workflowId: string): string {
@@ -99,28 +77,6 @@ function initiatorDisplay(run: AgentRunHistoryItem, processTitle: string): strin
   return `ИИ-агент «${processTitle}»`
 }
 
-function runDurationSec(run: AgentRunHistoryItem): number | null {
-  const total = Number(run.agentWorkMs || 0) + Number(run.humanWaitMs || 0)
-  if (total > 0) return Math.round(total / 1000)
-  const start = parseIso(run.startedAt)
-  const end = parseIso(run.finishedAt)
-  if (start && end && end >= start) return Math.round((end.getTime() - start.getTime()) / 1000)
-  return null
-}
-
-function orderedDayKeys(from: string, to: string): { from: string; to: string } {
-  return from <= to ? { from, to } : { from: to, to: from }
-}
-
-function inDateRange(run: AgentRunHistoryItem, from: string, to: string): boolean {
-  if (!from || !to) return false
-  const stamp = parseIso(run.startedAt || run.finishedAt)
-  if (!stamp) return false
-  const key = dayKey(stamp)
-  const range = orderedDayKeys(from, to)
-  return key >= range.from && key <= range.to
-}
-
 function escapeCsv(value: string): string {
   const text = String(value || '').replace(/\r?\n/g, ' ')
   if (/[",;]/.test(text)) return `"${text.replace(/"/g, '""')}"`
@@ -140,7 +96,7 @@ export function HistoryWorkplace({
 }: {
   onOpenRun: (workflowId: string, title: string, runId?: string) => void
 }): React.JSX.Element {
-  const today = todayKey()
+  const today = todayDayKey()
   const [rangeFrom, setRangeFrom] = useState(today)
   const [rangeTo, setRangeTo] = useState(today)
   const [board, setBoard] = useState<WorkflowBoard>(EMPTY_BOARD)
@@ -150,9 +106,9 @@ export function HistoryWorkplace({
   const [error, setError] = useState('')
   const [query, setQuery] = useState('')
   const [agentId, setAgentId] = useState('')
-  const [eventTypes, setEventTypes] = useState<EventTypeKey[]>([])
+  const [eventTypes, setEventTypes] = useState<HistoryEventTypeKey[]>([])
   const [initiator, setInitiator] = useState('')
-  const [status, setStatus] = useState<StatusFilter>('')
+  const [status, setStatus] = useState<HistoryStatusFilter>('')
   const [sort, setSort] = useState<SortKey>('newest')
   const [extraOpen, setExtraOpen] = useState(false)
   const [exportOpen, setExportOpen] = useState(false)
@@ -172,6 +128,7 @@ export function HistoryWorkplace({
   const [detailLoading, setDetailLoading] = useState(false)
   const [page, setPage] = useState(1)
   const [pageSize, setPageSize] = useState<(typeof PAGE_SIZE_OPTIONS)[number]>(20)
+  const gridGeneration = useGridRefreshGeneration()
   const reloadRef = useRef<() => Promise<void>>(async () => undefined)
   const extraRef = useRef<HTMLDivElement | null>(null)
   const exportRef = useRef<HTMLDivElement | null>(null)
@@ -235,7 +192,7 @@ export function HistoryWorkplace({
       void reloadRef.current()
     })
     return () => unsubscribe?.()
-  }, [])
+  }, [gridGeneration])
 
   const agentOptions = useMemo(() => {
     const seen = new Set<string>()
@@ -274,66 +231,47 @@ export function HistoryWorkplace({
     return () => window.clearTimeout(timer)
   }, [exportNote])
 
-  const visible = useMemo(() => {
-    const q = query.trim().toLowerCase()
-    const minSec = durationMin.trim() ? Number(durationMin) : null
-    const maxSec = durationMax.trim() ? Number(durationMax) : null
-    const rows = runs.filter((item) => {
-      if (!inDateRange(item, rangeFrom, rangeTo)) return false
-      if (agentId && item.workflowId !== agentId) return false
-      if (eventTypes.length && !eventTypes.includes(runEventType(item))) return false
-      if (initiator && runInitiator(item) !== initiator) return false
-      const key = historyRunStatus(item)
-      if (status === 'canceled' && key !== 'canceled' && key !== 'cancelled') return false
-      if (status === 'started' && key !== 'started' && key !== 'running') return false
-      if (status === 'ok' && key !== 'ok') return false
-      if (status === 'error' && key !== 'error') return false
-      if (correlationId.trim() && !item.runId.toLowerCase().includes(correlationId.trim().toLowerCase())) {
-        return false
-      }
-      if (agentVersion.trim()) {
-        const blob = `${item.summary || ''} ${item.message || ''}`.toLowerCase()
-        if (!blob.includes(agentVersion.trim().toLowerCase())) return false
-      }
-      const duration = runDurationSec(item)
-      if (minSec != null && Number.isFinite(minSec) && (duration == null || duration < minSec)) return false
-      if (maxSec != null && Number.isFinite(maxSec) && (duration == null || duration > maxSec)) return false
-      if (!q) return true
-      const title = titleOf(item.workflowId).toLowerCase()
-      const eventName = eventTitleForRun(item).toLowerCase()
-      return (
-        title.includes(q) ||
-        eventName.includes(q) ||
-        item.runId.toLowerCase().includes(q) ||
-        item.workflowId.toLowerCase().includes(q)
-      )
-    })
-    rows.sort((left, right) => {
-      const cmp = (right.startedAt || '').localeCompare(left.startedAt || '')
-      return sort === 'newest' ? cmp : -cmp
-    })
-    return rows
-  }, [
+  const historyPeriod = useMemo(
+    () => ({ from: rangeFrom, to: rangeTo }),
+    [rangeFrom, rangeTo]
+  )
+  const historyFilters = useMemo(
+    () => ({
+      query,
+      agentId,
+      eventTypes,
+      initiator,
+      status,
+      correlationId,
+      agentVersion,
+      durationMin,
+      durationMax,
+      sort
+    }),
+    [
+      query,
+      agentId,
+      eventTypes,
+      initiator,
+      status,
+      correlationId,
+      agentVersion,
+      durationMin,
+      durationMax,
+      sort
+    ]
+  )
+  const { tiles: historyTiles, filteredRuns: visible } = useHistoryKpiMetrics(
     runs,
-    query,
-    rangeFrom,
-    rangeTo,
-    agentId,
-    eventTypes,
-    initiator,
-    status,
-    correlationId,
-    agentVersion,
-    durationMin,
-    durationMax,
-    sort,
-    agents,
-    titles
-  ])
+    historyPeriod,
+    historyFilters,
+    titleOf,
+    eventTitleForRun
+  )
 
   function resetFilters(): void {
     setQuery('')
-    const key = todayKey()
+    const key = todayDayKey()
     setRangeFrom(key)
     setRangeTo(key)
     setAgentId('')
@@ -367,7 +305,7 @@ export function HistoryWorkplace({
     setDraftDurationMax('')
   }
 
-  function toggleEventType(key: EventTypeKey): void {
+  function toggleEventType(key: HistoryEventTypeKey): void {
     setEventTypes((current) =>
       current.includes(key) ? current.filter((item) => item !== key) : [...current, key]
     )
@@ -577,14 +515,6 @@ export function HistoryWorkplace({
     return list
   }, [pageSafe, totalPages])
 
-  const historyTiles: SpecSummaryTile[] = [
-    { id: 'ev', label: 'События за период', value: String(visible.length || '—'), hint: '+12% к прошлому', tone: 'orange' },
-    { id: 'emp', label: 'Действия сотрудника', value: '532', hint: '43% от общего', tone: 'blue' },
-    { id: 'ai', label: 'Действия ИИ', value: '486', hint: '39% от общего', tone: 'purple' },
-    { id: 'err', label: 'Ошибки / возвраты', value: '47', hint: '3,8%', tone: 'orange' },
-    { id: 'ok', label: 'Подтверждённые решения', value: '183', tone: 'green' }
-  ]
-
   return (
     <div className="wp-page wp-history spec-v04-page">
       <div className="wp-head spec-v04-head">
@@ -640,7 +570,7 @@ export function HistoryWorkplace({
             </button>
             {eventTypeOpen ? (
               <div className="hist-multi-menu" role="listbox">
-                {(Object.keys(EVENT_TYPE_LABELS) as EventTypeKey[]).map((key) => (
+                {(Object.keys(EVENT_TYPE_LABELS) as HistoryEventTypeKey[]).map((key) => (
                   <label key={key} className="hist-multi-option">
                     <input
                       type="checkbox"

@@ -3,7 +3,9 @@ import { existsSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { app } from 'electron'
 
-function isLoopback(url: string): boolean {
+export const LOCAL_BACKEND_DEFAULT = 'http://127.0.0.1:7812'
+
+export function isLoopback(url: string): boolean {
   try {
     const host = new URL(url).hostname.toLowerCase()
     return host === '127.0.0.1' || host === 'localhost' || host === '::1'
@@ -12,7 +14,7 @@ function isLoopback(url: string): boolean {
   }
 }
 
-async function pingHealth(baseUrl: string, timeoutMs = 3000): Promise<boolean> {
+export async function pingHealth(baseUrl: string, timeoutMs = 3000): Promise<boolean> {
   const url = `${baseUrl.replace(/\/+$/, '')}/health`
   try {
     const response = await fetch(url, { signal: AbortSignal.timeout(timeoutMs) })
@@ -68,9 +70,7 @@ function spawnLocalBackend(backendRoot: string): void {
 }
 
 /**
- * Dev / same-machine exe: if BACKEND_URL is localhost and /health is down,
- * start orchestrator/backend. Packaged clients on other PCs keep BACKEND_URL
- * on the shared server (LAN IP), so this is a no-op there.
+ * Wait until /health responds on the given loopback URL, starting orchestrator/backend if needed.
  */
 export async function ensureLocalBackend(backendUrl: string): Promise<boolean> {
   if (await pingHealth(backendUrl)) {
@@ -98,3 +98,26 @@ export async function ensureLocalBackend(backendUrl: string): Promise<boolean> {
   console.warn(`Backend did not become ready at ${backendUrl}`)
   return false
 }
+
+/**
+ * On launch: wait for /health on configured URL; start loopback backend when needed.
+ * Admin routes are probed only via authenticated IPC (never unauthenticated /admin/* here).
+ */
+export async function ensureDesktopBackend(configuredUrl: string): Promise<boolean> {
+  const primary = configuredUrl.replace(/\/+$/, '')
+
+  if (isLoopback(primary)) {
+    return ensureLocalBackend(primary)
+  }
+
+  if (await pingHealth(primary)) {
+    console.log(`Backend reachable: ${primary}`)
+    return true
+  }
+
+  console.warn(`Primary backend unreachable: ${primary}`)
+  return ensureLocalBackend(LOCAL_BACKEND_DEFAULT)
+}
+
+/** @deprecated use pingHealth */
+export const pingBackendHealth = pingHealth

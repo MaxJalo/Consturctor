@@ -11,8 +11,8 @@ from app.services.erp_assignments import (
     PROBE_MARK,
     assignment_write_recipe,
     build_probe_topic,
+    delete_probe_document,
     is_probe_topic,
-    mark_assignment_deleted,
     probe_assignment_write,
     stub_write_probe as stub_assignment_probe,
     sweep_probe_assignments,
@@ -91,6 +91,12 @@ def _odata_patch(args: dict[str, Any]) -> dict[str, Any]:
     from app.services.onec_tools import _odata_patch
 
     return _odata_patch(args)
+
+
+def _odata_delete(args: dict[str, Any]) -> dict[str, Any]:
+    from app.services.onec_tools import _odata_delete
+
+    return _odata_delete(args)
 
 
 def _looks_like_guid(value: str) -> bool:
@@ -209,17 +215,12 @@ def _apply_error_hint(body: dict[str, Any], error: str) -> bool:
 
 
 def mark_probe_deleted(entity: str, ref_key: str) -> None:
-    if not _looks_like_guid(ref_key):
-        return
-    try:
-        _odata_patch({"entity": entity, "ref_key": ref_key, "body": {"Posted": False}})
-    except Exception:  # noqa: BLE001
-        pass
-    _odata_patch({"entity": entity, "ref_key": ref_key, "body": {"DeletionMark": True}})
+    delete_probe_document(entity, ref_key)
 
 
-def list_probe_rows(entity: str, mark_field: str, *, limit: int = 20) -> list[dict[str, Any]]:
-    filt = f"DeletionMark eq false and substringof('{PROBE_MARK}', {mark_field})"
+def list_probe_rows(entity: str, mark_field: str, *, limit: int = 50) -> list[dict[str, Any]]:
+    field = str(mark_field or "Description").strip() or "Description"
+    filt = f"substringof('{PROBE_MARK}', {field})"
     result = _odata_get({"entity": entity, "top": max(1, min(limit, 50)), "filter": filt})
     return [row for row in (result.get("value") or []) if isinstance(row, dict)]
 
@@ -232,7 +233,7 @@ def sweep_probe_rows(entity: str, mark_field: str) -> int:
         return 0
     for row in rows:
         topic = str(row.get(mark_field) or "")
-        if not is_probe_topic(topic):
+        if not is_probe_topic(topic) and not _row_has_probe(row):
             continue
         key = str(row.get("Ref_Key") or "")
         try:
@@ -384,7 +385,7 @@ def probe_odata_entity_write(
             "tool": "onec.odata_patch" if change != "create" else "onec.odata_post",
             "create": {"via": "odata_post", "mark_field": mark_field},
             "update": {"via": "odata_patch", "field": field},
-            "delete": {"via": "DeletionMark"},
+            "delete": {"via": "odata_delete"},
             "verified": [{"field": field, "from": before, "to": after}],
             "source": "odata",
         }
@@ -552,7 +553,7 @@ def stub_write_probe(args: dict[str, Any], **_: Any) -> dict[str, Any]:
                     "tool": "onec.odata_patch",
                     "create": {"via": "odata_post", "mark_field": "Description"},
                     "update": {"via": "odata_patch", "field": "Description"},
-                    "delete": {"via": "DeletionMark"},
+                    "delete": {"via": "odata_delete"},
                     "source": "stub",
                 },
                 "test_left": False,

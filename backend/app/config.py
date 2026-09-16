@@ -6,11 +6,12 @@ from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 BACKEND_ROOT = Path(__file__).resolve().parents[1]
+WORKSPACE_ROOT = BACKEND_ROOT.parent.parent
 
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
-        env_file=BACKEND_ROOT / ".env",
+        env_file=(WORKSPACE_ROOT / ".env", BACKEND_ROOT / ".env"),
         env_file_encoding="utf-8",
         extra="ignore",
     )
@@ -80,6 +81,9 @@ class Settings(BaseSettings):
     turboproject_email: str = ""
     turboproject_password: str = ""
     turboproject_timeout_sec: float = 60.0
+    my_name: str = Field(default="", validation_alias="MY_NAME")
+    my_name_mail: str = Field(default="", validation_alias="MY_NAME_MAIL")
+    my_password: str = Field(default="", validation_alias="MY_PASSWORD")
 
     # 1C OData (server-side tools onec.odata_*; desktop never executes onec.*)
     odata_base_url: str = ""
@@ -90,10 +94,22 @@ class Settings(BaseSettings):
     docflow_odata_base_url: str = ""
     docflow_odata_username: str = ""
     docflow_odata_password: str = ""
+    dok_http_server: str = "192.168.2.229"
+    dok_http_port: int = 81
+    dok_http_user: str = ""
+    dok_http_password: str = ""
+    dok_http_timeout: float = 210.0
+    dok_http_cache_ttl_sec: float = 1800.0
+    dok_inbox_cache_dir: Path = BACKEND_ROOT / "storage" / "docflow_inbox"
+    dok_http_base_path: str = "/doc"
     erp_login: str = ""
     erp_password: str = ""
+    # When local ODBC to erp_pm fails (dev PC without VPN), delegate login to LAN gateway.
+    auth_erp_gateway_url: str = ""
     # Temporary: issue JWT as ERP_LOGIN without querying erp_pm SQL.
     auth_skip_erp_sql: bool = False
+    # Dev: do not compare JWT sid to Redis (LAN vs localhost BACKEND_URL mismatch).
+    auth_skip_session_lock: bool = False
     auth_bypass_user_id: str = ""
     onec_sql_allowlist: str = ""
     onec_odata_entity_allowlist: str = ""
@@ -109,3 +125,4 @@ settings.avatar_storage_dir.mkdir(parents=True, exist_ok=True)
 settings.regulation_storage_dir.mkdir(parents=True, exist_ok=True)
 settings.workflow_storage_dir.mkdir(parents=True, exist_ok=True)
 settings.onec_artifact_storage_dir.mkdir(parents=True, exist_ok=True)
+settings.dok_inbox_cache_dir.mkdir(parents=True, exist_ok=True)

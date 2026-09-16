@@ -3,6 +3,7 @@ export interface AdminDateRange {
   end: Date
 }
 
+/** Fixed anchor for period-picker demos; live calendar uses {@link adminToday}. */
 export const ADMIN_MOCK_TODAY = new Date(2026, 8, 14)
 
 export function formatAdminDate(date: Date): string {
@@ -18,6 +19,10 @@ export function formatAdminDateRange(range: AdminDateRange): string {
 
 export function startOfDay(date: Date): Date {
   return new Date(date.getFullYear(), date.getMonth(), date.getDate())
+}
+
+export function adminToday(): Date {
+  return startOfDay(new Date())
 }
 
 export function addDays(date: Date, days: number): Date {

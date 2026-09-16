@@ -32,7 +32,8 @@ export function clearGridCacheForUser(userId: string): void {
 
 /**
  * true → нужен сетевой запрос; false → можно отдать кэш (если есть).
- * При смене generation (фокус, 10 мин, смена пользователя) — всегда fetch.
+ * Новая generation (TTL / смена пользователя / forceRefresh) — fetch.
+ * Фокус окна generation не меняет.
  */
 export function shouldRunGridFetch(cacheKey: string, generation: number): boolean {
   const prevGen = lastHandledGeneration.get(cacheKey) ?? -1

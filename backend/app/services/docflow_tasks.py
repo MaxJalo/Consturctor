@@ -1,4 +1,8 @@
-"""Задачи 1С:Документооборот (публикация /doc) через OData."""
+"""Задачи 1С:Документооборот.
+
+Основной канал — HTTP SOAP ``/doc/ws/dm.1cws`` (``dok_soap`` / DOK_HTTP_*).
+OData ``Task_ЗадачаИсполнителя`` для inbox не вызываем.
+"""
 
 from __future__ import annotations
 
@@ -8,9 +12,18 @@ from typing import Any
 import httpx
 
 from app.config import settings
-from app.services.erp_tasks import from_1c_datetime, task_is_late
+from app.services.docflow_document_tasks import (
+    map_document_executor_row,
+    odata_entity as odata_entity,
+)
+from app.services.erp_tasks import from_1c_datetime
+from app.services.onec_response_text import (
+    decode_http_body,
+    format_onec_http_error,
+    looks_like_garbled,
+    sanitize_onec_error_snippet,
+)
 
-_TASK_ENTITY = "Task_ЗадачаИсполнителя"
 _USER_ENTITY = "Catalog_Пользователи"
 
 
@@ -28,18 +41,57 @@ def docflow_base_url() -> str:
     return ""
 
 
-def docflow_auth() -> tuple[str, str] | None:
-    user = (settings.docflow_odata_username or settings.odata_username or settings.erp_login).strip()
-    password = (
-        settings.docflow_odata_password or settings.odata_password or settings.erp_password
+def _credentials_from_args(args: dict[str, Any] | None) -> tuple[str, str] | None:
+    payload = args if isinstance(args, dict) else {}
+    # Документооборот: учётные записи как в 1С (ФИО), не slug name_mail из erp_pm.
+    username = str(
+        payload.get("fio")
+        or payload.get("erp_login")
+        or payload.get("user")
+        or payload.get("username")
+        or ""
     ).strip()
-    if user and password:
-        return user, password
+    password = str(payload.get("password") or payload.get("erp_password") or "").strip()
+    if username and password:
+        return username, password
     return None
 
 
+def docflow_env_auth() -> tuple[str, str] | None:
+    """Gateway .env fallback when desktop session did not forward a password."""
+    user = (settings.docflow_odata_username or settings.erp_login).strip()
+    password = (settings.docflow_odata_password or settings.erp_password).strip()
+    if user and password:
+        return user, password
+    # odata.user часто есть только в erp_pm; для /doc — явные DOCFLOW_* или ERP_LOGIN.
+    odata_user = settings.odata_username.strip()
+    odata_pass = settings.odata_password.strip()
+    if not user and not password and odata_user and odata_pass:
+        return odata_user, odata_pass
+    return None
+
+
+def docflow_auth(args: dict[str, Any] | None = None) -> tuple[str, str] | None:
+    explicit = _credentials_from_args(args)
+    if explicit:
+        return explicit
+    return docflow_env_auth()
+
+
+def docflow_soap_ready() -> bool:
+    """SOAP host plus a service credential pair (including ODATA_*)."""
+    from app.tools.onec.dok_soap import soap_configured
+
+    return soap_configured()
+
+
 def docflow_configured() -> bool:
-    return bool(docflow_base_url() and docflow_auth())
+    return docflow_soap_ready() or bool(docflow_base_url() and docflow_env_auth())
+
+
+def docflow_url_ready() -> bool:
+    """SOAP is ready when host + service creds exist, or OData /doc URL is set."""
+    return docflow_soap_ready() or bool(docflow_base_url())
 
 
 def _odata_str(value: str) -> str:
@@ -50,32 +102,45 @@ def _odata_dt(value: datetime) -> str:
     return value.strftime("%Y-%m-%dT%H:%M:%S")
 
 
-def _get(path: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
+def _get(
+    path: str,
+    params: dict[str, Any] | None = None,
+    *,
+    auth_args: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     base = docflow_base_url()
-    auth = docflow_auth()
+    auth = docflow_auth(auth_args)
     if not base or not auth:
         raise DocflowError("OData документооборота не настроен")
     url = f"{base}/{path.lstrip('/')}"
     with httpx.Client(timeout=settings.odata_timeout_sec, auth=auth) as client:
         response = client.get(url, params=params, headers={"Accept": "application/json"})
     if response.status_code in {401, 402}:
-        raise DocflowError(
+        msg = (
             "Документооборот (/doc) отклонил учётку OData. "
             "Добавьте того же пользователя в базу 1С:Документооборот "
-            "или задайте DOCFLOW_ODATA_USERNAME / DOCFLOW_ODATA_PASSWORD."
+            "или войдите в Orchestrator с паролем 1С (учётка сеанса), "
+            "либо задайте DOCFLOW_ODATA_USERNAME / DOCFLOW_ODATA_PASSWORD."
         )
+        detail = sanitize_onec_error_snippet(decode_http_body(response.content))
+        if detail and not looks_like_garbled(detail) and "отклонил учётку" not in detail:
+            msg = f"{msg} ({detail})"
+        raise DocflowError(msg)
     if response.status_code >= 400:
-        text = response.text.lstrip("\ufeff")[:280].replace("\n", " ")
-        raise DocflowError(f"Документооборот OData HTTP {response.status_code}: {text}")
+        raise DocflowError(format_onec_http_error(response, prefix="Документооборот OData"))
     data = response.json()
     return data if isinstance(data, dict) else {}
 
 
-def find_user_key(fio: str) -> str:
+def find_user_key(fio: str, *, auth_args: dict[str, Any] | None = None) -> str:
     name = _odata_str(fio.strip())
     if not name:
         return ""
-    data = _get(_USER_ENTITY, params={"$top": 5, "$filter": f"Description eq '{name}'"})
+    data = _get(
+        _USER_ENTITY,
+        params={"$top": 5, "$filter": f"Description eq '{name}'"},
+        auth_args=auth_args,
+    )
     for row in data.get("value") or []:
         if isinstance(row, dict) and row.get("Ref_Key"):
             return str(row["Ref_Key"])
@@ -94,28 +159,74 @@ def _parse_odata_dt(raw: Any) -> datetime | None:
 
 
 def _map_task(row: dict[str, Any], *, fio: str) -> dict[str, Any]:
-    done = bool(row.get("Executed"))
-    created = _parse_odata_dt(row.get("Date"))
-    due = _parse_odata_dt(row.get("СрокИсполнения"))
-    completed = _parse_odata_dt(row.get("ДатаИсполнения"))
-    comment = " ".join(str(row.get("Описание") or row.get("РезультатВыполнения") or "").split())
-    approval = str(row.get("СостояниеБизнесПроцесса") or "").strip()
-    title = " ".join(str(row.get("Description") or row.get("ПредметСтрокой") or "").split())
-    return {
-        "number": str(row.get("Number") or "").strip(),
-        "title": title,
-        "status": "выполнена" if done else "открыта",
-        "done": done,
-        "late": task_is_late(done=done, completed_at=completed, due_at=due),
-        "created_at": created.isoformat(sep=" ") if created else "",
-        "due_at": due.isoformat(sep=" ") if due else "",
-        "completed_at": completed.isoformat(sep=" ") if completed else "",
-        "comment": comment,
-        "approval": approval or ("завершена" if done else "не согласовано"),
-        "exported_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-        "performer": fio,
-        "source": "документооборот",
-    }
+    return map_document_executor_row(row, fio=fio)
+
+
+def _since_days(date_from: datetime | None) -> int:
+    if date_from is None:
+        return 30
+    delta = datetime.now() - date_from
+    return max(1, int(delta.total_seconds() // 86400) + 1)
+
+
+def _task_today_or_overdue(task: dict[str, Any]) -> bool:
+    from app.tools.onec.dok_soap import is_today_or_overdue
+
+    return is_today_or_overdue(task)
+
+
+def _task_in_period(
+    task: dict[str, Any],
+    date_from: datetime | None,
+    date_to: datetime | None,
+) -> bool:
+    raw = str(task.get("created_at") or task.get("due_at") or "").strip()
+    if not raw:
+        return True
+    try:
+        stamp = datetime.fromisoformat(raw[:19])
+    except ValueError:
+        return True
+    if date_from is not None and stamp < date_from:
+        return False
+    if date_to is not None and stamp > date_to:
+        return False
+    return True
+
+
+def _list_docflow_via_soap(
+    fio: str,
+    *,
+    limit: int,
+    date_from: datetime | None = None,
+    date_to: datetime | None = None,
+    only_open: bool = True,
+    today_and_overdue: bool = False,
+    force_refresh: bool = False,
+    auth_args: dict[str, Any] | None = None,
+) -> tuple[list[dict[str, Any]], str]:
+    from app.tools.onec.docflow_inbox_fetch import fetch_inbox_tasks_soap
+
+    try:
+        tasks, warning = fetch_inbox_tasks_soap(
+            fio,
+            since_days=_since_days(date_from),
+            only_open=only_open,
+            today_and_overdue=today_and_overdue,
+            force_refresh=force_refresh,
+            auth_args=auth_args,
+        )
+    except (RuntimeError, ValueError, OSError) as exc:
+        return [], str(exc)
+    if today_and_overdue:
+        tasks = [row for row in tasks if _task_today_or_overdue(row)]
+    else:
+        tasks = [row for row in tasks if _task_in_period(row, date_from, date_to)]
+    if only_open:
+        tasks = [row for row in tasks if not row.get("done")]
+    if limit > 0:
+        tasks = tasks[: max(1, min(int(limit), 200))]
+    return tasks, warning
 
 
 def list_docflow_tasks(
@@ -125,32 +236,24 @@ def list_docflow_tasks(
     date_to: datetime | None = None,
     only_open: bool = False,
     limit: int = 200,
+    today_and_overdue: bool = False,
+    force_refresh: bool = False,
+    auth_args: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
-    if not docflow_configured():
-        return []
-    user_key = find_user_key(fio)
-    if not user_key:
-        return []
     limit = max(1, min(int(limit or 200), 200))
-    clauses = [
-        f"Исполнитель eq cast(guid'{user_key}','Catalog_Пользователи')",
-    ]
-    if only_open:
-        clauses.append("Executed eq false")
-    if date_from is not None:
-        clauses.append(f"Date ge datetime'{_odata_dt(date_from)}'")
-    if date_to is not None:
-        clauses.append(f"Date le datetime'{_odata_dt(date_to)}'")
-    filt = " and ".join(clauses)
-    data = _get(
-        _TASK_ENTITY,
-        params={"$top": limit, "$orderby": "Date desc", "$filter": filt},
+    tasks, warning = _list_docflow_via_soap(
+        fio,
+        limit=limit,
+        date_from=date_from,
+        date_to=date_to,
+        only_open=only_open,
+        today_and_overdue=today_and_overdue,
+        force_refresh=force_refresh,
+        auth_args=auth_args,
     )
-    items: list[dict[str, Any]] = []
-    for row in data.get("value") or []:
-        if isinstance(row, dict):
-            items.append(_map_task(row, fio=fio))
-    return items
+    if warning and not tasks:
+        raise DocflowError(warning)
+    return tasks
 
 
 def list_docflow_for_people(
@@ -160,24 +263,25 @@ def list_docflow_for_people(
     date_to: datetime | None = None,
     only_open: bool = False,
     limit_per_person: int = 200,
+    auth_args: dict[str, Any] | None = None,
 ) -> tuple[dict[str, list[dict[str, Any]]], str]:
     warning = ""
     result: dict[str, list[dict[str, Any]]] = {name: [] for name in fios}
-    if not docflow_configured():
-        return result, "Документооборот: нет URL/учётки OData"
-    try:
-        for name in fios:
-            if not name:
-                continue
+    for name in fios:
+        if not name:
+            continue
+        try:
             result[name] = list_docflow_tasks(
                 fio=name,
                 date_from=date_from,
                 date_to=date_to,
                 only_open=only_open,
                 limit=limit_per_person,
+                auth_args=auth_args,
             )
-    except DocflowError as exc:
-        return {name: [] for name in fios}, str(exc)
+        except DocflowError as exc:
+            warning = str(exc)
+            result[name] = []
     return result, warning
 
 
@@ -198,20 +302,28 @@ def handle_docflow_tasks(
     only_open = True if include_done is None else not bool(include_done)
     if "only_open" in args:
         only_open = bool(args.get("only_open"))
-    warning = ""
-    try:
-        tasks = list_docflow_tasks(
-            fio=fio,
-            date_from=start,
-            date_to=finish,
-            only_open=only_open,
-            limit=int(args.get("limit") or 200),
-        )
-    except DocflowError as exc:
-        tasks = []
-        warning = str(exc)
+    today_and_overdue = bool(args.get("today_and_overdue"))
+    force_refresh = bool(args.get("force_refresh") or args.get("refresh"))
+    auth_args = dict(args)
+    if fio and not str(auth_args.get("fio") or auth_args.get("erp_login") or "").strip():
+        auth_args["fio"] = fio
+    tasks, warning = _list_docflow_via_soap(
+        fio,
+        limit=int(args.get("limit") or 200),
+        date_from=None if today_and_overdue else start,
+        date_to=None if today_and_overdue else finish,
+        only_open=only_open,
+        today_and_overdue=today_and_overdue,
+        force_refresh=force_refresh,
+        auth_args=auth_args,
+    )
+    summary = (
+        f"Задачи документооборота на сегодня и просроченные: {len(tasks)} ({fio})"
+        if today_and_overdue
+        else f"Задачи документооборота: {len(tasks)} ({fio})"
+    )
     return {
-        "summary": f"Задачи документооборота: {len(tasks)} ({fio})",
+        "summary": summary,
         "fio": fio,
         "user_id": user_id,
         "count": len(tasks),

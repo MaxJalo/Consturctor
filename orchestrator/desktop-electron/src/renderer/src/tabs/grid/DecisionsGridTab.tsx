@@ -1,14 +1,12 @@
+import type { UserProfile } from '../../api/types'
 import { DecisionsTab } from '../../workplace/DecisionsWorkplace'
-import { HeavyTabEmbed } from './HeavyTabEmbed'
 
 export function DecisionsGridTab({
+  user,
   onOpenRun
 }: {
+  user?: UserProfile
   onOpenRun: (workflowId: string, title: string, runId?: string) => void
 }): React.JSX.Element {
-  return (
-    <HeavyTabEmbed>
-      <DecisionsTab onOpenRun={onOpenRun} />
-    </HeavyTabEmbed>
-  )
+  return <DecisionsTab onOpenRun={onOpenRun} inGridShell userId={user?.id || ''} />
 }

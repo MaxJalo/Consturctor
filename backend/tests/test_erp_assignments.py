@@ -167,6 +167,26 @@ def test_write_recipe_prompt_remembers_mechanism() -> None:
     assert "CONSTRUCTOR_PROBE" in text or "тестовое" in text.casefold()
 
 
+def test_delete_probe_document_uses_odata_delete(monkeypatch) -> None:
+    from app.services.erp_assignments import delete_probe_document
+
+    calls: list[str] = []
+
+    monkeypatch.setattr(
+        "app.services.erp_assignments._odata_patch",
+        lambda args: calls.append("patch:" + ",".join((args.get("body") or {}).keys())) or {"updated": True},
+    )
+
+    def fake_delete(args: dict) -> dict:
+        calls.append("delete:" + str(args.get("ref_key") or ""))
+        return {"deleted": True}
+
+    monkeypatch.setattr("app.services.erp_assignments._odata_delete", fake_delete)
+    delete_probe_document(ASSIGNMENT_ENTITY, "b75214dc-a846-11f1-9877-6cb31113810c")
+    assert "delete:b75214dc-a846-11f1-9877-6cb31113810c" in calls
+    assert not any(item.startswith("patch:DeletionMark") for item in calls)
+
+
 def test_stub_write_probe_recipe() -> None:
     result = stub_write_probe({})
     assert result["ok"] is True
@@ -212,13 +232,16 @@ def test_write_probe_creates_updates_and_deletes(monkeypatch) -> None:
         body = args.get("body") or {}
         if body.get("Статус"):
             status["value"] = body["Статус"]
-        if body.get("DeletionMark"):
-            deleted.append(str(args.get("ref_key") or ""))
         return {"updated": True, "ref_key": args.get("ref_key"), "source": "odata"}
+
+    def fake_delete(args: dict) -> dict:
+        deleted.append(str(args.get("ref_key") or ""))
+        return {"deleted": True, "ref_key": args.get("ref_key"), "source": "odata"}
 
     monkeypatch.setattr("app.services.erp_assignments._odata_get", fake_odata_get)
     monkeypatch.setattr("app.services.erp_assignments._odata_post", fake_post)
     monkeypatch.setattr("app.services.erp_assignments._odata_patch", fake_patch)
+    monkeypatch.setattr("app.services.erp_assignments._odata_delete", fake_delete)
     monkeypatch.setattr("app.services.onec_tools.odata_configured", lambda: True)
 
     result = probe_assignment_write({"customer": "Тест Тестович", "workflow_id": "wf-1"})
@@ -266,11 +289,14 @@ def test_write_probe_deletes_on_failure(monkeypatch) -> None:
         body = args.get("body") or {}
         if body.get("Статус"):
             raise RuntimeError("status field rejected")
-        if body.get("DeletionMark"):
-            deleted.append(str(args.get("ref_key") or ""))
         return {"updated": True, "source": "odata"}
 
+    def fake_delete(args: dict) -> dict:
+        deleted.append(str(args.get("ref_key") or ""))
+        return {"deleted": True, "source": "odata"}
+
     monkeypatch.setattr("app.services.erp_assignments._odata_patch", fake_patch)
+    monkeypatch.setattr("app.services.erp_assignments._odata_delete", fake_delete)
     monkeypatch.setattr("app.services.onec_tools.odata_configured", lambda: True)
 
     result = probe_assignment_write({"customer": "Тест Тестович"})
