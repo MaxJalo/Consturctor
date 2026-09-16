@@ -11,9 +11,11 @@ import {
 import { GRID_DATA_TTL_MS, clearGridCacheForUser } from './gridDataCache'
 
 type GridDataRefreshContextValue = {
-  /** Монотонный счётчик: фокус после blur, visibility, интервал TTL, смена пользователя. */
+  /** Монотонный счётчик: интервал TTL, смена пользователя, кнопка обновить. */
   generation: number
   forceRefresh: () => void
+  /** True once after the user clicked refresh (bypass SOAP cache). */
+  takeHardRefresh: () => boolean
 }
 
 const GridDataRefreshContext = createContext<GridDataRefreshContextValue | null>(null)
@@ -26,64 +28,36 @@ export function GridDataRefreshProvider({
   children: ReactNode
 }): React.JSX.Element {
   const [generation, setGeneration] = useState(0)
-  const blurredRef = useRef(false)
   const prevUserIdRef = useRef<string | undefined>(undefined)
-
-  const bumpTimerRef = useRef<number | undefined>(undefined)
+  const hardRefreshRef = useRef(false)
 
   const bump = useCallback((): void => {
     setGeneration((value) => value + 1)
   }, [])
 
-  const bumpDebounced = useCallback((): void => {
-    if (bumpTimerRef.current != null) {
-      window.clearTimeout(bumpTimerRef.current)
-    }
-    bumpTimerRef.current = window.setTimeout(() => {
-      bumpTimerRef.current = undefined
-      bump()
-    }, 400)
+  const forceRefresh = useCallback((): void => {
+    hardRefreshRef.current = true
+    bump()
   }, [bump])
+
+  const takeHardRefresh = useCallback((): boolean => {
+    const next = hardRefreshRef.current
+    hardRefreshRef.current = false
+    return next
+  }, [])
 
   useEffect(() => {
     const uid = (userId || '').trim()
     if (!uid) return
     if (prevUserIdRef.current !== uid) {
-      if (prevUserIdRef.current) clearGridCacheForUser(prevUserIdRef.current)
+      const previous = prevUserIdRef.current
+      if (previous) clearGridCacheForUser(previous)
       prevUserIdRef.current = uid
-      bump()
+      // First login already triggers hook effects at generation 0.
+      // Do not bump: a second generation cancels in-flight Outlook/1C/Turbo fetches.
+      if (previous) bump()
     }
   }, [userId, bump])
-
-  useEffect(() => {
-    const onBlur = (): void => {
-      blurredRef.current = true
-    }
-    const onFocus = (): void => {
-      if (!blurredRef.current) return
-      blurredRef.current = false
-      if (document.visibilityState === 'hidden') return
-      bumpDebounced()
-    }
-    const onVisibility = (): void => {
-      if (document.visibilityState === 'hidden') {
-        blurredRef.current = true
-        return
-      }
-      if (blurredRef.current) {
-        blurredRef.current = false
-        bumpDebounced()
-      }
-    }
-    window.addEventListener('blur', onBlur)
-    window.addEventListener('focus', onFocus)
-    document.addEventListener('visibilitychange', onVisibility)
-    return () => {
-      window.removeEventListener('blur', onBlur)
-      window.removeEventListener('focus', onFocus)
-      document.removeEventListener('visibilitychange', onVisibility)
-    }
-  }, [bumpDebounced])
 
   useEffect(() => {
     const timer = window.setInterval(bump, GRID_DATA_TTL_MS)
@@ -93,9 +67,10 @@ export function GridDataRefreshProvider({
   const value = useMemo(
     () => ({
       generation,
-      forceRefresh: bump
+      forceRefresh,
+      takeHardRefresh
     }),
-    [generation, bump]
+    [generation, forceRefresh, takeHardRefresh]
   )
 
   return <GridDataRefreshContext.Provider value={value}>{children}</GridDataRefreshContext.Provider>
