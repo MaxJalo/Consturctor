@@ -88,7 +88,7 @@ export function comCredentials(): { login: string; password: string; nameMail: s
 }
 
 export function hasComPassword(): boolean {
-  return Boolean(comPassword || devGatewayPassword)
+  return Boolean(comPassword)
 }
 
 export function setDevGatewayCredentials(opts: {
@@ -116,8 +116,9 @@ export function devGatewayCredentials(): {
   }
 }
 
+/** Пароль, введённый на экране входа / в диалоге 1С. Не пароль из .env. */
 export function gatewaySessionPassword(): string {
-  return comPassword || devGatewayPassword
+  return comPassword
 }
 
 /** Bumps on set/clear — use in React deps to refetch 1C after re-login. */

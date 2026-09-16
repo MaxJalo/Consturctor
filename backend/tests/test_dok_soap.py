@@ -225,15 +225,14 @@ def _isolate_dok_env(monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.delenv(key, raising=False)
 
 
-def test_load_config_ignores_session_fio_password(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_load_config_session_fio_password_wins(monkeypatch: pytest.MonkeyPatch) -> None:
     _isolate_dok_env(monkeypatch)
-    with pytest.raises(RuntimeError, match="нет пользователя") as exc:
-        load_config(username="Иванов И.И.", password="secret")
-    assert "DOK_HTTP_USER" not in str(exc.value)
-    assert "Войдите с паролем 1С" in str(exc.value)
+    config = load_config(username="Иванов И.И.", password="secret")
+    assert config.user == "Иванов И.И."
+    assert config.password == "secret"
 
 
-def test_load_config_dok_http_wins_over_session(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_load_config_session_wins_over_dok_http(monkeypatch: pytest.MonkeyPatch) -> None:
     _isolate_dok_env(monkeypatch)
     monkeypatch.setenv("DOK_HTTP_USER", "env-user")
     monkeypatch.setenv("DOK_HTTP_PASSWORD", "env-pass")
@@ -241,8 +240,8 @@ def test_load_config_dok_http_wins_over_session(monkeypatch: pytest.MonkeyPatch)
     assert config.user == "env-user"
     assert config.password == "env-pass"
     session = load_config(username="Иванов И.И.", password="secret")
-    assert session.user == "env-user"
-    assert session.password == "env-pass"
+    assert session.user == "Иванов И.И."
+    assert session.password == "secret"
 
 
 def test_load_config_fallback_docflow_odata(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -342,11 +341,14 @@ def test_load_config_missing_user_does_not_blame_server(monkeypatch: pytest.Monk
 
 def test_load_config_session_fio_without_password(monkeypatch: pytest.MonkeyPatch) -> None:
     _isolate_dok_env(monkeypatch)
-    with pytest.raises(RuntimeError, match="нет пользователя") as exc:
+    monkeypatch.setenv("ODATA_USERNAME", "odata-user")
+    monkeypatch.setenv("ODATA_PASSWORD", "odata-pass")
+    with pytest.raises(RuntimeError, match="нет пароля") as exc:
         load_config(username="Иванов И.И.")
     assert "DOK_HTTP_SERVER" not in str(exc.value)
     assert "DOK_HTTP_USER" not in str(exc.value)
     assert "Войдите с паролем 1С" in str(exc.value)
+    assert "odata-user" not in str(exc.value)
 
 
 def test_soap_configured_false_without_credentials(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -382,6 +384,24 @@ def test_dok_config_soap_url() -> None:
     )
     assert config.soap_url() == "http://192.168.2.229:81/doc/ws/dm.1cws"
     assert config.auth_header().startswith("Basic ")
+
+
+def test_dok_config_auth_header_encodings() -> None:
+    import base64
+
+    utf = DokConfig(
+        server="192.168.2.229",
+        port=81,
+        user="Иванов",
+        password="пароль",
+        timeout=30,
+        base_path="/doc",
+        encoding="utf-8",
+    )
+    cp = utf.with_encoding("cp1251")
+    assert utf.auth_header() != cp.auth_header()
+    assert base64.b64decode(utf.auth_header().split(" ", 1)[1]) == "Иванов:пароль".encode("utf-8")
+    assert base64.b64decode(cp.auth_header().split(" ", 1)[1]) == "Иванов:пароль".encode("cp1251")
 
 
 def test_filter_ignored_needs_several_other_performers() -> None:

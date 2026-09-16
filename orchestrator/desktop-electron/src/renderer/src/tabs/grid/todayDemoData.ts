@@ -15,7 +15,13 @@ export type TodayPlanBlockDetail = {
   status?: string
   source?: string
   agentName?: string
+  agentCode?: string
   note?: string
+}
+
+export type TodayPlanAccent = {
+  bg: string
+  border: string
 }
 
 export type TodayPlanBlock = {
@@ -29,9 +35,10 @@ export type TodayPlanBlock = {
   kind: 'meet' | 'onec' | 'reg' | 'mail' | 'proj' | 'doc'
   lane?: TodayPlanLane
   detail?: TodayPlanBlockDetail
+  accent?: TodayPlanAccent
 }
 
-/** Блоки плана — по макету ТЗ (09:00–18:00). */
+/** Блоки плана — по макету ТЗ (07:00–18:00). */
 export const TODAY_PLAN_BLOCKS: TodayPlanBlock[] = [
   {
     id: 'm1',
@@ -190,4 +197,4 @@ export const TODAY_PREPARED_DECISIONS: TodayPreparedDecision[] = [
   }
 ]
 
-export const TODAY_TIMELINE_HOURS = [9, 10, 11, 12, 13, 14, 15, 16, 17, 18]
+export const TODAY_TIMELINE_HOURS = [7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18]

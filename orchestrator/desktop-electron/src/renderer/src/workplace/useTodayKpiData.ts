@@ -71,7 +71,7 @@ export function buildTodayDayBreakdown(data: SpecV04SourcesState): TodayDayBreak
  * «Задачи 1С» — onec.docflow_tasks (HTTP SOAP /doc/ws/dm.1cws).
  */
 export function buildTodayKpiTiles(data: SpecV04SourcesState): SpecSummaryTile[] {
-  const loading = data.loading
+  const dayLoading = data.erpLoading || data.tableLoading
   const onecDead = Boolean(data.erpError) && !data.erpTaskCount && !data.erpLoading
   const turboDead = Boolean(data.turboError) && !data.projectCount && !data.turboLoading
 
@@ -84,7 +84,7 @@ export function buildTodayKpiTiles(data: SpecV04SourcesState): SpecSummaryTile[]
 
   const dayTotal = onecTotal + regTotal
   const dayDone = onecDone + regDone
-  const dayPct = loading ? undefined : pct(dayDone, dayTotal || 1)
+  const dayPct = dayLoading ? undefined : pct(dayDone, dayTotal || 1)
 
   const projTotal = data.projectCount
   const projActive = data.projects.filter(
@@ -96,8 +96,8 @@ export function buildTodayKpiTiles(data: SpecV04SourcesState): SpecSummaryTile[]
     {
       id: 'day',
       label: 'Выполнение дня',
-      value: dash(loading, dayTotal ? `${dayDone} из ${dayTotal}` : '—'),
-      hint: loading
+      value: dash(dayLoading, dayTotal ? `${dayDone} из ${dayTotal}` : '—'),
+      hint: dayLoading
         ? 'загрузка…'
         : dayTotal
           ? '1С + регламентные агенты'
@@ -124,14 +124,14 @@ export function buildTodayKpiTiles(data: SpecV04SourcesState): SpecSummaryTile[]
     {
       id: 'reg',
       label: 'Регламентные работы',
-      value: dash(loading, regTotal ? String(regTotal) : '—'),
-      hint: loading
+      value: dash(data.tableLoading, regTotal ? String(regTotal) : '—'),
+      hint: data.tableLoading
         ? 'загрузка…'
         : regTotal
           ? `${regDone} из ${regTotal} выполнено`
           : 'запуски сегодня',
       tone: 'green',
-      progress: loading ? undefined : pct(regDone, regTotal || 1),
+      progress: data.tableLoading ? undefined : pct(regDone, regTotal || 1),
       ring: true
     },
     {
@@ -146,10 +146,10 @@ export function buildTodayKpiTiles(data: SpecV04SourcesState): SpecSummaryTile[]
     {
       id: 'ev',
       label: 'События дня',
-      value: dash(loading, meetToday ? String(meetToday) : '—'),
-      hint: loading ? 'загрузка…' : 'Outlook, сегодня',
+      value: dash(data.meetingsLoading, meetToday ? String(meetToday) : '—'),
+      hint: data.meetingsLoading ? 'загрузка…' : 'Outlook, сегодня',
       tone: 'yellow',
-      progress: loading ? undefined : meetToday ? Math.min(100, 25 + meetToday * 15) : 0,
+      progress: data.meetingsLoading ? undefined : meetToday ? Math.min(100, 25 + meetToday * 15) : 0,
       ring: true
     }
   ]

@@ -11,7 +11,7 @@ import {
   type TodayPlanBlock,
   type TodayPlanBlockDetail
 } from './todayDemoData'
-import { openOutlookCalendarView } from '../../workplace/specGridQuickActions'
+import { TodayFullPlanModal } from './TodayFullPlanModal'
 
 const DAY_START = TODAY_PLAN_DAY_START
 const DAY_END = TODAY_PLAN_DAY_END
@@ -318,7 +318,13 @@ function IconClock(): React.JSX.Element {
 function blockStyle(block: TodayPlanBlock): React.CSSProperties {
   const left = ((block.startHour - DAY_START) / DAY_SPAN) * 100
   const width = ((block.endHour - block.startHour) / DAY_SPAN) * 100
-  return { left: `${left}%`, width: `${Math.max(width, 3.5)}%` }
+  const style: React.CSSProperties = { left: `${left}%`, width: `${Math.max(width, 3.5)}%` }
+  if (block.accent) {
+    style.background = block.accent.bg
+    style.borderColor = block.accent.border
+    style.boxShadow = `inset 3px 0 0 ${block.accent.border}`
+  }
+  return style
 }
 
 function whoTag(block: TodayPlanBlock): string {
@@ -384,13 +390,72 @@ function PlanBlockIcon({ kind }: { kind: TodayPlanBlock['kind'] }): React.JSX.El
   )
 }
 
+export type TodayBarFilters = {
+  source: string
+  status: string
+  executor: string
+  process: string
+}
+
+export const EMPTY_TODAY_BAR_FILTERS: TodayBarFilters = {
+  source: '',
+  status: '',
+  executor: '',
+  process: ''
+}
+
+function TodayWidgetBasket({
+  ids,
+  labels,
+  onRestore
+}: {
+  ids: string[]
+  labels?: Record<string, string>
+  onRestore: (id: string) => void
+}): React.JSX.Element {
+  const [open, setOpen] = useState(false)
+  return (
+    <div className="tab-chrome-basket">
+      <button
+        type="button"
+        className={`tab-chrome-basket-btn${open ? ' is-open' : ''}`}
+        aria-expanded={open}
+        onClick={() => setOpen((value) => !value)}
+      >
+        Корзина ({ids.length})
+      </button>
+      {open ? (
+        <ul className="tab-chrome-basket-list">
+          {ids.map((id) => (
+            <li key={id}>
+              <span>{labels?.[id] || id}</span>
+              <button type="button" onClick={() => onRestore(id)}>
+                Вернуть
+              </button>
+            </li>
+          ))}
+        </ul>
+      ) : null}
+    </div>
+  )
+}
+
 export function TodayFiltersBar({
   periodDay,
   onPeriodDayChange,
   onReset,
   widgetEditMode = false,
   onWidgetEditModeChange,
-  onResetWidgetLayout
+  onResetWidgetLayout,
+  basketIds,
+  basketLabels,
+  onRestoreWidget,
+  barFilters,
+  onBarFiltersChange,
+  sourceOptions = [],
+  statusOptions = [],
+  executorOptions = [],
+  processOptions = []
 }: {
   periodDay: Date
   onPeriodDayChange: (day: Date) => void
@@ -398,7 +463,20 @@ export function TodayFiltersBar({
   widgetEditMode?: boolean
   onWidgetEditModeChange?: (edit: boolean) => void
   onResetWidgetLayout?: () => void
+  basketIds?: string[]
+  basketLabels?: Record<string, string>
+  onRestoreWidget?: (id: string) => void
+  barFilters?: TodayBarFilters
+  onBarFiltersChange?: (next: TodayBarFilters) => void
+  sourceOptions?: Array<string | { value: string; label: string }>
+  statusOptions?: string[]
+  executorOptions?: string[]
+  processOptions?: string[]
 }): React.JSX.Element {
+  const filters = barFilters || EMPTY_TODAY_BAR_FILTERS
+  const setFilter = (patch: Partial<TodayBarFilters>): void => {
+    onBarFiltersChange?.({ ...filters, ...patch })
+  }
   return (
     <div className="today-filters-bar wp-card">
       <label className="today-filter-field">
@@ -420,28 +498,71 @@ export function TodayFiltersBar({
       </label>
       <label className="today-filter-field">
         <span className="today-filter-label">Процесс</span>
-        <select className="today-filter-control today-filter-select" defaultValue="">
+        <select
+          className="today-filter-control today-filter-select"
+          value={filters.process}
+          onChange={(event) => setFilter({ process: event.target.value })}
+        >
           <option value="">Все процессы</option>
+          {processOptions.map((value) => (
+            <option key={value} value={value}>
+              {value}
+            </option>
+          ))}
         </select>
       </label>
       <label className="today-filter-field">
         <span className="today-filter-label">Источник</span>
-        <select className="today-filter-control today-filter-select" defaultValue="">
+        <select
+          className="today-filter-control today-filter-select"
+          value={filters.source}
+          onChange={(event) => setFilter({ source: event.target.value })}
+        >
           <option value="">Все источники</option>
+          {sourceOptions.map((item) => {
+            const value = typeof item === 'string' ? item : item.value
+            const label = typeof item === 'string' ? item : item.label
+            return (
+              <option key={value} value={value}>
+                {label}
+              </option>
+            )
+          })}
         </select>
       </label>
       <label className="today-filter-field">
         <span className="today-filter-label">Исполнитель</span>
-        <select className="today-filter-control today-filter-select" defaultValue="">
+        <select
+          className="today-filter-control today-filter-select"
+          value={filters.executor}
+          onChange={(event) => setFilter({ executor: event.target.value })}
+        >
           <option value="">Все исполнители</option>
+          {executorOptions.map((value) => (
+            <option key={value} value={value}>
+              {value}
+            </option>
+          ))}
         </select>
       </label>
       <label className="today-filter-field">
         <span className="today-filter-label">Статус</span>
-        <select className="today-filter-control today-filter-select" defaultValue="">
+        <select
+          className="today-filter-control today-filter-select"
+          value={filters.status}
+          onChange={(event) => setFilter({ status: event.target.value })}
+        >
           <option value="">Все статусы</option>
+          {statusOptions.map((value) => (
+            <option key={value} value={value}>
+              {value}
+            </option>
+          ))}
         </select>
       </label>
+      {basketIds?.length && onRestoreWidget ? (
+        <TodayWidgetBasket ids={basketIds} labels={basketLabels} onRestore={onRestoreWidget} />
+      ) : null}
       {onWidgetEditModeChange ? (
         <button
           type="button"
@@ -462,6 +583,7 @@ export function TodayFiltersBar({
         className="today-filter-reset"
         onClick={() => {
           onPeriodDayChange(startOfToday())
+          onBarFiltersChange?.(EMPTY_TODAY_BAR_FILTERS)
           onReset?.()
         }}
       >
@@ -475,14 +597,17 @@ export function TodayFiltersBar({
 export function TodayPlanPanel({
   periodDay,
   userId,
-  fio
+  fio,
+  onOpenRun
 }: {
   periodDay: Date
   userId: string
   fio: string
+  onOpenRun?: (workflowId: string, title: string, runId?: string) => void
 }): React.JSX.Element {
   const plan = useTodayPlanTimeline(periodDay, { userId, fio })
   const [selectedBlock, setSelectedBlock] = useState<TodayPlanBlock | null>(null)
+  const [fullPlanOpen, setFullPlanOpen] = useState(false)
 
   return (
     <section className="wp-card today-plan-card today-plan-tz">
@@ -503,16 +628,24 @@ export function TodayPlanPanel({
         <button
           type="button"
           className="today-plan-open"
-          onClick={() => void openOutlookCalendarView()}
+          onClick={() => setFullPlanOpen(true)}
         >
           Открыть полный план →
         </button>
       </header>
 
-      <div className="today-plan-timeline">
-        <div className="today-plan-hours">
+      <div
+        className="today-plan-timeline"
+        style={{ '--plan-span': DAY_SPAN } as React.CSSProperties}
+      >
+        <div className="today-plan-hours" aria-hidden>
           {TODAY_TIMELINE_HOURS.map((hour) => (
-            <span key={hour}>{String(hour).padStart(2, '0')}:00</span>
+            <span
+              key={hour}
+              style={{ left: `${((hour - DAY_START) / DAY_SPAN) * 100}%` }}
+            >
+              {String(hour).padStart(2, '0')}:00
+            </span>
           ))}
         </div>
         <div className="today-plan-lanes">
@@ -538,6 +671,13 @@ export function TodayPlanPanel({
       {selectedBlock ? (
         <PlanEventDetailDialog block={selectedBlock} onClose={() => setSelectedBlock(null)} />
       ) : null}
+      <TodayFullPlanModal
+        open={fullPlanOpen}
+        periodDay={periodDay}
+        fio={fio}
+        onClose={() => setFullPlanOpen(false)}
+        onOpenRun={onOpenRun}
+      />
     </section>
   )
 }

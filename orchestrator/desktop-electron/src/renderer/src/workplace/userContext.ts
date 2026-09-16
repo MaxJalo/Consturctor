@@ -1,5 +1,10 @@
 import type { UserProfile } from '../api/types'
-import { comCredentials, devGatewayCredentials, gatewaySessionPassword, savedFio } from '../store/session'
+import {
+  comCredentials,
+  devGatewayCredentials,
+  gatewaySessionPassword,
+  savedFio
+} from '../store/session'
 
 export const TURBO_DON_MAIL_DOMAIN = 'turbo-don.ru'
 
@@ -45,20 +50,23 @@ export function turboNameMailSlug(user: UserProfile | null): string {
   return String(import.meta.env.VITE_MY_NAME_MAIL ?? '').trim().toLowerCase()
 }
 
-/** Gateway onec.* invoke: always send session FIO + password (env DOK_HTTP_USER is fallback only). */
+/** Gateway onec.* invoke: только логин и пароль с экрана входа, без .env / OData. */
 export function onecGatewayInvokeArgs(
   user: UserProfile | null,
   extra: Record<string, unknown> = {}
 ): Record<string, unknown> {
+  const creds = comCredentials()
   const fio = erpActorFio(user)
   const userId = erpActorUserId(user)
   const password = gatewaySessionPassword()
+  const typedLogin = (creds.login || '').trim()
   const username = erpActorComUsername(user)
   return {
     ...extra,
     fio,
     user_id: userId,
-    erp_login: fio,
+    session_login: typedLogin || fio,
+    erp_login: typedLogin || fio,
     password,
     erp_password: password,
     ...(username ? { username } : {})

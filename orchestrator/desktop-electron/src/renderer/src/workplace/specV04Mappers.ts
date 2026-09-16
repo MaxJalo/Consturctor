@@ -47,7 +47,7 @@ export function erpTaskToRow(task: Record<string, unknown>, actorFio: string): S
     process: String(task.approval || task.comment || '—'),
     project: '—',
     deadline: due || '—',
-    urgent: late || (!done && due.includes(String(new Date().getDate()))),
+    urgent: late,
     priority: late ? 'Высокий' : 'Средний',
     priorityTone: late ? 'red' : 'orange',
     status: done ? 'Выполнена' : 'В работе',
@@ -169,8 +169,8 @@ function turboOpenTaskCount(item: Record<string, unknown>): number {
     if (Number.isFinite(nonSummary) && nonSummary > 0) {
       return Math.max(0, nonSummary - (Number.isFinite(completed) ? completed : 0))
     }
-    const overdue = Number(stats.overdue_tasks_count ?? 0)
-    if (Number.isFinite(overdue) && overdue > 0) return overdue
+    const open = Number(stats.open_tasks ?? stats.open_tasks_count ?? 0)
+    if (Number.isFinite(open) && open > 0) return open
   }
   const direct = Number(item.open_tasks ?? item.tasks_count ?? 0)
   return Number.isFinite(direct) && direct > 0 ? direct : 0

@@ -4,8 +4,15 @@
   gap: 6px;
 }
 
+.orch-kpi-tiles {
+  height: 100%;
+  min-height: 0;
+}
+
 .orch-kpi-tiles .spec-v04-tiles-rich {
   grid-template-columns: repeat(6, minmax(0, 1fr));
+  height: 100%;
+  gap: 4px;
 }
 
 .kpi-dash-table-toolbar {

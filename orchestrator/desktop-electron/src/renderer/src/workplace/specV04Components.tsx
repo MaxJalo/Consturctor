@@ -91,21 +91,32 @@ export function SpecSummaryTiles({
             <div className="spec-v04-tile-top">
               <div className="spec-v04-tile-label-row">
                 <SpecTileIcon id={tile.id} />
-                <span className="spec-v04-tile-label">{tile.label}</span>
+                <span className="spec-v04-tile-label" title={tile.label}>
+                  {tile.label}
+                </span>
               </div>
-              {tile.progress != null ? (
-                <div
-                  className={`spec-v04-ring tone-${tile.tone || 'blue'}`}
-                  style={{ '--p': `${tile.progress}%` } as React.CSSProperties}
-                >
-                  <span>{tile.progress}%</span>
-                </div>
+            </div>
+            <div className="spec-v04-tile-metrics">
+              <strong className="spec-v04-tile-value" title={tile.value}>
+                {tile.value}
+              </strong>
+              {tile.hint && tile.hint !== tile.value ? (
+                <small className="spec-v04-tile-hint" title={tile.hint}>
+                  {tile.hint}
+                </small>
               ) : null}
             </div>
-            <strong className="spec-v04-tile-value">{tile.value}</strong>
-            {tile.hint ? <small className="spec-v04-tile-hint">{tile.hint}</small> : null}
+            {tile.progress != null ? (
+              <div
+                className={`spec-v04-ring tone-${tile.tone || 'blue'}`}
+                style={{ '--p': `${tile.progress}%` } as React.CSSProperties}
+                title={`${tile.progress}%`}
+              >
+                <span>{tile.progress}%</span>
+              </div>
+            ) : null}
             {tile.progress != null && !tile.ring ? (
-              <div className="spec-v04-tile-bar">
+              <div className="spec-v04-tile-bar" title={`${tile.progress}%`}>
                 <i style={{ width: `${tile.progress}%` }} />
               </div>
             ) : null}

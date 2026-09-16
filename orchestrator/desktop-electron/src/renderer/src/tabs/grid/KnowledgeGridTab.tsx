@@ -1,17 +1,13 @@
 import { useEffect, useMemo, useState } from 'react'
 import { api } from '../../api/client'
 import type { UserProfile } from '../../api/types'
-import {
-  OrchSlotFilters,
-  OrchSlotMain,
-  OrchSlotMetrics,
-  OrchSlotSide
-} from '../../layout/GridSlots'
+import { StandardTabChrome, summaryTilesAsChrome } from './TabChromeGrid'
+import { DEFAULT_STANDARD_LAYOUT } from './useTabChromeLayout'
 import type { SpecSummaryTile } from '../../workplace/specV04Shell'
-import { SpecPill, SpecSummaryTiles } from '../../workplace/specV04Components'
+import { SpecPill } from '../../workplace/specV04Components'
 import { type SpecKnowledgeRow } from '../../workplace/specV04DemoData'
 import { openHttpUrl } from '../../workplace/workplaceNav'
-import { StandardGridFilters } from './gridFilters'
+import { GridFilterBar } from './gridFilters'
 
 export function KnowledgeGridTab({
   user
@@ -23,6 +19,8 @@ export function KnowledgeGridTab({
   const [selectedId, setSelectedId] = useState('')
   const [openHint, setOpenHint] = useState('')
   const [opening, setOpening] = useState(false)
+  const [query, setQuery] = useState('')
+  const [tileFilter, setTileFilter] = useState('all')
 
   useEffect(() => {
     let alive = true
@@ -57,7 +55,18 @@ export function KnowledgeGridTab({
     }
   }, [])
 
-  const selected = catalog.find((c) => c.id === (selectedId || catalog[0]?.id))
+  const visibleCatalog = useMemo(() => {
+    const q = query.trim().toLowerCase()
+    return catalog.filter((row) => {
+      if (tileFilter === 'reg' && row.type !== 'Регламент') return false
+      if (tileFilter === 'tpl' || tileFilter === 'art' || tileFilter === 'upd') return false
+      if (q && !`${row.name} ${row.section} ${row.process} ${row.author}`.toLowerCase().includes(q)) {
+        return false
+      }
+      return true
+    })
+  }, [catalog, query, tileFilter])
+  const selected = visibleCatalog.find((c) => c.id === (selectedId || visibleCatalog[0]?.id))
 
   const tiles: SpecSummaryTile[] = useMemo(
     () => [
@@ -101,14 +110,24 @@ export function KnowledgeGridTab({
   }
 
   return (
-    <>
-      <OrchSlotMetrics>
-        <SpecSummaryTiles tiles={tiles} />
-      </OrchSlotMetrics>
-      <OrchSlotFilters>
-        <StandardGridFilters searchPlaceholder="Поиск по материалам…" />
-      </OrchSlotFilters>
-      <OrchSlotMain>
+    <StandardTabChrome
+      tabId="knowledge"
+      userId={user.id || ''}
+      defaults={DEFAULT_STANDARD_LAYOUT}
+      chromeTiles={summaryTilesAsChrome(tiles, tileFilter === 'all' ? 'all' : tileFilter, (id) =>
+        setTileFilter((current) => (id === current || id === 'all' ? 'all' : id))
+      )}
+      widgets={{
+        filters: (
+        <GridFilterBar
+          search={{ value: query, onChange: setQuery, placeholder: 'Поиск по материалам…' }}
+          onReset={() => {
+            setQuery('')
+            setTileFilter('all')
+          }}
+        />
+        ),
+        main: (
         <div className="spec-v04-table-wrap wp-card">
           <table className="spec-v04-table">
             <thead>
@@ -128,14 +147,16 @@ export function KnowledgeGridTab({
                   </td>
                 </tr>
               ) : null}
-              {!loading && !catalog.length ? (
+              {!loading && !visibleCatalog.length ? (
                 <tr>
                   <td colSpan={5} className="spec-v04-empty">
-                    Нет опубликованных регламентов для {user.fio}.
+                    {catalog.length
+                      ? 'Нет материалов по выбранному фильтру'
+                      : `Нет опубликованных регламентов для ${user.fio}.`}
                   </td>
                 </tr>
               ) : null}
-              {catalog.map((row) => (
+              {visibleCatalog.map((row) => (
                 <tr key={row.id} className={selected?.id === row.id ? 'selected' : ''} onClick={() => setSelectedId(row.id)}>
                   <td>
                     <strong>{row.name}</strong>
@@ -151,9 +172,8 @@ export function KnowledgeGridTab({
             </tbody>
           </table>
         </div>
-      </OrchSlotMain>
-      <OrchSlotSide>
-        {selected ? (
+        ),
+        side: selected ? (
           <div className="spec-detail-card">
             <h2>{selected.name}</h2>
             <SpecPill tone={selected.typeTone}>{selected.type}</SpecPill>
@@ -170,8 +190,8 @@ export function KnowledgeGridTab({
           </div>
         ) : (
           <div className="wp-card spec-v04-muted">Выберите материал</div>
-        )}
-      </OrchSlotSide>
-    </>
+        )
+      }}
+    />
   )
 }

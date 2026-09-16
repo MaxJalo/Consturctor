@@ -41,7 +41,6 @@ def test_fetch_inbox_tasks_soap_keeps_session_fio_not_soap_user(monkeypatch) -> 
         captured.update(kwargs)
         return {"user_fio": fio, "rows": []}
 
-    monkeypatch.setattr(docflow_inbox_fetch, "soap_configured", lambda **_kwargs: True)
     monkeypatch.setattr(docflow_inbox_fetch, "fetch_user_inbox_tasks", fake_fetch)
     monkeypatch.setattr(docflow_inbox_fetch, "map_inbox_payload", lambda _payload, *, fio: [])
     tasks, warning = docflow_inbox_fetch.fetch_inbox_tasks_soap(
@@ -51,11 +50,11 @@ def test_fetch_inbox_tasks_soap_keeps_session_fio_not_soap_user(monkeypatch) -> 
     assert tasks == []
     assert warning == ""
     assert captured["fio"] == "Иванов И.И."
-    assert not captured.get("username")
-    assert not captured.get("password")
+    assert captured.get("username") == "Иванов И.И."
+    assert captured.get("password") == "secret"
 
 
-def test_fetch_inbox_tasks_soap_session_alias_is_not_soap_user(monkeypatch) -> None:
+def test_fetch_inbox_tasks_soap_session_alias_is_soap_user(monkeypatch) -> None:
     from app.tools.onec import docflow_inbox_fetch
 
     captured: dict[str, object] = {}
@@ -65,7 +64,6 @@ def test_fetch_inbox_tasks_soap_session_alias_is_not_soap_user(monkeypatch) -> N
         captured.update(kwargs)
         return {"user_fio": fio, "rows": []}
 
-    monkeypatch.setattr(docflow_inbox_fetch, "soap_configured", lambda **_kwargs: True)
     monkeypatch.setattr(docflow_inbox_fetch, "fetch_user_inbox_tasks", fake_fetch)
     monkeypatch.setattr(docflow_inbox_fetch, "map_inbox_payload", lambda _payload, *, fio: [])
     docflow_inbox_fetch.fetch_inbox_tasks_soap(
@@ -73,17 +71,98 @@ def test_fetch_inbox_tasks_soap_session_alias_is_not_soap_user(monkeypatch) -> N
         auth_args={"erp_login": "Петров П.П.", "erp_password": "pw"},
     )
     assert captured["fio"] == "Петров П.П."
-    assert not captured.get("username")
-    assert not captured.get("password")
+    assert captured.get("username") == "Петров П.П."
+    assert captured.get("password") == "pw"
+
+
+def test_fetch_inbox_tasks_soap_uses_session_login_first(monkeypatch) -> None:
+    from app.tools.onec import docflow_inbox_fetch
+
+    captured: dict[str, object] = {}
+
+    def fake_fetch(fio: str, **kwargs):
+        captured["fio"] = fio
+        captured.update(kwargs)
+        return {"user_fio": fio, "rows": []}
+
+    monkeypatch.setattr(docflow_inbox_fetch, "fetch_user_inbox_tasks", fake_fetch)
+    monkeypatch.setattr(docflow_inbox_fetch, "map_inbox_payload", lambda _payload, *, fio: [])
+    docflow_inbox_fetch.fetch_inbox_tasks_soap(
+        "Иванов Иван Иванович",
+        auth_args={
+            "fio": "Иванов Иван Иванович",
+            "session_login": "Иванов И.И.",
+            "username": "i.ivanov",
+            "password": "typed-secret",
+        },
+    )
+    assert captured.get("username") == "Иванов И.И."
+    assert captured.get("password") == "typed-secret"
+
+
+def test_fetch_inbox_tasks_soap_does_not_fallback_to_service_account(monkeypatch) -> None:
+    from app.tools.onec import docflow_inbox_fetch
+
+    calls: list[tuple[str | None, str | None]] = []
+
+    def fake_fetch(fio: str, **kwargs):
+        user = kwargs.get("username")
+        secret = kwargs.get("password")
+        calls.append((user if isinstance(user, str) or user is None else str(user), secret if isinstance(secret, str) or secret is None else str(secret)))
+        raise RuntimeError("HTTP 401: Документооборот отклонил Basic-учётку")
+
+    monkeypatch.setattr(docflow_inbox_fetch, "fetch_user_inbox_tasks", fake_fetch)
+    tasks, warning = docflow_inbox_fetch.fetch_inbox_tasks_soap(
+        "Иванов И.И.",
+        auth_args={
+            "fio": "Иванов И.И.",
+            "username": "i.ivanov",
+            "password": "typed-secret",
+        },
+    )
+    assert tasks == []
+    assert "экрана входа" in warning
+    assert "Иванов И.И." in warning
+    assert "i.ivanov" in warning
+    assert all(secret == "typed-secret" for _user, secret in calls)
+    assert (None, None) not in calls
+
+
+def test_fetch_inbox_tasks_soap_retries_latin_after_401(monkeypatch) -> None:
+    from app.tools.onec import docflow_inbox_fetch
+
+    calls: list[tuple[str | None, str | None]] = []
+
+    def fake_fetch(fio: str, **kwargs):
+        user = kwargs.get("username")
+        secret = kwargs.get("password")
+        calls.append((user if isinstance(user, str) or user is None else str(user), secret if isinstance(secret, str) or secret is None else str(secret)))
+        if user == "Иванов И.И.":
+            raise RuntimeError("HTTP 401: Документооборот отклонил Basic-учётку")
+        return {"user_fio": fio, "rows": []}
+
+    monkeypatch.setattr(docflow_inbox_fetch, "fetch_user_inbox_tasks", fake_fetch)
+    monkeypatch.setattr(docflow_inbox_fetch, "map_inbox_payload", lambda _payload, *, fio: [{"title": "ok"}])
+    tasks, warning = docflow_inbox_fetch.fetch_inbox_tasks_soap(
+        "Иванов И.И.",
+        auth_args={
+            "fio": "Иванов И.И.",
+            "username": "i.ivanov",
+            "password": "secret",
+        },
+    )
+    assert warning == ""
+    assert tasks == [{"title": "ok"}]
+    assert calls[0] == ("Иванов И.И.", "secret")
+    assert calls[1] == ("i.ivanov", "secret")
 
 
 def test_fetch_inbox_tasks_soap_missing_creds_asks_reconnect(monkeypatch) -> None:
     from app.tools.onec import docflow_inbox_fetch
 
-    monkeypatch.setattr(docflow_inbox_fetch, "soap_configured", lambda **_kwargs: False)
     tasks, warning = docflow_inbox_fetch.fetch_inbox_tasks_soap(
         "Иванов И.И.",
-        auth_args={"fio": "Иванов И.И.", "password": "secret"},
+        auth_args={"fio": "Иванов И.И."},
     )
     assert tasks == []
     assert "Войдите с паролем 1С" in warning

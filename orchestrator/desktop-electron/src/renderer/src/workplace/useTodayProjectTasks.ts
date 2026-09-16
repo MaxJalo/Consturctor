@@ -56,41 +56,39 @@ export interface TodayProjectTasksState {
   noSession: boolean
   error: string
   rows: TodayProjectTaskRow[]
+  showingAllAssignees: boolean
 }
 
 export function useTodayProjectTasks(
   periodDay: Date,
   spec: Pick<
     SpecV04SourcesState,
-    'sourcesLoading' | 'turboNoSession' | 'projects' | 'erpFio' | 'user' | 'comPasswordInSession'
+    'turboLoading' | 'turboNoSession' | 'projects' | 'erpFio' | 'user'
   >
 ): TodayProjectTasksState {
   const generation = useGridRefreshGeneration()
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
   const [rows, setRows] = useState<TodayProjectTaskRow[]>([])
+  const [showingAllAssignees, setShowingAllAssignees] = useState(false)
 
   const dayKey = `${periodDay.getFullYear()}-${periodDay.getMonth()}-${periodDay.getDate()}`
   const portfolioKey = spec.projects.map((item) => `${item.id}:${item.tasks}`).join('|')
 
   useEffect(() => {
-    if (spec.sourcesLoading) {
+    if (spec.turboLoading && !spec.projects.length) {
       setError('')
       return
     }
-    const liveSession = hasTurboSessionCredentials(spec.user)
-    if (!liveSession) {
-      setLoading(false)
-      setError('')
-      setRows([])
-      return
-    }
-
-    const candidates = turboProjectFetchCandidates(spec.projects, 5)
+    const candidates = turboProjectFetchCandidates(spec.projects, 8)
+    // #region agent log
+    fetch('http://127.0.0.1:7847/ingest/b2a622e9-6027-4fae-9a68-3d036eb3c49e',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'d8a6bb'},body:JSON.stringify({sessionId:'d8a6bb',runId:'pre-fix',hypothesisId:'H3',location:'useTodayProjectTasks.ts:candidates',message:'today project task fetch',data:{projects:spec.projects.length,candidates:candidates.length,generation},timestamp:Date.now()})}).catch(()=>{})
+    // #endregion
     if (!candidates.length) {
       setLoading(false)
       setError('')
       setRows([])
+      setShowingAllAssignees(false)
       return
     }
 
@@ -134,27 +132,32 @@ export function useTodayProjectTasks(
           })
         )
         if (!alive) return
-        const merged = batches
-          .flatMap((batch) =>
-            batch.tasks
-              .filter((task) => turboTaskAssignedToActor(task, spec.erpFio))
-              .filter((task) => taskVisibleForToday(task, periodDay, batch.projectId))
-              .map((task) => ({ task, projectId: batch.projectId }))
-          )
+        const visible = batches.flatMap((batch) =>
+          batch.tasks
+            .filter((task) => taskVisibleForToday(task, periodDay, batch.projectId))
+            .map((task) => ({ task, projectId: batch.projectId }))
+        )
+        const mine = spec.erpFio.trim()
+          ? visible.filter((item) => turboTaskAssignedToActor(item.task, spec.erpFio))
+          : visible
+        const fallbackAll = Boolean(mine.length === 0 && visible.length > 0)
+        const picked = fallbackAll ? visible : mine
+        const merged = picked
           .sort((left, right) => {
             const leftDelay = Number(left.task.delay_days ?? 0)
             const rightDelay = Number(right.task.delay_days ?? 0)
             if (rightDelay !== leftDelay) return rightDelay - leftDelay
             return String(left.task.finish_date || '').localeCompare(String(right.task.finish_date || ''))
           })
-          .slice(0, 4)
           .map(({ task, projectId }) => turboProjectTaskToTodayRow(task, projectId, spec.erpFio))
+        setShowingAllAssignees(fallbackAll)
         setRows(merged)
         setError(fetchError)
         writeGridCache(cacheKey, merged)
       } catch (err) {
         if (!alive) return
         setRows([])
+        setShowingAllAssignees(false)
         setError(err instanceof Error ? err.message : 'Не удалось загрузить задачи TurboProject')
       } finally {
         if (alive) setLoading(false)
@@ -168,17 +171,17 @@ export function useTodayProjectTasks(
     dayKey,
     portfolioKey,
     generation,
-    spec.sourcesLoading,
+    spec.turboLoading,
     spec.erpFio,
     spec.user?.id,
-    spec.comPasswordInSession,
     periodDay
   ])
 
   return {
-    loading: (spec.sourcesLoading || loading) && rows.length === 0,
+    loading: ((spec.turboLoading && !spec.projects.length) || loading) && rows.length === 0,
     noSession: !hasTurboSessionCredentials(spec.user),
     error,
-    rows
+    rows,
+    showingAllAssignees
   }
 }

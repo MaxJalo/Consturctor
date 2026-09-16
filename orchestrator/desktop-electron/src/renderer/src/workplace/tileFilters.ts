@@ -1,5 +1,5 @@
 import { parseMeetingTime } from '../utils/outlookMeetings'
-import { sameDay } from '../utils/calendar'
+import { parseIso, sameDay } from '../utils/calendar'
 import type { MeetingEvent } from '../utils/outlookMeetings'
 import type { SpecMailRow, SpecProcessRow, SpecProjectRow, SpecTaskRow } from './specV04DemoData'
 import type { SpecV04SourcesState } from './useSpecV04Data'
@@ -38,8 +38,50 @@ export function isDocflowFromMe(row: { role?: string }): boolean {
   return role === 'author' || role === 'both'
 }
 
-export function isOverdueTask(row: SpecTaskRow): boolean {
-  return Boolean(row.urgent && row.status !== 'Выполнена')
+export function parseTaskDueDate(deadline: string): Date | null {
+  const raw = String(deadline || '').trim()
+  if (!raw || raw === '—') return null
+  const now = new Date()
+  const timeMatch = /(\d{1,2}):(\d{2})/.exec(raw)
+  const hours = timeMatch ? Number(timeMatch[1]) : 23
+  const minutes = timeMatch ? Number(timeMatch[2]) : 59
+  if (/сегодня/i.test(raw)) {
+    return new Date(now.getFullYear(), now.getMonth(), now.getDate(), hours, minutes, timeMatch ? 0 : 59)
+  }
+  if (/завтра/i.test(raw)) {
+    const day = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1, hours, minutes, timeMatch ? 0 : 59)
+    return day
+  }
+  const iso = parseIso(raw) || parseIso(raw.replace(' ', 'T'))
+  if (iso) return iso
+  const dotted = /^(\d{1,2})\.(\d{1,2})(?:\.(\d{2,4}))?/.exec(raw)
+  if (dotted) {
+    const day = Number(dotted[1])
+    const month = Number(dotted[2]) - 1
+    let year = dotted[3] ? Number(dotted[3]) : now.getFullYear()
+    if (year < 100) year += 2000
+    return new Date(year, month, day, hours, minutes, timeMatch ? 0 : 59)
+  }
+  return null
+}
+
+export function isOverdueTask(row: SpecTaskRow, now = new Date()): boolean {
+  if (row.status === 'Выполнена') return false
+  if (/просроч/i.test(row.status || '')) return true
+  if (row.urgent) return true
+  const due = parseTaskDueDate(row.deadline)
+  if (!due) return false
+  const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate())
+  return due.getTime() < todayStart.getTime()
+}
+
+export function compareTasksByUrgency(left: SpecTaskRow, right: SpecTaskRow): number {
+  const leftOver = isOverdueTask(left) ? 0 : 1
+  const rightOver = isOverdueTask(right) ? 0 : 1
+  if (leftOver !== rightOver) return leftOver - rightOver
+  const leftDue = parseTaskDueDate(left.deadline)?.getTime() ?? Number.POSITIVE_INFINITY
+  const rightDue = parseTaskDueDate(right.deadline)?.getTime() ?? Number.POSITIVE_INFINITY
+  return leftDue - rightDue
 }
 
 export function processRowToTaskRow(row: SpecProcessRow): SpecTaskRow {
@@ -129,7 +171,10 @@ export function applyTaskTileClick(
 ): TaskTileFilter {
   if (dead) return current
   if (clickedId === 'bad') {
-    return { ...current, overdueOnly: !current.overdueOnly }
+    if (current.overdueOnly && current.source === 'all') {
+      return EMPTY_TASK_TILE_FILTER
+    }
+    return { source: 'all', overdueOnly: true }
   }
   if (clickedId === 'all') {
     return EMPTY_TASK_TILE_FILTER
@@ -209,7 +254,10 @@ export function meetingMatchesTile(meeting: MeetingEvent, id: string, now = new 
   const start = parseMeetingTime(meeting.start)
   const end = parseMeetingTime(meeting.end) || start
   if (id === 'today') return Boolean(start && sameDay(start, now))
-  if (id === 'done') return Boolean(end && end.getTime() < now.getTime())
+  if (id === 'done' || id === 'past') return Boolean(end && end.getTime() < now.getTime())
+  if (id === 'upcoming' || id === 'next') {
+    return Boolean(start && start.getTime() >= now.getTime() && !sameDay(start, now))
+  }
   return false
 }
 
@@ -217,8 +265,7 @@ export function countMeetingTiles(meetings: MeetingEvent[], now = new Date()): R
   return {
     period: meetings.length,
     today: meetings.filter((item) => meetingMatchesTile(item, 'today', now)).length,
-    prep: 0,
-    dec: 0,
+    upcoming: meetings.filter((item) => meetingMatchesTile(item, 'upcoming', now)).length,
     done: meetings.filter((item) => meetingMatchesTile(item, 'done', now)).length
   }
 }

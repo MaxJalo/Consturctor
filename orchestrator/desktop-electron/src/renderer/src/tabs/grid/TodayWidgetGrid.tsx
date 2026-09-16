@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import GridLayout, { type Layout, type LayoutItem } from 'react-grid-layout/legacy'
 import 'react-grid-layout/css/styles.css'
+import './tabChrome.css'
 import {
   TODAY_GRID_COLS,
   TODAY_GRID_MARGIN,
@@ -36,13 +37,21 @@ function TodayWidgetChrome({
   id,
   editMode,
   locked,
+  hidden,
+  color,
   onToggleLock,
+  onToggleVisible,
+  onSetColor,
   children
 }: {
   id: TodayWidgetId
   editMode: boolean
   locked: boolean
+  hidden: boolean
+  color: string
   onToggleLock: () => void
+  onToggleVisible: () => void
+  onSetColor: (color: string) => void
   children: React.ReactNode
 }): React.JSX.Element {
   const label = TODAY_WIDGET_LABELS[id]
@@ -51,10 +60,12 @@ function TodayWidgetChrome({
       className={[
         'today-widget-shell',
         editMode ? 'today-widget-shell--edit' : '',
-        locked ? 'today-widget-shell--locked' : ''
+        locked ? 'today-widget-shell--locked' : '',
+        hidden ? 'today-widget-shell--hidden' : ''
       ]
         .filter(Boolean)
         .join(' ')}
+      style={{ background: color || undefined }}
       data-widget-id={id}
     >
       {editMode ? (
@@ -68,6 +79,35 @@ function TodayWidgetChrome({
             ⋮⋮
           </span>
           <span className="today-widget-chrome-title">{label}</span>
+          <label className="tab-chrome-color" title="Цвет виджета">
+            <input
+              type="color"
+              value={color || '#ffffff'}
+              onChange={(event) => onSetColor(event.target.value)}
+              onClick={(event) => event.stopPropagation()}
+            />
+          </label>
+          <button
+            type="button"
+            className="tab-chrome-color-reset"
+            onClick={(event) => {
+              event.stopPropagation()
+              onSetColor('')
+            }}
+          >
+            Сброс цвета
+          </button>
+          <button
+            type="button"
+            className={`today-widget-lock-btn${hidden ? ' is-locked' : ''}`}
+            aria-label={hidden ? `Показать: ${label}` : `Скрыть: ${label}`}
+            onClick={(event) => {
+              event.stopPropagation()
+              onToggleVisible()
+            }}
+          >
+            {hidden ? 'Показать' : 'Скрыть'}
+          </button>
           <button
             type="button"
             className={`today-widget-lock-btn${locked ? ' is-locked' : ''}`}
@@ -93,16 +133,24 @@ export function TodayWidgetGrid({
   editMode,
   layoutWithStatic,
   locked,
+  visible = {},
+  color = {},
   onLayoutChange,
   onToggleLock,
+  onToggleVisible,
+  onSetColor,
   widgets
 }: {
   userId: string
   editMode: boolean
   layoutWithStatic: LayoutItem[]
   locked: Partial<Record<TodayWidgetId, boolean>>
+  visible?: Partial<Record<TodayWidgetId, boolean>>
+  color?: Partial<Record<TodayWidgetId, string>>
   onLayoutChange: (layout: Layout) => void
   onToggleLock: (id: TodayWidgetId) => void
+  onToggleVisible?: (id: TodayWidgetId) => void
+  onSetColor?: (id: TodayWidgetId, color: string) => void
   widgets: Record<TodayWidgetId, React.ReactNode>
 }): React.JSX.Element {
   const draggable = editMode
@@ -118,7 +166,14 @@ export function TodayWidgetGrid({
     const measure = (): void => {
       const height = Math.max(node.clientHeight, GRID_MIN_CANVAS_HEIGHT)
       const width = node.clientWidth
-      setGridMetrics(computeTodayGridMetrics(height, width))
+      const next = computeTodayGridMetrics(height, width)
+      setGridMetrics((prev) =>
+        prev.rowHeight === next.rowHeight &&
+        prev.canvasHeight === next.canvasHeight &&
+        prev.containerWidth === next.containerWidth
+          ? prev
+          : next
+      )
     }
 
     measure()
@@ -143,19 +198,23 @@ export function TodayWidgetGrid({
   )
 
   const children = useMemo(() => {
-    return TODAY_WIDGET_IDS.map((id) => (
+    return TODAY_WIDGET_IDS.filter((id) => editMode || visible[id] !== false).map((id) => (
       <div key={id} className="today-widget-grid-item">
         <TodayWidgetChrome
           id={id}
           editMode={editMode}
           locked={Boolean(locked[id])}
+          hidden={visible[id] === false}
+          color={color[id] || ''}
           onToggleLock={() => onToggleLock(id)}
+          onToggleVisible={() => onToggleVisible?.(id)}
+          onSetColor={(next) => onSetColor?.(id, next)}
         >
           {widgets[id]}
         </TodayWidgetChrome>
       </div>
     ))
-  }, [editMode, locked, onToggleLock, widgets])
+  }, [color, editMode, locked, onSetColor, onToggleLock, onToggleVisible, visible, widgets])
 
   return (
     <div
@@ -187,8 +246,8 @@ export function TodayWidgetGrid({
         isDraggable={draggable}
         isResizable={draggable}
         isBounded
-        compactType="vertical"
-        preventCollision={false}
+        compactType={null}
+        preventCollision
         allowOverlap={false}
         useCSSTransforms
         resizeHandles={[...TODAY_RESIZE_HANDLES]}

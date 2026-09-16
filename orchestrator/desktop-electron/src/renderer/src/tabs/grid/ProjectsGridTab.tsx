@@ -1,17 +1,9 @@
 import { Fragment, useEffect, useMemo, useState } from 'react'
 import type { UserProfile } from '../../api/types'
-import {
-  OrchSlotFilters,
-  OrchSlotMain,
-  OrchSlotMetrics,
-  OrchSlotSide
-} from '../../layout/GridSlots'
+import { StandardTabChrome, summaryTilesAsChrome } from './TabChromeGrid'
+import { DEFAULT_STANDARD_LAYOUT } from './useTabChromeLayout'
 import type { SpecSummaryTile } from '../../workplace/specV04Shell'
-import {
-  SpecPill,
-  SpecProgress,
-  SpecSummaryTiles
-} from '../../workplace/specV04Components'
+import { SpecPill, SpecProgress } from '../../workplace/specV04Components'
 import { useSpecV04Sources } from '../../workplace/useSpecV04Data'
 import { projectMatchesTile, toggleSimpleTile } from '../../workplace/tileFilters'
 import {
@@ -20,7 +12,7 @@ import {
   type TurboProjectTasksFetchOptions
 } from '../../workplace/useTurboProjectOpenTasks'
 import { openHttpUrl } from '../../workplace/workplaceNav'
-import { StandardGridFilters } from './gridFilters'
+import { GridFilterBar, toFilterOptions, uniqueFilterValues } from './gridFilters'
 import { hasTurboSessionCredentials } from '../../workplace/userContext'
 
 function ProjectTasksTable({
@@ -109,10 +101,21 @@ export function ProjectsGridTab({
   const data = useSpecV04Sources(user)
   const [tileFilter, setTileFilter] = useState('all')
   const [selectedId, setSelectedId] = useState('')
-  const projects = useMemo(
-    () => data.projects.filter((row) => projectMatchesTile(row, tileFilter)),
-    [data.projects, tileFilter]
-  )
+  const [query, setQuery] = useState('')
+  const [barStatus, setBarStatus] = useState('')
+  const [barRisk, setBarRisk] = useState('')
+  const [barMine, setBarMine] = useState(false)
+  const projects = useMemo(() => {
+    const q = query.trim().toLowerCase()
+    return data.projects.filter((row) => {
+      if (!projectMatchesTile(row, tileFilter)) return false
+      if (barStatus && row.status !== barStatus) return false
+      if (barRisk && row.risk !== barRisk) return false
+      if (barMine && !/руковод|исполн|я|мне|мо/i.test(row.role)) return false
+      if (q && !`${row.name} ${row.code} ${row.role}`.toLowerCase().includes(q)) return false
+      return true
+    })
+  }, [data.projects, tileFilter, query, barStatus, barRisk, barMine])
   const [expandedIds, setExpandedIds] = useState<Set<string>>(() => new Set())
   const [myTasksOnly, setMyTasksOnly] = useState(true)
   const effectiveId = selectedId || projects[0]?.id || ''
@@ -143,13 +146,13 @@ export function ProjectsGridTab({
   }, [effectiveId])
 
   const turboLive = hasTurboSessionCredentials(data.user)
-  const tasksEnabled = Boolean(effectiveId) && !data.sourcesLoading && (turboLive || !data.turboNoSession)
+  const canFetchTasks = Boolean(effectiveId) && (turboLive || data.projects.length > 0)
 
   const projectTasks = useTurboProjectOpenTasks(
     effectiveId,
     data.user,
     data.erpFio,
-    tasksEnabled,
+    canFetchTasks,
     taskFetch
   )
 
@@ -208,21 +211,45 @@ export function ProjectsGridTab({
   }
 
   return (
-    <>
-      <OrchSlotMetrics>
-        <SpecSummaryTiles
-          tiles={tiles}
-          activeId={tileFilter === 'all' ? 'active' : tileFilter}
-          onSelect={(id) => {
-            if (id === 'load') return
-            setTileFilter((current) => (id === 'active' ? 'all' : toggleSimpleTile(current, id)))
+    <StandardTabChrome
+      tabId="projects"
+      userId={user.id || ''}
+      defaults={DEFAULT_STANDARD_LAYOUT}
+      chromeTiles={summaryTilesAsChrome(tiles, tileFilter === 'all' ? 'active' : tileFilter, (id) => {
+        if (id === 'load') return
+        setTileFilter((current) => (id === 'active' ? 'all' : toggleSimpleTile(current, id)))
+      })}
+      widgets={{
+        filters: (
+        <GridFilterBar
+          search={{ value: query, onChange: setQuery, placeholder: 'Поиск по проектам…' }}
+          selects={[
+            {
+              id: 'status',
+              value: barStatus,
+              emptyLabel: 'Статус: все',
+              onChange: setBarStatus,
+              options: toFilterOptions(uniqueFilterValues(data.projects.map((row) => row.status)))
+            },
+            {
+              id: 'risk',
+              value: barRisk,
+              emptyLabel: 'Риск: все',
+              onChange: setBarRisk,
+              options: toFilterOptions(uniqueFilterValues(data.projects.map((row) => row.risk)))
+            }
+          ]}
+          toggles={[{ id: 'mine', label: 'Только мои', checked: barMine, onChange: setBarMine }]}
+          onReset={() => {
+            setQuery('')
+            setBarStatus('')
+            setBarRisk('')
+            setBarMine(false)
+            setTileFilter('all')
           }}
         />
-      </OrchSlotMetrics>
-      <OrchSlotFilters>
-        <StandardGridFilters searchPlaceholder="Поиск по проектам…" />
-      </OrchSlotFilters>
-      <OrchSlotMain>
+        ),
+        main: (
         <div className="spec-v04-table-wrap wp-card">
           <table className="spec-v04-table">
             <thead>
@@ -242,7 +269,7 @@ export function ProjectsGridTab({
               {!projects.length ? (
                 <tr>
                   <td colSpan={9} className="spec-v04-empty">
-                    {data.loading
+                    {data.turboLoading
                       ? 'Загружаем портфель…'
                       : allProjects.length
                         ? 'Нет проектов по выбранной плитке'
@@ -304,7 +331,7 @@ export function ProjectsGridTab({
                               projectId={p.id}
                               user={user}
                               erpFio={data.erpFio}
-                              enabled={tasksEnabled}
+                              enabled={Boolean(p.id) && (turboLive || data.projects.length > 0)}
                               taskFetch={taskFetch}
                             />
                           )}
@@ -317,9 +344,8 @@ export function ProjectsGridTab({
             </tbody>
           </table>
         </div>
-      </OrchSlotMain>
-      <OrchSlotSide>
-        {selected ? (
+        ),
+        side: selected ? (
           <div className="spec-detail-card wp-card">
             <h2>{selected.name}</h2>
             <div className="spec-detail-tags">
@@ -387,8 +413,8 @@ export function ProjectsGridTab({
           </div>
         ) : (
           <div className="wp-card spec-v04-muted">Выберите проект</div>
-        )}
-      </OrchSlotSide>
-    </>
+        )
+      }}
+    />
   )
 }

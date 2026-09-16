@@ -1,14 +1,9 @@
 import { useEffect, useMemo, useState } from 'react'
-import {
-  OrchSlotBotA,
-  OrchSlotBotB,
-  OrchSlotBotC,
-  OrchSlotFilters,
-  OrchSlotMain,
-  OrchSlotMetrics
-} from '../../layout/GridSlots'
+import { StandardTabChrome, summaryTilesAsChrome } from './TabChromeGrid'
+import { DEFAULT_KPI_LAYOUT } from './useTabChromeLayout'
+import type { UserProfile } from '../../api/types'
 import { KpiRangePicker, type KpiRangeShortcut } from '../../pages/KpiRangePicker'
-import { SpecFilters, SpecPanel, SpecPill, SpecProgress, SpecSummaryTiles } from '../../workplace/specV04Components'
+import { SpecFilters, SpecPanel, SpecPill, SpecProgress } from '../../workplace/specV04Components'
 import type { SpecSummaryTile } from '../../workplace/specV04Shell'
 import { SpecIconSearch } from '../../workplace/specV04Icons'
 import { currentWeekRange, rollingKpiRange } from '../../workplace/kpiPeriod'
@@ -92,6 +87,7 @@ function DynamicsChart({ dynamics }: { dynamics: WorkplaceKpiDashboard['dynamics
 }
 
 export function KpiGridTab(_props: {
+  user?: UserProfile
   onOpenProcesses?: () => void
   onOpenDecisions?: () => void
 }): React.JSX.Element {
@@ -138,18 +134,16 @@ export function KpiGridTab(_props: {
   }
 
   return (
-    <>
-      <OrchSlotMetrics>
-        <div className="orch-kpi-tiles">
-          <SpecSummaryTiles
-            tiles={tiles}
-            activeId={tileFilter === 'all' ? null : tileFilter}
-            onSelect={(id) => setTileFilter((current) => toggleSimpleTile(current, id))}
-          />
-        </div>
-      </OrchSlotMetrics>
-
-      <OrchSlotFilters>
+    <StandardTabChrome
+      tabId="kpi"
+      userId={_props.user?.id || ''}
+      defaults={DEFAULT_KPI_LAYOUT}
+      chromeTiles={summaryTilesAsChrome(tiles, tileFilter === 'all' ? null : tileFilter, (id) =>
+        setTileFilter((current) => toggleSimpleTile(current, id))
+      )}
+      widgets={{
+        filters: (
+        <>
         <SpecFilters layout="row">
           <KpiRangePicker from={from} to={to} shortcut={shortcut} onApply={applyRange} onShortcut={applyShortcut} />
         </SpecFilters>
@@ -158,9 +152,10 @@ export function KpiGridTab(_props: {
         ) : null}
         {notice ? <p className="kpi-dash-status-banner">{notice}</p> : null}
         {error ? <p className="kpi-dash-status-banner error">{error}</p> : null}
-      </OrchSlotFilters>
-
-      <OrchSlotMain spanAll>
+        </>
+        ),
+        main: (
+        <>
         <div className="spec-table-toolbar kpi-dash-table-toolbar">
           <h3 className="kpi-dash-table-title">KPI ИИ-агентов</h3>
           {data?.periodLabel ? <span className="spec-v04-muted">{data.periodLabel}</span> : null}
@@ -230,9 +225,9 @@ export function KpiGridTab(_props: {
               </tbody>
             </table>
         </div>
-      </OrchSlotMain>
-
-      <OrchSlotBotA>
+        </>
+        ),
+        botA: (
         <SpecPanel title="Проблемные зоны">
           <div className="spec-v04-table-wrap">
             <table className="spec-v04-table spec-v04-table-compact">
@@ -266,9 +261,8 @@ export function KpiGridTab(_props: {
             </table>
           </div>
         </SpecPanel>
-      </OrchSlotBotA>
-
-      <OrchSlotBotB>
+        ),
+        botB: (
         <SpecPanel title="Нагрузка: сотрудник vs ИИ">
           <div className="kpi-compare-legend">
             <span className="emp">Сотрудник (ч)</span>
@@ -289,13 +283,13 @@ export function KpiGridTab(_props: {
             })}
           </div>
         </SpecPanel>
-      </OrchSlotBotB>
-
-      <OrchSlotBotC>
+        ),
+        botC: (
         <SpecPanel title={data?.dynamics.title ?? 'Динамика показателей'}>
           {data?.dynamics ? <DynamicsChart dynamics={data.dynamics} /> : loading ? <p className="spec-v04-muted">Загружаем…</p> : null}
         </SpecPanel>
-      </OrchSlotBotC>
-    </>
+        )
+      }}
+    />
   )
 }

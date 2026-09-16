@@ -9,10 +9,11 @@ import {
 import { parseIso, sameDay } from '../utils/calendar'
 import { useWorkplaceData } from './WorkplaceBoard'
 import type { TodayPlanBlock } from '../tabs/grid/todayDemoData'
+import { agentAccent, shortAgentLabel } from './agentAccent'
 import { useGridRefreshGeneration } from './GridDataRefreshContext'
 import { readGridCache, shouldRunGridFetch, writeGridCache } from './gridDataCache'
 
-export const TODAY_PLAN_DAY_START = 9
+export const TODAY_PLAN_DAY_START = 7
 export const TODAY_PLAN_DAY_END = 18
 
 const MEETING_TONES: TodayPlanBlock['tone'][] = ['pink', 'purple', 'sky', 'orange', 'teal']
@@ -103,30 +104,37 @@ function meetingToBlock(meeting: MeetingEvent, index: number): TodayPlanBlock | 
 function agentEventToBlock(
   event: CalendarEvent,
   agentTitle: string,
+  agentCode: string | undefined,
   index: number
 ): TodayPlanBlock | null {
   const start = parseIso(event.startAt)
   if (!start) return null
   const end = new Date(start.getTime() + 60 * 60 * 1000)
-  const title = (event.subtitle || event.title || agentTitle || 'Запуск агента').trim()
-  const displayTitle = title === agentTitle ? 'Запуск агента' : title
+  const rawTitle = (event.subtitle || event.title || agentTitle || 'Запуск агента').trim()
+  const shortName = shortAgentLabel(agentCode, agentTitle)
+  const briefTask =
+    rawTitle && rawTitle !== agentTitle && rawTitle !== 'Запуск агента' ? rawTitle : ''
+  const displayTitle = briefTask ? `${shortName}: ${briefTask}` : shortName
   const status = (event.status || '').trim()
   const source = (event.source || '').trim()
   const runId = (event.runId || '').trim()
+  const accent = agentAccent(event.workflowId || agentTitle)
   return {
     id: `ai:${event.id || event.runId || `${event.workflowId}-${event.startAt}`}`,
     startHour: decimalHour(start),
     endHour: decimalHour(end),
     title: displayTitle,
-    subtitle: agentTitle,
+    subtitle: briefTask || agentTitle,
     tone: AI_TONES[index % AI_TONES.length],
     who: 'ai',
     kind: 'reg',
     lane: 'ai',
+    accent,
     detail: {
       timeRange: formatTimeRange(start, end),
       typeLabel: 'Запуск ИИ-агента',
       agentName: agentTitle,
+      agentCode: shortName,
       status: status || undefined,
       source: source || undefined,
       workflowId: event.workflowId || undefined,
@@ -140,32 +148,41 @@ function nextRunToBlock(
   workflowId: string,
   nextRunAt: string,
   agentTitle: string,
+  agentCode: string | undefined,
   index: number
 ): TodayPlanBlock | null {
   const start = parseIso(nextRunAt)
   if (!start) return null
   const end = new Date(start.getTime() + 60 * 60 * 1000)
+  const shortName = shortAgentLabel(agentCode, agentTitle || 'ИИ-агент')
+  const accent = agentAccent(workflowId || agentTitle)
   return {
     id: `ai-next:${workflowId}-${nextRunAt}`,
     startHour: decimalHour(start),
     endHour: decimalHour(end),
-    title: agentTitle || 'ИИ-агент',
+    title: shortName,
     subtitle: 'Плановый запуск',
     tone: AI_TONES[index % AI_TONES.length],
     who: 'ai',
     kind: 'reg',
     lane: 'ai',
+    accent,
     detail: {
       timeRange: formatTimeRange(start, end),
       typeLabel: 'Плановый запуск ИИ-агента',
       agentName: agentTitle || 'ИИ-агент',
+      agentCode: shortName,
       workflowId,
       note: 'Запуск по расписанию агента'
     }
   }
 }
 
-function aiBlocksForDay(board: WorkflowBoard, periodDay: Date): TodayPlanBlock[] {
+function aiBlocksForDay(
+  board: WorkflowBoard,
+  periodDay: Date,
+  codeById: Map<string, string>
+): TodayPlanBlock[] {
   const workflows = board.agents.filter((item) => item.kind === 'workflow')
   const titleById = new Map(workflows.map((agent) => [agent.id, agent.title || 'ИИ-агент']))
   const dayEvents = board.events.filter((event) => {
@@ -178,7 +195,8 @@ function aiBlocksForDay(board: WorkflowBoard, periodDay: Date): TodayPlanBlock[]
   const seen = new Set<string>()
 
   dayEvents.forEach((event, index) => {
-    const block = agentEventToBlock(event, titleById.get(event.workflowId) || 'ИИ-агент', index)
+    const title = titleById.get(event.workflowId) || 'ИИ-агент'
+    const block = agentEventToBlock(event, title, codeById.get(event.workflowId), index)
     if (!block) return
     const key = `${event.workflowId}:${Math.floor(block.startHour * 60)}`
     if (seen.has(key)) return
@@ -193,7 +211,7 @@ function aiBlocksForDay(board: WorkflowBoard, periodDay: Date): TodayPlanBlock[]
     const key = `${agent.id}:${Math.floor(decimalHour(next) * 60)}`
     if (seen.has(key)) continue
     seen.add(key)
-    const block = nextRunToBlock(agent.id, agent.nextRunAt, agent.title, slot)
+    const block = nextRunToBlock(agent.id, agent.nextRunAt, agent.title, codeById.get(agent.id), slot)
     if (block) blocks.push(block)
     slot += 1
   }
@@ -214,7 +232,7 @@ export function useTodayPlanTimeline(
   options: { userId: string; fio: string }
 ): TodayPlanTimelineState {
   const { userId, fio } = options
-  const { board, loading: boardLoading } = useWorkplaceData(
+  const { board, agents, loading: boardLoading } = useWorkplaceData(
     userId ? { userId, fio } : null
   )
 
@@ -268,7 +286,7 @@ export function useTodayPlanTimeline(
   }, [dayKey, fio, generation, periodDay, userId])
 
   return useMemo(() => {
-    const loading = meetingsLoading || boardLoading
+    const loading = meetingsLoading && !meetings.length
     const onDay = dedupeMeetingEvents(
       meetings.filter((item) => {
         const start = parseMeetingTime(item.start)
@@ -276,12 +294,13 @@ export function useTodayPlanTimeline(
       })
     )
 
-    let meetingBlocks = onDay
+    const meetingBlocks = onDay
       .map((meeting, index) => meetingToBlock(meeting, index))
       .filter((item): item is TodayPlanBlock => item !== null)
       .sort((a, b) => a.startHour - b.startHour)
 
-    let aiBlocks = aiBlocksForDay(board, periodDay)
+    const codeById = new Map(agents.map((agent) => [agent.workflowId, agent.code || '']))
+    const aiBlocks = aiBlocksForDay(board, periodDay, codeById)
 
     return {
       loading,
@@ -290,5 +309,5 @@ export function useTodayPlanTimeline(
       aiBlocks,
       lunchBlock: TODAY_LUNCH_BLOCK
     }
-  }, [board, boardLoading, meetings, meetingsError, meetingsLoading, periodDay, dayKey])
+  }, [agents, board, boardLoading, meetings, meetingsError, meetingsLoading, periodDay, dayKey])
 }

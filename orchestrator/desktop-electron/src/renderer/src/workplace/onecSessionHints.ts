@@ -1,8 +1,14 @@
-import { hasComPassword } from '../store/session'
+import { comCredentials, hasComPassword } from '../store/session'
 
 /** Dev-only suffix for empty 1C states (no password value). */
 export function comPasswordSessionHint(): string {
-  return `Пароль 1С в сессии: ${hasComPassword() ? 'да' : 'нет'}`
+  const login = (comCredentials().login || '').trim()
+  if (hasComPassword()) {
+    return login
+      ? `Пароль 1С: введён на экране входа · логин SOAP: ${login}`
+      : 'Пароль 1С: введён на экране входа'
+  }
+  return 'Пароль 1С: не введён (не берём пароль из .env)'
 }
 
 export function missingComPasswordMessage(): string {
@@ -88,7 +94,14 @@ export function stripTechnicalDocflowMessages(text: string): string {
 
 /** User-facing 1C error: technical stub/env text is dropped. */
 export function userFacingOneCError(text: string): string {
-  return stripTechnicalDocflowMessages(text)
+  const cleaned = stripTechnicalDocflowMessages(text)
+  if (/^HTTP\s*40[123]\s*:?\s*$/i.test(cleaned) || /HTTP\s*40[123]:\s*$/i.test(cleaned)) {
+    return 'Документооборот не принял учётку. Войдите с паролем 1С.'
+  }
+  if (/HTTP\s*40[123].*отклонил Basic/i.test(cleaned)) {
+    return 'Документооборот не принял учётку. Войдите с паролем 1С.'
+  }
+  return cleaned
 }
 
 export function sessionOneCSourceLabel(fio: string): string {
@@ -116,7 +129,7 @@ export function isOneCAuthFailure(...chunks: (string | undefined | null)[]): boo
   if (!text) return false
   const cleaned = stripTechnicalDocflowMessages(text)
   if (!cleaned) return !hasComPassword()
-  if (/Войдите с паролем 1С|пароль не сохраняется|Пароль 1С в сессии: нет/i.test(cleaned)) {
+  if (/Войдите с паролем 1С|пароль не сохраняется|Пароль 1С в сессии: нет|экрана входа|не берём пароль из \.env/i.test(cleaned)) {
     return true
   }
   if (/Документооборот SOAP: нет (пароля|пользователя|учётн)/i.test(cleaned)) {
@@ -219,7 +232,7 @@ export function isErpMetaHintRecord(task: Record<string, unknown>): boolean {
   ) {
     return true
   }
-  if (/Войдите с паролем 1С|Пароль 1С в сессии/i.test(title)) return true
+  if (/Войдите с паролем 1С|Пароль 1С в сессии|Пароль 1С: введён|Пароль 1С: не введён/i.test(title)) return true
   return false
 }
 
@@ -278,7 +291,6 @@ export function enrichEmptyOneCErrors(
 ): string {
   const cleaned = userFacingOneCError(erpError)
   if (opts.mergedCount > 0) return cleaned
-  if (!hasComPassword()) return missingComPasswordMessage()
   const stub =
     (opts.erpSource || '').trim().toLowerCase() === 'stub' ||
     (opts.docSource || '').trim().toLowerCase() === 'stub'

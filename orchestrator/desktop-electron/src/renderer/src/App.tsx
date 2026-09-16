@@ -163,6 +163,20 @@ function findExistingChat(threads: ChatThread[], name: string, peerId?: string):
   return threads.find((item) => item.kind !== 'support' && fioEquals(item.title, name))
 }
 
+function DebugSourcesLifetime(): null {
+  useEffect(() => {
+    // #region agent log
+    fetch('http://127.0.0.1:7847/ingest/b2a622e9-6027-4fae-9a68-3d036eb3c49e',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'d8a6bb'},body:JSON.stringify({sessionId:'d8a6bb',runId:'post-fix',hypothesisId:'H2',location:'App.tsx:DebugSourcesLifetime',message:'sources provider mount',data:{},timestamp:Date.now()})}).catch(()=>{})
+    // #endregion
+    return () => {
+      // #region agent log
+      fetch('http://127.0.0.1:7847/ingest/b2a622e9-6027-4fae-9a68-3d036eb3c49e',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'d8a6bb'},body:JSON.stringify({sessionId:'d8a6bb',runId:'post-fix',hypothesisId:'H2',location:'App.tsx:DebugSourcesLifetime',message:'sources provider unmount',data:{},timestamp:Date.now()})}).catch(()=>{})
+      // #endregion
+    }
+  }, [])
+  return null
+}
+
 export function App(): React.JSX.Element {
   return (
     <RunProvider>
@@ -365,9 +379,9 @@ function AppShell(): React.JSX.Element {
     setView({ kind: 'tab', key: mode === 'admin' ? 'overview' : 'today' })
   }
 
-  function onLoggedIn(result: LoginResult, remember: boolean, password = ''): void {
+  function onLoggedIn(result: LoginResult, remember: boolean, password = '', typedLogin = ''): void {
     api.setToken(result.accessToken || null)
-    setComCredentials(result.user.fio, password, result.user.nameMail)
+    setComCredentials(typedLogin || result.user.fio, password, result.user.nameMail)
     bumpComCredentialsRevision()
     setRequireComLogin(false)
     void agentClient
@@ -687,9 +701,9 @@ function AppShell(): React.JSX.Element {
       case 'meetings':
         return <MeetingsGridTab user={activeUser} />
       case 'decisions':
-        return <DecisionsGridTab onOpenRun={(workflowId, title, runId) => void openAgentRun(workflowId, runId || '', Boolean(!runId), title)} />
+        return <DecisionsGridTab user={activeUser} onOpenRun={(workflowId, title, runId) => void openAgentRun(workflowId, runId || '', Boolean(!runId), title)} />
       case 'kpi':
-        return <KpiGridTab onOpenProcesses={() => setView({ kind: 'tab', key: 'processes' })} onOpenDecisions={() => setView({ kind: 'tab', key: 'decisions' })} />
+        return <KpiGridTab user={activeUser} onOpenProcesses={() => setView({ kind: 'tab', key: 'processes' })} onOpenDecisions={() => setView({ kind: 'tab', key: 'decisions' })} />
       case 'knowledge':
         return <KnowledgeGridTab user={activeUser} />
       case 'history':
@@ -752,11 +766,18 @@ function AppShell(): React.JSX.Element {
     return renderUserFullscreen()
   }
 
-  if (!isAdminMode && view.kind === 'tab' && isWorkplaceTabKey(view.key)) {
-    const tabKey = view.key
-    return (
-      <GridDataRefreshProvider userId={activeUser.id}>
-        <SpecV04SourcesProvider user={activeUser} comCredsRevision={comCredsRevision}>
+  const workplaceGrid = !isAdminMode && view.kind === 'tab' && isWorkplaceTabKey(view.key)
+  const tabKey = workplaceGrid && view.kind === 'tab' ? view.key : null
+  const content = isAdminMode ? renderAdminContent() : renderUserContent()
+  // #region agent log
+  fetch('http://127.0.0.1:7847/ingest/b2a622e9-6027-4fae-9a68-3d036eb3c49e',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'d8a6bb'},body:JSON.stringify({sessionId:'d8a6bb',runId:'post-fix',hypothesisId:'H2',location:'App.tsx:unified-tree',message:'render unified provider tree',data:{workplaceGrid,isAdminMode,tabKey,viewKind:view.kind},timestamp:Date.now()})}).catch(()=>{})
+  // #endregion
+
+  return (
+    <GridDataRefreshProvider userId={activeUser.id}>
+      <SpecV04SourcesProvider user={activeUser} comCredsRevision={comCredsRevision}>
+        <DebugSourcesLifetime />
+        {workplaceGrid && tabKey ? (
           <div className="app-root orch-app-root">
             <OrchGridShell
               activeKey={tabKey}
@@ -789,57 +810,49 @@ function AppShell(): React.JSX.Element {
             </OrchGridShell>
             <ChatDock onAskOrchestrator={askOrchestratorFromDock} onOpenSupport={openSupport} />
           </div>
-        </SpecV04SourcesProvider>
-      </GridDataRefreshProvider>
-    )
-  }
-
-  const content = isAdminMode ? renderAdminContent() : renderUserContent()
-
-  return (
-    <GridDataRefreshProvider userId={activeUser.id}>
-      <SpecV04SourcesProvider user={activeUser} comCredsRevision={comCredsRevision}>
-        <div className="app-root">
-          <Sidebar
-            active={activeKey}
-            light={false}
-            showAdminNav={isAdminMode}
-            activeThreadId={view.kind === 'chat' ? view.thread.id : ''}
-            currentUserId={activeUser.id || ''}
-            onNavigate={(key) => {
-              if (isAdminMode && !isAdminTabKey(key)) return
-              if (!isAdminMode && !isWorkplaceTabKey(key) && key !== 'settings') return
-              setTabIntent(null)
-              setLastTab(key)
-              setView({ kind: 'tab', key })
-            }}
-            onOpenThread={openChat}
-            onOpenFio={(fio, picked) => void openChatByFio(fio, picked)}
-            refreshAt={chatRefreshAt}
-          />
-          <main className={isAdminMode ? 'content' : 'content orch-legacy-fullpage'}>
-            <div className={view.kind === 'chat' ? 'content-inner messenger-mode' : 'content-inner'}>
-              <div className="app-page-header">
-                <UserMenu
-                  user={activeUser}
-                  avatarUrl={avatarUrl}
-                  unread={unread}
-                  onUnreadChange={setUnread}
-                  onLogout={onLogout}
-                  showLogout={showLogout}
-                  onOpenAgent={(workflowId, runId) => void openAgentRun(workflowId, runId)}
-                  onOpenSettings={() => setView({ kind: 'tab', key: 'settings' })}
-                  canSwitchAdminView={Boolean(activeUser.isAdmin)}
-                  onSwitchAdminView={switchAdminView}
-                  variant={isAdminMode ? 'admin' : 'default'}
-                />
+        ) : (
+          <div className="app-root">
+            <Sidebar
+              active={activeKey}
+              light={false}
+              showAdminNav={isAdminMode}
+              activeThreadId={view.kind === 'chat' ? view.thread.id : ''}
+              currentUserId={activeUser.id || ''}
+              onNavigate={(key) => {
+                if (isAdminMode && !isAdminTabKey(key)) return
+                if (!isAdminMode && !isWorkplaceTabKey(key) && key !== 'settings') return
+                setTabIntent(null)
+                setLastTab(key)
+                setView({ kind: 'tab', key })
+              }}
+              onOpenThread={openChat}
+              onOpenFio={(fio, picked) => void openChatByFio(fio, picked)}
+              refreshAt={chatRefreshAt}
+            />
+            <main className={isAdminMode ? 'content' : 'content orch-legacy-fullpage'}>
+              <div className={view.kind === 'chat' ? 'content-inner messenger-mode' : 'content-inner'}>
+                <div className="app-page-header">
+                  <UserMenu
+                    user={activeUser}
+                    avatarUrl={avatarUrl}
+                    unread={unread}
+                    onUnreadChange={setUnread}
+                    onLogout={onLogout}
+                    showLogout={showLogout}
+                    onOpenAgent={(workflowId, runId) => void openAgentRun(workflowId, runId)}
+                    onOpenSettings={() => setView({ kind: 'tab', key: 'settings' })}
+                    canSwitchAdminView={Boolean(activeUser.isAdmin)}
+                    onSwitchAdminView={switchAdminView}
+                    variant={isAdminMode ? 'admin' : 'default'}
+                  />
+                </div>
+                {toast && <div className="wp-toast">{toast}</div>}
+                {content}
               </div>
-              {toast && <div className="wp-toast">{toast}</div>}
-              {content}
-            </div>
-          </main>
-          <ChatDock onAskOrchestrator={askOrchestratorFromDock} onOpenSupport={openSupport} />
-        </div>
+            </main>
+            <ChatDock onAskOrchestrator={askOrchestratorFromDock} onOpenSupport={openSupport} />
+          </div>
+        )}
       </SpecV04SourcesProvider>
     </GridDataRefreshProvider>
   )

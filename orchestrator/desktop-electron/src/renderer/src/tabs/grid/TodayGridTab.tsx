@@ -2,10 +2,12 @@ import { useEffect, useMemo, useState } from 'react'
 import { RefreshCw } from 'lucide-react'
 import type { UserProfile } from '../../api/types'
 import { OrchSlotFilters, OrchSlotMetrics, OrchSlotTodayCanvas } from '../../layout/GridSlots'
+import { ChromeFitRoot } from './TabChromeGrid'
 import { TodayWidgetGrid, useTodayWidgetLayout } from './TodayWidgetGrid'
+import { TODAY_WIDGET_IDS, TODAY_WIDGET_LABELS } from './useTodayWidgetLayout'
 import { SpecPanel, SpecPill, SpecSummaryTiles } from '../../workplace/specV04Components'
 import { buildTodayDayBreakdown, useTodayKpiData } from '../../workplace/useTodayKpiData'
-import { TODAY_ONEC_TASK_FILTER } from '../../workplace/tileFilters'
+import { compareTasksByUrgency, TODAY_ONEC_TASK_FILTER } from '../../workplace/tileFilters'
 import { openWorkplaceTab } from '../../workplace/workplaceNav'
 import { TodayDayBreakdownModal } from './TodayDayBreakdownModal'
 import { useTodayOutlookMail } from '../../workplace/useTodayOutlookMail'
@@ -22,7 +24,14 @@ import { useTodayProjectTasks } from '../../workplace/useTodayProjectTasks'
 import { parseMeetingTime } from '../../utils/outlookMeetings'
 import { sameDay } from '../../utils/calendar'
 import { useTodayPreparedDecisions } from '../../workplace/useTodayPreparedDecisions'
-import { TodayFiltersBar, TodayPlanPanel } from './todayTzComponents'
+import {
+  EMPTY_TODAY_BAR_FILTERS,
+  TodayFiltersBar,
+  TodayPlanPanel,
+  type TodayBarFilters
+} from './todayTzComponents'
+import { uniqueFilterValues } from './gridFilters'
+import { agentAccentStyle } from '../../workplace/agentAccent'
 import { TodayResultsPanel } from './TodayResultsPanel'
 import { useGridDataRefreshContext } from '../../workplace/GridDataRefreshContext'
 
@@ -139,6 +148,7 @@ export function TodayGridTab({
   const { data, tiles } = useTodayKpiData(user)
   const [dayBreakdownOpen, setDayBreakdownOpen] = useState(false)
   const [periodDay, setPeriodDay] = useState(startOfToday)
+  const [barFilters, setBarFilters] = useState<TodayBarFilters>(EMPTY_TODAY_BAR_FILTERS)
   const dayBreakdown = useMemo(() => buildTodayDayBreakdown(data), [data])
   const [onecDialogOpen, setOnecDialogOpen] = useState(false)
   const outlookMail = useTodayOutlookMail(periodDay)
@@ -146,8 +156,28 @@ export function TodayGridTab({
   const projectTasks = useTodayProjectTasks(periodDay, data)
   const erpFio = erpActorFio(user)
 
-  const mailRows = useMemo(() => outlookMail.rows.slice(0, 4), [outlookMail.rows])
-  const taskRows = useMemo(() => data.erpTasks.slice(0, 4), [data.erpTasks])
+  const matchesBar = (blob: string, status = '', executor = '', process = '', sourceId = ''): boolean => {
+    if (barFilters.source && barFilters.source !== sourceId) return false
+    if (barFilters.status && status !== barFilters.status) return false
+    if (barFilters.executor && executor !== barFilters.executor) return false
+    if (barFilters.process && process !== barFilters.process) return false
+    return true
+  }
+
+  const mailRows = useMemo(
+    () =>
+      outlookMail.rows.filter((row) =>
+        matchesBar(`${row.subject} ${row.sender}`, row.status, row.sender, '', 'outlook')
+      ),
+    [outlookMail.rows, barFilters]
+  )
+  const taskRows = useMemo(
+    () =>
+      [...data.erpTasks]
+        .filter((row) => matchesBar(row.title, row.status, row.executor || row.who, row.process, 'onec'))
+        .sort(compareTasksByUrgency),
+    [data.erpTasks, barFilters]
+  )
   const meetingRows = useMemo(() => {
     return data.meetings
       .filter((meeting) => {
@@ -155,7 +185,9 @@ export function TodayGridTab({
         return start ? sameDay(start, periodDay) : false
       })
       .sort((left, right) => left.start.localeCompare(right.start))
-      .slice(0, 4)
+      .filter((meeting) =>
+        matchesBar(meeting.subject, '', meeting.organizer || '', '', 'meet')
+      )
       .map((meeting) => {
         const start = parseMeetingTime(meeting.start)
         const time =
@@ -170,7 +202,57 @@ export function TodayGridTab({
           participants: attendees.length ? `${attendees.length} чел.` : '—'
         }
       })
-  }, [data.meetings, periodDay])
+  }, [data.meetings, periodDay, barFilters])
+
+  const projectTaskRows = useMemo(
+    () =>
+      projectTasks.rows.filter((row) =>
+        matchesBar(row.title, row.status, row.assignee, '', 'proj')
+      ),
+    [projectTasks.rows, barFilters]
+  )
+  const decisionItems = useMemo(
+    () =>
+      preparedDecisions.items.filter((item) =>
+        matchesBar(item.title, item.status, item.agentName, item.agentName, 'decision')
+      ),
+    [preparedDecisions.items, barFilters]
+  )
+
+  const todayFilterOptions = useMemo(() => {
+    const sources = [
+      outlookMail.rows.length ? { id: 'outlook', label: 'Outlook' } : null,
+      data.erpTasks.length ? { id: 'onec', label: '1С' } : null,
+      projectTasks.rows.length ? { id: 'proj', label: 'Проекты' } : null,
+      data.meetings.length ? { id: 'meet', label: 'Совещания' } : null,
+      preparedDecisions.items.length ? { id: 'decision', label: 'Решения' } : null
+    ].filter((item): item is { id: string; label: string } => Boolean(item))
+    return {
+      sources: sources.map((item) => item.id),
+      sourceLabels: Object.fromEntries(sources.map((item) => [item.id, item.label])) as Record<string, string>,
+      statuses: uniqueFilterValues([
+        ...outlookMail.rows.map((row) => row.status),
+        ...data.erpTasks.map((row) => row.status),
+        ...projectTasks.rows.map((row) => row.status),
+        ...preparedDecisions.items.map((row) => row.status)
+      ]),
+      executors: uniqueFilterValues([
+        ...data.erpTasks.map((row) => row.executor || row.who),
+        ...projectTasks.rows.map((row) => row.assignee),
+        ...data.meetings.map((row) => row.organizer)
+      ]),
+      processes: uniqueFilterValues([
+        ...data.erpTasks.map((row) => row.process),
+        ...preparedDecisions.items.map((row) => row.agentName)
+      ])
+    }
+  }, [
+    data.erpTasks,
+    data.meetings,
+    outlookMail.rows,
+    preparedDecisions.items,
+    projectTasks.rows
+  ])
 
   const onecError = userFacingOneCError(data.erpError)
   const showOneCReconnect = !data.erpLoading && data.oneCAuthFailure && !data.erpTasks.length
@@ -182,33 +264,36 @@ export function TodayGridTab({
   ) : undefined
 
   useEffect(() => {
-    if (data.comPasswordInSession) return
-    if (data.erpLoading || data.turboLoading) return
-    if (!showOneCReconnect && projectTasks.rows.length) return
+    if (data.comPasswordInSession || data.erpLoading || !showOneCReconnect) return
     setOnecDialogOpen(true)
-  }, [
-    data.comPasswordInSession,
-    data.erpLoading,
-    data.turboLoading,
-    showOneCReconnect,
-    projectTasks.rows.length
-  ])
+  }, [data.comPasswordInSession, data.erpLoading, showOneCReconnect])
 
   const {
     layoutWithStatic,
     locked,
+    visible,
+    color,
     editMode,
     setEditMode,
     onLayoutChange,
     toggleWidgetLock,
+    toggleWidgetVisible,
+    restoreWidget,
+    setWidgetColor,
     resetLayout
   } = useTodayWidgetLayout(user.id || '')
+  const todayBasketIds = TODAY_WIDGET_IDS.filter((id) => visible[id] === false)
 
   const todayWidgets = useMemo(
     () => ({
       plan: (
         <TodayWindow>
-          <TodayPlanPanel periodDay={periodDay} userId={user.id || ''} fio={erpFio} />
+          <TodayPlanPanel
+            periodDay={periodDay}
+            userId={user.id || ''}
+            fio={erpFio}
+            onOpenRun={onOpenRun}
+          />
         </TodayWindow>
       ),
       results: (
@@ -250,7 +335,7 @@ export function TodayGridTab({
             <button
               type="button"
               className="today-refresh-btn"
-              title="Обновить задачи 1С:Документооборот: сегодня и просроченные"
+              title="Обновить задачи 1С:Документооборот"
               disabled={data.erpLoading}
               onClick={() => forceRefresh()}
             >
@@ -293,14 +378,16 @@ export function TodayGridTab({
         <MiniTableCard
           title="Проектные задачи"
           loading={projectTasks.loading}
+          error={projectTasks.error || undefined}
           emptyText="Нет открытых проектных задач"
+          hint={projectTasks.showingAllAssignees ? 'Показаны все исполнители' : undefined}
           emptyExtra={
             !data.comPasswordInSession ? (
               <OneCReconnectInline errorHint={onecError} onOpen={() => setOnecDialogOpen(true)} />
             ) : undefined
           }
           columns={['Задача', 'Срок', 'Статус', 'Исполнитель']}
-          rows={projectTasks.rows.map((row) => [
+          rows={projectTaskRows.map((row) => [
             <TodayCellText key={`${row.id}-t`} text={row.title} />,
             <TodayCellText key={`${row.id}-d`} text={row.deadline} />,
             <SpecPill key={`${row.id}-st`} tone={row.statusTone}>
@@ -317,7 +404,7 @@ export function TodayGridTab({
         <TodayWindow>
         <MiniTableCard
           title="Предстоящие события"
-          loading={data.sourcesLoading}
+          loading={data.meetingsLoading}
           emptyText="Нет событий Outlook на выбранный день"
           columns={['Время', 'Событие', 'Формат', 'Участники']}
           rows={meetingRows.map((row) => [
@@ -343,11 +430,11 @@ export function TodayGridTab({
             <p className="today-table-status">Загружаем…</p>
           ) : preparedDecisions.error ? (
             <p className="today-table-status today-table-error">{preparedDecisions.error}</p>
-          ) : !preparedDecisions.items.length ? (
+          ) : !decisionItems.length ? (
             <p className="today-table-status">Нет подготовленных решений</p>
           ) : (
             <ul className="today-decision-list">
-              {preparedDecisions.items.map((item) => {
+              {decisionItems.map((item) => {
                 const openRow = (): void => {
                   if (item.workflowId && item.runId) {
                     onOpenRun(item.workflowId, item.agentName, item.runId)
@@ -362,6 +449,7 @@ export function TodayGridTab({
                   <li
                     key={item.id}
                     className={`today-decision-item${clickable ? ' today-decision-item-clickable' : ''}`}
+                    style={agentAccentStyle(item.workflowId)}
                     role={clickable ? 'button' : undefined}
                     tabIndex={clickable ? 0 : undefined}
                     onClick={clickable ? openRow : undefined}
@@ -406,9 +494,10 @@ export function TodayGridTab({
       data.outlookMailbox,
       data.comPasswordInSession,
       data.turboLoading,
-      data.sourcesLoading,
+      data.meetingsLoading,
       erpFio,
       preparedDecisions.error,
+      decisionItems,
       preparedDecisions.items,
       preparedDecisions.loading,
       mailRows,
@@ -418,8 +507,11 @@ export function TodayGridTab({
       outlookMail.error,
       outlookMail.loading,
       periodDay,
+      projectTasks.error,
       projectTasks.loading,
+      projectTaskRows,
       projectTasks.rows,
+      projectTasks.showingAllAssignees,
       taskRows,
       user.id
     ]
@@ -428,31 +520,40 @@ export function TodayGridTab({
   return (
     <>
       <OrchSlotMetrics>
-        <div className="orch-today-tiles">
-          <SpecSummaryTiles
-            tiles={tiles}
-            onSelect={(id) => {
-              if (id === 'day') {
-                setDayBreakdownOpen(true)
-                return
-              }
-              if (id === 'onec') {
-                openWorkplaceTab('tasks', { taskFilter: TODAY_ONEC_TASK_FILTER })
-                return
-              }
-              if (id === 'reg') {
-                openWorkplaceTab('processes', { processTab: 'reg' })
-                return
-              }
-              if (id === 'proj') {
-                openWorkplaceTab('projects')
-                return
-              }
-              if (id === 'ev') {
-                openWorkplaceTab('meetings')
-              }
-            }}
-          />
+        <div className="orch-today-tiles orch-today-tiles-widgets">
+          {tiles.map((tile) => (
+            <ChromeFitRoot
+              key={tile.id}
+              widgetId={`tile:${tile.id}`}
+              className="tab-chrome-shell today-kpi-tile-widget"
+            >
+              <SpecSummaryTiles
+                tiles={[tile]}
+                className="spec-v04-tile-solo"
+                onSelect={(id) => {
+                  if (id === 'day') {
+                    setDayBreakdownOpen(true)
+                    return
+                  }
+                  if (id === 'onec') {
+                    openWorkplaceTab('tasks', { taskFilter: TODAY_ONEC_TASK_FILTER })
+                    return
+                  }
+                  if (id === 'reg') {
+                    openWorkplaceTab('processes', { processTab: 'reg' })
+                    return
+                  }
+                  if (id === 'proj') {
+                    openWorkplaceTab('projects')
+                    return
+                  }
+                  if (id === 'ev') {
+                    openWorkplaceTab('meetings')
+                  }
+                }}
+              />
+            </ChromeFitRoot>
+          ))}
         </div>
       </OrchSlotMetrics>
 
@@ -463,6 +564,21 @@ export function TodayGridTab({
           widgetEditMode={editMode}
           onWidgetEditModeChange={setEditMode}
           onResetWidgetLayout={resetLayout}
+          basketIds={todayBasketIds}
+          basketLabels={TODAY_WIDGET_LABELS}
+          onRestoreWidget={(id) => restoreWidget(id as (typeof TODAY_WIDGET_IDS)[number])}
+          barFilters={barFilters}
+          onBarFiltersChange={setBarFilters}
+          sourceOptions={[
+            outlookMail.rows.length ? { value: 'outlook', label: 'Outlook' } : null,
+            data.erpTasks.length ? { value: 'onec', label: '1С' } : null,
+            projectTasks.rows.length ? { value: 'proj', label: 'Проекты' } : null,
+            data.meetings.length ? { value: 'meet', label: 'Совещания' } : null,
+            preparedDecisions.items.length ? { value: 'decision', label: 'Решения' } : null
+          ].filter((item): item is { value: string; label: string } => Boolean(item))}
+          statusOptions={todayFilterOptions.statuses}
+          executorOptions={todayFilterOptions.executors}
+          processOptions={todayFilterOptions.processes}
         />
       </OrchSlotFilters>
 
@@ -472,8 +588,12 @@ export function TodayGridTab({
           editMode={editMode}
           layoutWithStatic={layoutWithStatic}
           locked={locked}
+          visible={visible}
+          color={color}
           onLayoutChange={onLayoutChange}
           onToggleLock={toggleWidgetLock}
+          onToggleVisible={toggleWidgetVisible}
+          onSetColor={setWidgetColor}
           widgets={todayWidgets}
         />
       </OrchSlotTodayCanvas>
@@ -486,7 +606,7 @@ export function TodayGridTab({
       <TodayDayBreakdownModal
         open={dayBreakdownOpen}
         breakdown={dayBreakdown}
-        loading={data.loading}
+        loading={data.erpLoading || data.tableLoading}
         onClose={() => setDayBreakdownOpen(false)}
       />
     </>

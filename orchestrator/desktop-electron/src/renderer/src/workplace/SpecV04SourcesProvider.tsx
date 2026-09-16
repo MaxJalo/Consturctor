@@ -3,7 +3,6 @@ import {
   useContext,
   useEffect,
   useMemo,
-  useRef,
   useState,
   type ReactNode
 } from 'react'
@@ -15,7 +14,7 @@ import {
   type MeetingEvent
 } from '../utils/outlookMeetings'
 import { hasComPassword } from '../store/session'
-import { userFacingOneCError } from './onecSessionHints'
+import { isOneCAuthFailure, userFacingOneCError } from './onecSessionHints'
 import { isTechnicalTurboMessage } from './turboSession'
 import { erpActorFio, outlookMailboxAddress } from './userContext'
 import {
@@ -64,6 +63,7 @@ const EMPTY: SpecV04SourcesState = {
   meetingCount: 0,
   meetingCountToday: 0,
   meetings: [],
+  meetingsLoading: false,
   erpError: '',
   erpLoading: false,
   turboError: '',
@@ -116,23 +116,22 @@ export function SpecV04SourcesProvider({
   const [mailImapError, setMailImapError] = useState('')
   const [mailImapStatus, setMailImapStatus] = useState('')
   const [meetings, setMeetings] = useState<MeetingEvent[]>([])
+  const [meetingsLoading, setMeetingsLoading] = useState(true)
   const [oneCAuthFailure, setOneCAuthFailure] = useState(false)
-  const hasLoadedSourcesRef = useRef(false)
 
   useEffect(() => {
     if (!user.id) {
       setErpLoading(false)
-      setTurboLoading(false)
-      setMailLoading(false)
-      setTurboNoSession(false)
       return
     }
     let alive = true
     const forceRefresh = takeHardRefresh()
     setErpLoading(true)
-    setTurboLoading(true)
     setError('')
-
+    // #region agent log
+    const _erpT0 = Date.now()
+    fetch('http://127.0.0.1:7847/ingest/b2a622e9-6027-4fae-9a68-3d036eb3c49e',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'d8a6bb'},body:JSON.stringify({sessionId:'d8a6bb',runId:'pre-fix',hypothesisId:'H4',location:'SpecV04SourcesProvider.tsx:erp-start',message:'erp fetch start',data:{generation,forceRefresh,comCredsRevision},timestamp:Date.now()})}).catch(()=>{})
+    // #endregion
     void loadOrchestratorErpTasks(user, erpFio, { forceRefresh })
       .then((erp) => {
         if (!alive) return
@@ -146,15 +145,31 @@ export function SpecV04SourcesProvider({
         if (!alive) return
         setErpTasks([])
         setErpError(userFacingOneCError(err instanceof Error ? err.message : ''))
-        setOneCAuthFailure(!hasComPassword())
+        setOneCAuthFailure(isOneCAuthFailure(err instanceof Error ? err.message : ''))
       })
       .finally(() => {
-        if (alive) {
-          hasLoadedSourcesRef.current = true
-          setErpLoading(false)
-        }
+        if (alive) setErpLoading(false)
+        // #region agent log
+        fetch('http://127.0.0.1:7847/ingest/b2a622e9-6027-4fae-9a68-3d036eb3c49e',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'d8a6bb'},body:JSON.stringify({sessionId:'d8a6bb',runId:'pre-fix',hypothesisId:'H4',location:'SpecV04SourcesProvider.tsx:erp-end',message:'erp fetch end',data:{ms:Date.now()-_erpT0,alive},timestamp:Date.now()})}).catch(()=>{})
+        // #endregion
       })
+    return () => {
+      alive = false
+    }
+  }, [user.id, erpFio, generation, comCredsRevision, takeHardRefresh])
 
+  useEffect(() => {
+    if (!user.id) {
+      setTurboLoading(false)
+      setTurboNoSession(false)
+      return
+    }
+    let alive = true
+    setTurboLoading(true)
+    // #region agent log
+    const _turboT0 = Date.now()
+    fetch('http://127.0.0.1:7847/ingest/b2a622e9-6027-4fae-9a68-3d036eb3c49e',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'d8a6bb'},body:JSON.stringify({sessionId:'d8a6bb',runId:'pre-fix',hypothesisId:'H3',location:'SpecV04SourcesProvider.tsx:turbo-start',message:'turbo fetch start',data:{generation,comCredsRevision},timestamp:Date.now()})}).catch(()=>{})
+    // #endregion
     void (async () => {
       try {
         const turbo = await loadOrchestratorTurboPortfolio(user, erpFio)
@@ -180,13 +195,23 @@ export function SpecV04SourcesProvider({
             'Не удалось загрузить TurboProject'
         )
       } finally {
-        if (alive) {
-          hasLoadedSourcesRef.current = true
-          setTurboLoading(false)
-        }
+        if (alive) setTurboLoading(false)
+        // #region agent log
+        fetch('http://127.0.0.1:7847/ingest/b2a622e9-6027-4fae-9a68-3d036eb3c49e',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'d8a6bb'},body:JSON.stringify({sessionId:'d8a6bb',runId:'pre-fix',hypothesisId:'H3',location:'SpecV04SourcesProvider.tsx:turbo-end',message:'turbo fetch end',data:{ms:Date.now()-_turboT0,alive},timestamp:Date.now()})}).catch(()=>{})
+        // #endregion
       }
     })()
+    return () => {
+      alive = false
+    }
+  }, [user.id, erpFio, generation, comCredsRevision])
 
+  useEffect(() => {
+    if (!user.id) {
+      setMailLoading(false)
+      return
+    }
+    let alive = true
     setMailLoading(true)
     void loadOrchestratorOutlookMailWeek(outlookMailbox)
       .then((mail) => {
@@ -206,22 +231,27 @@ export function SpecV04SourcesProvider({
       .finally(() => {
         if (alive) setMailLoading(false)
       })
-
     return () => {
       alive = false
     }
-  }, [user.id, erpFio, outlookMailbox, generation, comCredsRevision])
+  }, [user.id, outlookMailbox, generation])
 
   useEffect(() => {
-    if (!user.id) return
+    if (!user.id) {
+      setMeetingsLoading(false)
+      return
+    }
     let alive = true
-    const today = new Date()
-    void ensureOutlookMeetings('week', today, { owner: erpFio })
+    setMeetingsLoading(true)
+    void ensureOutlookMeetings('week', new Date(), { owner: erpFio })
       .then((cal) => {
         if (alive) setMeetings(dedupeMeetingEvents(cal.meetings || []))
       })
       .catch(() => {
         if (alive) setMeetings([])
+      })
+      .finally(() => {
+        if (alive) setMeetingsLoading(false)
       })
     return () => {
       alive = false
@@ -289,6 +319,7 @@ export function SpecV04SourcesProvider({
       meetingCount: meetings.length,
       meetingCountToday,
       meetings,
+      meetingsLoading,
       sources: {
         erp: erpSource || ORCH_SOURCE_ID.erpPm,
         turbo: turboSource || ORCH_SOURCE_ID.turboProject,
@@ -324,6 +355,7 @@ export function SpecV04SourcesProvider({
       todayProcessRows,
       allProcessRows,
       meetings,
+      meetingsLoading,
       meetingCountToday,
       erpSource,
       turboSource,

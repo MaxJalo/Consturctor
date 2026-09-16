@@ -1,13 +1,9 @@
 import { useEffect, useMemo, useState } from 'react'
 import { OneCReconnectDialog, OneCReconnectInline } from '../../workplace/OneCReconnectDialog'
 import type { UserProfile } from '../../api/types'
-import {
-  OrchSlotFilters,
-  OrchSlotMain,
-  OrchSlotMetrics,
-  OrchSlotSide
-} from '../../layout/GridSlots'
-import { SpecPill, SpecProgress, SpecSummaryTiles } from '../../workplace/specV04Components'
+import { StandardTabChrome, summaryTilesAsChrome } from './TabChromeGrid'
+import { DEFAULT_STANDARD_LAYOUT } from './useTabChromeLayout'
+import { SpecPill, SpecProgress } from '../../workplace/specV04Components'
 import {
   comPasswordSessionHint,
   sessionOneCEmptyText,
@@ -18,10 +14,14 @@ import { buildTaskTiles, useSpecV04Sources } from '../../workplace/useSpecV04Dat
 import {
   applyTaskTileClick,
   buildTaskCatalog,
+  compareTasksByUrgency,
   EMPTY_TASK_TILE_FILTER,
   filterTaskRows,
   isDeadTaskSource,
+  isOverdueTask,
+  parseTaskDueDate,
   taskTileActiveIds,
+  type TaskSourceFilter,
   type TaskTileFilter
 } from '../../workplace/tileFilters'
 import {
@@ -29,7 +29,7 @@ import {
   ORCH_CREATE_TASK,
   type CreateTaskChannel
 } from '../../workplace/workplaceNav'
-import { StandardGridFilters } from './gridFilters'
+import { GridFilterBar, toFilterOptions, uniqueFilterValues } from './gridFilters'
 
 export function TasksGridTab({
   user,
@@ -40,6 +40,12 @@ export function TasksGridTab({
 }): React.JSX.Element {
   const data = useSpecV04Sources(user)
   const [tileFilter, setTileFilter] = useState(navTaskFilter ?? EMPTY_TASK_TILE_FILTER)
+  const [query, setQuery] = useState('')
+  const [barSource, setBarSource] = useState('')
+  const [barStatus, setBarStatus] = useState('')
+  const [barProject, setBarProject] = useState('')
+  const [barSort, setBarSort] = useState('urgent')
+  const [barOverdue, setBarOverdue] = useState(false)
   useEffect(() => {
     if (navTaskFilter) setTileFilter(navTaskFilter)
   }, [navTaskFilter])
@@ -47,10 +53,35 @@ export function TasksGridTab({
     () => buildTaskCatalog(data.erpTasks, data.turboTasks, data.processRows),
     [data.erpTasks, data.turboTasks, data.processRows]
   )
-  const taskRows = useMemo(
-    () => filterTaskRows(catalog.rows, tileFilter, catalog.erpIds, catalog.turboIds),
-    [catalog, tileFilter]
-  )
+  const effectiveTile: TaskTileFilter = {
+    source: (barSource as TaskSourceFilter) || tileFilter.source,
+    overdueOnly: barOverdue || tileFilter.overdueOnly
+  }
+  const taskRows = useMemo(() => {
+    const q = query.trim().toLowerCase()
+    const filtered = filterTaskRows(catalog.rows, effectiveTile, catalog.erpIds, catalog.turboIds).filter(
+      (row) => {
+        if (barStatus && row.status !== barStatus) return false
+        if (barProject && row.project !== barProject) return false
+        if (q && !`${row.title} ${row.source} ${row.process} ${row.project}`.toLowerCase().includes(q)) {
+          return false
+        }
+        if (barOverdue && !isOverdueTask(row)) return false
+        return true
+      }
+    )
+    if (barSort === 'name') {
+      return [...filtered].sort((left, right) => left.title.localeCompare(right.title, 'ru'))
+    }
+    if (barSort === 'due') {
+      return [...filtered].sort((left, right) => {
+        const leftDue = parseTaskDueDate(left.deadline)?.getTime() ?? Number.POSITIVE_INFINITY
+        const rightDue = parseTaskDueDate(right.deadline)?.getTime() ?? Number.POSITIVE_INFINITY
+        return leftDue - rightDue
+      })
+    }
+    return [...filtered].sort(compareTasksByUrgency)
+  }, [catalog, effectiveTile, query, barStatus, barProject, barSort, barOverdue])
   const onTileSelect = (id: string): void => {
     setTileFilter((current) => applyTaskTileClick(current, id, isDeadTaskSource(data, id)))
   }
@@ -61,9 +92,11 @@ export function TasksGridTab({
   const showOneCReconnect = !data.erpLoading && data.oneCAuthFailure
   const emptyTableText =
     (data.erpLoading || data.turboLoading) && !taskRows.length
-      ? data.erpFio
+      ? data.erpLoading && data.erpFio
         ? `Загружаем задачи 1С для ${data.erpFio}…`
-        : 'Загружаем задачи…'
+        : data.turboLoading
+          ? 'Загружаем проектные задачи…'
+          : 'Загружаем задачи…'
       : showOneCReconnect && !taskRows.length
         ? 'Нужно подключить 1С.'
         : catalog.rows.length && !taskRows.length
@@ -97,18 +130,68 @@ export function TasksGridTab({
 
   return (
     <>
-      <OrchSlotMetrics>
-        <SpecSummaryTiles
-          tiles={buildTaskTiles(data)}
-          activeId={taskTileActiveIds(tileFilter)}
-          onSelect={onTileSelect}
-          className="spec-v04-tiles-6"
+      <StandardTabChrome
+        tabId="tasks"
+        userId={user.id || ''}
+        defaults={DEFAULT_STANDARD_LAYOUT}
+        chromeTiles={summaryTilesAsChrome(buildTaskTiles(data), taskTileActiveIds(tileFilter), onTileSelect)}
+        widgets={{
+          filters: (
+        <GridFilterBar
+          search={{ value: query, onChange: setQuery, placeholder: 'Поиск по задачам…' }}
+          selects={[
+            {
+              id: 'source',
+              value: barSource,
+              emptyLabel: 'Источник: все',
+              onChange: setBarSource,
+              options: [
+                { value: 'onec', label: '1С' },
+                { value: 'proj', label: 'TurboProject' },
+                { value: 'reg', label: 'Регламент' }
+              ]
+            },
+            {
+              id: 'status',
+              value: barStatus,
+              emptyLabel: 'Статус: все',
+              onChange: setBarStatus,
+              options: toFilterOptions(uniqueFilterValues(catalog.rows.map((row) => row.status)))
+            },
+            {
+              id: 'project',
+              value: barProject,
+              emptyLabel: 'Проект: все',
+              onChange: setBarProject,
+              options: toFilterOptions(uniqueFilterValues(catalog.rows.map((row) => row.project)))
+            }
+          ]}
+          sort={{
+            id: 'sort',
+            value: barSort,
+            emptyLabel: '',
+            onChange: setBarSort,
+            options: [
+              { value: 'urgent', label: 'Сортировка: срочные сначала' },
+              { value: 'due', label: 'Сортировка: по сроку' },
+              { value: 'name', label: 'Сортировка: по названию' }
+            ]
+          }}
+          toggles={[
+            { id: 'overdue', label: 'Только просроченные', checked: barOverdue, onChange: setBarOverdue }
+          ]}
+          onReset={() => {
+            setQuery('')
+            setBarSource('')
+            setBarStatus('')
+            setBarProject('')
+            setBarSort('urgent')
+            setBarOverdue(false)
+            setTileFilter(EMPTY_TASK_TILE_FILTER)
+          }}
         />
-      </OrchSlotMetrics>
-      <OrchSlotFilters>
-        <StandardGridFilters searchPlaceholder="Поиск по задачам…" />
-      </OrchSlotFilters>
-      <OrchSlotMain>
+          ),
+          main: (
         <div className="spec-v04-table-wrap wp-card">
           {soapBanner ? (
             <p className="today-table-status today-table-error today-table-banner">{soapBanner}</p>
@@ -122,7 +205,7 @@ export function TasksGridTab({
           {!soapBanner && !turboBanner && data.erpSecondaryHint ? (
             <p className="today-table-status today-table-banner">{data.erpSecondaryHint}</p>
           ) : null}
-          {!soapBanner && !turboBanner && !data.erpSecondaryHint && !data.loading && !taskRows.length ? (
+          {!soapBanner && !turboBanner && !data.erpSecondaryHint && !data.erpLoading && !data.turboLoading && !taskRows.length ? (
             <p className="today-table-status today-table-banner spec-v04-muted">
               {comPasswordSessionHint()}
             </p>
@@ -180,8 +263,9 @@ export function TasksGridTab({
             </tbody>
           </table>
         </div>
-      </OrchSlotMain>
-      <OrchSlotSide>
+          ),
+          side: (
+        <>
         {createChannel ? (
           <div className="spec-detail-card wp-card">
             <h2>Создать задачу</h2>
@@ -229,7 +313,10 @@ export function TasksGridTab({
         ) : (
           <div className="wp-card spec-v04-muted">Выберите задачу</div>
         )}
-      </OrchSlotSide>
+        </>
+          )
+        }}
+      />
       <OneCReconnectDialog
         open={onecDialogOpen}
         onClose={() => setOnecDialogOpen(false)}

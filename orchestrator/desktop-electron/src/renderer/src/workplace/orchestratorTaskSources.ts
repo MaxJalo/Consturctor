@@ -8,9 +8,7 @@ import {
   sessionOneCSourceLabel,
   userFacingOneCError,
   isErpMetaHintRecord,
-  missingComPasswordMessage
 } from './onecSessionHints'
-import { hasComPassword } from '../store/session'
 import { hasTurboSessionCredentials, onecGatewayInvokeArgs, turboProjectInvokeArgs } from './userContext'
 import {
   erpTaskToRow,
@@ -222,20 +220,10 @@ export async function loadOrchestratorErpTasks(
   erpFio: string,
   opts?: { forceRefresh?: boolean }
 ): Promise<OrchestratorErpLoad> {
-  if (!hasComPassword()) {
-    return {
-      tasks: [],
-      sourceLabel: sessionOneCSourceLabel(erpFio),
-      error: missingComPasswordMessage(),
-      loading: false,
-      erpSecondaryHint: '',
-      oneCAuthFailure: true
-    }
-  }
   const onecArgs = onecGatewayInvokeArgs(user, {
     limit: 80,
     only_open: true,
-    today_and_overdue: true,
+    today_and_overdue: false,
     force_refresh: Boolean(opts?.forceRefresh)
   })
   const dfRes = await api.invokeServerTool('onec.docflow_tasks', onecArgs, 300_000)
@@ -413,8 +401,9 @@ export function pickTurboProjectsForTaskFetch(projects: SpecProjectRow[], max = 
       if (right.tasks !== left.tasks) return right.tasks - left.tasks
       return left.name.localeCompare(right.name, 'ru')
     })
+  const cap = max > 0 ? max : projects.length
   for (const row of rest) {
-    if (selected.length >= max) break
+    if (cap > 0 && selected.length >= cap) break
     if (!selected.some((item) => item.id === row.id)) selected.push(row)
   }
   return selected
@@ -436,14 +425,10 @@ export async function loadOrchestratorTurboTaskRows(
   user: UserProfile,
   erpFio: string,
   projects: SpecProjectRow[],
-  turboNoSession: boolean
+  _turboNoSession: boolean
 ): Promise<OrchestratorTurboTasksLoad> {
-  const liveSession = hasTurboSessionCredentials(user)
-  if (!liveSession && turboNoSession) {
-    return { tasks: [], error: '', loading: false }
-  }
   const pool = projects.length ? projects : mergePinnedTurboProjects([])
-  const candidates = turboProjectFetchCandidates(pool, 8)
+  const candidates = turboProjectFetchCandidates(pool, pool.length || 200)
   if (!candidates.length) return { tasks: [], error: '', loading: false }
 
   const byId = new Map(pool.map((row) => [row.id, row]))

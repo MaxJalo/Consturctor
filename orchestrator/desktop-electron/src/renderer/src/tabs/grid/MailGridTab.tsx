@@ -1,18 +1,14 @@
 import { useCallback, useMemo, useState } from 'react'
 import type { UserProfile } from '../../api/types'
-import {
-  OrchSlotFilters,
-  OrchSlotMain,
-  OrchSlotMetrics,
-  OrchSlotSide
-} from '../../layout/GridSlots'
+import { StandardTabChrome, summaryTilesAsChrome } from './TabChromeGrid'
+import { DEFAULT_STANDARD_LAYOUT } from './useTabChromeLayout'
 import type { SpecSummaryTile } from '../../workplace/specV04Shell'
-import { SpecPill, SpecSummaryTiles } from '../../workplace/specV04Components'
+import { SpecPill } from '../../workplace/specV04Components'
 import { type SpecMailRow } from '../../workplace/specV04DemoData'
 import { useSpecV04Sources } from '../../workplace/useSpecV04Data'
 import { countMailTiles, mailMatchesTile, toggleSimpleTile } from '../../workplace/tileFilters'
 import { mailListEmptyHint } from '../../workplace/mailProbe'
-import { StandardGridFilters } from './gridFilters'
+import { GridFilterBar, toFilterOptions, uniqueFilterValues } from './gridFilters'
 import { MailDetailPanel } from './MailDetailPanel'
 
 export function MailGridTab({
@@ -30,10 +26,19 @@ export function MailGridTab({
   )
   const [selectedId, setSelectedId] = useState('')
   const [tileFilter, setTileFilter] = useState('all')
-  const visibleMail = useMemo(
-    () => mailRows.filter((row) => mailMatchesTile(row, tileFilter)),
-    [mailRows, tileFilter]
-  )
+  const [query, setQuery] = useState('')
+  const [barPriority, setBarPriority] = useState('')
+  const [barStatus, setBarStatus] = useState('')
+  const visibleMail = useMemo(() => {
+    const q = query.trim().toLowerCase()
+    return mailRows.filter((row) => {
+      if (!mailMatchesTile(row, tileFilter)) return false
+      if (barPriority && row.priority !== barPriority) return false
+      if (barStatus && row.status !== barStatus) return false
+      if (q && !`${row.sender} ${row.subject} ${row.status}`.toLowerCase().includes(q)) return false
+      return true
+    })
+  }, [mailRows, tileFilter, query, barPriority, barStatus])
   const selected = visibleMail.find((m) => m.id === (selectedId || visibleMail[0]?.id))
   const patchRow = useCallback((id: string, patch: Partial<(typeof mailRows)[0]>) => {
     setRowPatches((prev) => ({ ...prev, [id]: { ...prev[id], ...patch } }))
@@ -54,18 +59,42 @@ export function MailGridTab({
   const ask = (m: string) => onAskOrchestrator(m, 'Вкладка «Письма»')
 
   return (
-    <>
-      <OrchSlotMetrics>
-        <SpecSummaryTiles
-          tiles={tiles}
-          activeId={tileFilter === 'all' ? 'new' : tileFilter}
-          onSelect={(id) => setTileFilter((current) => (id === 'new' ? 'all' : toggleSimpleTile(current, id)))}
+    <StandardTabChrome
+      tabId="mail"
+      userId={user.id || ''}
+      defaults={DEFAULT_STANDARD_LAYOUT}
+      chromeTiles={summaryTilesAsChrome(tiles, tileFilter === 'all' ? 'new' : tileFilter, (id) =>
+        setTileFilter((current) => (id === 'new' ? 'all' : toggleSimpleTile(current, id)))
+      )}
+      widgets={{
+        filters: (
+        <GridFilterBar
+          search={{ value: query, onChange: setQuery, placeholder: 'Поиск в письмах…' }}
+          selects={[
+            {
+              id: 'priority',
+              value: barPriority,
+              emptyLabel: 'Приоритет: все',
+              onChange: setBarPriority,
+              options: toFilterOptions(uniqueFilterValues(mailRows.map((row) => row.priority)))
+            },
+            {
+              id: 'status',
+              value: barStatus,
+              emptyLabel: 'Статус: все',
+              onChange: setBarStatus,
+              options: toFilterOptions(uniqueFilterValues(mailRows.map((row) => row.status)))
+            }
+          ]}
+          onReset={() => {
+            setQuery('')
+            setBarPriority('')
+            setBarStatus('')
+            setTileFilter('all')
+          }}
         />
-      </OrchSlotMetrics>
-      <OrchSlotFilters>
-        <StandardGridFilters searchPlaceholder="Поиск в письмах…" />
-      </OrchSlotFilters>
-      <OrchSlotMain>
+        ),
+        main: (
         <div className="spec-v04-table-wrap wp-card">
           {data.mailComError || data.mailImapError || (!data.mailImapPrimary && data.mailImapStatus) ? (
             <p className="spec-v04-muted">
@@ -91,7 +120,7 @@ export function MailGridTab({
                     {mailRows.length
                       ? 'Нет писем по выбранной плитке'
                       : mailListEmptyHint({
-                          loading: data.mailLoading || data.loading,
+                          loading: data.mailLoading,
                           imapPrimary: data.mailImapPrimary,
                           mailbox: data.outlookMailbox,
                           imapStatus: data.mailImapStatus
@@ -115,14 +144,13 @@ export function MailGridTab({
             </tbody>
           </table>
         </div>
-      </OrchSlotMain>
-      <OrchSlotSide>
-        {selected ? (
+        ),
+        side: selected ? (
           <MailDetailPanel mail={selected} onPatchRow={patchRow} onAskOrchestrator={ask} />
         ) : (
           <div className="wp-card spec-v04-muted">Выберите письмо</div>
-        )}
-      </OrchSlotSide>
-    </>
+        )
+      }}
+    />
   )
 }

@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import type { Layout, LayoutItem } from 'react-grid-layout/legacy'
+import { resolveLayoutOverlaps } from './gridReflow'
 
-export const TODAY_LAYOUT_STORAGE_KEY = 'orch-today-layout-v4'
+export const TODAY_LAYOUT_STORAGE_KEY = 'orch-today-layout-v5'
 
 export const TODAY_GRID_COLS = 8
 export const TODAY_GRID_MAX_ROWS = 6
@@ -54,6 +55,8 @@ export type TodayWidgetId = (typeof TODAY_WIDGET_IDS)[number]
 export type TodayWidgetLayoutPersist = {
   layout: LayoutItem[]
   locked: Partial<Record<TodayWidgetId, boolean>>
+  visible?: Partial<Record<TodayWidgetId, boolean>>
+  color?: Partial<Record<TodayWidgetId, string>>
 }
 
 /**
@@ -114,7 +117,7 @@ function clampLayoutItem(item: LayoutItem, defaults: LayoutItem): LayoutItem {
   return { ...defaults, x, y, w, h }
 }
 
-function sanitizeLayout(raw: Layout | LayoutItem[] | undefined): LayoutItem[] {
+function mergeLayout(raw: Layout | LayoutItem[] | undefined): LayoutItem[] {
   const base = cloneDefaultLayout()
   const list = raw ? [...raw] : []
   if (!list.length) return base
@@ -133,6 +136,16 @@ function sanitizeLayout(raw: Layout | LayoutItem[] | undefined): LayoutItem[] {
   })
 }
 
+/** Clamp bounds only — used while dragging (RGL preventCollision keeps cells free). */
+function sanitizeLayout(raw: Layout | LayoutItem[] | undefined): LayoutItem[] {
+  return mergeLayout(raw)
+}
+
+/** One-time repair when loading corrupted saves. */
+function sanitizeLayoutFromStorage(raw: Layout | LayoutItem[] | undefined): LayoutItem[] {
+  return resolveLayoutOverlaps(mergeLayout(raw), TODAY_GRID_COLS, TODAY_GRID_MAX_ROWS)
+}
+
 function sanitizeLocked(raw: Partial<Record<string, boolean>> | undefined): Partial<Record<TodayWidgetId, boolean>> {
   const locked: Partial<Record<TodayWidgetId, boolean>> = {}
   if (!raw) return locked
@@ -142,19 +155,43 @@ function sanitizeLocked(raw: Partial<Record<string, boolean>> | undefined): Part
   return locked
 }
 
+function sanitizeFlagMap(
+  raw: Partial<Record<string, boolean>> | undefined
+): Partial<Record<TodayWidgetId, boolean>> {
+  const next: Partial<Record<TodayWidgetId, boolean>> = {}
+  if (!raw) return next
+  for (const id of TODAY_WIDGET_IDS) {
+    if (typeof raw[id] === 'boolean') next[id] = raw[id]
+  }
+  return next
+}
+
+function sanitizeColorMap(
+  raw: Partial<Record<string, string>> | undefined
+): Partial<Record<TodayWidgetId, string>> {
+  const next: Partial<Record<TodayWidgetId, string>> = {}
+  if (!raw) return next
+  for (const id of TODAY_WIDGET_IDS) {
+    if (typeof raw[id] === 'string') next[id] = raw[id]
+  }
+  return next
+}
+
 function readPersist(userId: string): TodayWidgetLayoutPersist {
   try {
     const raw = localStorage.getItem(storageKeyForUser(userId))
     if (!raw) {
-      return { layout: cloneDefaultLayout(), locked: {} }
+      return { layout: cloneDefaultLayout(), locked: {}, visible: {}, color: {} }
     }
     const parsed = JSON.parse(raw) as TodayWidgetLayoutPersist
     return {
-      layout: sanitizeLayout(parsed.layout),
-      locked: sanitizeLocked(parsed.locked)
+      layout: sanitizeLayoutFromStorage(parsed.layout),
+      locked: sanitizeLocked(parsed.locked),
+      visible: sanitizeFlagMap(parsed.visible),
+      color: sanitizeColorMap(parsed.color)
     }
   } catch {
-    return { layout: cloneDefaultLayout(), locked: {} }
+    return { layout: cloneDefaultLayout(), locked: {}, visible: {}, color: {} }
   }
 }
 
@@ -164,6 +201,17 @@ function writePersist(userId: string, state: TodayWidgetLayoutPersist): void {
   } catch {
     /* ignore quota */
   }
+}
+
+function layoutGeomEqual(left: LayoutItem[], right: LayoutItem[]): boolean {
+  if (left.length !== right.length) return false
+  const rightById = new Map(right.map((item) => [item.i, item]))
+  return left.every((item) => {
+    const other = rightById.get(item.i)
+    return Boolean(
+      other && item.x === other.x && item.y === other.y && item.w === other.w && item.h === other.h
+    )
+  })
 }
 
 export function applyTodayLayoutStaticFlags(
@@ -181,10 +229,15 @@ export function useTodayWidgetLayout(userId: string): {
   layout: LayoutItem[]
   layoutWithStatic: LayoutItem[]
   locked: Partial<Record<TodayWidgetId, boolean>>
+  visible: Partial<Record<TodayWidgetId, boolean>>
+  color: Partial<Record<TodayWidgetId, string>>
   editMode: boolean
   setEditMode: (value: boolean | ((prev: boolean) => boolean)) => void
   onLayoutChange: (next: Layout) => void
   toggleWidgetLock: (id: TodayWidgetId) => void
+  toggleWidgetVisible: (id: TodayWidgetId) => void
+  restoreWidget: (id: TodayWidgetId) => void
+  setWidgetColor: (id: TodayWidgetId, color: string) => void
   resetLayout: () => void
 } {
   const [persist, setPersist] = useState(() => readPersist(userId))
@@ -206,39 +259,76 @@ export function useTodayWidgetLayout(userId: string): {
     [userId]
   )
 
+  const visible = persist.visible || {}
+  const color = persist.color || {}
+
   const onLayoutChange = useCallback(
     (next: Layout) => {
-      persistState({ layout: sanitizeLayout(next), locked })
+      const proposed = sanitizeLayout(next)
+      if (layoutGeomEqual(proposed, layout)) return
+      persistState({ layout: proposed, locked, visible, color })
     },
-    [locked, persistState]
+    [color, layout, locked, persistState, visible]
   )
 
   const toggleWidgetLock = useCallback(
     (id: TodayWidgetId) => {
       const nextLocked = { ...locked, [id]: !locked[id] }
       if (!nextLocked[id]) delete nextLocked[id]
-      persistState({ layout, locked: nextLocked })
+      persistState({ layout, locked: nextLocked, visible, color })
     },
-    [layout, locked, persistState]
+    [color, layout, locked, persistState, visible]
+  )
+
+  const toggleWidgetVisible = useCallback(
+    (id: TodayWidgetId) => {
+      const nextVisible = { ...visible, [id]: visible[id] === false }
+      persistState({ layout, locked, visible: nextVisible, color })
+    },
+    [color, layout, locked, persistState, visible]
+  )
+
+  const restoreWidget = useCallback(
+    (id: TodayWidgetId) => {
+      const nextVisible = { ...visible }
+      delete nextVisible[id]
+      persistState({ layout, locked, visible: nextVisible, color })
+    },
+    [color, layout, locked, persistState, visible]
+  )
+
+  const setWidgetColor = useCallback(
+    (id: TodayWidgetId, nextColor: string) => {
+      const next = { ...color, [id]: nextColor }
+      if (!nextColor) delete next[id]
+      persistState({ layout, locked, visible, color: next })
+    },
+    [color, layout, locked, persistState, visible]
   )
 
   const resetLayout = useCallback(() => {
-    persistState({ layout: cloneDefaultLayout(), locked: {} })
+    persistState({ layout: cloneDefaultLayout(), locked: {}, visible: {}, color: {} })
   }, [persistState])
 
-  const layoutWithStatic = useMemo(
-    () => applyTodayLayoutStaticFlags(layout, editMode, locked),
-    [layout, editMode, locked]
-  )
+  const layoutWithStatic = useMemo(() => {
+    const flagged = applyTodayLayoutStaticFlags(layout, editMode, locked)
+    if (editMode) return flagged
+    return flagged.filter((item) => visible[item.i as TodayWidgetId] !== false)
+  }, [layout, editMode, locked, visible])
 
   return {
     layout,
     layoutWithStatic,
     locked,
+    visible,
+    color,
     editMode,
     setEditMode,
     onLayoutChange,
     toggleWidgetLock,
+    toggleWidgetVisible,
+    restoreWidget,
+    setWidgetColor,
     resetLayout
   }
 }

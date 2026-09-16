@@ -6,8 +6,8 @@
   overflow: hidden;
   grid-template-rows:
     minmax(48px, max-content)
-    104px
-    76px
+    87px
+    40px
     minmax(268px, 1.35fr)
     minmax(0, 1fr)
     minmax(0, 1fr)
@@ -44,9 +44,9 @@
 .orch-grid-today .orch-slot-metrics {
   grid-column: 1 / 9;
   grid-row: 2;
-  height: 104px;
-  max-height: 104px;
-  min-height: 104px;
+  height: 87px;
+  max-height: 87px;
+  min-height: 87px;
   overflow: hidden;
 }
 
@@ -55,13 +55,40 @@
   min-height: 0;
 }
 
-.orch-today-tiles .spec-v04-tiles-rich {
-  display: grid !important;
-  grid-template-columns: repeat(5, minmax(0, 1fr)) !important;
+.orch-today-tiles-widgets {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 5px;
+  height: 100%;
+}
+
+.today-kpi-tile-widget,
+.chrome-fit-root.today-kpi-tile-widget {
+  min-height: 0;
+  min-width: 0;
+  height: 100%;
+  width: 100%;
+  container-type: size;
+  container-name: orch-tile;
+}
+
+.orch-today-tiles:not(.orch-today-tiles-widgets) .spec-v04-tiles-rich {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
   gap: 5px;
   height: 100%;
   min-height: 0;
   margin: 0;
+}
+
+.orch-today-tiles-widgets .spec-v04-tiles-rich,
+.orch-today-tiles-widgets .spec-v04-tile-solo {
+  display: grid !important;
+  grid-template-columns: minmax(0, 1fr) !important;
+  height: 100%;
+  min-height: 0;
+  margin: 0;
+  gap: 0;
 }
 
 .orch-today-tiles .spec-v04-tile {
@@ -69,65 +96,122 @@
   min-width: 0;
   height: 100%;
   overflow: hidden;
-  padding: 8px 10px 6px;
-  gap: 3px;
+  padding: clamp(4px, 8cqh, 12px) clamp(6px, 2.4cqw, 14px);
+  row-gap: 2px;
+  column-gap: clamp(6px, 1.6cqw, 12px);
+  border-radius: 10px;
+  align-content: center;
 }
 
 .orch-grid-today .spec-v04-tile-label {
-  font-size: 11px;
+  font-size: clamp(11px, 16cqh, 19px);
   line-height: 1.2;
-  display: -webkit-box;
-  -webkit-box-orient: vertical;
-  -webkit-line-clamp: 2;
+  white-space: nowrap;
   overflow: hidden;
+  text-overflow: ellipsis;
+  display: block;
+}
+
+.orch-grid-today .spec-v04-tile-metrics {
+  flex-direction: row;
+  align-items: baseline;
+  gap: clamp(4px, 1.2cqw, 8px);
+  min-width: 0;
 }
 
 .orch-grid-today .spec-v04-tile-value {
-  font-size: 17px;
-  line-height: 1.1;
+  font-size: clamp(14px, 22cqh, 27px);
+  line-height: 1.15;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .orch-grid-today .spec-v04-tile-hint {
-  font-size: 10px;
+  display: inline;
+  font-size: clamp(11px, 13cqh, 16px);
   line-height: 1.2;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
 
+.orch-grid-today .spec-v04-tile-bar {
+  display: block;
+  height: 3px;
+  margin-top: 2px;
+}
+
 .orch-grid-today .spec-v04-ring {
-  width: 34px;
-  height: 34px;
-  font-size: 9px;
+  width: clamp(24px, 48cqh, 54px);
+  height: clamp(24px, 48cqh, 54px);
+  font-size: clamp(9px, 14cqh, 15px);
 }
 
 .orch-grid-today .spec-v04-ring span {
-  width: 26px;
-  height: 26px;
+  width: 72%;
+  height: 72%;
 }
 
 .orch-grid-today .spec-tile-icon-wrap {
-  width: 28px;
-  height: 28px;
+  width: clamp(21px, 32cqh, 33px);
+  height: clamp(21px, 32cqh, 33px);
+  border-radius: 8px;
 }
 
 .orch-grid-today .spec-tile-ico {
-  width: 16px;
-  height: 16px;
+  width: 62%;
+  height: 62%;
 }
 
 .orch-grid-today .spec-v04-tile-top {
   align-items: center;
   gap: 4px;
+  min-width: 0;
+}
+
+@container orch-tile (max-height: 78px) {
+  .orch-grid-today .spec-v04-tile,
+  .today-kpi-tile-widget .spec-v04-tile {
+    grid-template-columns: auto minmax(0, 1fr) auto auto;
+    grid-template-rows: 1fr;
+    align-items: center;
+    align-content: center;
+  }
+
+  .orch-grid-today .spec-v04-tile-top,
+  .today-kpi-tile-widget .spec-v04-tile-top {
+    grid-column: 1 / 3;
+    grid-row: 1;
+  }
+
+  .orch-grid-today .spec-v04-tile-metrics,
+  .today-kpi-tile-widget .spec-v04-tile-metrics {
+    grid-column: 3;
+    grid-row: 1;
+  }
+
+  .orch-grid-today .spec-v04-ring,
+  .today-kpi-tile-widget .spec-v04-ring {
+    grid-column: 4;
+    grid-row: 1;
+  }
+
+  .orch-grid-today .spec-v04-tile-bar,
+  .orch-grid-today .spec-v04-tile-hint,
+  .today-kpi-tile-widget .spec-v04-tile-bar,
+  .today-kpi-tile-widget .spec-v04-tile-hint {
+    display: none;
+  }
 }
 
 /* --- Фильтры (ТЗ) --- */
 .orch-grid-today .orch-slot-filters {
   grid-column: 1 / 9;
   grid-row: 3;
-  height: 76px;
-  max-height: 76px;
-  min-height: 76px;
+  height: 40px;
+  max-height: 40px;
+  min-height: 40px;
   overflow: hidden;
 }
 
@@ -219,6 +303,10 @@
   background: #fff;
   border: 1px solid var(--card-border);
   box-sizing: border-box;
+}
+
+.today-widget-shell--hidden {
+  opacity: 0.55;
 }
 
 .today-widget-content {
@@ -415,18 +503,39 @@
   height: 100%;
   display: grid;
   grid-template-columns: minmax(0, 1.35fr) repeat(4, minmax(0, 1fr)) auto auto auto;
-  gap: 10px;
-  align-items: end;
-  padding: 8px 12px 10px;
+  gap: 6px;
+  align-items: center;
+  padding: 2px 8px;
   margin: 0;
-  border-radius: 14px;
+  border-radius: 10px;
+}
+
+.orch-grid-today .today-filter-label {
+  display: none;
+}
+
+.orch-grid-today .today-filter-control,
+.orch-grid-today .today-filter-layout-btn,
+.orch-grid-today .today-filter-layout-reset,
+.orch-grid-today .today-filter-reset,
+.orch-grid-today .tab-chrome-basket-btn {
+  height: 28px;
+  min-height: 28px;
+  align-self: center;
+  padding-bottom: 0;
+}
+
+.orch-grid-today .today-filter-select {
+  background-position:
+    calc(100% - 12px) 11px,
+    calc(100% - 7px) 11px;
 }
 
 .today-filter-layout-btn {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  height: 38px;
+  height: 28px;
   padding: 0 12px;
   border-radius: 10px;
   border: 1px solid rgba(21, 101, 192, 0.35);
@@ -447,7 +556,7 @@
 .today-filter-layout-reset {
   display: inline-flex;
   align-items: center;
-  height: 38px;
+  height: 28px;
   padding: 0 10px;
   border: none;
   background: transparent;
@@ -482,7 +591,7 @@
   gap: 8px;
   width: 100%;
   min-width: 0;
-  height: 38px;
+  height: 28px;
   padding: 0 10px;
   border-radius: 10px;
   border: 1px solid var(--card-border);
@@ -497,8 +606,8 @@
   background-image: linear-gradient(45deg, transparent 50%, #6b7a8c 50%),
     linear-gradient(135deg, #6b7a8c 50%, transparent 50%);
   background-position:
-    calc(100% - 14px) 16px,
-    calc(100% - 9px) 16px;
+    calc(100% - 14px) 11px,
+    calc(100% - 9px) 11px;
   background-size:
     5px 5px,
     5px 5px;
@@ -603,7 +712,7 @@
   white-space: nowrap;
   cursor: pointer;
   padding: 0 4px 8px;
-  height: 38px;
+  height: 28px;
   align-self: end;
 }
 
@@ -764,13 +873,30 @@
 }
 
 .today-plan-hours {
-  display: grid;
-  grid-template-columns: repeat(10, minmax(0, 1fr));
-  gap: 2px;
-  font-size: 11px;
-  color: var(--content-muted);
+  position: relative;
+  height: 16px;
   margin-bottom: 6px;
   flex-shrink: 0;
+  color: var(--content-muted);
+}
+
+.today-plan-hours span {
+  position: absolute;
+  top: 0;
+  transform: translateX(-50%);
+  white-space: nowrap;
+  font-size: 10px;
+  line-height: 16px;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.02em;
+}
+
+.today-plan-hours span:first-child {
+  transform: none;
+}
+
+.today-plan-hours span:last-child {
+  transform: translateX(-100%);
 }
 
 .today-plan-lanes {
@@ -809,7 +935,7 @@
     rgba(13, 59, 115, 0.06) 0,
     rgba(13, 59, 115, 0.06) 1px,
     transparent 1px,
-    transparent calc(100% / 9)
+    transparent calc(100% / var(--plan-span, 11))
   );
   overflow: hidden;
 }
@@ -916,13 +1042,10 @@
 }
 
 .today-plan-block[data-compact='true'] .today-plan-block-title {
-  visibility: hidden;
-  position: absolute;
-  width: 1px;
-  height: 1px;
-  overflow: hidden;
-  clip: rect(0, 0, 0, 0);
-  white-space: nowrap;
+  font-size: 10px;
+  letter-spacing: -0.02em;
+  padding-left: 26px;
+  padding-right: 3px;
 }
 
 .today-plan-block.tone-pink {
@@ -1273,6 +1396,8 @@
   gap: 8px;
   align-items: flex-start;
   font-size: 12px;
+  box-shadow: inset 3px 0 0 var(--agent-accent, transparent);
+  padding-left: 8px;
 }
 
 .today-decision-item-clickable {
@@ -1386,6 +1511,31 @@
   width: min(560px, 94vw);
   max-height: min(80vh, 640px);
   overflow: auto;
+}
+
+.today-full-plan-dialog {
+  width: min(1180px, 96vw);
+  max-width: 96vw;
+  height: min(88vh, 860px);
+  max-height: min(88vh, 860px);
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  padding: 16px 18px 14px;
+}
+
+.today-full-plan-dialog .today-plan-detail-head {
+  flex: 0 0 auto;
+}
+
+.today-full-plan-cal {
+  flex: 1;
+  min-height: 0;
+}
+
+.today-full-plan-cal .run-calendar {
+  border: none;
+  padding: 0;
 }
 
 .today-day-breakdown-hint {

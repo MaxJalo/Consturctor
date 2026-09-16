@@ -23,6 +23,7 @@ import {
   subtitleFromToolDecision
 } from '../tabs/grid/todayAgentActionSummary'
 import type { TodayAgentResultItem } from './useTodayAgentResults'
+import { agentResultToToolDecision, clipDecisionSummary } from './agentResultDecisions'
 
 export type TodayPreparedDecisionRow = {
   id: string
@@ -152,7 +153,7 @@ function dedupeKey(row: TodayPreparedDecisionRow): string {
 }
 
 const MAX_AGENTS = 40
-const MAX_ROWS = 8
+const MAX_ROWS = 80
 const MAX_RUNS_PER_AGENT = 12
 
 /** Открытые HITL без отсечки по дню + завершённые за выбранный день. */
@@ -331,22 +332,29 @@ export function useTodayPreparedDecisions(periodDay: Date, userId?: string): Tod
               events,
               status: run.status
             })
-            const summary = (cleaned.text || run.summary || '').trim()
-            if (summary) {
+            const asDecision = agentResultToToolDecision({
+              workflowId: agent.workflowId,
+              agentName: agent.name,
+              runId: run.runId,
+              at,
+              text: cleaned.text || run.summary || '',
+              status: run.status
+            })
+            if (asDecision) {
               collectedWaiting.push({
-                id: `run:${agent.workflowId}:${run.runId}`,
-                title: run.summary?.trim() || `Итог: ${agent.name}`,
+                id: asDecision.id,
+                title: asDecision.title,
                 status: 'Готово',
                 statusTone: 'green',
                 statusIcon: '✓',
                 tag: 'ИИ',
                 tagTone: 'purple',
-                subtitle: summary.length > 160 ? `${summary.slice(0, 157)}…` : summary,
-                workflowId: agent.workflowId,
-                agentName: agent.name,
-                runId: run.runId,
+                subtitle: clipDecisionSummary(asDecision.result || asDecision.intent),
+                workflowId: asDecision.workflowId,
+                agentName: asDecision.agentName,
+                runId: asDecision.runId,
                 kind: 'waiting',
-                at
+                at: asDecision.at
               })
             }
           }

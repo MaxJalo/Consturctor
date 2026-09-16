@@ -4,9 +4,10 @@ import type { UserProfile } from '../api/types'
 import type { SpecSummaryTile } from './specV04Shell'
 import type { SpecMailRow, SpecProcessRow, SpecProjectRow, SpecTaskRow } from './specV04DemoData'
 import { SpecV04SourcesContext } from './SpecV04SourcesProvider'
+import { buildTaskCatalog, filterTaskRows } from './tileFilters'
 
 export interface SpecV04SourcesState {
-  /** Долгая подгрузка 1С / Turbo / Outlook (баннер). */
+  /** Любой из долгих источников ещё грузится. Не использовать как стоп-кран виджета. */
   sourcesLoading: boolean
   /** Только доска агентов Constructor — таблица процессов. */
   tableLoading: boolean
@@ -39,6 +40,7 @@ export interface SpecV04SourcesState {
   /** Совещания с датой начала = сегодня (локальный календарь). */
   meetingCountToday: number
   meetings: MeetingEvent[]
+  meetingsLoading: boolean
   /** Ошибка загрузки 1С (SOAP документооборот). */
   erpError: string
   erpLoading: boolean
@@ -73,6 +75,15 @@ function processTabKind(row: SpecProcessRow): 'reg' | 'onec' | 'proj' | 'mail' |
   if (row.type === 'Письмо') return 'mail'
   if (row.type === 'Совещание') return 'meet'
   return 'reg'
+}
+
+export function processTabLoading(data: SpecV04SourcesState, tab: string): boolean {
+  if (tab === 'onec') return data.erpLoading
+  if (tab === 'proj') return data.turboLoading
+  if (tab === 'mail') return data.mailLoading
+  if (tab === 'meet') return data.meetingsLoading
+  if (tab === 'reg') return data.tableLoading
+  return false
 }
 
 export function filterProcessRowsByTab(rows: SpecProcessRow[], tab: string): SpecProcessRow[] {
@@ -167,9 +178,14 @@ function taskTileValue(loading: boolean, count: number, dead?: boolean): string 
 }
 
 export function buildTaskTiles(data: SpecV04SourcesState): SpecSummaryTile[] {
-  const loading = data.sourcesLoading
-  const gridTasks = [...data.erpTasks, ...data.turboTasks]
-  const overdue = gridTasks.filter((t) => t.urgent && t.status !== 'Выполнена').length
+  const allPending = (data.erpLoading || data.turboLoading || data.tableLoading) && !data.allTaskCount
+  const catalog = buildTaskCatalog(data.erpTasks, data.turboTasks, data.processRows)
+  const overdue = filterTaskRows(
+    catalog.rows,
+    { source: 'all', overdueOnly: true },
+    catalog.erpIds,
+    catalog.turboIds
+  ).length
   const fromMe = data.erpTasks.filter((t) => {
     const role = String(t.role || '').trim().toLowerCase()
     return role === 'author' || role === 'both'
@@ -178,7 +194,7 @@ export function buildTaskTiles(data: SpecV04SourcesState): SpecSummaryTile[] {
   const onecDead = Boolean(data.erpError) && !data.erpTaskCount && !data.erpLoading
   const turboDead = Boolean(data.turboError) && !data.turboTaskCount && !data.turboLoading
   const onecDone = data.erpTasks.filter((t) => t.status === 'Выполнена').length
-  const allHint = loading ? 'загрузка…' : ''
+  const allHint = allPending ? 'загрузка…' : ''
   const onecHint = data.erpLoading
     ? 'загрузка…'
     : onecDead
@@ -198,7 +214,7 @@ export function buildTaskTiles(data: SpecV04SourcesState): SpecSummaryTile[] {
     {
       id: 'all',
       label: 'Все задачи',
-      value: taskTileValue(loading, data.allTaskCount),
+      value: taskTileValue(allPending, data.allTaskCount),
       hint: allHint,
       tone: 'blue'
     },
@@ -226,13 +242,13 @@ export function buildTaskTiles(data: SpecV04SourcesState): SpecSummaryTile[] {
     {
       id: 'reg',
       label: 'Регламентные',
-      value: taskTileValue(loading, regTotal),
+      value: taskTileValue(data.tableLoading && !regTotal, regTotal),
       tone: 'green'
     },
     {
       id: 'bad',
       label: 'Просроченные',
-      value: taskTileValue(loading, overdue),
+      value: taskTileValue(allPending, overdue),
       tone: 'orange'
     }
   ]
