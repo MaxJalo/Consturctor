@@ -13,9 +13,9 @@ function dash(loading: boolean, text: string): string {
 }
 
 /**
- * KPI «Сегодня»: агрегаты из useSpecV04Sources (1С erp_pm, Turbo, агенты, Outlook).
+ * KPI «Сегодня»: агрегаты из useSpecV04Sources (1С:Документооборот SOAP, Turbo, агенты, Outlook).
  * «Выполнение дня» — композит: выполненные задачи 1С + регламентные агенты / их сумма (partial, без проектных задач Turbo).
- * «Задачи 1С» — onec.erp_tasks_current + onec.docflow_tasks (ТД_ЗадачиМне / документооборот).
+ * «Задачи 1С» — onec.docflow_tasks (HTTP SOAP /doc/ws/dm.1cws).
  */
 export function buildTodayKpiTiles(data: SpecV04SourcesState): SpecSummaryTile[] {
   const loading = data.loading
@@ -35,8 +35,6 @@ export function buildTodayKpiTiles(data: SpecV04SourcesState): SpecSummaryTile[]
   const projActive = data.projects.filter(
     (p) => !/заверш|закрыт|complete|done/i.test(p.status)
   ).length
-  const projHint = loading ? 'загрузка…' : data.sources.turbo
-
   const meetToday = data.meetingCountToday
 
   return [
@@ -57,7 +55,11 @@ export function buildTodayKpiTiles(data: SpecV04SourcesState): SpecSummaryTile[]
       id: 'onec',
       label: 'Задачи из 1С',
       value: dash(loading, onecTotal ? String(onecTotal) : '—'),
-      hint: loading ? 'загрузка…' : onecTotal ? `${onecDone} выполнено` : data.sources.erp,
+      hint: loading
+        ? 'загрузка…'
+        : onecTotal
+          ? `${onecDone} выполнено`
+          : 'сегодня и просроченные',
       tone: 'blue',
       progress: loading ? undefined : pct(onecDone, onecTotal || 1),
       ring: true
@@ -79,11 +81,7 @@ export function buildTodayKpiTiles(data: SpecV04SourcesState): SpecSummaryTile[]
       id: 'proj',
       label: 'Проекты',
       value: dash(loading, projTotal ? String(projTotal) : '—'),
-      hint: loading
-        ? 'загрузка…'
-        : projTotal
-          ? `${projActive} активных`
-          : projHint,
+      hint: loading ? 'загрузка…' : projTotal ? `${projActive} активных` : 'TurboProject',
       tone: 'purple',
       progress: loading ? undefined : pct(projActive, projTotal || 1),
       ring: true

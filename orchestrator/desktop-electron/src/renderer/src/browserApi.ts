@@ -1,4 +1,4 @@
-const BACKEND = String(import.meta.env.VITE_BACKEND_URL || 'http://192.168.1.157:7812').replace(/\/+$/, '')
+const BACKEND = String(import.meta.env.VITE_BACKEND_URL || 'http://127.0.0.1:7812').replace(/\/+$/, '')
 
 function errorText(data: unknown, fallback: string): string {
   if (!data || typeof data !== 'object') return fallback
@@ -60,6 +60,9 @@ function installBrowserApi(): void {
     onStreamEvent: noopUnsub,
     getPathForFile: () => '',
     openFile: async () => [],
+    openPath: async () => ({ ok: false, error: 'Только в Electron' }),
+    readLocalFilePreview: async () => ({ ok: false, error: 'Только в Electron' }),
+    copyLocalFile: async () => ({ ok: false, error: 'Только в Electron' }),
     startNotifications: async () => ({ ok: true }),
     stopNotifications: async () => ({ ok: true }),
     showNotification: async () => ({ ok: true }),
@@ -77,7 +80,18 @@ function installBrowserApi(): void {
       error: ''
     }),
     installUpdate: async () => ({ ok: false, error: 'Только в Electron' }),
-    onUpdateStatus: noopUnsub
+    onUpdateStatus: noopUnsub,
+    loadOdataExternalEnv: async () => ({
+      ok: false,
+      path: '',
+      missing: ['electron'],
+      invokeArgs: {}
+    }),
+    fetchErpOdataTasks: async () => ({
+      ok: false,
+      status: 501,
+      error: 'Только в Electron'
+    })
   } as Window['api']
 
   const agentDefaults = {

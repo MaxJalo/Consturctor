@@ -2264,6 +2264,15 @@
   color: #6b7f93;
 }
 
+.admin-kb-sub[role='alert'] {
+  white-space: pre-line;
+  color: #b45309;
+  padding: 10px 12px;
+  border: 1px solid #fcd34d;
+  border-radius: 8px;
+  background: #fffbeb;
+}
+
 .admin-kb-usage-head {
   display: flex;
   align-items: baseline;

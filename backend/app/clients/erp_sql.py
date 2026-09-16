@@ -387,6 +387,23 @@ def find_users_by_fio(fio: str) -> list[ErpUserRow]:
         conn.close()
 
 
+def find_user_by_fio_relaxed(fio: str) -> ErpUserRow:
+    """Exact FIO match, then surname+name if patronymic typo (Димитриевич vs Дмитриевич)."""
+    try:
+        return find_user_by_fio(fio)
+    except (UserNotFoundError, AmbiguousUserError):
+        pass
+    parts = [part.strip() for part in (fio or "").split() if part.strip()]
+    if len(parts) >= 2:
+        for query in (f"{parts[0]} {parts[1]}", parts[0]):
+            for candidate in search_user_fios(query, limit=30):
+                try:
+                    return find_user_by_fio(candidate)
+                except (UserNotFoundError, AmbiguousUserError):
+                    continue
+    raise UserNotFoundError("User not found")
+
+
 def find_user_by_fio(fio: str) -> ErpUserRow:
     rows = find_users_by_fio(fio)
     if not rows:

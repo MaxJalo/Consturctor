@@ -14,6 +14,8 @@ type GridDataRefreshContextValue = {
   /** Монотонный счётчик: фокус после blur, visibility, интервал TTL, смена пользователя. */
   generation: number
   forceRefresh: () => void
+  /** True once after the user clicked refresh (bypass SOAP cache). */
+  takeHardRefresh: () => boolean
 }
 
 const GridDataRefreshContext = createContext<GridDataRefreshContextValue | null>(null)
@@ -28,7 +30,7 @@ export function GridDataRefreshProvider({
   const [generation, setGeneration] = useState(0)
   const blurredRef = useRef(false)
   const prevUserIdRef = useRef<string | undefined>(undefined)
-
+  const hardRefreshRef = useRef(false)
   const bumpTimerRef = useRef<number | undefined>(undefined)
 
   const bump = useCallback((): void => {
@@ -45,13 +47,25 @@ export function GridDataRefreshProvider({
     }, 400)
   }, [bump])
 
+  const forceRefresh = useCallback((): void => {
+    hardRefreshRef.current = true
+    bump()
+  }, [bump])
+
+  const takeHardRefresh = useCallback((): boolean => {
+    const next = hardRefreshRef.current
+    hardRefreshRef.current = false
+    return next
+  }, [])
+
   useEffect(() => {
     const uid = (userId || '').trim()
     if (!uid) return
     if (prevUserIdRef.current !== uid) {
-      if (prevUserIdRef.current) clearGridCacheForUser(prevUserIdRef.current)
+      const previous = prevUserIdRef.current
+      if (previous) clearGridCacheForUser(previous)
       prevUserIdRef.current = uid
-      bump()
+      if (previous) bump()
     }
   }, [userId, bump])
 
@@ -93,9 +107,10 @@ export function GridDataRefreshProvider({
   const value = useMemo(
     () => ({
       generation,
-      forceRefresh: bump
+      forceRefresh,
+      takeHardRefresh
     }),
-    [generation, bump]
+    [generation, forceRefresh, takeHardRefresh]
   )
 
   return <GridDataRefreshContext.Provider value={value}>{children}</GridDataRefreshContext.Provider>

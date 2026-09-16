@@ -284,6 +284,47 @@ def _raw_tools() -> list[dict[str, Any]]:
             },
         },
         {
+            "name": "onec.erp_tasks_odata",
+            "description": (
+                "Текущие задачи erp_pm через OData Task_ЗадачаИсполнителя "
+                "(исполнитель + ФИО в теме). По умолчанию дополняет SQL _query_tasks, "
+                "если OData пуст или неполон (fallback_sql=true). "
+                "Нужны ODATA_BASE_URL и учётка в backend/.env."
+            ),
+            "execution": "server",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "limit": _prop("integer", "Максимум задач", default=50),
+                    "fallback_sql": _prop(
+                        "boolean",
+                        "Добавить задачи из ERP SQL при пустом/неполном OData",
+                        default=True,
+                    ),
+                    "fio": {
+                        "type": "string",
+                        "description": "Необязательно: ФИО. Пусто — из JWT.",
+                    },
+                    "user_id": {
+                        "type": "string",
+                        "description": "Необязательно: id пользователя 1С.",
+                    },
+                    "odata_base_url": _prop(
+                        "string",
+                        "Переопределение ODATA_BASE_URL (сессия / desktop)",
+                    ),
+                    "odata_username": _prop(
+                        "string",
+                        "Переопределение ODATA_USERNAME (не логировать)",
+                    ),
+                    "odata_password": _prop(
+                        "string",
+                        "Переопределение ODATA_PASSWORD (не логировать)",
+                    ),
+                },
+            },
+        },
+        {
             "name": "onec.erp_tasks_period",
             "description": (
                 "Задачи пользователя из erp_pm за период (дата создания). "
@@ -479,13 +520,20 @@ def _raw_tools() -> list[dict[str, Any]]:
         {
             "name": "onec.docflow_tasks",
             "description": (
-                "Задачи пользователя из 1С:Документооборот (публикация /doc). "
+                "Задачи пользователя из 1С:Документооборот через HTTP SOAP "
+                "/doc/ws/dm.1cws (DOK_HTTP_*). OData не вызывается. "
+                "today_and_overdue — только срок сегодня и просроченные. "
                 "ФИО из JWT сессии. Исполняется на сервере."
             ),
             "execution": "server",
             "input_schema": {
                 "type": "object",
                 "properties": {
+                    "today_and_overdue": {
+                        "type": "boolean",
+                        "default": False,
+                        "description": "Только задачи на сегодня и просроченные",
+                    },
                     "date_from": {
                         "type": "string",
                         "description": "Начало периода YYYY-MM-DD. Пусто — без нижней границы.",
@@ -1066,6 +1114,7 @@ _CONTRACTS: dict[str, tuple[str, str, str | tuple[str, ...], list[str], list[str
     ),
     "onec.sql_query": ("onec", "sql_table", "search", ["sql"], ["rows"], "count"),
     "onec.erp_tasks_current": ("onec", "task", "list", [], ["tasks"], "count"),
+    "onec.erp_tasks_odata": ("onec", "task", "list", [], ["tasks"], "count"),
     "onec.erp_tasks_period": (
         "onec",
         "task",

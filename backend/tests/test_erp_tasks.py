@@ -11,8 +11,10 @@ from app.services.erp_tasks import (
     actor_from_args,
     actor_from_jwt,
     build_subordinate_task_tree,
+    build_task_user_relevance_clause,
     from_1c_datetime,
     is_constructor_test_probe,
+    list_current_tasks,
     list_org_subordinates,
     merge_task_lists,
     parse_date,
@@ -100,6 +102,7 @@ def test_resolve_actor_uses_fio_when_jwt_id_is_constructor(monkeypatch) -> None:
 
 def test_tools_registered() -> None:
     assert "onec.erp_tasks_current" in ONEC_TOOLS
+    assert "onec.erp_tasks_odata" in ONEC_TOOLS
     assert "onec.erp_tasks_period" in ONEC_TOOLS
     assert "onec.erp_subordinate_tasks" in ONEC_TOOLS
     assert "onec.docflow_tasks" in ONEC_TOOLS
@@ -115,6 +118,7 @@ def test_tools_registered() -> None:
     assert search.get("runtime") == "com32"
     assert "users.subordinates" in names
     assert "onec.erp_tasks_current" in names
+    assert "onec.erp_tasks_odata" in names
     assert "onec.erp_tasks_period" in names
     assert "onec.erp_subordinate_tasks" in names
     assert "onec.docflow_tasks" in names
@@ -123,6 +127,7 @@ def test_tools_registered() -> None:
     for item in list_tools():
         if item["name"] in {
             "onec.erp_tasks_current",
+            "onec.erp_tasks_odata",
             "onec.erp_tasks_period",
             "onec.erp_subordinate_tasks",
             "onec.docflow_tasks",
@@ -158,6 +163,82 @@ def test_list_org_subordinates_from_erp_without_constructor(monkeypatch) -> None
     assert result["users"][0]["fio"] == "Незарегистрированный Иванов"
     assert result["users"][0]["source"] == "erp_pm"
     assert "id" not in result["users"][0]
+
+
+def test_map_odata_task_row_open() -> None:
+    from app.services.erp_tasks_odata import _map_odata_task_row
+
+    row = _map_odata_task_row(
+        {
+            "Number": "00-Л-000040259",
+            "Description": "Проверить отчёт",
+            "Executed": False,
+            "Date": "2026-09-10T12:00:00",
+            "СрокИсполнения": "2026-09-15T18:00:00",
+            "Исполнитель_Name": "Жалыбин И.И.",
+        }
+    )
+    assert row["number"] == "00-Л-000040259"
+    assert row["done"] is False
+    assert row["source"] == "erp_pm+odata"
+    assert row["performer"] == "Жалыбин И.И."
+
+
+def test_odata_configured_accepts_invoke_overrides() -> None:
+    from app.services.onec_tools import odata_configured
+
+    assert odata_configured(
+        {
+            "odata_base_url": "http://192.168.2.229:81/erp_pm/odata/standard.odata",
+            "odata_username": "odata.user",
+            "odata_password": "secret",
+        }
+    )
+
+
+def test_list_current_tasks_odata_merges_docflow(monkeypatch) -> None:
+    from app.services import erp_tasks_odata
+
+    monkeypatch.setattr(
+        erp_tasks_odata,
+        "_fetch_odata_tasks",
+        lambda **_: ([{"number": "1", "title": "ERP", "source": "erp_pm+odata", "done": False}], ""),
+    )
+    monkeypatch.setattr(
+        erp_tasks_odata,
+        "_query_tasks",
+        lambda **_: [],
+    )
+    def _fake_attach_docflow(tasks_by_fio, **_kwargs):
+        tasks_by_fio.setdefault("Иванов И.И.", []).append(
+            {"number": "d1", "title": "ДО", "source": "документооборот", "done": False}
+        )
+        return ""
+
+    monkeypatch.setattr("app.services.erp_tasks._attach_docflow", _fake_attach_docflow)
+    monkeypatch.setattr(
+        erp_tasks_odata,
+        "resolve_actor",
+        lambda **_: ("Иванов И.И.", "u1"),
+    )
+    result = erp_tasks_odata.list_current_tasks_odata(fio="Иванов И.И.", limit=10)
+    assert result["count"] == 2
+    assert result["docflow_warning"] == ""
+    sources = {str(t.get("source")) for t in result["tasks"]}
+    assert "документооборот" in sources
+
+
+def test_invoke_erp_tasks_odata_stub_without_odata(monkeypatch) -> None:
+    monkeypatch.setattr("app.services.onec_tools._erp_sql_ready", lambda: False)
+    monkeypatch.setattr("app.services.onec_tools.odata_configured", lambda: False)
+    result = invoke_onec(
+        "onec.erp_tasks_odata",
+        {"limit": 5},
+        actor_fio="Сидоров С.С.",
+    )
+    assert result["source"] == "stub"
+    assert result["count"] == 0
+    assert "OData" in str(result.get("odata_warning") or "")
 
 
 def test_invoke_current_uses_jwt_actor(monkeypatch) -> None:
@@ -366,6 +447,7 @@ def test_invoke_docflow_stub(monkeypatch) -> None:
     monkeypatch.setattr("app.services.onec_tools._erp_sql_ready", lambda: False)
     monkeypatch.setattr("app.services.onec_tools.odata_configured", lambda: False)
     monkeypatch.setattr("app.services.docflow_tasks.docflow_configured", lambda: False)
+    monkeypatch.setattr("app.services.docflow_tasks.docflow_url_ready", lambda: False)
     result = invoke_onec(
         "onec.docflow_tasks",
         {},
@@ -381,3 +463,99 @@ def test_constructor_test_probes_detected() -> None:
     assert is_constructor_test_probe({"number": "96", "title": "тестовая проба Constructor"})
     assert is_constructor_test_probe({"title": "проба Constructor", "comment": ""})
     assert not is_constructor_test_probe({"number": "12", "title": "Поручение РК по аудиту"})
+
+
+def test_build_task_user_relevance_clause_ref_and_title() -> None:
+    ref = bytes.fromhex("980E6CB31113810E11F1599041290A43")
+    fio = "Жалыбин Максим Дмитриевич"
+    sql, params = build_task_user_relevance_clause(
+        unique_names=[fio],
+        catalog_refs=[ref],
+    )
+    assert "t._Fld2503_RRRef = ?" in sql
+    assert "t._Fld2510_RRRef = ?" in sql
+    assert "_Fld2518_RRRef" not in sql
+    assert "CAST(t._Name AS nvarchar(500)) LIKE ?" in sql
+    assert "CAST(t._Fld2509 AS nvarchar(1000)) LIKE ?" in sql
+    assert params[:2] == [ref, ref]
+    assert params[2:4] == [f"%{fio}%", f"%{fio}%"]
+    assert "%Жалыбин М.Д.%" in params
+
+
+def test_build_task_user_relevance_clause_bp_addressee() -> None:
+    ref = bytes.fromhex("980E6CB31113810E11F1599041290A43")
+    sql, params = build_task_user_relevance_clause(
+        unique_names=[],
+        catalog_refs=[ref],
+        include_bp_addressee=True,
+    )
+    assert "t._Fld2503_RRRef = ?" in sql
+    assert "t._Fld2510_RRRef = ?" in sql
+    assert "t._Fld2518_RRRef = ?" in sql
+    assert params == [ref, ref, ref]
+
+
+def test_build_task_user_relevance_clause_multiple_fios() -> None:
+    sql, params = build_task_user_relevance_clause(
+        unique_names=["Иванов И.И.", "Петров П.П."],
+        catalog_refs=[],
+    )
+    assert " OR " in sql
+    assert "%Иванов И.И.%" in params
+    assert "%Петров П.П.%" in params
+    assert all(p.endswith("%") and p.startswith("%") for p in params)
+    assert len(params) >= 4
+
+
+def test_build_task_user_relevance_clause_empty() -> None:
+    sql, params = build_task_user_relevance_clause(unique_names=[], catalog_refs=[])
+    assert sql == "1 = 0"
+    assert params == []
+
+
+def test_list_current_tasks_response_shape(monkeypatch) -> None:
+    sample = {
+        "number": "00-Л-000040259",
+        "title": "Жалыбин М.Д. — поручение",
+        "status": "открыта",
+        "done": False,
+        "late": False,
+        "due_at": "2026-09-15 18:00:00",
+        "created_at": "2026-09-01 10:00:00",
+        "completed_at": "",
+        "comment": "",
+        "approval": "не согласовано",
+        "exported_at": "2026-09-15 12:00:00",
+        "performer": "Жалыбин Максим Дмитриевич",
+        "source": "erp_pm",
+    }
+
+    monkeypatch.setattr(
+        "app.services.erp_tasks.resolve_actor",
+        lambda **_kwargs: ("Жалыбин Максим Дмитриевич", "1CUSER"),
+    )
+    monkeypatch.setattr(
+        "app.services.erp_tasks._query_tasks",
+        lambda **_kwargs: [sample],
+    )
+    monkeypatch.setattr("app.services.erp_tasks._attach_docflow", lambda *_a, **_k: "")
+
+    result = list_current_tasks(fio="Жалыбин Максим Дмитриевич", limit=10)
+    assert result["fio"] == "Жалыбин Максим Дмитриевич"
+    assert result["user_id"] == "1CUSER"
+    assert result["count"] == 1
+    assert "erp_pm" in result["source"]
+    assert isinstance(result["tasks"], list)
+    task = result["tasks"][0]
+    for key in (
+        "number",
+        "title",
+        "status",
+        "done",
+        "late",
+        "due_at",
+        "source",
+    ):
+        assert key in task
+    assert task["number"] == "00-Л-000040259"
+    assert task["source"] == "erp_pm"

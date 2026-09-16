@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import sys
 from pathlib import Path
 from typing import Any
@@ -156,7 +157,7 @@ async def invoke_named_tool(
     name = str(body.tool or "").strip()
     if not name:
         raise HTTPException(status_code=400, detail="tool is required")
-    return _dispatch_server_tool(name, body.arguments, auth)
+    return await asyncio.to_thread(_dispatch_server_tool, name, body.arguments, auth)
 
 
 @router.get("/onec-artifacts/{file_id}")
@@ -188,7 +189,7 @@ async def invoke_tool(
     body: ToolInvokeBody,
     auth: AuthContext = Depends(get_current_user),
 ) -> dict[str, Any]:
-    return _dispatch_server_tool(tool_name, body.arguments, auth)
+    return await asyncio.to_thread(_dispatch_server_tool, tool_name, body.arguments, auth)
 
 
 def _invoke_users_tool(

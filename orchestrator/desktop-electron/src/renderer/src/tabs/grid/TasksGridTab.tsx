@@ -1,4 +1,5 @@
-import { useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
+import { OneCReconnectDialog, OneCReconnectInline } from '../../workplace/OneCReconnectDialog'
 import type { UserProfile } from '../../api/types'
 import {
   OrchSlotBotC,
@@ -9,6 +10,7 @@ import {
 } from '../../layout/GridSlots'
 import { SpecAskOrchestratorBlock, SpecPill, SpecProgress, SpecSummaryTiles } from '../../workplace/specV04Components'
 import { ASK_CHIPS } from '../../workplace/specV04DemoData'
+import { comPasswordSessionHint } from '../../workplace/onecSessionHints'
 import { buildTaskTiles, useSpecV04Sources } from '../../workplace/useSpecV04Data'
 import { StandardGridFilters } from './gridFilters'
 
@@ -20,7 +22,29 @@ export function TasksGridTab({
   onAskOrchestrator: (message: string, context: string) => void
 }): React.JSX.Element {
   const data = useSpecV04Sources(user)
-  const taskRows = data.erpTasks
+  const taskRows = useMemo(
+    () => [...data.erpTasks, ...data.turboTasks],
+    [data.erpTasks, data.turboTasks]
+  )
+  const bannerText = (data.erpError || data.error || '').trim()
+  const showOneCReconnect =
+    !data.loading && !data.erpTasks.length && !data.turboTasks.length && data.oneCAuthFailure
+  const emptyTableText =
+    data.loading && !taskRows.length
+      ? 'Загружаем задачи…'
+      : showOneCReconnect
+        ? 'Нужно подключить 1С.'
+        : bannerText
+          ? 'Нет открытых задач в таблице.'
+          : 'Нет открытых задач.'
+  const reconnectHint = showOneCReconnect
+    ? bannerText || 'Не удалось загрузить задачи 1С.'
+    : ''
+  const [onecDialogOpen, setOnecDialogOpen] = useState(false)
+  useEffect(() => {
+    if (data.loading || !showOneCReconnect || data.comPasswordInSession) return
+    setOnecDialogOpen(true)
+  }, [data.loading, showOneCReconnect, data.comPasswordInSession])
   const [selectedId, setSelectedId] = useState('')
   const effectiveId = selectedId || taskRows[0]?.id || ''
   const selected = taskRows.find((item) => item.id === effectiveId)
@@ -36,6 +60,16 @@ export function TasksGridTab({
       </OrchSlotFilters>
       <OrchSlotMain>
         <div className="spec-v04-table-wrap wp-card">
+          {bannerText && !showOneCReconnect ? (
+            <p className="today-table-status today-table-error today-table-banner">{bannerText}</p>
+          ) : data.erpSecondaryHint ? (
+            <p className="today-table-status today-table-banner">{data.erpSecondaryHint}</p>
+          ) : null}
+          {!bannerText && !data.erpSecondaryHint && !data.loading && !taskRows.length ? (
+            <p className="today-table-status today-table-banner spec-v04-muted">
+              {comPasswordSessionHint()}
+            </p>
+          ) : null}
           <table className="spec-v04-table">
             <thead>
               <tr>
@@ -52,7 +86,14 @@ export function TasksGridTab({
               {!taskRows.length ? (
                 <tr>
                   <td colSpan={7} className="spec-v04-empty">
-                    {data.loading ? 'Загружаем задачи из 1С…' : 'Нет открытых задач 1С.'}
+                    {showOneCReconnect ? (
+                      <OneCReconnectInline
+                        errorHint={reconnectHint}
+                        onOpen={() => setOnecDialogOpen(true)}
+                      />
+                    ) : (
+                      emptyTableText
+                    )}
                   </td>
                 </tr>
               ) : null}
@@ -101,6 +142,12 @@ export function TasksGridTab({
       <OrchSlotBotC>
         <SpecAskOrchestratorBlock chips={ASK_CHIPS.tasks} placeholder="Спросить про задачи…" onSubmit={ask} />
       </OrchSlotBotC>
+      <OneCReconnectDialog
+        open={onecDialogOpen}
+        onClose={() => setOnecDialogOpen(false)}
+        user={user}
+        errorHint={data.erpError || data.error}
+      />
     </>
   )
 }

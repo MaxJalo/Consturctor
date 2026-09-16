@@ -1,5 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
-import { adminKpiMock } from '../../mocks/adminMocks'
+import { emptyAdminKpi } from '../adminEmpty'
+import { fetchAdminKpi } from '../adminApi'
+import { useAdminTabLoad } from '../hooks/useAdminTabLoad'
 import { LineChartCard } from '../components/LineChartCard'
 import { KpiAgentCardIcon } from '../components/KpiAgentCardIcon'
 import { AdminPageHeader } from '../components/shared/AdminPageHeader'
@@ -8,43 +10,42 @@ import { AdminPeriodControls } from '../components/shared/AdminPeriodControls'
 import { AdminSegmentTabs } from '../components/shared/AdminSegmentTabs'
 import { AdminStatusBadge } from '../components/shared/AdminStatusBadge'
 
-const GAUGE_PERCENT: Record<string, number> = {
-  cpu: 32,
-  mem: 68,
-  queue: 12,
-  avail: 99.7
-}
-
 export function KpiAdminPage(): React.JSX.Element {
-  const mock = adminKpiMock
-  const [activeTab, setActiveTab] = useState(mock.activeTab)
+  const { data, loading, error } = useAdminTabLoad(emptyAdminKpi, fetchAdminKpi)
+  const [activeTab, setActiveTab] = useState(data.activeTab)
   const [selectedAgentId, setSelectedAgentId] = useState<string | null>(null)
   const [hoverAgent, setHoverAgent] = useState<string | null>(null)
   const [hoverGauge, setHoverGauge] = useState<string | null>(null)
 
   useEffect(() => {
-    if (activeTab === 'agents' && mock.agentCards.length > 0) {
-      setSelectedAgentId((current) => current ?? mock.agentCards[0].id)
+    if (activeTab === 'agents' && data.agentCards.length > 0) {
+      setSelectedAgentId((current) => current ?? data.agentCards[0].id)
       return
     }
     if (activeTab !== 'agents') {
       setSelectedAgentId(null)
     }
-  }, [activeTab, mock.agentCards])
+  }, [activeTab, data.agentCards])
 
   const summaries = useMemo(() => {
-    if (activeTab !== 'agents' || !selectedAgentId) return mock.summaries
-    return mock.agentCards.find((agent) => agent.id === selectedAgentId)?.summaries ?? mock.summaries
-  }, [activeTab, mock.agentCards, mock.summaries, selectedAgentId])
+    if (activeTab !== 'agents' || !selectedAgentId) return data.summaries
+    return data.agentCards.find((agent) => agent.id === selectedAgentId)?.summaries ?? data.summaries
+  }, [activeTab, data.agentCards, data.summaries, selectedAgentId])
 
   return (
-    <AdminPageShell breadcrumb={mock.breadcrumb}>
+    <AdminPageShell breadcrumb={data.breadcrumb}>
       <AdminPageHeader
-        title={mock.title}
-        subtitle={mock.subtitle}
+        title={data.title}
+        subtitle={data.subtitle}
         controls={<AdminPeriodControls />}
       />
-      <AdminSegmentTabs tabs={mock.tabs} activeId={activeTab} onChange={setActiveTab} />
+      {loading ? <p className="admin-kb-sub">Загрузка…</p> : null}
+      {error ? (
+        <p className="admin-kb-sub" role="alert">
+          {error}
+        </p>
+      ) : null}
+      <AdminSegmentTabs tabs={data.tabs} activeId={activeTab} onChange={setActiveTab} />
       <section className="admin-kpi-summary">
         {summaries.map((item) => (
           <article key={item.id} className={`admin-kpi-card admin-kpi-card--${item.tint || 'none'}`}>
@@ -66,7 +67,7 @@ export function KpiAdminPage(): React.JSX.Element {
       </section>
       {activeTab === 'agents' ? (
         <section className="admin-kpi-agent-cards admin-kpi-agent-cards--full">
-          {mock.agentCards.map((agent) => (
+          {data.agentCards.map((agent) => (
             <button
               key={agent.id}
               type="button"
@@ -85,11 +86,11 @@ export function KpiAdminPage(): React.JSX.Element {
         </section>
       ) : (
         <div className="admin-kpi-charts">
-          <LineChartCard data={mock.dynamics} />
+          <LineChartCard data={data.dynamics} />
           <section className="admin-panel admin-kpi-side">
             <h3 className="admin-dashboard-panel__title">Топ-5 агентов по эффективности</h3>
             <ul className="admin-progress-list">
-              {mock.topAgents.map((item) => (
+              {data.topAgents.map((item) => (
                 <li
                   key={item.label}
                   className={hoverAgent === item.label ? 'active' : ''}
@@ -104,8 +105,12 @@ export function KpiAdminPage(): React.JSX.Element {
             </ul>
             <h3 className="admin-dashboard-panel__title admin-kpi-gauges-title">Загрузка системы</h3>
             <div className="admin-gauge-grid">
-              {mock.gauges.map((gauge) => {
-                const percent = GAUGE_PERCENT[gauge.id] ?? 50
+              {data.gauges.map((gauge) => {
+                const raw = String(gauge.value)
+                const numeric = Number.parseFloat(raw.replace('%', '').replace(',', '.'))
+                const percent = Number.isFinite(numeric)
+                  ? Math.min(100, Math.max(0, raw.includes('%') ? numeric : numeric * 10))
+                  : 0
                 const dash = `${(percent / 100) * 188} 188`
                 return (
                   <div

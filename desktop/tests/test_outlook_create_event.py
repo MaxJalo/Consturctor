@@ -39,6 +39,19 @@ def test_outlook_create_runs_in_gui_process() -> None:
     assert isinstance(read._worker, SubprocessComWorker)
 
 
+def test_outlook_mail_panel_tools_registered() -> None:
+    from app.tools.ac.dispatch import build_registry
+
+    registry = build_registry()
+    for name in (
+        "outlook.fetch_message",
+        "outlook.save_attachment",
+        "outlook.display_message",
+        "outlook.mark_read",
+    ):
+        assert registry.has_tool(name), name
+
+
 def test_outlook_save_failure_is_retried() -> None:
     from app.tools.ac.workers.outlook_com_actions import _is_transient_com_error
 

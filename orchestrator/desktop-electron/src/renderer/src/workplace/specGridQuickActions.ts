@@ -2,10 +2,13 @@ import { invokeLocalAcTool } from '../utils/localAcTool'
 
 export type SpecQuickActionTone = 'green' | 'orange' | 'blue' | 'yellow'
 
+export type SpecQuickActionIcon = 'play' | 'onec' | 'calendar'
+
 export interface SpecQuickActionDef {
   id: string
   label: string
   tone: SpecQuickActionTone
+  icon: SpecQuickActionIcon
   run: () => void | Promise<void>
 }
 
@@ -47,6 +50,7 @@ export function buildProcessesQuickActions(_handlers: Record<string, never> = {}
       id: 'launch-process',
       label: 'Запустить новый процесс',
       tone: 'green',
+      icon: 'play',
       run: () => {
         triggerHeaderQuickLaunch()
       }
@@ -55,18 +59,21 @@ export function buildProcessesQuickActions(_handlers: Record<string, never> = {}
       id: 'create-1c-task',
       label: 'Создать задачу в 1С',
       tone: 'orange',
+      icon: 'onec',
       run: () => void open1cTaskCreation()
     },
     {
       id: 'open-outlook-cal',
       label: 'Открыть календарь Outlook',
       tone: 'blue',
+      icon: 'calendar',
       run: () => void openOutlookCalendarView()
     },
     {
       id: 'goto-1c',
       label: 'Перейти в 1С',
       tone: 'yellow',
+      icon: 'onec',
       run: () => void launch1cClient()
     }
   ]

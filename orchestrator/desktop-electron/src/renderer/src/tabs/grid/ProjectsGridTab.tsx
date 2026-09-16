@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { Fragment, useEffect, useMemo, useState } from 'react'
 import type { UserProfile } from '../../api/types'
 import {
   OrchSlotBotC,
@@ -16,7 +16,90 @@ import {
 } from '../../workplace/specV04Components'
 import { ASK_CHIPS } from '../../workplace/specV04DemoData'
 import { useSpecV04Sources } from '../../workplace/useSpecV04Data'
+import {
+  useTurboProjectOpenTasks,
+  type TurboProjectOpenTaskRow,
+  type TurboProjectTasksFetchOptions
+} from '../../workplace/useTurboProjectOpenTasks'
 import { StandardGridFilters } from './gridFilters'
+
+function ProjectTasksTable({
+  rows,
+  loading,
+  error,
+  emptyLabel
+}: {
+  rows: TurboProjectOpenTaskRow[]
+  loading: boolean
+  error: string
+  emptyLabel: string
+}): React.JSX.Element {
+  if (loading) {
+    return <p className="spec-v04-muted">Загружаем задачи…</p>
+  }
+  if (error) {
+    return <p className="spec-v04-muted">{error}</p>
+  }
+  if (!rows.length) {
+    return <p className="spec-v04-muted">{emptyLabel}</p>
+  }
+  return (
+    <div className="spec-v04-nested-wrap">
+      <table className="spec-v04-table spec-v04-table-compact">
+        <thead>
+          <tr>
+            <th>Задача</th>
+            <th>Срок</th>
+            <th>Статус</th>
+            <th>Прогресс</th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((task) => (
+            <tr key={task.id}>
+              <td>
+                <strong>{task.title}</strong>
+              </td>
+              <td className={task.status === 'Просрочена' ? 'spec-deadline-urgent' : undefined}>
+                {task.deadline}
+              </td>
+              <td>
+                <SpecPill tone={task.statusTone}>{task.status}</SpecPill>
+              </td>
+              <td>
+                <SpecProgress value={task.progress} />
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  )
+}
+
+function ProjectExpandedTasks({
+  projectId,
+  user,
+  erpFio,
+  enabled,
+  taskFetch
+}: {
+  projectId: string
+  user: UserProfile
+  erpFio: string
+  enabled: boolean
+  taskFetch: TurboProjectTasksFetchOptions
+}): React.JSX.Element {
+  const tasks = useTurboProjectOpenTasks(projectId, user, erpFio, enabled, taskFetch)
+  return (
+    <ProjectTasksTable
+      rows={tasks.rows}
+      loading={tasks.loading}
+      error={tasks.error}
+      emptyLabel="Нет задач по выбранному фильтру"
+    />
+  )
+}
 
 export function ProjectsGridTab({
   user,
@@ -28,20 +111,76 @@ export function ProjectsGridTab({
   const data = useSpecV04Sources(user)
   const projects = data.projects
   const [selectedId, setSelectedId] = useState('')
-  const selected = projects.find((p) => p.id === (selectedId || projects[0]?.id))
+  const [expandedIds, setExpandedIds] = useState<Set<string>>(() => new Set())
+  const [myTasksOnly, setMyTasksOnly] = useState(true)
+  const effectiveId = selectedId || projects[0]?.id || ''
+  const selected = projects.find((p) => p.id === effectiveId)
+
+  const taskFetch = useMemo(
+    (): TurboProjectTasksFetchOptions => ({
+      openOnly: true,
+      assigneeOnly: myTasksOnly,
+      limit: 200
+    }),
+    [myTasksOnly]
+  )
+
+  useEffect(() => {
+    if (selectedId || !projects[0]?.id) return
+    setSelectedId(projects[0].id)
+  }, [projects, selectedId])
+
+  const projectTasks = useTurboProjectOpenTasks(
+    effectiveId,
+    data.user,
+    data.erpFio,
+    Boolean(effectiveId) && !data.turboNoSession && !data.sourcesLoading,
+    taskFetch
+  )
+
+  const riskCount = useMemo(
+    () => projects.filter((p) => p.riskTone === 'red' || p.riskTone === 'orange').length,
+    [projects]
+  )
+
+  const doneTasksInView = useMemo(
+    () => projectTasks.rows.filter((row) => row.status === 'Выполнена').length,
+    [projectTasks.rows]
+  )
 
   const tiles: SpecSummaryTile[] = useMemo(
     () => [
       { id: 'active', label: 'Активные проекты', value: String(projects.length || '—'), tone: 'green' },
-      { id: 'tasks', label: 'Задачи на сегодня', value: String(projects.reduce((s, p) => s + p.tasks, 0) || '—'), tone: 'blue' },
-      { id: 'risk', label: 'С риском', value: '—', tone: 'orange' },
-      { id: 'done', label: 'Завершённые этапы', value: '—', tone: 'purple' },
+      {
+        id: 'tasks',
+        label: 'Открытые задачи',
+        value: String(projects.reduce((s, p) => s + p.tasks, 0) || '—'),
+        tone: 'blue'
+      },
+      { id: 'risk', label: 'С риском', value: riskCount ? String(riskCount) : '—', tone: 'orange' },
+      {
+        id: 'done',
+        label: 'Выполнено (выбранный)',
+        value: selected && projectTasks.rows.length ? String(doneTasksInView) : '—',
+        tone: 'purple'
+      },
       { id: 'load', label: 'Загрузка', value: '—', tone: 'yellow' }
     ],
-    [projects]
+    [projects, riskCount, selected, projectTasks.rows.length, doneTasksInView]
   )
 
+  const toggleExpanded = (projectId: string) => {
+    setExpandedIds((prev) => {
+      const next = new Set(prev)
+      if (next.has(projectId)) next.delete(projectId)
+      else next.add(projectId)
+      return next
+    })
+  }
+
   const ask = (m: string) => onAskOrchestrator(m, 'Вкладка «Проекты»')
+  const fileLabel = selected?.fileId || selected?.id || '—'
+  const tasksEnabled = Boolean(effectiveId) && !data.turboNoSession && !data.sourcesLoading
 
   return (
     <>
@@ -56,6 +195,7 @@ export function ProjectsGridTab({
           <table className="spec-v04-table">
             <thead>
               <tr>
+                <th className="spec-v04-col-expand" aria-label="Развернуть" />
                 <th>Проект</th>
                 <th>Код</th>
                 <th>Роль</th>
@@ -69,44 +209,145 @@ export function ProjectsGridTab({
             <tbody>
               {!projects.length ? (
                 <tr>
-                  <td colSpan={8} className="spec-v04-empty">
-                    {data.loading ? 'Загружаем портфель…' : 'Портфель TurboProject пуст.'}
+                  <td colSpan={9} className="spec-v04-empty">
+                    {data.loading
+                      ? 'Загружаем портфель…'
+                      : data.turboNoSession
+                        ? `TurboProject: ${data.sources.turbo || 'нет сеанса'}`
+                        : 'Портфель TurboProject пуст (нет проектов по вашему ФИО).'}
                   </td>
                 </tr>
               ) : null}
-              {projects.map((p) => (
-                <tr key={p.id} className={selected?.id === p.id ? 'selected' : ''} onClick={() => setSelectedId(p.id)}>
-                  <td>
-                    <strong>{p.name}</strong>
-                  </td>
-                  <td>{p.code}</td>
-                  <td>{p.role}</td>
-                  <td>{p.tasks}</td>
-                  <td>
-                    <SpecPill tone={p.statusTone}>{p.status}</SpecPill>
-                  </td>
-                  <td>{p.deadline}</td>
-                  <td>
-                    <SpecProgress value={p.progress} />
-                  </td>
-                  <td>
-                    <SpecPill tone={p.riskTone}>{p.risk}</SpecPill>
-                  </td>
-                </tr>
-              ))}
+              {projects.map((p) => {
+                const expanded = expandedIds.has(p.id)
+                return (
+                  <Fragment key={p.id}>
+                    <tr
+                      className={selected?.id === p.id ? 'selected' : ''}
+                      onClick={() => setSelectedId(p.id)}
+                    >
+                      <td className="spec-v04-col-expand">
+                        <button
+                          type="button"
+                          className={`spec-v04-expand-btn${expanded ? ' open' : ''}`}
+                          aria-expanded={expanded}
+                          aria-label={expanded ? 'Свернуть задачи' : 'Развернуть задачи'}
+                          onClick={(e) => {
+                            e.stopPropagation()
+                            toggleExpanded(p.id)
+                          }}
+                        >
+                          ▶
+                        </button>
+                      </td>
+                      <td>
+                        <strong>{p.name}</strong>
+                      </td>
+                      <td>{p.code}</td>
+                      <td>{p.role}</td>
+                      <td>{p.tasks}</td>
+                      <td>
+                        <SpecPill tone={p.statusTone}>{p.status}</SpecPill>
+                      </td>
+                      <td>{p.deadline}</td>
+                      <td>
+                        <SpecProgress value={p.progress} />
+                      </td>
+                      <td>
+                        <SpecPill tone={p.riskTone}>{p.risk}</SpecPill>
+                      </td>
+                    </tr>
+                    {expanded ? (
+                      <tr className="spec-v04-row-expand">
+                        <td colSpan={9}>
+                          {p.id === effectiveId ? (
+                            <ProjectTasksTable
+                              rows={projectTasks.rows}
+                              loading={projectTasks.loading}
+                              error={projectTasks.error}
+                              emptyLabel="Нет задач по выбранному фильтру"
+                            />
+                          ) : (
+                            <ProjectExpandedTasks
+                              projectId={p.id}
+                              user={user}
+                              erpFio={data.erpFio}
+                              enabled={tasksEnabled && !data.turboNoSession}
+                              taskFetch={taskFetch}
+                            />
+                          )}
+                        </td>
+                      </tr>
+                    ) : null}
+                  </Fragment>
+                )
+              })}
             </tbody>
           </table>
         </div>
       </OrchSlotMain>
       <OrchSlotSide>
         {selected ? (
-          <div className="spec-detail-card">
+          <div className="spec-detail-card wp-card">
             <h2>{selected.name}</h2>
-            <p className="wp-code">{selected.code}</p>
+            <div className="spec-detail-tags">
+              <SpecPill tone={selected.statusTone}>{selected.status}</SpecPill>
+              <SpecPill tone={selected.riskTone}>{selected.risk}</SpecPill>
+            </div>
+            <dl className="spec-detail-meta">
+              <div>
+                <dt>Код / file_id</dt>
+                <dd>
+                  {selected.code}
+                  {fileLabel !== selected.code ? ` · ${fileLabel}` : ''}
+                </dd>
+              </div>
+              <div>
+                <dt>Роль</dt>
+                <dd>{selected.role}</dd>
+              </div>
+              <div>
+                <dt>Срок</dt>
+                <dd>{selected.deadline}</dd>
+              </div>
+              {selected.manager ? (
+                <div>
+                  <dt>Руководитель</dt>
+                  <dd>{selected.manager}</dd>
+                </div>
+              ) : null}
+            </dl>
+            <p className="spec-v04-muted">
+              Открытых задач (MPP): {selected.tasks}
+              {projectTasks.matchedCount > projectTasks.rows.length
+                ? ` · показано ${projectTasks.rows.length} из ${projectTasks.matchedCount}`
+                : projectTasks.rows.length
+                  ? ` · ${projectTasks.rows.length} в списке`
+                  : ''}
+            </p>
             <SpecProgress value={selected.progress} />
-            <button type="button" className="spec-btn-launch spec-btn-launch-block">
-              Открыть в проекте
-            </button>
+            <div className="spec-detail-pane spec-detail-pane-row">
+              <h4>Задачи проекта</h4>
+              <label className="spec-v04-toggle-inline">
+                <input
+                  type="checkbox"
+                  checked={myTasksOnly}
+                  onChange={(e) => setMyTasksOnly(e.target.checked)}
+                />
+                Только мои
+              </label>
+            </div>
+            <ProjectTasksTable
+              rows={projectTasks.rows}
+              loading={projectTasks.loading}
+              error={projectTasks.error}
+              emptyLabel="Нет задач в MPP по фильтру"
+            />
+            <footer className="spec-detail-actions">
+              <button type="button" className="btn-primary">
+                Открыть в проекте
+              </button>
+            </footer>
           </div>
         ) : (
           <div className="wp-card spec-v04-muted">Выберите проект</div>

@@ -1,3 +1,7 @@
+import type { UserProfile } from '../api/types'
+import { formatIpcInvokeError, sidecarAckFailureMessage, type SidecarAck } from './sidecarAck'
+import { onecComInvokeArgs } from '../workplace/userContext'
+
 const DEFAULT_TIMEOUT_MS = 180_000
 
 export interface LocalAcToolResult {
@@ -15,7 +19,10 @@ function sidecarUnavailableMessage(): string {
     return 'Sidecar агента недоступен — перезапустите приложение'
   }
   if (typeof window.agent.invokeAcTool !== 'function') {
-    return 'Локальный мост COM не подключён — перезапустите Electron (main + preload)'
+    return (
+      'Preload без invokeAcTool — полностью закройте Orchestrator и запустите ' +
+      'orchestrator\\orchestrator\\desktop-electron\\run_dev.bat (не Constructor/desktop-electron)'
+    )
   }
   return 'Sidecar недоступен'
 }
@@ -24,7 +31,8 @@ function sidecarUnavailableMessage(): string {
 export function invokeLocalAcTool(
   tool: string,
   input: Record<string, unknown> = {},
-  timeoutMs = DEFAULT_TIMEOUT_MS
+  timeoutMs = DEFAULT_TIMEOUT_MS,
+  user: UserProfile | null = null
 ): Promise<LocalAcToolResult> {
   const toolName = tool.trim()
   if (!toolName) {
@@ -66,7 +74,30 @@ export function invokeLocalAcTool(
         })
       }
     })
-    void window.agent.invokeAcTool({ requestId, tool: toolName, input })
+    const payload =
+      toolName.startsWith('onec.') ? onecComInvokeArgs(input, user) : input
+    void window.agent
+      .invokeAcTool({ requestId, tool: toolName, input: payload })
+      .then((ack) => {
+        const fail = sidecarAckFailureMessage(
+          ack as SidecarAck,
+          'Sidecar не принял COM-запрос — дождитесь запуска sidecar или перезапустите Orchestrator'
+        )
+        if (fail) finish({ ok: false, tool: toolName, error: fail })
+      })
+      .catch((err: unknown) => {
+        const detail = err instanceof Error ? err.message : String(err)
+        const mapped = formatIpcInvokeError(detail)
+        finish({
+          ok: false,
+          tool: toolName,
+          error: mapped.trim()
+            ? mapped.includes('Main-процесс')
+              ? mapped
+              : `Sidecar недоступен (${mapped})`
+            : sidecarUnavailableMessage()
+        })
+      })
   })
 }
 

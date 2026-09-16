@@ -17,6 +17,8 @@ const api = {
     params?: Record<string, string | number | boolean | undefined | null>
     token?: string | null
     timeoutMs?: number
+    filePaths?: string[]
+    extraFields?: Record<string, string>
   }): Promise<ApiResponse<T>> => ipcRenderer.invoke('api:request', opts),
   upload: <T = unknown>(opts: {
     endpoint: string
@@ -37,18 +39,6 @@ const api = {
     token?: string | null
   }): Promise<{ ok: boolean; canceled?: boolean; path?: string; error?: string }> =>
     ipcRenderer.invoke('api:download', opts),
-  saveLocalFile: (opts: {
-    defaultName?: string
-    text?: string
-    base64?: string
-    filters?: { name: string; extensions: string[] }[]
-  }): Promise<{ ok: boolean; canceled?: boolean; path?: string; error?: string }> =>
-    ipcRenderer.invoke('api:saveLocalFile', opts),
-  exportPdf: (opts: {
-    html: string
-    defaultName?: string
-  }): Promise<{ ok: boolean; canceled?: boolean; path?: string; error?: string }> =>
-    ipcRenderer.invoke('api:exportPdf', opts),
   createWorkflow: <T = unknown>(opts: {
     notes: string
     draftId?: string
@@ -83,6 +73,43 @@ const api = {
     filters?: { name: string; extensions: string[] }[]
     properties?: string[]
   }): Promise<string[]> => ipcRenderer.invoke('dialog:openFile', options),
+  openPath: (filePath: string): Promise<{ ok: boolean; error?: string }> =>
+    ipcRenderer.invoke('shell:openPath', filePath),
+  readLocalFilePreview: (
+    filePath: string
+  ): Promise<
+    | {
+        ok: true
+        path: string
+        size: number
+        mime: string
+        kind: 'text'
+        text: string
+      }
+    | {
+        ok: true
+        path: string
+        size: number
+        mime: string
+        kind: 'embed'
+        dataUrl: string
+      }
+    | {
+        ok: true
+        path: string
+        size: number
+        mime: string
+        kind: 'external'
+        hint: string
+      }
+    | { ok: false; error: string; tooLarge?: boolean; path?: string; size?: number }
+  > => ipcRenderer.invoke('fs:readLocalFilePreview', filePath),
+  copyLocalFile: (opts: {
+    sourcePath: string
+    defaultName?: string
+  }): Promise<{ ok: boolean; canceled?: boolean; path?: string; error?: string }> =>
+    ipcRenderer.invoke('fs:copyLocalFile', opts),
+  saveClipboardImage: (): Promise<string> => ipcRenderer.invoke('clipboard:saveImage'),
   startNotifications: (token: string): Promise<{ ok: boolean }> =>
     ipcRenderer.invoke('notifications:start', token),
   stopNotifications: (): Promise<{ ok: boolean }> => ipcRenderer.invoke('notifications:stop'),
@@ -91,16 +118,40 @@ const api = {
     body?: string
     workflowId?: string
     runId?: string
+    requestId?: string
+    draftId?: string
   }): Promise<{ ok: boolean }> => ipcRenderer.invoke('notify:show', payload),
   onNotificationOpen: (
-    callback: (payload: { workflowId: string; runId: string }) => void
+    callback: (payload: { workflowId: string; runId: string; draftId?: string }) => void
   ): (() => void) => {
-    const listener = (_event: unknown, payload: { workflowId: string; runId: string }): void => {
+    const listener = (
+      _event: unknown,
+      payload: { workflowId: string; runId: string; draftId?: string }
+    ): void => {
       callback(payload)
     }
     ipcRenderer.on('notification:open', listener)
     return () => {
       ipcRenderer.removeListener('notification:open', listener)
+    }
+  },
+  onNotificationHitl: (
+    callback: (payload: {
+      requestId: string
+      approved: boolean
+      workflowId: string
+      runId: string
+    }) => void
+  ): (() => void) => {
+    const listener = (
+      _event: unknown,
+      payload: { requestId: string; approved: boolean; workflowId: string; runId: string }
+    ): void => {
+      callback(payload)
+    }
+    ipcRenderer.on('notification:hitl', listener)
+    return () => {
+      ipcRenderer.removeListener('notification:hitl', listener)
     }
   },
   onInboxChanged: (callback: (payload: { id: string }) => void): (() => void) => {
@@ -147,6 +198,23 @@ const api = {
     error: string
   }> => ipcRenderer.invoke('updater:getStatus'),
   installUpdate: (): Promise<{ ok: boolean; error?: string }> => ipcRenderer.invoke('updater:install'),
+  loadOdataExternalEnv: (): Promise<{
+    ok: boolean
+    path: string
+    missing: string[]
+    invokeArgs: Record<string, string>
+  }> => ipcRenderer.invoke('orch:load-odata-external-env'),
+  fetchErpOdataTasks: (opts: {
+    token?: string | null
+    fio?: string
+    limit?: number
+    fallbackSql?: boolean
+  }): Promise<{
+    ok: boolean
+    status: number
+    data?: unknown
+    error?: string
+  }> => ipcRenderer.invoke('orch:fetch-erp-odata-tasks', opts),
   onUpdateStatus: (
     callback: (payload: {
       state: 'idle' | 'available' | 'downloading' | 'installing' | 'error'
@@ -192,10 +260,15 @@ const agent = {
     ipcRenderer.invoke('agent:cancel', command),
   readCalendar: (command: Record<string, unknown>): Promise<{ ok: boolean }> =>
     ipcRenderer.invoke('agent:read-calendar', command),
-  searchOutlookMail: (command: Record<string, unknown>): Promise<{ ok: boolean }> =>
+  searchOutlookMail: (
+    command: Record<string, unknown>
+  ): Promise<{ ok: boolean; queued?: boolean; error?: string; reason?: string }> =>
     ipcRenderer.invoke('agent:search-mail', command),
-  invokeAcTool: (command: Record<string, unknown>): Promise<{ ok: boolean }> =>
+  invokeAcTool: (
+    command: Record<string, unknown>
+  ): Promise<{ ok: boolean; queued?: boolean; error?: string; reason?: string }> =>
     ipcRenderer.invoke('agent:invoke-ac-tool', command),
+  sidecarStatus: (): Promise<Record<string, unknown>> => ipcRenderer.invoke('agent:status'),
   onEvent: (callback: (payload: Record<string, unknown>) => void): (() => void) => {
     const listener = (_event: unknown, payload: Record<string, unknown>): void => {
       callback(payload)

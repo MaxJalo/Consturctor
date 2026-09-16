@@ -1,6 +1,6 @@
 import { useContext } from 'react'
-import type { UserProfile } from '../api/types'
 import { type MeetingEvent } from '../utils/outlookMeetings'
+import type { UserProfile } from '../api/types'
 import type { SpecSummaryTile } from './specV04Shell'
 import type { SpecMailRow, SpecProcessRow, SpecProjectRow, SpecTaskRow } from './specV04DemoData'
 import { SpecV04SourcesContext } from './SpecV04SourcesProvider'
@@ -17,6 +17,11 @@ export interface SpecV04SourcesState {
   erpFio: string
   erpTasks: SpecTaskRow[]
   erpTaskCount: number
+  /** TurboProject open tasks (только текущий исполнитель). */
+  turboTasks: SpecTaskRow[]
+  turboTaskCount: number
+  /** ERP + Turbo + регламентные агенты для KPI «Все задачи». */
+  allTaskCount: number
   projects: SpecProjectRow[]
   projectCount: number
   mailRows: SpecMailRow[]
@@ -27,8 +32,10 @@ export interface SpecV04SourcesState {
   /** Совещания с датой начала = сегодня (локальный календарь). */
   meetingCountToday: number
   meetings: MeetingEvent[]
-  /** Ошибка загрузки 1С (erp_pm / документооборот), если задач нет. */
+  /** Ошибка загрузки 1С (erp_pm), блокирующая при 0 задач. */
   erpError: string
+  /** Документооборот /doc — подсказка, когда задачи erp_pm уже загружены. */
+  erpSecondaryHint: string
   sources: {
     erp: string
     turbo: string
@@ -36,6 +43,12 @@ export interface SpecV04SourcesState {
   }
   /** TurboProject API / учётка недоступны (не путать с пустым портфелем). */
   turboNoSession: boolean
+  /** Профиль для turboproject.* (email/nameMail из сессии). */
+  user: UserProfile | null
+  /** Пароль 1С из экрана входа в памяти renderer (не localStorage). */
+  comPasswordInSession: boolean
+  /** Нужен повторный ввод пароля 1С (COM / gateway / OData). */
+  oneCAuthFailure: boolean
 }
 
 function pct(done: number, total: number): number {
@@ -98,7 +111,7 @@ export function buildProcessTiles(data: SpecV04SourcesState): SpecSummaryTile[] 
       id: 'onec',
       label: 'Задачи из 1С',
       value: onecTotal ? `${onecTotal} активных` : '—',
-      hint: onecTotal ? `${onecDone} выполнено` : data.sources.erp,
+      hint: onecTotal ? `${onecDone} выполнено` : '1С ERP',
       tone: 'blue',
       progress: pct(onecDone, onecTotal || 1),
       ring: true
@@ -107,7 +120,7 @@ export function buildProcessTiles(data: SpecV04SourcesState): SpecSummaryTile[] 
       id: 'proj',
       label: 'Проекты',
       value: projTotal ? `${projTotal} в портфеле` : '—',
-      hint: data.sources.turbo,
+      hint: 'TurboProject',
       tone: 'purple',
       progress: projTotal ? 50 : 0,
       ring: true
@@ -116,7 +129,7 @@ export function buildProcessTiles(data: SpecV04SourcesState): SpecSummaryTile[] 
       id: 'mail',
       label: 'Письма (Outlook)',
       value: mailTotal ? `${mailTotal} за неделю` : '—',
-      hint: data.outlookMailbox || data.sources.mail,
+      hint: 'Outlook',
       tone: 'orange',
       progress: mailTotal ? 30 : 0,
       ring: true
@@ -133,18 +146,53 @@ export function buildProcessTiles(data: SpecV04SourcesState): SpecSummaryTile[] 
   ]
 }
 
+function taskTileValue(loading: boolean, count: number): string {
+  if (loading) return '—'
+  return count ? String(count) : '—'
+}
+
 export function buildTaskTiles(data: SpecV04SourcesState): SpecSummaryTile[] {
-  const overdue = data.erpTasks.filter((t) => t.urgent && t.status !== 'Выполнена').length
+  const loading = data.sourcesLoading
+  const gridTasks = [...data.erpTasks, ...data.turboTasks]
+  const overdue = gridTasks.filter((t) => t.urgent && t.status !== 'Выполнена').length
+  const regTotal = data.processRows.length
+  const allHint = loading
+    ? 'загрузка…'
+    : '1С ERP + ДО + Turbo + регламент'
+  const onecHint = loading ? 'загрузка…' : 'ERP и документооборот'
   return [
-    { id: 'all', label: 'Все задачи', value: String(data.erpTaskCount || '—'), tone: 'blue' },
-    { id: 'onec', label: 'Задачи из 1С', value: String(data.erpTaskCount || '—'), tone: 'blue' },
+    {
+      id: 'all',
+      label: 'Все задачи',
+      value: taskTileValue(loading, data.allTaskCount),
+      hint: allHint,
+      tone: 'blue'
+    },
+    {
+      id: 'onec',
+      label: 'Задачи из 1С',
+      value: taskTileValue(loading, data.erpTaskCount),
+      hint: onecHint,
+      tone: 'blue'
+    },
     {
       id: 'proj',
       label: 'Проектные',
-      value: String(data.projects.reduce((s, p) => s + p.tasks, 0) || '—'),
+      value: taskTileValue(loading, data.turboTaskCount),
+      hint: loading ? 'загрузка…' : 'TurboProject, мои',
       tone: 'purple'
     },
-    { id: 'reg', label: 'Регламентные', value: String(data.processRows.length || '—'), tone: 'green' },
-    { id: 'bad', label: 'Просроченные', value: String(overdue || '—'), tone: 'orange' }
+    {
+      id: 'reg',
+      label: 'Регламентные',
+      value: taskTileValue(loading, regTotal),
+      tone: 'green'
+    },
+    {
+      id: 'bad',
+      label: 'Просроченные',
+      value: taskTileValue(loading, overdue),
+      tone: 'orange'
+    }
   ]
 }

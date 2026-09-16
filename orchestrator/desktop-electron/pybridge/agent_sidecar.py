@@ -36,7 +36,8 @@ Protocol: newline-delimited JSON.
     {"type": "error", "runId": str, "message": str}
     {"type": "ready_state", "ok": bool, "message": str}
 
-All console/log text is ASCII to stay safe on Windows consoles.
+Diagnostics on stderr use UTF-8 (Electron reads stderr as utf-8).
+Protocol on stdout is UTF-8 JSON lines.
 """
 
 from __future__ import annotations
@@ -56,40 +57,69 @@ from pathlib import Path
 from typing import Any
 
 
+def _is_orchestrator_desktop(path: Path) -> bool:
+    normalized = str(path).replace("\\", "/").lower()
+    return normalized.endswith("/orchestrator/desktop") or "/orchestrator/orchestrator/desktop" in normalized
+
+
+def _strip_other_desktop_roots(keep: Path) -> None:
+    """Avoid importing app.* from Consturctor/desktop when Orchestrator desktop is intended."""
+    keep_resolved = keep.resolve()
+    for entry in list(sys.path):
+        if not entry:
+            continue
+        try:
+            candidate = Path(entry).resolve()
+        except OSError:
+            continue
+        if candidate == keep_resolved:
+            continue
+        if (candidate / "app" / "config.py").is_file():
+            try:
+                sys.path.remove(entry)
+            except ValueError:
+                pass
+
+
+def _use_desktop_root(desktop_root: Path) -> Path:
+    desktop_root = desktop_root.resolve()
+    if not desktop_root.is_dir():
+        raise RuntimeError(f"desktop folder not found at {desktop_root}")
+    _strip_other_desktop_roots(desktop_root)
+    path_str = str(desktop_root)
+    while path_str in sys.path:
+        sys.path.remove(path_str)
+    sys.path.insert(0, path_str)
+    return desktop_root
+
+
 def _bootstrap_desktop_path() -> Path:
     """Add the desktop/ folder to sys.path so app.* is importable."""
     env_root = os.environ.get("CONSTRUCTOR_DESKTOP_ROOT", "").strip()
     if env_root:
-        desktop_root = Path(env_root).resolve()
-        if not desktop_root.is_dir():
-            raise RuntimeError(f"desktop folder not found at {desktop_root}")
-        path_str = str(desktop_root)
-        if path_str not in sys.path:
-            sys.path.insert(0, path_str)
-        return desktop_root
+        return _use_desktop_root(Path(env_root))
 
     here = Path(__file__).resolve()
+    sidecar_is_orchestrator = "orchestrator" in str(here).replace("\\", "/").lower()
     candidates: list[Path] = []
     for parent in here.parents:
         candidates.append(parent / "Consturctor" / "desktop")
         candidates.append(parent / "desktop")
     found = [path for path in candidates if (path / "app" / "config.py").is_file()]
+    if sidecar_is_orchestrator:
+        orchestrator_desktops = [path for path in found if _is_orchestrator_desktop(path)]
+        if orchestrator_desktops:
+            return _use_desktop_root(orchestrator_desktops[0])
     for desktop_root in found:
         if (desktop_root / ".env").is_file():
-            path_str = str(desktop_root)
-            if path_str not in sys.path:
-                sys.path.insert(0, path_str)
-            return desktop_root
+            return _use_desktop_root(desktop_root)
     if found:
-        desktop_root = found[0]
-        path_str = str(desktop_root)
-        if path_str not in sys.path:
-            sys.path.insert(0, path_str)
-        return desktop_root
+        return _use_desktop_root(found[0])
     raise RuntimeError(f"desktop folder not found near {here}")
 
 
 DESKTOP_ROOT = _bootstrap_desktop_path()
+_AC_REGISTRY_LOGGED = False
 
 # Importing app.config loads desktop/.env (CURSOR_API_KEY, BACKEND_URL, ...).
 from app.api_client import ApiClient, ApiError  # noqa: E402
@@ -234,10 +264,39 @@ def emit(message: dict[str, Any]) -> None:
 
 
 def log(message: str) -> None:
-    """ASCII-safe diagnostic to stderr (never stdout, which is the protocol)."""
-    safe = message.encode("ascii", errors="replace").decode("ascii")
-    sys.stderr.write(safe + "\n")
-    sys.stderr.flush()
+    """UTF-8 diagnostic to stderr (never stdout, which is the protocol)."""
+    line = str(message) + "\n"
+    payload = line.encode("utf-8")
+    with _STDOUT_LOCK:
+        buffer = getattr(sys.stderr, "buffer", None)
+        if buffer is not None:
+            buffer.write(payload)
+            buffer.flush()
+        else:
+            sys.stderr.write(line)
+            sys.stderr.flush()
+
+
+def _log_ac_registry_once() -> None:
+    """Log registered outlook.* AC tools on first invoke (helps debug wrong desktop root)."""
+    global _AC_REGISTRY_LOGGED
+    if _AC_REGISTRY_LOGGED:
+        return
+    _AC_REGISTRY_LOGGED = True
+    try:
+        from app.tools.ac.dispatch import get_registry
+
+        names = sorted(
+            name
+            for name in get_registry().list_tool_names()
+            if name.startswith("outlook.")
+        )
+        log(f"ac_tools outlook.* ({len(names)}): " + ", ".join(names))
+    except Exception as exc:  # noqa: BLE001
+        log("ac_tools registry log failed: " + repr(exc))
+
+
+log(f"desktop root: {DESKTOP_ROOT}")
 
 
 def _json_default(value: Any) -> Any:
@@ -251,6 +310,20 @@ def _exc_text(exc: Exception, fallback: str) -> str:
     if not text:
         text = repr(exc).strip()
     return text or fallback
+
+
+from app.tools.ac.workers.onec_com_session import (  # noqa: E402
+    apply_onec_session_credentials,
+    com_session_auth_ready,
+    missing_com_auth_message,
+    snapshot_desktop_com_env,
+)
+
+_DESKTOP_COM_ENV = snapshot_desktop_com_env()
+
+
+def _apply_onec_session_credentials(raw: dict[str, Any] | None) -> None:
+    apply_onec_session_credentials(raw, desktop_snapshot=_DESKTOP_COM_ENV)
 
 
 KEEP_KNOWLEDGE_FILE_NAME = "keepKnowledgeFile"
@@ -2159,17 +2232,9 @@ class Sidecar:
         # Server-side tools (users.current, 1C tasks, ...) read this process-global
         # token. Without it they fail with "no user session" even if the UI is logged in.
         configure_runtime_api(token=token, base_url=self._api.base_url)
-        # COM 1C workers read ERP_LOGIN / ERP_PASSWORD from the process env.
-        # ONEC_COM_USR in desktop/.env overrides session FIO for COM Usr=.
-        login = str(command.get("login") or "").strip()
-        password = str(command.get("password") or "")
-        if login and not os.environ.get("ONEC_COM_USR", "").strip():
-            if not os.environ.get("ERP_LOGIN", "").strip():
-                os.environ["ERP_LOGIN"] = login
-        if password:
-            os.environ["ERP_PASSWORD"] = password
-        elif "password" in command and not os.environ.get("ERP_PASSWORD", "").strip():
-            os.environ.pop("ERP_PASSWORD", None)
+        # COM 1C workers read ERP_LOGIN / ERP_PASSWORD / ONEC_COM_USR from process env.
+        # Session creds from Orchestrator login override desktop/.env when sent here.
+        _apply_onec_session_credentials(command)
 
     def check_ready(self) -> None:
         try:
@@ -3610,8 +3675,13 @@ class Sidecar:
             try:
                 from app.tools.ac.dispatch import invoke_ac_tool
 
+                _log_ac_registry_once()
                 if not tool_name:
                     raise ValueError("tool name required")
+                if tool_name.startswith("onec."):
+                    _apply_onec_session_credentials(input_data)
+                    if not com_session_auth_ready():
+                        raise RuntimeError(missing_com_auth_message())
                 output = invoke_ac_tool(tool_name, input_data)
                 log("invoke_ac_tool ok tool=" + tool_name)
                 emit(

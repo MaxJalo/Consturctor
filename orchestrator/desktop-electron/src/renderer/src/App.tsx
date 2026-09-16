@@ -11,10 +11,16 @@ import {
   clearComCredentials,
   comCredentials,
   clearSession,
+  hasComPassword,
   loadSession,
   saveSession,
-  setComCredentials
+  setComCredentials,
+  setDevGatewayCredentials,
+  syncComProfileFromUser
 } from './store/session'
+import { formatGatewayToolError, shouldForceReLogin } from './workplace/onecSessionHints'
+import { fetchMyErpTasksOData } from './workplace/fetchMyErpTasksOData'
+import { erpActorFio } from './workplace/userContext'
 import { AgentRunPage } from './pages/AgentRunPage'
 import { AgentHistoryPage } from './pages/AgentHistoryPage'
 import { AgentSchedulePage } from './pages/AgentSchedulePage'
@@ -32,13 +38,18 @@ import { TodayGridTab } from './tabs/grid/TodayGridTab'
 import { KpiGridTab } from './tabs/grid/KpiGridTab'
 import { DecisionsGridTab } from './tabs/grid/DecisionsGridTab'
 import { HistoryGridTab } from './tabs/grid/HistoryGridTab'
-import { useRuns } from './store/runs'
+import { RunProvider, useRuns } from './store/runs'
 import { isInFlightRunStatus, isLiveRunState } from './store/liveRun'
 import { ChatDock } from './workplace/ChatDock'
 import { isPersonalAgentWorkflowId, personalAgentWorkflowId } from './workplace/personalAgent'
 import { DiagnosticsPage, SettingsTab, TicketsPage } from './workplace/WorkplaceTabs'
 import { GridDataRefreshProvider } from './workplace/GridDataRefreshContext'
 import { SpecV04SourcesProvider } from './workplace/SpecV04SourcesProvider'
+import {
+  ComCredentialsRevisionProvider,
+  useBumpComCredentialsRevision,
+  useComCredentialsRevision
+} from './workplace/ComCredentialsRevisionContext'
 import { OverviewPage } from './admin/pages/OverviewPage'
 import { HistoryPage } from './admin/pages/HistoryPage'
 import { LaunchCalendarPage } from './admin/pages/LaunchCalendarPage'
@@ -153,6 +164,16 @@ function findExistingChat(threads: ChatThread[], name: string, peerId?: string):
 }
 
 export function App(): React.JSX.Element {
+  return (
+    <RunProvider>
+      <ComCredentialsRevisionProvider>
+        <AppShell />
+      </ComCredentialsRevisionProvider>
+    </RunProvider>
+  )
+}
+
+function AppShell(): React.JSX.Element {
   const [booting, setBooting] = useState(true)
   const [user, setUser] = useState<UserProfile | null>(null)
   const [showLogout, setShowLogout] = useState(true)
@@ -162,7 +183,11 @@ export function App(): React.JSX.Element {
   const [unread, setUnread] = useState(0)
   const [avatarUrl, setAvatarUrl] = useState<string | null>(null)
   const [toast, setToast] = useState('')
+  /** JWT restored from localStorage but 1C password is only in memory after login form. */
+  const [requireComLogin, setRequireComLogin] = useState(false)
   const kickedRef = useRef(false)
+  const comCredsRevision = useComCredentialsRevision()
+  const bumpComCredentialsRevision = useBumpComCredentialsRevision()
   const [chatRefreshAt, setChatRefreshAt] = useState(0)
   const runs = useRuns()
 
@@ -182,6 +207,15 @@ export function App(): React.JSX.Element {
       try {
         const config = await window.api.getConfig()
         setShowLogout(!config.testUser)
+        const dev = config.devGatewaySecrets
+        if (dev) {
+          setDevGatewayCredentials({
+            fio: dev.fio,
+            nameMail: dev.nameMail,
+            password: dev.password
+          })
+          bumpComCredentialsRevision()
+        }
         const stored = loadSession()
         if (stored?.accessToken) {
           if (!isOrchestratorToken(stored.accessToken)) {
@@ -191,6 +225,7 @@ export function App(): React.JSX.Element {
             try {
               const profile = await api.me(8_000)
               setUser(profile)
+              setRequireComLogin(!hasComPassword())
               setModeForUser(profile)
             } catch {
               clearSession(true)
@@ -237,6 +272,20 @@ export function App(): React.JSX.Element {
   }, [])
 
   useEffect(() => {
+    api.setUnauthorizedHandler((message, status) => {
+      if (!shouldForceReLogin(message, status)) return
+      if (kickedRef.current) return
+      kickedRef.current = true
+      const hint = formatGatewayToolError(message, status)
+      void resetToLogin().then(() => {
+        setRequireComLogin(true)
+        if (hint) flash(hint)
+      })
+    })
+    return () => api.setUnauthorizedHandler(null)
+  }, [])
+
+  useEffect(() => {
     if (!user) {
       kickedRef.current = false
       void window.api.stopNotifications?.()
@@ -245,9 +294,29 @@ export function App(): React.JSX.Element {
     }
     const token = api.getToken()
     if (token) void window.api.startNotifications?.(token)
+    syncComProfileFromUser(user)
     const creds = comCredentials()
-    void agentClient.ready(token, { login: creds.login || user.fio, password: creds.password || '' }).catch(() => undefined)
-  }, [user?.id])
+    void agentClient
+      .ready(token, {
+        login: creds.login || user.fio,
+        password: creds.password || ''
+      })
+      .catch(() => undefined)
+  }, [user?.id ?? '', user?.nameMail ?? '', user?.fio ?? '', comCredsRevision])
+
+  useEffect(() => {
+    if (!import.meta.env.DEV || !user) {
+      delete window.__ORCH_DEV__
+      return
+    }
+    window.__ORCH_DEV__ = {
+      fetchMyErpTasksOData: (limit?: number) =>
+        fetchMyErpTasksOData(user, erpActorFio(user), { limit })
+    }
+    return () => {
+      delete window.__ORCH_DEV__
+    }
+  }, [user])
 
   useEffect(() => {
     if (!user) return
@@ -282,8 +351,15 @@ export function App(): React.JSX.Element {
 
   function onLoggedIn(result: LoginResult, remember: boolean, password = ''): void {
     api.setToken(result.accessToken || null)
-    setComCredentials(result.user.fio, password)
-    void agentClient.ready(result.accessToken || null, { login: result.user.fio, password }).catch(() => undefined)
+    setComCredentials(result.user.fio, password, result.user.nameMail)
+    bumpComCredentialsRevision()
+    setRequireComLogin(false)
+    void agentClient
+      .ready(result.accessToken || null, {
+        login: result.user.fio,
+        password
+      })
+      .catch(() => undefined)
     if (remember && result.accessToken) {
       saveSession({ accessToken: result.accessToken, fio: result.user.fio })
     } else {
@@ -311,6 +387,7 @@ export function App(): React.JSX.Element {
     setLastTab('overview')
     setAdminViewMode('user')
     setUser(null)
+    setRequireComLogin(false)
   }
 
   function onLogout(): void {
@@ -442,8 +519,17 @@ export function App(): React.JSX.Element {
     )
   }
 
-  if (!user) {
-    return <LoginPage onLoggedIn={onLoggedIn} />
+  if (!user || requireComLogin) {
+    return (
+      <LoginPage
+        onLoggedIn={onLoggedIn}
+        banner={
+          requireComLogin
+            ? 'Сеанс Orchestrator восстановлен по сохранённому токену. Введите пароль 1С для загрузки задач и OData.'
+            : undefined
+        }
+      />
+    )
   }
 
   const activeUser = user
@@ -649,11 +735,13 @@ export function App(): React.JSX.Element {
     const tabKey = view.key
     return (
       <GridDataRefreshProvider userId={activeUser.id}>
-        <SpecV04SourcesProvider user={activeUser}>
+        <SpecV04SourcesProvider user={activeUser} comCredsRevision={comCredsRevision}>
           <div className="app-root orch-app-root">
             <OrchGridShell
               activeKey={tabKey}
-              gridClassName={tabKey === 'today' ? 'orch-grid-today' : ''}
+              gridClassName={
+                tabKey === 'today' ? 'orch-grid-today' : tabKey === 'kpi' ? 'orch-grid-kpi' : ''
+              }
               user={activeUser}
               avatarUrl={avatarUrl}
               unread={unread}
@@ -688,7 +776,7 @@ export function App(): React.JSX.Element {
 
   return (
     <GridDataRefreshProvider userId={activeUser.id}>
-      <SpecV04SourcesProvider user={activeUser}>
+      <SpecV04SourcesProvider user={activeUser} comCredsRevision={comCredsRevision}>
         <div className="app-root">
           <Sidebar
             active={activeKey}

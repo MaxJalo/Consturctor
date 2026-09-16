@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useCallback, useMemo, useState } from 'react'
 import type { UserProfile } from '../../api/types'
 import {
   OrchSlotBotC,
@@ -9,9 +9,10 @@ import {
 } from '../../layout/GridSlots'
 import type { SpecSummaryTile } from '../../workplace/specV04Shell'
 import { SpecAskOrchestratorBlock, SpecPill, SpecSummaryTiles } from '../../workplace/specV04Components'
-import { ASK_CHIPS } from '../../workplace/specV04DemoData'
+import { ASK_CHIPS, type SpecMailRow } from '../../workplace/specV04DemoData'
 import { useSpecV04Sources } from '../../workplace/useSpecV04Data'
 import { StandardGridFilters } from './gridFilters'
+import { MailDetailPanel } from './MailDetailPanel'
 
 export function MailGridTab({
   user,
@@ -21,9 +22,16 @@ export function MailGridTab({
   onAskOrchestrator: (message: string, context: string) => void
 }): React.JSX.Element {
   const data = useSpecV04Sources(user)
-  const mailRows = data.mailRows
+  const [rowPatches, setRowPatches] = useState<Record<string, Partial<SpecMailRow>>>({})
+  const mailRows = useMemo(
+    () => data.mailRows.map((row) => ({ ...row, ...rowPatches[row.id] })),
+    [data.mailRows, rowPatches]
+  )
   const [selectedId, setSelectedId] = useState('')
   const selected = mailRows.find((m) => m.id === (selectedId || mailRows[0]?.id))
+  const patchRow = useCallback((id: string, patch: Partial<(typeof mailRows)[0]>) => {
+    setRowPatches((prev) => ({ ...prev, [id]: { ...prev[id], ...patch } }))
+  }, [])
 
   const tiles: SpecSummaryTile[] = useMemo(
     () => [
@@ -85,11 +93,7 @@ export function MailGridTab({
       </OrchSlotMain>
       <OrchSlotSide>
         {selected ? (
-          <div className="spec-detail-card">
-            <h2>{selected.subject}</h2>
-            <p>{selected.sender}</p>
-            <SpecPill tone={selected.stTone}>{selected.status}</SpecPill>
-          </div>
+          <MailDetailPanel mail={selected} onPatchRow={patchRow} onAskOrchestrator={ask} />
         ) : (
           <div className="wp-card spec-v04-muted">Выберите письмо</div>
         )}

@@ -54,6 +54,12 @@ def _odata_patch(args: dict[str, Any]) -> dict[str, Any]:
     return _odata_patch(args)
 
 
+def _odata_delete(args: dict[str, Any]) -> dict[str, Any]:
+    from app.services.onec_tools import _odata_delete
+
+    return _odata_delete(args)
+
+
 def _empty_guid(value: Any) -> bool:
     text = str(value or "").strip()
     return not text or text.startswith(_GUID_EMPTY)
@@ -908,26 +914,37 @@ def _assignment_ref_from_write(result: dict[str, Any]) -> tuple[str, str]:
     return ref_key, number
 
 
-def mark_assignment_deleted(ref_key: str) -> None:
+def delete_probe_document(entity: str, ref_key: str) -> None:
+    """Physically remove a CONSTRUCTOR_PROBE object. Mark-for-delete is not enough."""
     if not _looks_like_guid(ref_key):
         return
     try:
-        _odata_patch(
-            {"entity": ASSIGNMENT_ENTITY, "ref_key": ref_key, "body": {"Posted": False}}
-        )
+        _odata_patch({"entity": entity, "ref_key": ref_key, "body": {"Posted": False}})
     except Exception:  # noqa: BLE001
         pass
-    _odata_patch(
-        {
-            "entity": ASSIGNMENT_ENTITY,
-            "ref_key": ref_key,
-            "body": {"DeletionMark": True},
-        }
-    )
+    try:
+        _odata_delete({"entity": entity, "ref_key": ref_key})
+        return
+    except Exception as first:  # noqa: BLE001
+        try:
+            _odata_patch(
+                {"entity": entity, "ref_key": ref_key, "body": {"DeletionMark": True}}
+            )
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            _odata_delete({"entity": entity, "ref_key": ref_key})
+            return
+        except Exception:  # noqa: BLE001
+            raise first
 
 
-def list_probe_assignments(*, customer_key: str = "", limit: int = 20) -> list[dict[str, Any]]:
-    parts = ["DeletionMark eq false", f"substringof('{PROBE_MARK}', ОЧем)"]
+def mark_assignment_deleted(ref_key: str) -> None:
+    delete_probe_document(ASSIGNMENT_ENTITY, ref_key)
+
+
+def list_probe_assignments(*, customer_key: str = "", limit: int = 50) -> list[dict[str, Any]]:
+    parts = [f"substringof('{PROBE_MARK}', ОЧем)"]
     if customer_key and _looks_like_guid(customer_key):
         parts.append(f"Руководитель_Key eq guid'{customer_key}'")
     result = _odata_get(
@@ -938,8 +955,8 @@ def list_probe_assignments(*, customer_key: str = "", limit: int = 20) -> list[d
 
 def sweep_probe_assignments(*, customer_key: str = "") -> int:
     removed = 0
-    for row in list_probe_assignments(customer_key=customer_key):
-        topic = str(row.get("ОЧем") or "")
+    for row in list_probe_assignments(customer_key=customer_key, limit=50):
+        topic = " ".join(str(row.get(name) or "") for name in ("ОЧем", "Основание"))
         if not is_probe_topic(topic):
             continue
         key = str(row.get("Ref_Key") or "")
@@ -973,7 +990,7 @@ def assignment_write_recipe(
             "field": "Статус",
             "via": "odata_patch",
         },
-        "delete": {"via": "DeletionMark"},
+        "delete": {"via": "odata_delete"},
         "verified_status_from": from_status,
         "verified_status_to": to_status,
         "verified": fields,

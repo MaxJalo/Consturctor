@@ -1,6 +1,8 @@
 @echo off
 cd /d "%~dp0"
 set "PORT=7812"
+rem Local dev: JWT is not tied to Redis session (avoids 401 after LAN/localhost switch).
+if not defined AUTH_SKIP_SESSION_LOCK set "AUTH_SKIP_SESSION_LOCK=1"
 
 powershell -NoProfile -Command ^
   "$c=Get-NetTCPConnection -LocalPort %PORT% -State Listen -ErrorAction SilentlyContinue | Select-Object -First 1;" ^

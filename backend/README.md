@@ -59,6 +59,8 @@ python -m app.main
 
 API: `http://127.0.0.1:7812`
 
+Деплой LAN gateway (`192.168.1.157:7812`, без VPN на клиентах): [docs/DEPLOY_CONSTRUCTOR_GATEWAY.md](docs/DEPLOY_CONSTRUCTOR_GATEWAY.md).
+
 Расписание агентов и KPI считает **Celery worker**, не каждый десктоп. Redis + worker + beat:
 
 ```powershell

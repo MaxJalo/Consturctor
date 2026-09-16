@@ -203,6 +203,7 @@ def test_invoke_onec_real_get_denies_without_actor(monkeypatch: pytest.MonkeyPat
     monkeypatch.setattr("app.services.onec_tools.odata_configured", lambda: True)
     monkeypatch.setattr("app.services.onec_tools._erp_sql_ready", lambda: False)
     monkeypatch.setattr("app.services.docflow_tasks.docflow_configured", lambda: False)
+    monkeypatch.setattr("app.services.docflow_tasks.docflow_url_ready", lambda: False)
     monkeypatch.setattr(
         "app.services.onec_tools.REAL_HANDLERS",
         {"onec.odata_get": fake_get},

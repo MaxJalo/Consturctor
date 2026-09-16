@@ -4,7 +4,11 @@ from app.tools.ac.workers.base import BaseWorker
 from app.tools.ac.workers.models import WorkerResult, WorkerTask
 from app.tools.ac.workers.outlook_com_actions import (
     create_event,
+    display_mail_message,
+    fetch_mail_message,
+    mark_mail_read,
     read_calendar,
+    save_mail_attachment,
     search_mail,
 )
 from app.tools.ac.workers.outlook_diagnostics import (
@@ -75,6 +79,46 @@ class OutlookComWorker(BaseWorker):
             if not self.allow_direct_com_calls:
                 return self._direct_com_disabled_result(task)
             output_data = search_mail(task.input_data)
+            return WorkerResult(
+                task_id=task.task_id,
+                ok=True,
+                output_data=output_data,
+            )
+
+        if task.tool_name == "outlook.fetch_message":
+            if not self.allow_direct_com_calls:
+                return self._direct_com_disabled_result(task)
+            output_data = fetch_mail_message(task.input_data)
+            return WorkerResult(
+                task_id=task.task_id,
+                ok=True,
+                output_data=output_data,
+            )
+
+        if task.tool_name == "outlook.mark_read":
+            if not self.allow_direct_com_calls:
+                return self._direct_com_disabled_result(task)
+            output_data = mark_mail_read(task.input_data)
+            return WorkerResult(
+                task_id=task.task_id,
+                ok=True,
+                output_data=output_data,
+            )
+
+        if task.tool_name == "outlook.display_message":
+            if not self.allow_direct_com_calls:
+                return self._direct_com_disabled_result(task)
+            output_data = display_mail_message(task.input_data)
+            return WorkerResult(
+                task_id=task.task_id,
+                ok=True,
+                output_data=output_data,
+            )
+
+        if task.tool_name == "outlook.save_attachment":
+            if not self.allow_direct_com_calls:
+                return self._direct_com_disabled_result(task)
+            output_data = save_mail_attachment(task.input_data)
             return WorkerResult(
                 task_id=task.task_id,
                 ok=True,

@@ -6,17 +6,17 @@
 |---------|-----------|----------|
 | Метрики «Процессы» | live | `useSpecV04Sources`, `buildProcessTiles` |
 | Таблица процессов | live | agents + 1C + Turbo + Outlook mail + Outlook meetings |
-| Задачи 1С | live | `onec.erp_tasks_current` + `onec.docflow_tasks`; при ошибке OData ДО — fallback `onec.search_tasks` (COM, sidecar) |
-| Проекты | live | `turboproject.get_user_portfolio` |
-| Письма (вкладка «Почта» / процессы) | live | `outlook.search_mail` (COM): `folder=All`, `date_from`/`date_to` = текущая неделя (пн…вс), `max_results=50`; sidecar `agent:search-mail` |
+| Задачи 1С | live | **`onec.docflow_tasks`** — HTTP SOAP `/doc/ws/dm.1cws` (DOK_HTTP_*). Без `erp_tasks_current` / OData. |
+| Проекты | live | `turboproject.get_user_portfolio` (source id `turboproject`) |
+| Письма (вкладка «Почта» / процессы) | live | `outlook.search_mail` (COM): `folder=All`, `date_from`/`date_to` = текущая неделя (пн…вс), `max_results=50`; sidecar `agent:search-mail`. Действия в боковой панели: `outlook.fetch_message`, `outlook.display_message` (ответ/открыть), `outlook.mark_read`, `outlook.save_attachment`; вложения — `fs:readLocalFilePreview` / `fs:copyLocalFile` + модалка `MailAttachmentsModal`, внешнее открытие — `shell:openPath`, таймаут UI 45s |
 | Письма («Сегодня» → Outlook) | live | `outlook.search_mail`: `folder=Inbox`, `date=YYYY-MM-DD` (день = «Период») |
 | Совещания | live/partial | `ensureOutlookMeetings` |
 | База знаний | partial | `api.listWorkflows()` (регламенты Constructor) |
 | KPI «Сегодня» (5 плиток) | live/partial | `useTodayKpiData` → `useSpecV04Sources` (см. ниже) |
 | Сегодня → «Результаты дня» | live | `useTodayAgentResults` → `GET /api/v1/workflows/files` (`listPlatformFiles`), фильтр: `source=agent`, день = «Период», скачивание `api.download` |
 | Сегодня → «Подготовленные решения» | live | `useTodayPreparedDecisions` (день = «Период», scope = пользователь): доска `useWorkplaceData` + `useRuns` (live HITL / `WAITING_HUMAN`) + `extractToolDecisions` по прогонам за день (`listAgentRuns` / `getAgentRunDetail`) + файлы агентов без вердикта (`listPlatformFiles`, как «Результаты дня»); подзаголовок — `intent`/`result` инструмента, `summary`/`agentTitle` файла или итог прогона (`run.summary` / `cleanRunResult`); пустой список без demo; mock `TODAY_PREPARED_DECISIONS` не используется |
-| Сегодня → «Проектные задачи» | live | `useTodayProjectTasks`: портфель `get_user_portfolio` + до 3× `get_project_tasks` (open); без сеанса Turbo → «Нет активного сеанса» |
-| Сегодня → «Задачи из 1С» | live | `useSpecV04Sources`: erp_pm + docflow OData; частичный успех (erp_pm/COM при ошибке ДО); подсказка в hint, не блокирует таблицу |
+| Сегодня → «Проектные задачи» | live | `useTodayProjectTasks`: портфель + до 5× `get_project_tasks` (open); **pin** `VITE_TURBO_PIN_FILE_IDS=363`; для pin — все open-задачи, не только «на день» |
+| Сегодня → «Задачи из 1С» | live | `loadOrchestratorErpTasks` → `onec.docflow_tasks` (`today_and_overdue`: срок сегодня + просроченные) |
 | Сегодня → «Предстоящие события» | live | `useSpecV04Sources` → `ensureOutlookMeetings`, фильтр по «Период» |
 | Сегодня / план дня | live | `useTodayPlanTimeline`: Outlook + доска агентов (без demo-fallback блоков) |
 | Глобальный поиск (row 1) | noop | локальный фильтр — TBD endpoint |
@@ -29,7 +29,7 @@
 | Плитка | Источник | Примечание |
 |--------|----------|------------|
 | Выполнение дня | erp_tasks + агенты доски | % в кольце; value = «N из M»; без Turbo-задач |
-| Задачи 1С | `onec.erp_tasks_current` + `onec.docflow_tasks` | erp_pm SQL; ДО OData; при сбое ДО — `onec.search_tasks` (COM, `agent:invoke-ac-tool`) |
+| Задачи 1С | `onec.docflow_tasks` | HTTP SOAP `/doc/ws/dm.1cws`. Общий кэш полной выгрузки (`DOK_HTTP_CACHE_TTL_SEC`), нарезка по ФИО на backend. |
 | Регламентные работы | `useWorkplaceData` agents (!standalone) | count + выполненные по статусу процесса |
 | Проекты | `turboproject.get_user_portfolio` | count портфеля |
 | События дня | `ensureOutlookMeetings` + `meetingCountToday` | только встречи на текущий день |
@@ -43,7 +43,7 @@ TTL кэша: **10 мин** (`GRID_DATA_TTL_MS = 600_000`). Смена вкла�
 
 | Область | Где живёт | Смена user | Focus после blur / visibility | Interval 10 мин | События |
 |---------|-----------|------------|-------------------------------|-----------------|---------|
-| `SpecV04SourcesProvider` (1С, Turbo, Outlook mail week, календарь) | App | да | да | да | — |
+| `SpecV04SourcesProvider` → `fetchOrchestratorTaskSources` (`orchestratorTaskSources.ts`) | App | да | да | да | — |
 | `useWorkplaceData` (доска) | hook + module cache | да | да | да | `onBoardUpdated` (всегда reload) |
 | `useTodayOutlookMail` | hook + cache | — (`periodDay` в deps) | да | да | — |
 | `useTodayAgentResults` | hook + cache | — | да | да | `files_updated`, poll 60 с |
@@ -59,7 +59,9 @@ TTL кэша: **10 мин** (`GRID_DATA_TTL_MS = 600_000`). Смена вкла�
 2. Orchestrator Electron: `orchestrator/orchestrator/desktop-electron/run_dev.bat` (не Turbobot `Consturctor/desktop/run_dev.bat` — там нет `window.agent`).
 3. После правок **preload/main/pybridge** — полностью закрыть окно Electron и снова `run_dev.bat` (hot-reload renderer не подхватывает preload).
 4. Outlook/1С COM: локально установлены Outlook и клиент 1С; sidecar вызывает `orchestrator/desktop` AC workers.
-5. `DOCFLOW_ODATA_*` не обязательны, если задачи подтягиваются через `onec.search_tasks` (COM) после сбоя OData документооборота; erp_pm по-прежнему через gateway (`onec.erp_tasks_current`).
+5. **Учётка 1С:** после входа в Orchestrator пароль хранится только в памяти renderer (`setComCredentials`) и уходит в gateway (`fio` + `password` в теле `invoke`) и в COM sidecar (`agent:ready` + каждый `onec.*` invoke). JWT — только идентификация пользователя, не пароль 1С.
+6. **Dev backend:** для **задач 1С** — `BACKEND_URL=http://127.0.0.1:7812`, в `backend/.env` задайте `DOK_HTTP_*` (SOAP `/doc/ws/dm.1cws`). Виджет вызывает только `onec.docflow_tasks`. Пустой `get_user_portfolio` не блокирует pin `VITE_TURBO_PIN_FILE_IDS=363`.
+7. `DOCFLOW_ODATA_*` / `ERP_*` на gateway — **fallback**, если сеанс восстановлен по token без повторного ввода пароля или invoke без `password`.
 
 ### Быстрые действия вкладки «Процессы» (`specGridQuickActions.ts`)
 

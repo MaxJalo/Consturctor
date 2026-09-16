@@ -56,6 +56,8 @@ import {
   type SupportTicketItem
 } from './types'
 import { decodeAgentMessage, previewText } from './chatCodec'
+import { loadSession } from '../store/session'
+import { formatGatewayToolError } from '../workplace/onecSessionHints'
 
 type Params = Record<string, string | number | boolean | undefined | null>
 
@@ -110,8 +112,18 @@ function normalizeFioKey(value: string): string {
   return (value || '').toLowerCase().replace(/[ьъ\u0301]/g, '')
 }
 
+const LOCAL_ADMIN_FIO_KEYS = new Set([
+  'уставицкий андрей алексеевич',
+  'жалыбин максим дмитриевич',
+  'жалыбин максим димитриевич'
+])
+
+function localAdminFioKey(value: string): string {
+  return normalizeFioKey(value).replace(/ё/g, 'е').replace(/\s+/g, ' ').trim()
+}
+
 function isLocalAdminFio(value: string): boolean {
-  return normalizeFioKey(value).replace(/ё/g, 'е').replace(/\s+/g, ' ').trim() === 'уставицкий андрей алексеевич'
+  return LOCAL_ADMIN_FIO_KEYS.has(localAdminFioKey(value))
 }
 
 const PROFILE_OVERRIDES: Array<{ needle: string; position: string; department: string }> = [
@@ -1034,15 +1046,34 @@ export function suggestionsFromRoleMatch(roleMatch: RoleMatchResult): AgentSugge
 }
 
 
+export type UnauthorizedHandler = (message: string, status: number) => void
+
 export class ApiClient {
   private token: string | null = null
+  private unauthorizedHandler: UnauthorizedHandler | null = null
+
+  setUnauthorizedHandler(handler: UnauthorizedHandler | null): void {
+    this.unauthorizedHandler = handler
+  }
 
   setToken(token: string | null): void {
     this.token = token
   }
 
+  /** In-memory JWT; falls back to remembered session (survives Vite HMR). */
+  private resolveToken(): string | null {
+    const memory = (this.token || '').trim()
+    if (memory) return memory
+    const stored = (loadSession()?.accessToken || '').trim()
+    if (stored) {
+      this.token = stored
+      return stored
+    }
+    return null
+  }
+
   getToken(): string | null {
-    return this.token
+    return this.resolveToken()
   }
 
   private async request<T = unknown>(
@@ -1055,11 +1086,16 @@ export class ApiClient {
       path,
       body: opts.body,
       params: opts.params,
-      token: this.token,
+      token: this.resolveToken(),
       timeoutMs: opts.timeoutMs
     })
     if (!res.ok) {
-      throw new ApiError(res.error || 'Ошибка backend', res.status)
+      const message = res.error || 'Ошибка backend'
+      const status = res.status
+      if (status === 401 && this.unauthorizedHandler) {
+        this.unauthorizedHandler(message, status)
+      }
+      throw new ApiError(message, status)
     }
     return (res.data ?? ({} as T)) as T
   }
@@ -1098,7 +1134,7 @@ export class ApiClient {
     const res = await window.api.upload<Record<string, unknown>>({
       endpoint: '/api/v1/regulations/upload',
       filePath,
-      token: this.token,
+      token: this.resolveToken(),
       timeoutMs: 420_000
     })
     if (!res.ok) throw new ApiError(res.error || 'Ошибка распознавания', res.status)
@@ -1159,7 +1195,7 @@ export class ApiClient {
         body: hasFiles ? undefined : { message },
         filePaths: hasFiles ? filePaths : undefined,
         extraFields: hasFiles ? { message } : undefined,
-        token: this.token
+        token: this.resolveToken()
       })
       if (!res.ok) throw new ApiError(res.error || 'Ошибка потока регламента', res.status)
       return parseCreationSession(res.data ?? {})
@@ -1365,7 +1401,7 @@ export class ApiClient {
         endpoint: `/api/v1/agents/drafts/${draftId}/files`,
         filePath,
         fieldName: 'files',
-        token: this.token,
+        token: this.resolveToken(),
         extraFields: functionId ? { functionId } : undefined,
         timeoutMs: 180_000
       })
@@ -1472,7 +1508,7 @@ export class ApiClient {
     const res = await window.api.createWorkflow<Record<string, unknown>>({
       notes,
       draftId,
-      token: this.token
+      token: this.resolveToken()
     })
     if (!res.ok) throw new ApiError(res.error || 'Ошибка создания workflow', res.status)
     return parseWorkflow(res.data ?? {})
@@ -1707,7 +1743,7 @@ export class ApiClient {
         method: 'POST',
         path,
         body,
-        token: this.token
+        token: this.resolveToken()
       })
       if (!res.ok) throw new ApiError(res.error || 'Ошибка потока workflow', res.status)
       return parseWorkflow(res.data ?? {})
@@ -1764,7 +1800,7 @@ export class ApiClient {
         endpoint: `/api/v1/workflows/${workflowId}/files`,
         filePath,
         fieldName: 'files',
-        token: this.token,
+        token: this.resolveToken(),
         timeoutMs: 180_000
       })
       if (!res.ok) throw new ApiError(res.error || 'Не удалось загрузить файл', res.status)
@@ -1854,7 +1890,7 @@ export class ApiClient {
       endpoint: '/api/v1/chat/files',
       filePath,
       fieldName: 'file',
-      token: this.token,
+      token: this.resolveToken(),
       timeoutMs: 60_000
     })
     if (!res.ok || !res.data) {
@@ -1974,7 +2010,10 @@ export class ApiClient {
     } catch (err) {
       return {
         ok: false,
-        error: err instanceof ApiError ? err.message : 'Ошибка вызова инструмента'
+        error:
+          err instanceof ApiError
+            ? formatGatewayToolError(err.message, err.status)
+            : 'Ошибка вызова инструмента'
       }
     }
   }
@@ -2000,14 +2039,55 @@ export class ApiClient {
 
   async fetchDataUrl(url: string): Promise<string | null> {
     if (!url) return null
-    const res = await window.api.fetchDataUrl({ url, token: this.token })
+    const res = await window.api.fetchDataUrl({ url, token: this.resolveToken() })
     return res.ok && res.dataUrl ? res.dataUrl : null
   }
 
   // ---------- Download ----------
   async download(url: string, defaultName: string): Promise<boolean> {
-    const res = await window.api.download({ url, defaultName, token: this.token })
+    const res = await window.api.download({ url, defaultName, token: this.resolveToken() })
     return Boolean(res.ok)
+  }
+
+  async getWorkplaceKpi(params: { from?: string; to?: string } = {}): Promise<import('../workplace/workplaceKpiTypes').WorkplaceKpiDashboard> {
+    const { parseWorkplaceKpiDashboard } = await import('../workplace/workplaceKpiTypes')
+    const data = await this.request<Record<string, unknown>>('GET', '/api/v1/workplace/kpi', {
+      params: { from: params.from, to: params.to }
+    })
+    return parseWorkplaceKpiDashboard(data)
+  }
+
+  // ---------- Admin (orchestrator panel) ----------
+  async adminOverview(): Promise<Record<string, unknown>> {
+    return this.request<Record<string, unknown>>('GET', '/api/v1/admin/overview')
+  }
+
+  async adminHistory(): Promise<Record<string, unknown>> {
+    return this.request<Record<string, unknown>>('GET', '/api/v1/admin/history')
+  }
+
+  async adminLaunchCalendar(): Promise<Record<string, unknown>> {
+    return this.request<Record<string, unknown>>('GET', '/api/v1/admin/launch-calendar')
+  }
+
+  async adminKpi(): Promise<Record<string, unknown>> {
+    return this.request<Record<string, unknown>>('GET', '/api/v1/admin/kpi')
+  }
+
+  async adminUsers(): Promise<Record<string, unknown>> {
+    return this.request<Record<string, unknown>>('GET', '/api/v1/admin/users')
+  }
+
+  async adminAiAgents(): Promise<Record<string, unknown>> {
+    return this.request<Record<string, unknown>>('GET', '/api/v1/admin/ai-agents')
+  }
+
+  async adminKnowledgeBase(): Promise<Record<string, unknown>> {
+    return this.request<Record<string, unknown>>('GET', '/api/v1/admin/knowledge-base')
+  }
+
+  async adminSettings(): Promise<Record<string, unknown>> {
+    return this.request<Record<string, unknown>>('GET', '/api/v1/admin/settings')
   }
 }
 
