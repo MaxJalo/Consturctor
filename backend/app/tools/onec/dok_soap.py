@@ -1,7 +1,10 @@
 """Открытые задачи пользователя из 1С:Документооборота (HTTP SOAP dm.1cws).
 
 Автономный клиент: стандартная библиотека Python.
-Учётные данные — DOK_HTTP_* из окружения, .env или backend settings.
+Хост — DOK_HTTP_SERVER/PORT (есть значения по умолчанию).
+SOAP Basic — сервисная учётка, не ФИО сеанса:
+DOK_HTTP_* → DOCFLOW_ODATA_* → ODATA_* → ERP_*.
+ФИО сеанса режет дамп (исполнитель/автор).
 """
 
 from __future__ import annotations
@@ -122,7 +125,31 @@ def _settings_mapping() -> dict[str, str]:
         "DOK_HTTP_PASSWORD": str(getattr(settings, "dok_http_password", "") or "").strip(),
         "DOK_HTTP_TIMEOUT": str(getattr(settings, "dok_http_timeout", "") or "").strip(),
         "DOK_HTTP_BASE_PATH": str(getattr(settings, "dok_http_base_path", "") or "").strip(),
+        "DOCFLOW_ODATA_USERNAME": str(getattr(settings, "docflow_odata_username", "") or "").strip(),
+        "DOCFLOW_ODATA_PASSWORD": str(getattr(settings, "docflow_odata_password", "") or "").strip(),
+        "ODATA_USERNAME": str(getattr(settings, "odata_username", "") or "").strip(),
+        "ODATA_PASSWORD": str(getattr(settings, "odata_password", "") or "").strip(),
+        "ERP_LOGIN": str(getattr(settings, "erp_login", "") or "").strip(),
+        "ERP_PASSWORD": str(getattr(settings, "erp_password", "") or "").strip(),
     }
+
+
+_SOAP_CREDENTIAL_PAIRS = (
+    ("DOK_HTTP_USER", "DOK_HTTP_PASSWORD"),
+    ("DOCFLOW_ODATA_USERNAME", "DOCFLOW_ODATA_PASSWORD"),
+    ("ODATA_USERNAME", "ODATA_PASSWORD"),
+    ("ERP_LOGIN", "ERP_PASSWORD"),
+)
+
+
+def _pick_soap_credentials(loaded: list[dict[str, str]]) -> tuple[str, str]:
+    """SOAP Basic user is a service account, never session FIO."""
+    for user_key, pass_key in _SOAP_CREDENTIAL_PAIRS:
+        user = env_get(loaded, user_key)
+        secret = env_get(loaded, pass_key)
+        if user and secret:
+            return user, secret
+    return "", ""
 
 
 def load_config(
@@ -130,18 +157,26 @@ def load_config(
     env_file: str | None = None,
     username: str | None = None,
     password: str | None = None,
+    require_user: bool = True,
 ) -> DokConfig:
+    # username/password are session FIO — dump slice only, never SOAP Basic.
+    _ = (username, password)
     loaded = [load_env_file(path) for path in discover_env_files(env_file)]
     settings_map = _settings_mapping()
     if any(settings_map.values()):
         loaded.append(settings_map)
     server = env_get(loaded, "DOK_HTTP_SERVER", "192.168.2.229")
-    user = (username or "").strip() or env_get(loaded, "DOK_HTTP_USER")
-    secret = env_get(loaded, "DOK_HTTP_PASSWORD")
-    if password is not None and ((username or "").strip() or not secret):
-        secret = password
-    if not server or not user:
-        raise RuntimeError("Задайте DOK_HTTP_SERVER и DOK_HTTP_USER в окружении или .env")
+    user, secret = _pick_soap_credentials(loaded)
+    if not server:
+        raise RuntimeError("Задайте DOK_HTTP_SERVER в окружении или .env")
+    if require_user and not user:
+        raise RuntimeError(
+            "Документооборот SOAP: нет пользователя. Войдите с паролем 1С."
+        )
+    if require_user and not secret:
+        raise RuntimeError(
+            "Документооборот SOAP: нет пароля. Войдите с паролем 1С."
+        )
     return DokConfig(
         server=server,
         port=int(env_get(loaded, "DOK_HTTP_PORT", "81") or "81"),
@@ -153,11 +188,12 @@ def load_config(
 
 
 def soap_configured(*, env_file: str | None = None) -> bool:
+    """Host plus a service credential pair (DOK_HTTP_*, DOCFLOW_ODATA_*, ODATA_*, ERP_*)."""
     try:
-        config = load_config(env_file=env_file)
+        config = load_config(env_file=env_file, require_user=False)
     except (RuntimeError, ValueError, OSError):
         return False
-    return bool(config.server and config.user)
+    return bool(config.server and config.user and config.password)
 
 
 def decode_body(raw: bytes) -> str:
@@ -581,8 +617,39 @@ def retrieve_tasks(config: DokConfig, task_ids: list[str], *, timeout: float) ->
     return parse_tasks(root)
 
 
+ROLE_EXECUTOR = "executor"
+ROLE_AUTHOR = "author"
+ROLE_BOTH = "both"
+
+SOURCE_INBOX = "документооборот"
+SOURCE_FROM_ME = "документооборот (от меня)"
+CHANNEL_SOAP = "soap"
+
+
 def normalize_person(value: str) -> str:
     return " ".join(value.lower().replace("ё", "е").split())
+
+
+def task_role_for_user(row: dict[str, Any], user_fio: str) -> str | None:
+    """executor / author / both when the dump row belongs to the session FIO."""
+    mine = normalize_person(user_fio)
+    if not mine:
+        return None
+    is_performer = normalize_person(str(row.get("performer") or "")) == mine
+    is_author = normalize_person(str(row.get("author") or "")) == mine
+    if is_performer and is_author:
+        return ROLE_BOTH
+    if is_performer:
+        return ROLE_EXECUTOR
+    if is_author:
+        return ROLE_AUTHOR
+    return None
+
+
+def source_for_role(role: str) -> str:
+    if role in {ROLE_AUTHOR, ROLE_BOTH}:
+        return SOURCE_FROM_ME
+    return SOURCE_INBOX
 
 
 def _filter_ignored(rows: list[dict[str, Any]], user_name: str) -> bool:
@@ -633,12 +700,20 @@ def slice_dump_for_user(
     today_and_overdue: bool = False,
 ) -> dict[str, Any]:
     today = date.today()
-    mine = normalize_person(user_fio)
-    rows = [
-        row
-        for row in _dump_rows(dump)
-        if normalize_person(str(row.get("performer") or "")) == mine
-    ]
+    seen: set[str] = set()
+    rows: list[dict[str, Any]] = []
+    for row in _dump_rows(dump):
+        role = task_role_for_user(row, user_fio)
+        if role is None:
+            continue
+        key = str(row.get("id") or row.get("number") or "").strip()
+        if key:
+            if key in seen:
+                continue
+            seen.add(key)
+        tagged = dict(row)
+        tagged["role"] = role
+        rows.append(tagged)
     if today_and_overdue:
         rows = [row for row in rows if is_today_or_overdue(row, today=today)]
     return {
@@ -724,12 +799,7 @@ def fetch_inbox(
             raise last_error
         raise RuntimeError("Документооборот SOAP: не удалось отобрать задачи исполнителя")
     listed_at = time.perf_counter()
-    rows = [
-        row
-        for row in raw
-        if normalize_person(str(row.get("performer") or ""))
-        == normalize_person(user["name"])
-    ]
+    rows = [row for row in raw if task_role_for_user(row, user["name"])]
     if today_and_overdue:
         rows = [row for row in rows if is_today_or_overdue(row, today=today)]
     if rows and retrieve:

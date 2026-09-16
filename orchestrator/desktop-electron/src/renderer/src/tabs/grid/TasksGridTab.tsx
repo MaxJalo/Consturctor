@@ -2,70 +2,127 @@ import { useEffect, useMemo, useState } from 'react'
 import { OneCReconnectDialog, OneCReconnectInline } from '../../workplace/OneCReconnectDialog'
 import type { UserProfile } from '../../api/types'
 import {
-  OrchSlotBotC,
   OrchSlotFilters,
   OrchSlotMain,
   OrchSlotMetrics,
   OrchSlotSide
 } from '../../layout/GridSlots'
-import { SpecAskOrchestratorBlock, SpecPill, SpecProgress, SpecSummaryTiles } from '../../workplace/specV04Components'
-import { ASK_CHIPS } from '../../workplace/specV04DemoData'
-import { comPasswordSessionHint } from '../../workplace/onecSessionHints'
+import { SpecPill, SpecProgress, SpecSummaryTiles } from '../../workplace/specV04Components'
+import {
+  comPasswordSessionHint,
+  sessionOneCEmptyText,
+  userFacingOneCError
+} from '../../workplace/onecSessionHints'
+import { isTechnicalTurboMessage } from '../../workplace/turboSession'
 import { buildTaskTiles, useSpecV04Sources } from '../../workplace/useSpecV04Data'
+import {
+  applyTaskTileClick,
+  buildTaskCatalog,
+  EMPTY_TASK_TILE_FILTER,
+  filterTaskRows,
+  isDeadTaskSource,
+  taskTileActiveIds,
+  type TaskTileFilter
+} from '../../workplace/tileFilters'
+import {
+  CREATE_TASK_CHANNEL_LABEL,
+  ORCH_CREATE_TASK,
+  type CreateTaskChannel
+} from '../../workplace/workplaceNav'
 import { StandardGridFilters } from './gridFilters'
 
 export function TasksGridTab({
   user,
-  onAskOrchestrator
+  navTaskFilter
 }: {
   user: UserProfile
-  onAskOrchestrator: (message: string, context: string) => void
+  navTaskFilter?: TaskTileFilter | null
 }): React.JSX.Element {
   const data = useSpecV04Sources(user)
-  const taskRows = useMemo(
-    () => [...data.erpTasks, ...data.turboTasks],
-    [data.erpTasks, data.turboTasks]
+  const [tileFilter, setTileFilter] = useState(navTaskFilter ?? EMPTY_TASK_TILE_FILTER)
+  useEffect(() => {
+    if (navTaskFilter) setTileFilter(navTaskFilter)
+  }, [navTaskFilter])
+  const catalog = useMemo(
+    () => buildTaskCatalog(data.erpTasks, data.turboTasks, data.processRows),
+    [data.erpTasks, data.turboTasks, data.processRows]
   )
-  const bannerText = (data.erpError || data.error || '').trim()
-  const showOneCReconnect =
-    !data.loading && !data.erpTasks.length && !data.turboTasks.length && data.oneCAuthFailure
+  const taskRows = useMemo(
+    () => filterTaskRows(catalog.rows, tileFilter, catalog.erpIds, catalog.turboIds),
+    [catalog, tileFilter]
+  )
+  const onTileSelect = (id: string): void => {
+    setTileFilter((current) => applyTaskTileClick(current, id, isDeadTaskSource(data, id)))
+  }
+  const soapBanner = userFacingOneCError(data.erpError)
+  const turboBanner = isTechnicalTurboMessage(data.turboError)
+    ? ''
+    : userFacingOneCError(data.turboError)
+  const showOneCReconnect = !data.erpLoading && data.oneCAuthFailure
   const emptyTableText =
-    data.loading && !taskRows.length
-      ? 'Загружаем задачи…'
-      : showOneCReconnect
+    (data.erpLoading || data.turboLoading) && !taskRows.length
+      ? data.erpFio
+        ? `Загружаем задачи 1С для ${data.erpFio}…`
+        : 'Загружаем задачи…'
+      : showOneCReconnect && !taskRows.length
         ? 'Нужно подключить 1С.'
-        : bannerText
+        : catalog.rows.length && !taskRows.length
+          ? 'Нет задач по выбранной плитке.'
+        : soapBanner || turboBanner
           ? 'Нет открытых задач в таблице.'
-          : 'Нет открытых задач.'
+          : sessionOneCEmptyText(data.erpFio)
   const reconnectHint = showOneCReconnect
-    ? bannerText || 'Не удалось загрузить задачи 1С.'
+    ? soapBanner || 'Не удалось загрузить задачи 1С.'
     : ''
   const [onecDialogOpen, setOnecDialogOpen] = useState(false)
   useEffect(() => {
-    if (data.loading || !showOneCReconnect || data.comPasswordInSession) return
+    if (data.erpLoading || !showOneCReconnect || data.comPasswordInSession) return
     setOnecDialogOpen(true)
-  }, [data.loading, showOneCReconnect, data.comPasswordInSession])
+  }, [data.erpLoading, showOneCReconnect, data.comPasswordInSession])
   const [selectedId, setSelectedId] = useState('')
+  const [createChannel, setCreateChannel] = useState<CreateTaskChannel | null>(null)
   const effectiveId = selectedId || taskRows[0]?.id || ''
   const selected = taskRows.find((item) => item.id === effectiveId)
-  const ask = (m: string) => onAskOrchestrator(m, 'Вкладка «Задачи»')
+
+  useEffect(() => {
+    const onCreate = (event: Event): void => {
+      const channel = (event as CustomEvent<{ channel?: CreateTaskChannel }>).detail?.channel
+      if (channel === 'onec' || channel === 'turbo' || channel === 'draft') {
+        setCreateChannel(channel)
+      }
+    }
+    window.addEventListener(ORCH_CREATE_TASK, onCreate)
+    return () => window.removeEventListener(ORCH_CREATE_TASK, onCreate)
+  }, [])
 
   return (
     <>
       <OrchSlotMetrics>
-        <SpecSummaryTiles tiles={buildTaskTiles(data)} />
+        <SpecSummaryTiles
+          tiles={buildTaskTiles(data)}
+          activeId={taskTileActiveIds(tileFilter)}
+          onSelect={onTileSelect}
+          className="spec-v04-tiles-6"
+        />
       </OrchSlotMetrics>
       <OrchSlotFilters>
         <StandardGridFilters searchPlaceholder="Поиск по задачам…" />
       </OrchSlotFilters>
       <OrchSlotMain>
         <div className="spec-v04-table-wrap wp-card">
-          {bannerText && !showOneCReconnect ? (
-            <p className="today-table-status today-table-error today-table-banner">{bannerText}</p>
-          ) : data.erpSecondaryHint ? (
+          {soapBanner ? (
+            <p className="today-table-status today-table-error today-table-banner">{soapBanner}</p>
+          ) : null}
+          {showOneCReconnect && taskRows.length ? (
+            <OneCReconnectInline errorHint={reconnectHint} onOpen={() => setOnecDialogOpen(true)} />
+          ) : null}
+          {turboBanner ? (
+            <p className="today-table-status today-table-error today-table-banner">{turboBanner}</p>
+          ) : null}
+          {!soapBanner && !turboBanner && data.erpSecondaryHint ? (
             <p className="today-table-status today-table-banner">{data.erpSecondaryHint}</p>
           ) : null}
-          {!bannerText && !data.erpSecondaryHint && !data.loading && !taskRows.length ? (
+          {!soapBanner && !turboBanner && !data.erpSecondaryHint && !data.loading && !taskRows.length ? (
             <p className="today-table-status today-table-banner spec-v04-muted">
               {comPasswordSessionHint()}
             </p>
@@ -125,11 +182,45 @@ export function TasksGridTab({
         </div>
       </OrchSlotMain>
       <OrchSlotSide>
-        {selected ? (
+        {createChannel ? (
+          <div className="spec-detail-card wp-card">
+            <h2>Создать задачу</h2>
+            <SpecPill tone="blue">{CREATE_TASK_CHANNEL_LABEL[createChannel]}</SpecPill>
+            <p className="spec-v04-muted">
+              Write-API для канала «{CREATE_TASK_CHANNEL_LABEL[createChannel]}» ещё не готов. Задача не
+              создана.
+            </p>
+            <button type="button" className="spec-btn-outline spec-btn-outline-block" onClick={() => setCreateChannel(null)}>
+              Закрыть
+            </button>
+          </div>
+        ) : selected ? (
           <div className="spec-detail-card wp-card">
             <h2>{selected.title}</h2>
             <SpecPill tone={selected.statusTone}>{selected.status}</SpecPill>
             <p className="spec-v04-muted">{selected.process}</p>
+            <dl className="spec-detail-meta">
+              <div>
+                <dt>Автор</dt>
+                <dd>{selected.author || '—'}</dd>
+              </div>
+              <div>
+                <dt>Исполнитель</dt>
+                <dd>{selected.performer || selected.executor || '—'}</dd>
+              </div>
+              <div>
+                <dt>Канал</dt>
+                <dd>{selected.channel === 'soap' ? 'SOAP' : selected.channel || '—'}</dd>
+              </div>
+              <div>
+                <dt>Источник</dt>
+                <dd>{selected.source}</dd>
+              </div>
+              <div>
+                <dt>Кто</dt>
+                <dd>{selected.who}</dd>
+              </div>
+            </dl>
             <SpecProgress value={selected.progress} />
             <button type="button" className="spec-btn-launch spec-btn-launch-block">
               Отметить выполненной
@@ -139,14 +230,11 @@ export function TasksGridTab({
           <div className="wp-card spec-v04-muted">Выберите задачу</div>
         )}
       </OrchSlotSide>
-      <OrchSlotBotC>
-        <SpecAskOrchestratorBlock chips={ASK_CHIPS.tasks} placeholder="Спросить про задачи…" onSubmit={ask} />
-      </OrchSlotBotC>
       <OneCReconnectDialog
         open={onecDialogOpen}
         onClose={() => setOnecDialogOpen(false)}
         user={user}
-        errorHint={data.erpError || data.error}
+        errorHint={soapBanner}
       />
     </>
   )

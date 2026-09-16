@@ -134,6 +134,39 @@
   height: 12px;
 }
 
+.orch-header-menu {
+  position: relative;
+}
+
+.orch-header-menu-pop {
+  position: fixed;
+  z-index: 40;
+  min-width: 220px;
+  background: #fff;
+  border: 1px solid rgba(13, 59, 115, 0.14);
+  border-radius: 12px;
+  box-shadow: 0 12px 28px rgba(16, 32, 51, 0.14);
+  padding: 6px;
+}
+
+.orch-header-menu-pop button {
+  width: 100%;
+  border: none;
+  background: transparent;
+  display: flex;
+  align-items: center;
+  padding: 10px 12px;
+  border-radius: 8px;
+  cursor: pointer;
+  color: #102033;
+  font-size: 13px;
+  text-align: left;
+}
+
+.orch-header-menu-pop button:hover {
+  background: #eef4fb;
+}
+
 .orch-grid-search {
   grid-column: 5 / 8;
   grid-row: 1;

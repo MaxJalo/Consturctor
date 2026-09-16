@@ -45,7 +45,7 @@ export function turboNameMailSlug(user: UserProfile | null): string {
   return String(import.meta.env.VITE_MY_NAME_MAIL ?? '').trim().toLowerCase()
 }
 
-/** Gateway onec.* invoke: FIO + optional password from login session (not localStorage). */
+/** Gateway onec.* invoke: always send session FIO + password (env DOK_HTTP_USER is fallback only). */
 export function onecGatewayInvokeArgs(
   user: UserProfile | null,
   extra: Record<string, unknown> = {}
@@ -54,14 +54,15 @@ export function onecGatewayInvokeArgs(
   const userId = erpActorUserId(user)
   const password = gatewaySessionPassword()
   const username = erpActorComUsername(user)
-  const args: Record<string, unknown> = {
+  return {
     ...extra,
     fio,
-    user_id: userId
+    user_id: userId,
+    erp_login: fio,
+    password,
+    erp_password: password,
+    ...(username ? { username } : {})
   }
-  if (username) args.username = username
-  if (password) args.password = password
-  return args
 }
 
 /** Gateway turboproject.*: portfolio employee + TurboProject login from session (email + password). */
@@ -84,6 +85,11 @@ export function turboProjectInvokeArgs(
   if (email) args.email = email
   if (password) args.password = password
   return args
+}
+
+/** Live Turbo session: latin login + password from the login screen (not gateway stub). */
+export function hasTurboSessionCredentials(user: UserProfile | null): boolean {
+  return Boolean(turboNameMailSlug(user) && gatewaySessionPassword())
 }
 
 /** COM onec.* via sidecar: FIO + session password (Usr= in COM is FIO, not nameMail). */

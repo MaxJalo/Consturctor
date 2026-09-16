@@ -11,7 +11,6 @@ import {
   clearComCredentials,
   comCredentials,
   clearSession,
-  hasComPassword,
   loadSession,
   saveSession,
   setComCredentials,
@@ -44,6 +43,7 @@ import { ChatDock } from './workplace/ChatDock'
 import { isPersonalAgentWorkflowId, personalAgentWorkflowId } from './workplace/personalAgent'
 import { DiagnosticsPage, SettingsTab, TicketsPage } from './workplace/WorkplaceTabs'
 import { GridDataRefreshProvider } from './workplace/GridDataRefreshContext'
+import { ORCH_OPEN_TAB, type WorkplaceTabIntent } from './workplace/workplaceNav'
 import { SpecV04SourcesProvider } from './workplace/SpecV04SourcesProvider'
 import {
   ComCredentialsRevisionProvider,
@@ -189,6 +189,7 @@ function AppShell(): React.JSX.Element {
   const comCredsRevision = useComCredentialsRevision()
   const bumpComCredentialsRevision = useBumpComCredentialsRevision()
   const [chatRefreshAt, setChatRefreshAt] = useState(0)
+  const [tabIntent, setTabIntent] = useState<WorkplaceTabIntent | null>(null)
   const runs = useRuns()
 
   useEffect(() => {
@@ -225,7 +226,7 @@ function AppShell(): React.JSX.Element {
             try {
               const profile = await api.me(8_000)
               setUser(profile)
-              setRequireComLogin(!hasComPassword())
+              // JWT has no 1C password — workplace shows OneCReconnectDialog, not LoginPage / DOK_HTTP_USER.
               setModeForUser(profile)
             } catch {
               clearSession(true)
@@ -340,6 +341,21 @@ function AppShell(): React.JSX.Element {
   useEffect(() => {
     const unsubscribe = window.api.onChatEvent?.(() => setChatRefreshAt(Date.now()))
     return () => unsubscribe?.()
+  }, [])
+
+  useEffect(() => {
+    const onOpenTab = (event: Event): void => {
+      const detail = (event as CustomEvent<{ key?: string; intent?: WorkplaceTabIntent }>).detail || {}
+      const key = String(detail.key || '')
+      if (!key) return
+      if ((WORKPLACE_TAB_KEYS as string[]).includes(key) || (ADMIN_TAB_KEYS as string[]).includes(key)) {
+        setTabIntent(detail.intent ?? null)
+        setLastTab(key as PageKey)
+        setView({ kind: 'tab', key: key as PageKey })
+      }
+    }
+    window.addEventListener(ORCH_OPEN_TAB, onOpenTab)
+    return () => window.removeEventListener(ORCH_OPEN_TAB, onOpenTab)
   }, [])
 
   function setModeForUser(profile: UserProfile): void {
@@ -595,6 +611,12 @@ function AppShell(): React.JSX.Element {
     })
   }
 
+  function askOrchestratorFromDock(message: string): void {
+    const tabKey = view.kind === 'tab' ? view.key : lastTab
+    const label = tabKey ? PAGE_LABELS[tabKey] || tabKey : ''
+    askOrchestratorFromTab(message, label ? `Вкладка «${label}»` : 'Рабочее место')
+  }
+
   function renderAdminContent(): React.JSX.Element {
     if (view.kind === 'chat') {
       return (
@@ -655,21 +677,21 @@ function AppShell(): React.JSX.Element {
   function renderWorkplaceGridTab(key: WorkplaceTabKey): React.JSX.Element {
     switch (key) {
       case 'processes':
-        return <ProcessesGridTab user={activeUser} onOpen={(workflowId, title) => setView({ kind: 'passport', workflowId, title, tab: 'info' })} onOpenRun={(workflowId, title, runId) => void openAgentRun(workflowId, runId || '', false, title)} onAskOrchestrator={askOrchestratorFromTab} />
+        return <ProcessesGridTab user={activeUser} navProcessTab={tabIntent?.processTab} onOpen={(workflowId, title) => setView({ kind: 'passport', workflowId, title, tab: 'info' })} onOpenRun={(workflowId, title, runId) => void openAgentRun(workflowId, runId || '', false, title)} />
       case 'tasks':
-        return <TasksGridTab user={activeUser} onAskOrchestrator={askOrchestratorFromTab} />
+        return <TasksGridTab user={activeUser} navTaskFilter={tabIntent?.taskFilter} />
       case 'projects':
-        return <ProjectsGridTab user={activeUser} onAskOrchestrator={askOrchestratorFromTab} />
+        return <ProjectsGridTab user={activeUser} />
       case 'mail':
         return <MailGridTab user={activeUser} onAskOrchestrator={askOrchestratorFromTab} />
       case 'meetings':
-        return <MeetingsGridTab user={activeUser} onAskOrchestrator={askOrchestratorFromTab} />
+        return <MeetingsGridTab user={activeUser} />
       case 'decisions':
         return <DecisionsGridTab onOpenRun={(workflowId, title, runId) => void openAgentRun(workflowId, runId || '', Boolean(!runId), title)} />
       case 'kpi':
         return <KpiGridTab onOpenProcesses={() => setView({ kind: 'tab', key: 'processes' })} onOpenDecisions={() => setView({ kind: 'tab', key: 'decisions' })} />
       case 'knowledge':
-        return <KnowledgeGridTab user={activeUser} onAskOrchestrator={askOrchestratorFromTab} />
+        return <KnowledgeGridTab user={activeUser} />
       case 'history':
         return <HistoryGridTab onOpenRun={(workflowId, title, runId) => void openAgentRun(workflowId, runId || '', false, title)} />
       case 'today':
@@ -682,7 +704,6 @@ function AppShell(): React.JSX.Element {
             onOpenPassport={(workflowId, title, tab) => setView({ kind: 'passport', workflowId, title, tab })}
             onRun={(workflowId, title) => void openAgentRun(workflowId, '', true, title)}
             onOpenRun={(workflowId, title, runId) => void openAgentRun(workflowId, runId || '', false, title)}
-            onAskOrchestrator={askOrchestratorFromTab}
           />
         )
     }
@@ -752,6 +773,7 @@ function AppShell(): React.JSX.Element {
               activeThreadId=""
               chatRefreshAt={chatRefreshAt}
               onNavigate={(key) => {
+                setTabIntent(null)
                 setLastTab(key)
                 setView({ kind: 'tab', key })
               }}
@@ -765,7 +787,7 @@ function AppShell(): React.JSX.Element {
             >
               {renderUserContent()}
             </OrchGridShell>
-            <ChatDock onOpenThread={openChat} onOpenSupport={openSupport} />
+            <ChatDock onAskOrchestrator={askOrchestratorFromDock} onOpenSupport={openSupport} />
           </div>
         </SpecV04SourcesProvider>
       </GridDataRefreshProvider>
@@ -787,6 +809,7 @@ function AppShell(): React.JSX.Element {
             onNavigate={(key) => {
               if (isAdminMode && !isAdminTabKey(key)) return
               if (!isAdminMode && !isWorkplaceTabKey(key) && key !== 'settings') return
+              setTabIntent(null)
               setLastTab(key)
               setView({ kind: 'tab', key })
             }}
@@ -815,7 +838,7 @@ function AppShell(): React.JSX.Element {
               {content}
             </div>
           </main>
-          <ChatDock onOpenThread={openChat} onOpenSupport={openSupport} />
+          <ChatDock onAskOrchestrator={askOrchestratorFromDock} onOpenSupport={openSupport} />
         </div>
       </SpecV04SourcesProvider>
     </GridDataRefreshProvider>

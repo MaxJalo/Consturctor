@@ -2,27 +2,27 @@ import { useEffect, useMemo, useState } from 'react'
 import { api } from '../../api/client'
 import type { UserProfile } from '../../api/types'
 import {
-  OrchSlotBotC,
   OrchSlotFilters,
   OrchSlotMain,
   OrchSlotMetrics,
   OrchSlotSide
 } from '../../layout/GridSlots'
 import type { SpecSummaryTile } from '../../workplace/specV04Shell'
-import { SpecAskOrchestratorBlock, SpecPill, SpecSummaryTiles } from '../../workplace/specV04Components'
-import { ASK_CHIPS, type SpecKnowledgeRow } from '../../workplace/specV04DemoData'
+import { SpecPill, SpecSummaryTiles } from '../../workplace/specV04Components'
+import { type SpecKnowledgeRow } from '../../workplace/specV04DemoData'
+import { openHttpUrl } from '../../workplace/workplaceNav'
 import { StandardGridFilters } from './gridFilters'
 
 export function KnowledgeGridTab({
-  user,
-  onAskOrchestrator
+  user
 }: {
   user: UserProfile
-  onAskOrchestrator: (message: string, context: string) => void
 }): React.JSX.Element {
   const [catalog, setCatalog] = useState<SpecKnowledgeRow[]>([])
   const [loading, setLoading] = useState(true)
   const [selectedId, setSelectedId] = useState('')
+  const [openHint, setOpenHint] = useState('')
+  const [opening, setOpening] = useState(false)
 
   useEffect(() => {
     let alive = true
@@ -43,8 +43,9 @@ export function KnowledgeGridTab({
               process: w.title,
               project: '—',
               version: '—',
-              updated: '—',
-              author: 'Constructor'
+              updated: w.updatedAt || '—',
+              author: 'Constructor',
+              workflowId: w.id
             }))
         )
       })
@@ -69,7 +70,35 @@ export function KnowledgeGridTab({
     [catalog.length]
   )
 
-  const ask = (m: string) => onAskOrchestrator(m, 'Вкладка «База знаний»')
+  const openSelectedKnowledge = (): void => {
+    if (!selected) return
+    setSelectedId(selected.id)
+    if (selected.url && openHttpUrl(selected.url)) {
+      setOpenHint('')
+      return
+    }
+    const workflowId = selected.workflowId || selected.id
+    if (!workflowId) {
+      setOpenHint('Нет ссылки на регламент — карточка открыта справа.')
+      return
+    }
+    setOpening(true)
+    void api
+      .listPlatformFiles()
+      .then((files) => {
+        const match = files.find((file) => file.workflowId === workflowId && file.downloadUrl)
+        if (match?.downloadUrl) {
+          setOpenHint('')
+          return api.download(match.downloadUrl, match.name || selected.name)
+        }
+        setOpenHint('Нет внешней ссылки на регламент — карточка открыта справа.')
+        return false
+      })
+      .catch(() => {
+        setOpenHint('Не удалось открыть файл регламента — карточка открыта справа.')
+      })
+      .finally(() => setOpening(false))
+  }
 
   return (
     <>
@@ -129,17 +158,20 @@ export function KnowledgeGridTab({
             <h2>{selected.name}</h2>
             <SpecPill tone={selected.typeTone}>{selected.type}</SpecPill>
             <p className="spec-v04-muted">{selected.process}</p>
-            <button type="button" className="spec-btn-launch spec-btn-launch-block">
-              Открыть
+            {openHint ? <p className="spec-v04-muted">{openHint}</p> : null}
+            <button
+              type="button"
+              className="spec-btn-launch spec-btn-launch-block"
+              disabled={opening}
+              onClick={openSelectedKnowledge}
+            >
+              {opening ? 'Открываем…' : 'Открыть знание'}
             </button>
           </div>
         ) : (
           <div className="wp-card spec-v04-muted">Выберите материал</div>
         )}
       </OrchSlotSide>
-      <OrchSlotBotC>
-        <SpecAskOrchestratorBlock chips={ASK_CHIPS.knowledge} placeholder="Спросить по базе знаний…" onSubmit={ask} />
-      </OrchSlotBotC>
     </>
   )
 }

@@ -387,7 +387,7 @@ export function MailTabWorkplace({
   }, [])
   const tiles: SpecSummaryTile[] = [
     { id: 'p', label: 'К обработке', value: String(mailRows.length || '—'), tone: 'blue' },
-    { id: 'box', label: 'Ящик Outlook', value: data.outlookMailbox || 'локальный профиль', tone: 'orange' },
+    { id: 'box', label: data.mailImapPrimary ? 'Ящик IMAP' : 'Ящик Outlook', value: data.outlookMailbox || 'локальный профиль', tone: 'orange' },
     { id: 'src', label: 'Источник списка', value: data.sources.mail, tone: 'purple' }
   ]
   const ask = (m: string) => onAskOrchestrator(m, 'Вкладка «Письма»')
@@ -397,9 +397,11 @@ export function MailTabWorkplace({
       <SpecPageHead
         title="Письма"
         subtitle={
-          data.outlookMailbox
-            ? `Почта Outlook: ${data.outlookMailbox} · список через ${data.sources.mail}`
-            : 'Единый центр обработки рабочей почты Outlook'
+          data.mailImapPrimary
+            ? `Почта IMAP (primary) · ${data.sources.mail}${data.outlookMailbox ? ` · COM fallback: ${data.outlookMailbox}` : ''}`
+            : data.outlookMailbox
+              ? `Почта Outlook: ${data.outlookMailbox} · список через ${data.sources.mail} · ${data.mailImapStatus}`
+              : `Единый центр обработки рабочей почты · ${data.mailImapStatus || data.sources.mail}`
         }
         actions={<SpecQuickLaunchButton />}
       />
@@ -409,6 +411,11 @@ export function MailTabWorkplace({
         main={
           <div className="spec-v04-table-wrap wp-card">
             <h3 className="spec-table-caption">Письма ({mailRows.length})</h3>
+            {data.mailComError || data.mailImapError ? (
+              <p className="spec-v04-muted">
+                {[data.mailComError, data.mailImapError].filter(Boolean).join(' · ')}
+              </p>
+            ) : null}
             <table className="spec-v04-table">
               <thead>
                 <tr>
@@ -427,9 +434,11 @@ export function MailTabWorkplace({
                 {!mailRows.length ? (
                   <tr>
                     <td colSpan={9} className="spec-v04-empty">
-                      {data.loading
+                      {data.mailLoading || data.loading
                         ? 'Загружаем письма…'
-                        : `Нет писем за неделю (Outlook COM). Ящик: ${data.outlookMailbox || 'проверьте профиль'}.`}
+                        : data.mailImapPrimary
+                          ? `Нет писем в IMAP. ${data.mailImapStatus}`
+                          : `Нет писем за неделю (Outlook COM). Ящик: ${data.outlookMailbox || 'проверьте профиль'}. ${data.mailImapStatus}`}
                     </td>
                   </tr>
                 ) : null}

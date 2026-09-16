@@ -10,7 +10,8 @@ import {
 import { parseIso, sameDay } from '../utils/calendar'
 import { useGridRefreshGeneration } from './GridDataRefreshContext'
 import { readGridCache, shouldRunGridFetch, writeGridCache } from './gridDataCache'
-import { turboProjectInvokeArgs } from './userContext'
+import { hasTurboSessionCredentials, turboProjectInvokeArgs } from './userContext'
+import { isTechnicalTurboMessage } from './turboSession'
 import { turboTaskAssignedToActor } from './turboAssigneeMatch'
 
 export type TodayProjectTaskRow = {
@@ -77,7 +78,8 @@ export function useTodayProjectTasks(
       setError('')
       return
     }
-    if (spec.turboNoSession) {
+    const liveSession = hasTurboSessionCredentials(spec.user)
+    if (!liveSession) {
       setLoading(false)
       setError('')
       setRows([])
@@ -118,7 +120,7 @@ export function useTodayProjectTasks(
             )
             if (!res.ok || !res.result || typeof res.result !== 'object') {
               const hint = (res.error || '').trim()
-              if (hint && !fetchError) fetchError = hint
+              if (hint && !fetchError && !isTechnicalTurboMessage(hint)) fetchError = hint
               return { projectId: project.id, tasks: [] as Record<string, unknown>[] }
             }
             const payload = res.result as Record<string, unknown>
@@ -167,7 +169,6 @@ export function useTodayProjectTasks(
     portfolioKey,
     generation,
     spec.sourcesLoading,
-    spec.turboNoSession,
     spec.erpFio,
     spec.user?.id,
     spec.comPasswordInSession,
@@ -176,7 +177,7 @@ export function useTodayProjectTasks(
 
   return {
     loading: (spec.sourcesLoading || loading) && rows.length === 0,
-    noSession: spec.turboNoSession,
+    noSession: !hasTurboSessionCredentials(spec.user),
     error,
     rows
   }

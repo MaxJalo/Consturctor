@@ -1,5 +1,6 @@
 import { useMemo } from 'react'
 import type { UserProfile } from '../api/types'
+import type { SpecPillTone } from './specV04DemoData'
 import type { SpecSummaryTile } from './specV04Shell'
 import { type SpecV04SourcesState, useSpecV04Sources } from './useSpecV04Data'
 
@@ -12,18 +13,72 @@ function dash(loading: boolean, text: string): string {
   return loading ? '—' : text
 }
 
+export type TodayDayBreakdownItem = {
+  id: string
+  title: string
+  source: string
+  status: string
+  statusTone: SpecPillTone
+  deadline: string
+  done: boolean
+}
+
+export type TodayDayBreakdown = {
+  done: TodayDayBreakdownItem[]
+  todo: TodayDayBreakdownItem[]
+  dayDone: number
+  dayTotal: number
+}
+
+function isDoneStatus(status: string): boolean {
+  return status === 'Выполнена' || status === 'Выполнен'
+}
+
+/** 1С задачи + регламентные агенты с работой сегодня. Без выдуманных строк. */
+export function buildTodayDayBreakdown(data: SpecV04SourcesState): TodayDayBreakdown {
+  const items: TodayDayBreakdownItem[] = [
+    ...data.erpTasks.map((task) => ({
+      id: `erp:${task.id}`,
+      title: task.title,
+      source: task.source || '1С',
+      status: task.status,
+      statusTone: task.statusTone,
+      deadline: task.deadline,
+      done: isDoneStatus(task.status)
+    })),
+    ...data.todayProcessRows.map((row) => ({
+      id: `reg:${row.id}`,
+      title: row.name,
+      source: row.source || 'Регламент',
+      status: row.status,
+      statusTone: row.statusTone,
+      deadline: row.deadline,
+      done: isDoneStatus(row.status)
+    }))
+  ]
+  return {
+    done: items.filter((item) => item.done),
+    todo: items.filter((item) => !item.done),
+    dayDone: items.filter((item) => item.done).length,
+    dayTotal: items.length
+  }
+}
+
 /**
  * KPI «Сегодня»: агрегаты из useSpecV04Sources (1С:Документооборот SOAP, Turbo, агенты, Outlook).
- * «Выполнение дня» — композит: выполненные задачи 1С + регламентные агенты / их сумма (partial, без проектных задач Turbo).
+ * «Выполнение дня» — композит: выполненные задачи 1С + регламентные агенты сегодня / их сумма (без Turbo).
+ * «Регламентные работы» — только агенты с запуском сегодня (`todayProcessRows`).
  * «Задачи 1С» — onec.docflow_tasks (HTTP SOAP /doc/ws/dm.1cws).
  */
 export function buildTodayKpiTiles(data: SpecV04SourcesState): SpecSummaryTile[] {
   const loading = data.loading
+  const onecDead = Boolean(data.erpError) && !data.erpTaskCount && !data.erpLoading
+  const turboDead = Boolean(data.turboError) && !data.projectCount && !data.turboLoading
 
   const onecTotal = data.erpTaskCount
   const onecDone = data.erpTasks.filter((t) => t.status === 'Выполнена').length
 
-  const regRows = data.processRows
+  const regRows = data.todayProcessRows
   const regTotal = regRows.length
   const regDone = regRows.filter((r) => r.status === 'Выполнен').length
 
@@ -54,14 +109,16 @@ export function buildTodayKpiTiles(data: SpecV04SourcesState): SpecSummaryTile[]
     {
       id: 'onec',
       label: 'Задачи из 1С',
-      value: dash(loading, onecTotal ? String(onecTotal) : '—'),
-      hint: loading
+      value: dash(data.erpLoading || onecDead, onecTotal ? String(onecTotal) : '—'),
+      hint: data.erpLoading
         ? 'загрузка…'
-        : onecTotal
-          ? `${onecDone} выполнено`
-          : 'сегодня и просроченные',
+        : onecDead
+          ? ''
+          : onecTotal
+            ? `${onecDone} выполнено`
+            : '',
       tone: 'blue',
-      progress: loading ? undefined : pct(onecDone, onecTotal || 1),
+      progress: data.erpLoading || onecDead ? undefined : pct(onecDone, onecTotal || 1),
       ring: true
     },
     {
@@ -72,7 +129,7 @@ export function buildTodayKpiTiles(data: SpecV04SourcesState): SpecSummaryTile[]
         ? 'загрузка…'
         : regTotal
           ? `${regDone} из ${regTotal} выполнено`
-          : 'агенты Constructor',
+          : 'запуски сегодня',
       tone: 'green',
       progress: loading ? undefined : pct(regDone, regTotal || 1),
       ring: true
@@ -80,10 +137,10 @@ export function buildTodayKpiTiles(data: SpecV04SourcesState): SpecSummaryTile[]
     {
       id: 'proj',
       label: 'Проекты',
-      value: dash(loading, projTotal ? String(projTotal) : '—'),
-      hint: loading ? 'загрузка…' : projTotal ? `${projActive} активных` : 'TurboProject',
+      value: dash(data.turboLoading || turboDead, projTotal ? String(projTotal) : '—'),
+      hint: data.turboLoading ? 'загрузка…' : projTotal ? `${projActive} активных` : '',
       tone: 'purple',
-      progress: loading ? undefined : pct(projActive, projTotal || 1),
+      progress: data.turboLoading || turboDead ? undefined : pct(projActive, projTotal || 1),
       ring: true
     },
     {

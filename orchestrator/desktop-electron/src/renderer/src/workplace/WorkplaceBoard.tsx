@@ -268,6 +268,16 @@ export function agentHasWorkToday(agent: WorkplaceAgent, today = new Date()): bo
   return agent.status === 'ACTIVE' || agent.status === 'WAITING_HUMAN'
 }
 
+/** Scheduled or already started on the local calendar day — not the full process catalog. */
+export function agentLaunchesToday(agent: WorkplaceAgent, today = new Date()): boolean {
+  if (agent.standalone) return false
+  if (agent.tasks.length > 0) return true
+  const last = parseIso(agent.boardAgent?.lastRunAt || '')
+  if (last && sameDay(last, today)) return true
+  const next = parseIso(agent.boardAgent?.nextRunAt || '')
+  return Boolean(next && sameDay(next, today))
+}
+
 export function buildWorkplaceAgents(board: WorkflowBoard, personal?: PersonalAgentSeed | null): WorkplaceAgent[] {
   const today = new Date()
   const todayEvents = board.events.filter((event) => {

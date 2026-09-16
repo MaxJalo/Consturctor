@@ -14,6 +14,12 @@
   gap: 12px;
 }
 
+.kpi-dash-agent-search {
+  margin-left: auto;
+  min-width: 220px;
+  max-width: 320px;
+}
+
 .kpi-dash-table-title {
   margin: 0;
   font-size: 15px;

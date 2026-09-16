@@ -3,11 +3,19 @@ import { RefreshCw } from 'lucide-react'
 import type { UserProfile } from '../../api/types'
 import { OrchSlotFilters, OrchSlotMetrics, OrchSlotTodayCanvas } from '../../layout/GridSlots'
 import { TodayWidgetGrid, useTodayWidgetLayout } from './TodayWidgetGrid'
-import { SpecAskOrchestratorBlock, SpecPanel, SpecPill, SpecSummaryTiles } from '../../workplace/specV04Components'
-import { ASK_CHIPS } from '../../workplace/specV04DemoData'
-import { useTodayKpiData } from '../../workplace/useTodayKpiData'
+import { SpecPanel, SpecPill, SpecSummaryTiles } from '../../workplace/specV04Components'
+import { buildTodayDayBreakdown, useTodayKpiData } from '../../workplace/useTodayKpiData'
+import { TODAY_ONEC_TASK_FILTER } from '../../workplace/tileFilters'
+import { openWorkplaceTab } from '../../workplace/workplaceNav'
+import { TodayDayBreakdownModal } from './TodayDayBreakdownModal'
 import { useTodayOutlookMail } from '../../workplace/useTodayOutlookMail'
-import { comPasswordSessionHint, isOneCAuthFailure } from '../../workplace/onecSessionHints'
+import {
+  comPasswordSessionHint,
+  isOneCAuthFailure,
+  sessionOneCEmptyText,
+  sessionOneCLoadingText,
+  userFacingOneCError
+} from '../../workplace/onecSessionHints'
 import { OneCReconnectDialog, OneCReconnectInline } from '../../workplace/OneCReconnectDialog'
 import { erpActorFio } from '../../workplace/userContext'
 import { useTodayProjectTasks } from '../../workplace/useTodayProjectTasks'
@@ -37,6 +45,7 @@ function MiniTableCard({
   loading,
   error,
   emptyText,
+  loadingText,
   hint,
   emptyExtra,
   headerAction
@@ -48,6 +57,7 @@ function MiniTableCard({
   /** Shown above the table (KPI/banner), never as a fake data row. */
   error?: string
   emptyText?: string
+  loadingText?: string
   hint?: string
   emptyExtra?: React.ReactNode
   headerAction?: React.ReactNode
@@ -57,7 +67,7 @@ function MiniTableCard({
       return (
         <tr>
           <td colSpan={columns.length} className="today-table-status">
-            Загружаем…
+            {loadingText || 'Загружаем…'}
           </td>
         </tr>
       )
@@ -116,8 +126,7 @@ function startOfToday(): Date {
 export function TodayGridTab({
   user,
   onOpenDecisions,
-  onOpenRun,
-  onAskOrchestrator
+  onOpenRun
 }: {
   user: UserProfile
   onOpenDecisions: () => void
@@ -125,11 +134,12 @@ export function TodayGridTab({
   onOpenPassport: (workflowId: string, title: string, tab?: 'info' | 'files' | 'results') => void
   onRun: (workflowId: string, title: string) => void
   onOpenRun: (workflowId: string, title: string, runId?: string) => void
-  onAskOrchestrator: (message: string, appContext: string) => void
 }): React.JSX.Element {
   const { forceRefresh } = useGridDataRefreshContext()
   const { data, tiles } = useTodayKpiData(user)
+  const [dayBreakdownOpen, setDayBreakdownOpen] = useState(false)
   const [periodDay, setPeriodDay] = useState(startOfToday)
+  const dayBreakdown = useMemo(() => buildTodayDayBreakdown(data), [data])
   const [onecDialogOpen, setOnecDialogOpen] = useState(false)
   const outlookMail = useTodayOutlookMail(periodDay)
   const preparedDecisions = useTodayPreparedDecisions(periodDay, user.id)
@@ -162,23 +172,27 @@ export function TodayGridTab({
       })
   }, [data.meetings, periodDay])
 
-  const ask = (message: string): void => {
-    onAskOrchestrator(message, 'Вкладка «Сегодня»')
-  }
-
-  const showOneCReconnect =
-    !data.sourcesLoading && !taskRows.length && data.oneCAuthFailure
+  const onecError = userFacingOneCError(data.erpError)
+  const showOneCReconnect = !data.erpLoading && data.oneCAuthFailure && !data.erpTasks.length
   const onecReconnectBlock = showOneCReconnect ? (
     <OneCReconnectInline
-      errorHint={data.erpError || data.error}
+      errorHint={onecError}
       onOpen={() => setOnecDialogOpen(true)}
     />
   ) : undefined
 
   useEffect(() => {
-    if (data.sourcesLoading || !showOneCReconnect || data.comPasswordInSession) return
+    if (data.comPasswordInSession) return
+    if (data.erpLoading || data.turboLoading) return
+    if (!showOneCReconnect && projectTasks.rows.length) return
     setOnecDialogOpen(true)
-  }, [data.sourcesLoading, showOneCReconnect, data.comPasswordInSession])
+  }, [
+    data.comPasswordInSession,
+    data.erpLoading,
+    data.turboLoading,
+    showOneCReconnect,
+    projectTasks.rows.length
+  ])
 
   const {
     layoutWithStatic,
@@ -206,15 +220,12 @@ export function TodayGridTab({
         <TodayWindow>
         <MiniTableCard
           title="Письма из Outlook"
-          hint={
-            outlookMail.source
-              ? `Outlook COM · ${outlookMail.source}`
-              : data.outlookMailbox
-                ? data.outlookMailbox
-                : undefined
-          }
           loading={outlookMail.loading}
-          error={outlookMail.error}
+          error={
+            outlookMail.error && !/IMAP/i.test(outlookMail.error)
+              ? outlookMail.error
+              : undefined
+          }
           emptyText="Нет писем во входящих за выбранный день"
           columns={['Отправитель', 'Тема', 'Время', 'Приоритет', 'Статус']}
           rows={mailRows.map((row) => [
@@ -240,31 +251,27 @@ export function TodayGridTab({
               type="button"
               className="today-refresh-btn"
               title="Обновить задачи 1С:Документооборот: сегодня и просроченные"
-              disabled={data.sourcesLoading}
+              disabled={data.erpLoading}
               onClick={() => forceRefresh()}
             >
               <RefreshCw size={14} aria-hidden />
             </button>
           }
-          loading={data.sourcesLoading}
+          loading={data.erpLoading}
+          loadingText={sessionOneCLoadingText(erpFio)}
           error={
             taskRows.length
-              ? data.erpError || data.error || undefined
-              : data.erpError || data.error
-                ? isOneCAuthFailure(data.erpError || data.error)
-                  ? [data.erpError || data.error, comPasswordSessionHint()].filter(Boolean).join(' · ')
-                  : data.erpError || data.error
+              ? onecError || undefined
+              : onecError
+                ? isOneCAuthFailure(onecError)
+                  ? [onecError, comPasswordSessionHint()].filter(Boolean).join(' · ')
+                  : onecError
                 : undefined
           }
           emptyText={
-            data.erpError || data.error
+            onecError
               ? 'Не удалось загрузить задачи документооборота'
-              : 'Нет задач на сегодня и просроченных'
-          }
-          hint={
-            [data.erpSecondaryHint, data.sources.erp !== '—' ? data.sources.erp : '']
-              .filter(Boolean)
-              .join(' · ') || undefined
+              : sessionOneCEmptyText(erpFio)
           }
           emptyExtra={onecReconnectBlock}
           columns={['Задача', 'Срок', 'Статус', 'Исполнитель']}
@@ -286,9 +293,12 @@ export function TodayGridTab({
         <MiniTableCard
           title="Проектные задачи"
           loading={projectTasks.loading}
-          error={projectTasks.error || undefined}
-          emptyText={projectTasks.noSession ? 'Нет активного сеанса' : 'Нет открытых проектных задач'}
-          hint={data.sources.turbo !== '—' ? data.sources.turbo : undefined}
+          emptyText="Нет открытых проектных задач"
+          emptyExtra={
+            !data.comPasswordInSession ? (
+              <OneCReconnectInline errorHint={onecError} onOpen={() => setOnecDialogOpen(true)} />
+            ) : undefined
+          }
           columns={['Задача', 'Срок', 'Статус', 'Исполнитель']}
           rows={projectTasks.rows.map((row) => [
             <TodayCellText key={`${row.id}-t`} text={row.title} />,
@@ -334,7 +344,7 @@ export function TodayGridTab({
           ) : preparedDecisions.error ? (
             <p className="today-table-status today-table-error">{preparedDecisions.error}</p>
           ) : !preparedDecisions.items.length ? (
-            <p className="today-table-status">Нет подготовленных решений за выбранный день</p>
+            <p className="today-table-status">Нет подготовленных решений</p>
           ) : (
             <ul className="today-decision-list">
               {preparedDecisions.items.map((item) => {
@@ -383,27 +393,19 @@ export function TodayGridTab({
           )}
         </SpecPanel>
         </TodayWindow>
-      ),
-      ask: (
-        <TodayWindow>
-          <SpecAskOrchestratorBlock
-            placeholder="Например: какие регламентные процессы просрочены?"
-            chips={ASK_CHIPS.today}
-            onSubmit={ask}
-          />
-        </TodayWindow>
       )
     }),
     [
       data.erpError,
+      onecError,
+      data.erpLoading,
       data.erpTasks,
-      data.error,
       data.oneCAuthFailure,
       onecReconnectBlock,
       data.meetings,
       data.outlookMailbox,
-      data.sources.erp,
-      data.sources.turbo,
+      data.comPasswordInSession,
+      data.turboLoading,
       data.sourcesLoading,
       erpFio,
       preparedDecisions.error,
@@ -415,15 +417,11 @@ export function TodayGridTab({
       onOpenRun,
       outlookMail.error,
       outlookMail.loading,
-      outlookMail.source,
       periodDay,
-      projectTasks.error,
       projectTasks.loading,
-      projectTasks.noSession,
       projectTasks.rows,
       taskRows,
-      user.id,
-      onAskOrchestrator
+      user.id
     ]
   )
 
@@ -431,7 +429,30 @@ export function TodayGridTab({
     <>
       <OrchSlotMetrics>
         <div className="orch-today-tiles">
-          <SpecSummaryTiles tiles={tiles} />
+          <SpecSummaryTiles
+            tiles={tiles}
+            onSelect={(id) => {
+              if (id === 'day') {
+                setDayBreakdownOpen(true)
+                return
+              }
+              if (id === 'onec') {
+                openWorkplaceTab('tasks', { taskFilter: TODAY_ONEC_TASK_FILTER })
+                return
+              }
+              if (id === 'reg') {
+                openWorkplaceTab('processes', { processTab: 'reg' })
+                return
+              }
+              if (id === 'proj') {
+                openWorkplaceTab('projects')
+                return
+              }
+              if (id === 'ev') {
+                openWorkplaceTab('meetings')
+              }
+            }}
+          />
         </div>
       </OrchSlotMetrics>
 
@@ -460,7 +481,13 @@ export function TodayGridTab({
         open={onecDialogOpen}
         onClose={() => setOnecDialogOpen(false)}
         user={user}
-        errorHint={data.erpError || data.error}
+        errorHint={onecError}
+      />
+      <TodayDayBreakdownModal
+        open={dayBreakdownOpen}
+        breakdown={dayBreakdown}
+        loading={data.loading}
+        onClose={() => setDayBreakdownOpen(false)}
       />
     </>
   )

@@ -1377,3 +1377,70 @@
   line-height: 1.2;
   text-align: left;
 }
+
+.today-day-breakdown-overlay {
+  z-index: 10000;
+}
+
+.today-day-breakdown-dialog {
+  width: min(560px, 94vw);
+  max-height: min(80vh, 640px);
+  overflow: auto;
+}
+
+.today-day-breakdown-hint {
+  margin: 0 0 8px;
+  font-size: 13px;
+}
+
+.today-day-breakdown-section {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.today-day-breakdown-section h5 {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  margin: 8px 0 0;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.today-day-breakdown-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.today-day-breakdown-item {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 8px 10px;
+  border: 1px solid #e6ebf2;
+  border-radius: 10px;
+  background: #f8fafc;
+}
+
+.today-day-breakdown-body {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.today-day-breakdown-body strong {
+  font-size: 13px;
+  line-height: 1.3;
+}
+
+.today-day-breakdown-body small {
+  font-size: 12px;
+}

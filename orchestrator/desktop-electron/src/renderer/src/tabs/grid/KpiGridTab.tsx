@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import {
   OrchSlotBotA,
   OrchSlotBotB,
@@ -7,16 +7,18 @@ import {
   OrchSlotMain,
   OrchSlotMetrics
 } from '../../layout/GridSlots'
-import { KpiRangePicker } from '../../pages/KpiRangePicker'
+import { KpiRangePicker, type KpiRangeShortcut } from '../../pages/KpiRangePicker'
 import { SpecFilters, SpecPanel, SpecPill, SpecProgress, SpecSummaryTiles } from '../../workplace/specV04Components'
 import type { SpecSummaryTile } from '../../workplace/specV04Shell'
-import { StandardGridFilters } from './gridFilters'
+import { SpecIconSearch } from '../../workplace/specV04Icons'
+import { currentWeekRange, rollingKpiRange } from '../../workplace/kpiPeriod'
+import { setKpiExportSnapshot } from '../../workplace/kpiExportSnapshot'
 import { useWorkplaceKpiDashboard } from '../../workplace/useWorkplaceKpiDashboard'
+import { agentMatchesKpiTile, toggleSimpleTile } from '../../workplace/tileFilters'
 import type { WorkplaceKpiCard, WorkplaceKpiChartSeries, WorkplaceKpiDashboard } from '../../workplace/workplaceKpiTypes'
 import './kpiGrid.css'
 
-const DEFAULT_FROM = '2024-08-12'
-const DEFAULT_TO = '2024-08-18'
+const WEEK = currentWeekRange()
 
 const LOADING_TILES: SpecSummaryTile[] = [
   { id: 'tasks', label: 'Выполнение задач', value: '—', tone: 'orange' },
@@ -93,8 +95,11 @@ export function KpiGridTab(_props: {
   onOpenProcesses?: () => void
   onOpenDecisions?: () => void
 }): React.JSX.Element {
-  const [from, setFrom] = useState(DEFAULT_FROM)
-  const [to, setTo] = useState(DEFAULT_TO)
+  const [from, setFrom] = useState(WEEK.from)
+  const [to, setTo] = useState(WEEK.to)
+  const [shortcut, setShortcut] = useState<KpiRangeShortcut | null>(null)
+  const [agentQuery, setAgentQuery] = useState('')
+  const [tileFilter, setTileFilter] = useState('all')
   const { data, loading, error, notice } = useWorkplaceKpiDashboard(from, to)
 
   const tiles = useMemo(() => {
@@ -103,23 +108,50 @@ export function KpiGridTab(_props: {
     return []
   }, [data, loading])
 
+  const agents = useMemo(() => {
+    const rows = data?.agents ?? []
+    const byTile =
+      tileFilter === 'all' ? rows : rows.filter((row) => agentMatchesKpiTile(row, tileFilter))
+    const q = agentQuery.trim().toLowerCase()
+    if (!q) return byTile
+    return byTile.filter((row) =>
+      [row.name, row.code, row.process, row.status].some((value) => value.toLowerCase().includes(q))
+    )
+  }, [data, agentQuery, tileFilter])
+
+  useEffect(() => {
+    setKpiExportSnapshot({ from, to, data })
+    return () => setKpiExportSnapshot({ from: '', to: '', data: null })
+  }, [from, to, data])
+
   const applyRange = (next: { from: string; to: string }): void => {
     setFrom(next.from)
     setTo(next.to)
+    setShortcut(null)
+  }
+
+  const applyShortcut = (days: KpiRangeShortcut): void => {
+    const next = rollingKpiRange(days)
+    setFrom(next.from)
+    setTo(next.to)
+    setShortcut(days)
   }
 
   return (
     <>
       <OrchSlotMetrics>
         <div className="orch-kpi-tiles">
-          <SpecSummaryTiles tiles={tiles} />
+          <SpecSummaryTiles
+            tiles={tiles}
+            activeId={tileFilter === 'all' ? null : tileFilter}
+            onSelect={(id) => setTileFilter((current) => toggleSimpleTile(current, id))}
+          />
         </div>
       </OrchSlotMetrics>
 
       <OrchSlotFilters>
         <SpecFilters layout="row">
-          <KpiRangePicker from={from} to={to} shortcut={null} onApply={applyRange} onShortcut={() => undefined} />
-          <StandardGridFilters searchPlaceholder="Поиск по KPI…" />
+          <KpiRangePicker from={from} to={to} shortcut={shortcut} onApply={applyRange} onShortcut={applyShortcut} />
         </SpecFilters>
         {!tiles.length && loading ? (
           <p className="kpi-dash-status-banner">Загружаем показатели…</p>
@@ -132,6 +164,16 @@ export function KpiGridTab(_props: {
         <div className="spec-table-toolbar kpi-dash-table-toolbar">
           <h3 className="kpi-dash-table-title">KPI ИИ-агентов</h3>
           {data?.periodLabel ? <span className="spec-v04-muted">{data.periodLabel}</span> : null}
+          <label className="spec-filter-input spec-filter-search kpi-dash-agent-search">
+            <SpecIconSearch />
+            <input
+              className="wp-search"
+              type="search"
+              value={agentQuery}
+              onChange={(event) => setAgentQuery(event.target.value)}
+              placeholder="Поиск по агентам…"
+            />
+          </label>
         </div>
         <div className="spec-v04-table-wrap wp-card kpi-dash-main-table">
             <table className="spec-v04-table">
@@ -147,21 +189,25 @@ export function KpiGridTab(_props: {
                 </tr>
               </thead>
               <tbody>
-                {loading && !data?.agents.length ? (
+                {loading && !agents.length ? (
                   <tr>
                     <td colSpan={7} className="spec-v04-empty">
                       Загружаем…
                     </td>
                   </tr>
                 ) : null}
-                {!loading && !data?.agents.length ? (
+                {!loading && !agents.length ? (
                   <tr>
                     <td colSpan={7} className="spec-v04-empty">
-                      Нет данных за период
+                      {agentQuery.trim()
+                        ? 'Нет агентов по поиску'
+                        : tileFilter !== 'all'
+                          ? 'Нет агентов по выбранной плитке'
+                          : 'Нет данных за период'}
                     </td>
                   </tr>
                 ) : null}
-                {(data?.agents ?? []).map((row) => (
+                {agents.map((row) => (
                   <tr key={row.id}>
                     <td>
                       <div className="kpi-dash-agent-name">

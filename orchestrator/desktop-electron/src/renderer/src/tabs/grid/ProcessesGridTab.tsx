@@ -3,14 +3,12 @@ import type { UserProfile } from '../../api/types'
 import {
   OrchSlotBotA,
   OrchSlotBotB,
-  OrchSlotBotC,
   OrchSlotFilters,
   OrchSlotMain,
   OrchSlotMetrics,
   OrchSlotSide
 } from '../../layout/GridSlots'
 import {
-  SpecAskOrchestratorBlock,
   SpecFilters,
   SpecPanel,
   SpecPill,
@@ -19,13 +17,14 @@ import {
   SpecSummaryTiles,
   SpecTableTabs
 } from '../../workplace/specV04Components'
-import { ASK_CHIPS, type SpecProcessRow } from '../../workplace/specV04DemoData'
+import { type SpecProcessRow } from '../../workplace/specV04DemoData'
 import {
   buildProcessTiles,
   countProcessRowsByTab,
   filterProcessRowsByTab,
   useSpecV04Sources
 } from '../../workplace/useSpecV04Data'
+import { isDeadProcessSource } from '../../workplace/tileFilters'
 import { SpecIconCalendar, SpecIconSearch } from '../../workplace/specV04Icons'
 import { buildProcessesQuickActions } from '../../workplace/specGridQuickActions'
 import { applyMeetingDoneToRow, isMeetingRowId } from '../../workplace/meetingCompletion'
@@ -174,16 +173,19 @@ export function ProcessesGridTab({
   user,
   onOpen,
   onOpenRun,
-  onAskOrchestrator
+  navProcessTab
 }: {
   user: UserProfile
   onOpen: (workflowId: string, title: string) => void
   onOpenRun: (workflowId: string, title: string, runId?: string) => void
-  onAskOrchestrator?: (message: string, context: string) => void
+  navProcessTab?: string | null
 }): React.JSX.Element {
   const data = useSpecV04Sources(user)
   const meetingCompletion = useMeetingCompletion()
-  const [tab, setTab] = useState('all')
+  const [tab, setTab] = useState(navProcessTab || 'all')
+  useEffect(() => {
+    if (navProcessTab) setTab(navProcessTab)
+  }, [navProcessTab])
   const [rowMenuId, setRowMenuId] = useState('')
   const allRows = data.allProcessRows
   const rows = useMemo(() => filterProcessRowsByTab(allRows, tab), [allRows, tab])
@@ -213,10 +215,6 @@ export function ProcessesGridTab({
   const tableBusy = data.tableLoading && tab === 'reg' && !rows.length
   const tableEmpty = !tableBusy && !rows.length
 
-  const ask = (message: string): void => {
-    onAskOrchestrator?.(message, 'Вкладка «Процессы»')
-  }
-
   const quickActions = useMemo(
     () =>
       buildProcessesQuickActions({}).map((action) => ({
@@ -232,7 +230,14 @@ export function ProcessesGridTab({
   return (
     <>
       <OrchSlotMetrics>
-        <SpecSummaryTiles tiles={buildProcessTiles(data)} />
+        <SpecSummaryTiles
+          tiles={buildProcessTiles(data)}
+          activeId={tab === 'all' ? null : tab}
+          onSelect={(id) => {
+            if (isDeadProcessSource(data, id)) return
+            setTab((current) => (id === current ? 'all' : id))
+          }}
+        />
       </OrchSlotMetrics>
       <OrchSlotFilters>
         <SpecFilters layout="row">
@@ -420,9 +425,6 @@ export function ProcessesGridTab({
           <SpecQuickActions items={quickActions} />
         </SpecPanel>
       </OrchSlotBotB>
-      <OrchSlotBotC>
-        <SpecAskOrchestratorBlock placeholder="Спросить про процессы…" chips={ASK_CHIPS.processes} onSubmit={ask} />
-      </OrchSlotBotC>
     </>
   )
 }

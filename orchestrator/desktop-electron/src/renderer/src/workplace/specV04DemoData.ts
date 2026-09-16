@@ -109,6 +109,10 @@ export interface SpecTaskRow {
   executor: string
   who: string
   progress: number
+  author?: string
+  performer?: string
+  channel?: string
+  role?: string
 }
 
 export const DEMO_TASK_ROWS: SpecTaskRow[] = [
@@ -180,6 +184,8 @@ export interface SpecProjectRow {
   fileId?: string
   /** Руководитель / owner из карточки или 1С. */
   manager?: string
+  /** Внешняя ссылка Turbo / web, если портфель её отдал. */
+  url?: string
 }
 
 export const DEMO_PROJECT_ROWS: SpecProjectRow[] = [
@@ -228,6 +234,11 @@ export interface SpecMailRow {
   id: string
   /** Outlook MAPI EntryID (same as id when loaded via COM). */
   entryId?: string
+  /** RFC Message-ID when known (IMAP / compare). */
+  messageId?: string
+  /** IMAP uid for fetch_message; desktop never opens IMAP sockets. */
+  imapUid?: number
+  channel?: 'imap' | 'outlook'
   sender: string
   subject: string
   category: string
@@ -364,6 +375,8 @@ export interface SpecKnowledgeRow {
   version: string
   updated: string
   author: string
+  url?: string
+  workflowId?: string
 }
 
 export const DEMO_KNOWLEDGE_ROWS: SpecKnowledgeRow[] = [

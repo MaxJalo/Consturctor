@@ -1,7 +1,6 @@
 import { Fragment, useEffect, useMemo, useState } from 'react'
 import type { UserProfile } from '../../api/types'
 import {
-  OrchSlotBotC,
   OrchSlotFilters,
   OrchSlotMain,
   OrchSlotMetrics,
@@ -9,19 +8,20 @@ import {
 } from '../../layout/GridSlots'
 import type { SpecSummaryTile } from '../../workplace/specV04Shell'
 import {
-  SpecAskOrchestratorBlock,
   SpecPill,
   SpecProgress,
   SpecSummaryTiles
 } from '../../workplace/specV04Components'
-import { ASK_CHIPS } from '../../workplace/specV04DemoData'
 import { useSpecV04Sources } from '../../workplace/useSpecV04Data'
+import { projectMatchesTile, toggleSimpleTile } from '../../workplace/tileFilters'
 import {
   useTurboProjectOpenTasks,
   type TurboProjectOpenTaskRow,
   type TurboProjectTasksFetchOptions
 } from '../../workplace/useTurboProjectOpenTasks'
+import { openHttpUrl } from '../../workplace/workplaceNav'
 import { StandardGridFilters } from './gridFilters'
+import { hasTurboSessionCredentials } from '../../workplace/userContext'
 
 function ProjectTasksTable({
   rows,
@@ -102,15 +102,17 @@ function ProjectExpandedTasks({
 }
 
 export function ProjectsGridTab({
-  user,
-  onAskOrchestrator
+  user
 }: {
   user: UserProfile
-  onAskOrchestrator: (message: string, context: string) => void
 }): React.JSX.Element {
   const data = useSpecV04Sources(user)
-  const projects = data.projects
+  const [tileFilter, setTileFilter] = useState('all')
   const [selectedId, setSelectedId] = useState('')
+  const projects = useMemo(
+    () => data.projects.filter((row) => projectMatchesTile(row, tileFilter)),
+    [data.projects, tileFilter]
+  )
   const [expandedIds, setExpandedIds] = useState<Set<string>>(() => new Set())
   const [myTasksOnly, setMyTasksOnly] = useState(true)
   const effectiveId = selectedId || projects[0]?.id || ''
@@ -130,17 +132,31 @@ export function ProjectsGridTab({
     setSelectedId(projects[0].id)
   }, [projects, selectedId])
 
+  useEffect(() => {
+    if (!effectiveId) return
+    setExpandedIds((prev) => {
+      if (prev.has(effectiveId)) return prev
+      const next = new Set(prev)
+      next.add(effectiveId)
+      return next
+    })
+  }, [effectiveId])
+
+  const turboLive = hasTurboSessionCredentials(data.user)
+  const tasksEnabled = Boolean(effectiveId) && !data.sourcesLoading && (turboLive || !data.turboNoSession)
+
   const projectTasks = useTurboProjectOpenTasks(
     effectiveId,
     data.user,
     data.erpFio,
-    Boolean(effectiveId) && !data.turboNoSession && !data.sourcesLoading,
+    tasksEnabled,
     taskFetch
   )
 
+  const allProjects = data.projects
   const riskCount = useMemo(
-    () => projects.filter((p) => p.riskTone === 'red' || p.riskTone === 'orange').length,
-    [projects]
+    () => allProjects.filter((p) => p.riskTone === 'red' || p.riskTone === 'orange').length,
+    [allProjects]
   )
 
   const doneTasksInView = useMemo(
@@ -150,11 +166,11 @@ export function ProjectsGridTab({
 
   const tiles: SpecSummaryTile[] = useMemo(
     () => [
-      { id: 'active', label: 'Активные проекты', value: String(projects.length || '—'), tone: 'green' },
+      { id: 'active', label: 'Активные проекты', value: String(allProjects.length || '—'), tone: 'green' },
       {
         id: 'tasks',
         label: 'Открытые задачи',
-        value: String(projects.reduce((s, p) => s + p.tasks, 0) || '—'),
+        value: String(allProjects.reduce((s, p) => s + p.tasks, 0) || '—'),
         tone: 'blue'
       },
       { id: 'risk', label: 'С риском', value: riskCount ? String(riskCount) : '—', tone: 'orange' },
@@ -166,7 +182,7 @@ export function ProjectsGridTab({
       },
       { id: 'load', label: 'Загрузка', value: '—', tone: 'yellow' }
     ],
-    [projects, riskCount, selected, projectTasks.rows.length, doneTasksInView]
+    [allProjects, riskCount, selected, projectTasks.rows.length, doneTasksInView]
   )
 
   const toggleExpanded = (projectId: string) => {
@@ -178,14 +194,30 @@ export function ProjectsGridTab({
     })
   }
 
-  const ask = (m: string) => onAskOrchestrator(m, 'Вкладка «Проекты»')
   const fileLabel = selected?.fileId || selected?.id || '—'
-  const tasksEnabled = Boolean(effectiveId) && !data.turboNoSession && !data.sourcesLoading
+  const [openHint, setOpenHint] = useState('')
+
+  const openSelectedProject = (): void => {
+    if (!selected) return
+    setSelectedId(selected.id)
+    if (selected.url && openHttpUrl(selected.url)) {
+      setOpenHint('')
+      return
+    }
+    setOpenHint('Нет внешней ссылки Turbo — карточка проекта открыта справа.')
+  }
 
   return (
     <>
       <OrchSlotMetrics>
-        <SpecSummaryTiles tiles={tiles} />
+        <SpecSummaryTiles
+          tiles={tiles}
+          activeId={tileFilter === 'all' ? 'active' : tileFilter}
+          onSelect={(id) => {
+            if (id === 'load') return
+            setTileFilter((current) => (id === 'active' ? 'all' : toggleSimpleTile(current, id)))
+          }}
+        />
       </OrchSlotMetrics>
       <OrchSlotFilters>
         <StandardGridFilters searchPlaceholder="Поиск по проектам…" />
@@ -212,9 +244,9 @@ export function ProjectsGridTab({
                   <td colSpan={9} className="spec-v04-empty">
                     {data.loading
                       ? 'Загружаем портфель…'
-                      : data.turboNoSession
-                        ? `TurboProject: ${data.sources.turbo || 'нет сеанса'}`
-                        : 'Портфель TurboProject пуст (нет проектов по вашему ФИО).'}
+                      : allProjects.length
+                        ? 'Нет проектов по выбранной плитке'
+                        : 'Портфель пуст'}
                   </td>
                 </tr>
               ) : null}
@@ -272,7 +304,7 @@ export function ProjectsGridTab({
                               projectId={p.id}
                               user={user}
                               erpFio={data.erpFio}
-                              enabled={tasksEnabled && !data.turboNoSession}
+                              enabled={tasksEnabled}
                               taskFetch={taskFetch}
                             />
                           )}
@@ -335,6 +367,9 @@ export function ProjectsGridTab({
                   onChange={(e) => setMyTasksOnly(e.target.checked)}
                 />
                 Только мои
+                {projectTasks.showingAllAssignees ? (
+                  <span className="spec-v04-muted"> · все задачи</span>
+                ) : null}
               </label>
             </div>
             <ProjectTasksTable
@@ -343,8 +378,9 @@ export function ProjectsGridTab({
               error={projectTasks.error}
               emptyLabel="Нет задач в MPP по фильтру"
             />
+            {openHint ? <p className="spec-v04-muted">{openHint}</p> : null}
             <footer className="spec-detail-actions">
-              <button type="button" className="btn-primary">
+              <button type="button" className="btn-primary" onClick={openSelectedProject}>
                 Открыть в проекте
               </button>
             </footer>
@@ -353,9 +389,6 @@ export function ProjectsGridTab({
           <div className="wp-card spec-v04-muted">Выберите проект</div>
         )}
       </OrchSlotSide>
-      <OrchSlotBotC>
-        <SpecAskOrchestratorBlock chips={ASK_CHIPS.projects} placeholder="Спросить про проекты…" onSubmit={ask} />
-      </OrchSlotBotC>
     </>
   )
 }

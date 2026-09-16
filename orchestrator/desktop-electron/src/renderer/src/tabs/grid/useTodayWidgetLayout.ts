@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import type { Layout, LayoutItem } from 'react-grid-layout/legacy'
 
-export const TODAY_LAYOUT_STORAGE_KEY = 'orch-today-layout-v3'
+export const TODAY_LAYOUT_STORAGE_KEY = 'orch-today-layout-v4'
 
 export const TODAY_GRID_COLS = 8
 export const TODAY_GRID_MAX_ROWS = 6
@@ -46,8 +46,7 @@ export const TODAY_WIDGET_IDS = [
   'onec',
   'projects',
   'events',
-  'decisions',
-  'ask'
+  'decisions'
 ] as const
 
 export type TodayWidgetId = (typeof TODAY_WIDGET_IDS)[number]
@@ -61,7 +60,7 @@ export type TodayWidgetLayoutPersist = {
  * 8×6 grid — mirrors pre-RGL todayGrid.css placement:
  * row band 1: plan (6 col) + results (2 col, full height);
  * row band 2: outlook / 1С / projects (3×2 col);
- * row band 3: events / decisions / ask (2+2+4 col).
+ * row band 3: events / decisions (4+4 col).
  */
 export const DEFAULT_TODAY_WIDGET_LAYOUT: LayoutItem[] = [
   { i: 'plan', x: 0, y: 0, w: 6, h: 3, minW: 2, minH: 1, maxW: 8, maxH: 6 },
@@ -69,9 +68,8 @@ export const DEFAULT_TODAY_WIDGET_LAYOUT: LayoutItem[] = [
   { i: 'outlook', x: 0, y: 3, w: 2, h: 2, minW: 2, minH: 1, maxW: 8, maxH: 6 },
   { i: 'onec', x: 2, y: 3, w: 2, h: 2, minW: 2, minH: 1, maxW: 8, maxH: 6 },
   { i: 'projects', x: 4, y: 3, w: 2, h: 2, minW: 2, minH: 1, maxW: 8, maxH: 6 },
-  { i: 'events', x: 0, y: 5, w: 2, h: 1, minW: 2, minH: 1, maxW: 8, maxH: 6 },
-  { i: 'decisions', x: 2, y: 5, w: 2, h: 1, minW: 2, minH: 1, maxW: 8, maxH: 6 },
-  { i: 'ask', x: 4, y: 5, w: 4, h: 1, minW: 2, minH: 1, maxW: 8, maxH: 6 }
+  { i: 'events', x: 0, y: 5, w: 4, h: 1, minW: 2, minH: 1, maxW: 8, maxH: 6 },
+  { i: 'decisions', x: 4, y: 5, w: 4, h: 1, minW: 2, minH: 1, maxW: 8, maxH: 6 }
 ]
 
 export const TODAY_WIDGET_LABELS: Record<TodayWidgetId, string> = {
@@ -81,8 +79,7 @@ export const TODAY_WIDGET_LABELS: Record<TodayWidgetId, string> = {
   onec: 'Задачи 1С',
   projects: 'Проектные задачи',
   events: 'События',
-  decisions: 'Решения',
-  ask: 'Спросить Оркестратора'
+  decisions: 'Решения'
 }
 
 function storageKeyForUser(userId: string): string {

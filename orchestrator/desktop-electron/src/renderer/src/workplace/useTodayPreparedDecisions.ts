@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { api } from '../api/client'
 import type { AgentRunHistoryItem, AgentRunnerEvent, WorkflowFileItem } from '../api/types'
-import { parseFileDate } from '../pages/filesGrouping'
 import { parseIso, sameDay } from '../utils/calendar'
 import { cleanRunResult } from '../utils/cleanRunResult'
 import { useRuns } from '../store/runs'
@@ -61,6 +60,14 @@ function runStamp(run: AgentRunHistoryItem): Date | null {
 function isOpenRun(status: string): boolean {
   const key = (status || '').trim().toLowerCase()
   return key === 'started' || key === 'running'
+}
+
+function isOpenPreparedRow(row: TodayPreparedDecisionRow): boolean {
+  return row.status === 'На проверке' || row.status === 'Черновик'
+}
+
+function isOpenToolDecision(item: ToolDecisionItem): boolean {
+  return item.status === 'pending'
 }
 
 function rowFromTool(item: ToolDecisionItem): TodayPreparedDecisionRow {
@@ -148,7 +155,7 @@ const MAX_AGENTS = 40
 const MAX_ROWS = 8
 const MAX_RUNS_PER_AGENT = 12
 
-/** Подготовленные решения за выбранный день: HITL, подтверждения инструментов, файлы агентов без вердикта. */
+/** Открытые HITL без отсечки по дню + завершённые за выбранный день. */
 export function useTodayPreparedDecisions(periodDay: Date, userId?: string): TodayPreparedDecisionsState {
   const dayScope = `${periodDay.getFullYear()}-${periodDay.getMonth()}-${periodDay.getDate()}`
   const generation = useGridRefreshGeneration()
@@ -203,15 +210,12 @@ export function useTodayPreparedDecisions(periodDay: Date, userId?: string): Tod
     const collectedWaiting: TodayPreparedDecisionRow[] = []
     const seenRuns = new Set<string>()
     const liveEntries = runs.entries
-    const viewingToday = sameDay(periodDay, new Date())
 
     try {
       const allPlatformFiles = await api.listPlatformFiles().catch(() => [] as WorkflowFileItem[])
       const platformByWorkflow = new Map<string, WorkflowFileItem[]>()
       for (const file of allPlatformFiles) {
         if (file.source !== 'agent' || !isUserFacingResultFile(file)) continue
-        const stamp = parseFileDate(file.createdAt)
-        if (!stamp || !sameDay(stamp, periodDay)) continue
         const wid = file.workflowId || ''
         if (!wid) continue
         const bucket = platformByWorkflow.get(wid) || []
@@ -230,7 +234,7 @@ export function useTodayPreparedDecisions(periodDay: Date, userId?: string): Tod
         }
 
         const live = liveEntries[agent.workflowId]
-        if (live?.state.pendingHitl && viewingToday) {
+        if (live?.state.pendingHitl) {
           const hitl = live.state.pendingHitl
           const tool = String(hitl.tool || '')
           if (isDecisionTool(tool, true)) {
@@ -253,7 +257,7 @@ export function useTodayPreparedDecisions(periodDay: Date, userId?: string): Tod
           }
         }
 
-        if (agent.status === 'WAITING_HUMAN' && viewingToday && !live?.state.pendingHitl) {
+        if (agent.status === 'WAITING_HUMAN' && !live?.state.pendingHitl) {
           const taskTitle = agent.tasks.find((task) => task.status === 'needs_decision')?.title
           collectedWaiting.push({
             id: `wait-board:${agent.workflowId}`,
@@ -276,7 +280,7 @@ export function useTodayPreparedDecisions(periodDay: Date, userId?: string): Tod
           const liveEvents = feedItemsToRunnerEvents(live.state.items)
           const liveRunId = live.backendRunId || live.state.activeRunId || `live:${agent.workflowId}`
           const liveAt = new Date(live.state.runningSinceMs || Date.now()).toISOString()
-          if (liveEvents.length && (viewingToday || isOnPeriodDay(liveAt, periodDay))) {
+          if (liveEvents.length) {
             seenRuns.add(`${agent.workflowId}:${liveRunId}`)
             const extracted = extractToolDecisions(liveEvents, {
               workflowId: agent.workflowId,
@@ -286,7 +290,7 @@ export function useTodayPreparedDecisions(periodDay: Date, userId?: string): Tod
               runClosed: !live.state.running
             })
             for (const item of extracted) {
-              if (!isOnPeriodDay(item.at, periodDay) && !viewingToday) continue
+              if (!isOpenToolDecision(item) && !isOnPeriodDay(item.at, periodDay)) continue
               collectedTools.push(item)
             }
           }
@@ -294,6 +298,7 @@ export function useTodayPreparedDecisions(periodDay: Date, userId?: string): Tod
 
         const matched = history
           .filter((run) => {
+            if (isOpenRun(run.status) || isInFlightRunStatus(run.status)) return true
             const stamp = runStamp(run)
             return stamp ? sameDay(stamp, periodDay) : false
           })
@@ -313,9 +318,13 @@ export function useTodayPreparedDecisions(periodDay: Date, userId?: string): Tod
             at,
             runClosed: !isOpenRun(run.status)
           })
-          collectedTools.push(...extracted.filter((item) => isOnPeriodDay(item.at, periodDay)))
+          collectedTools.push(
+            ...extracted.filter(
+              (item) => isOpenToolDecision(item) || isOnPeriodDay(item.at, periodDay)
+            )
+          )
 
-          if (!extracted.length && !isInFlightRunStatus(run.status)) {
+          if (!extracted.length && !isInFlightRunStatus(run.status) && isOnPeriodDay(at, periodDay)) {
             const cleaned = cleanRunResult({
               answer: detail?.item.answer || run.answer,
               summary: run.summary,
@@ -417,8 +426,11 @@ export function useTodayPreparedDecisions(periodDay: Date, userId?: string): Tod
       seen.add(key)
       merged.push(row)
     }
-    merged.sort((left, right) => String(right.at).localeCompare(String(left.at)))
-    return merged.slice(0, MAX_ROWS)
+    const open = merged.filter(isOpenPreparedRow)
+    const finished = merged.filter((row) => !isOpenPreparedRow(row))
+    open.sort((left, right) => String(right.at).localeCompare(String(left.at)))
+    finished.sort((left, right) => String(right.at).localeCompare(String(left.at)))
+    return [...open, ...finished].slice(0, MAX_ROWS)
   }, [waitingRows, toolRows, fileRows])
 
   const loading = agentsLoading || loadingDetails
