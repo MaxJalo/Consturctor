@@ -74,7 +74,6 @@ export function useTodayProjectTasks(
 
   useEffect(() => {
     if (spec.sourcesLoading) {
-      setLoading(true)
       setError('')
       return
     }
@@ -95,15 +94,14 @@ export function useTodayProjectTasks(
 
     let alive = true
     const cacheKey = `today-project-tasks:${dayKey}:${portfolioKey}`
-    if (!shouldRunGridFetch(cacheKey, generation)) {
-      const cached = readGridCache<TodayProjectTaskRow[]>(cacheKey)
-      if (cached) {
-        setRows(cached)
-        setLoading(false)
-        return
-      }
+    const cached = readGridCache<TodayProjectTaskRow[]>(cacheKey)
+    if (!shouldRunGridFetch(cacheKey, generation) && cached) {
+      setRows(cached)
+      setLoading(false)
+      return
     }
-    setLoading(true)
+    if (cached) setRows(cached)
+    setLoading(!cached)
     setError('')
     ;(async () => {
       let fetchError = ''
@@ -171,13 +169,13 @@ export function useTodayProjectTasks(
     spec.sourcesLoading,
     spec.turboNoSession,
     spec.erpFio,
-    spec.user,
+    spec.user?.id,
     spec.comPasswordInSession,
     periodDay
   ])
 
   return {
-    loading: spec.sourcesLoading || loading,
+    loading: (spec.sourcesLoading || loading) && rows.length === 0,
     noSession: spec.turboNoSession,
     error,
     rows

@@ -520,13 +520,20 @@ def _raw_tools() -> list[dict[str, Any]]:
         {
             "name": "onec.docflow_tasks",
             "description": (
-                "Задачи пользователя из 1С:Документооборот (публикация /doc). "
+                "Задачи пользователя из 1С:Документооборот через HTTP SOAP "
+                "/doc/ws/dm.1cws (DOK_HTTP_*). OData не вызывается. "
+                "today_and_overdue — только срок сегодня и просроченные. "
                 "ФИО из JWT сессии. Исполняется на сервере."
             ),
             "execution": "server",
             "input_schema": {
                 "type": "object",
                 "properties": {
+                    "today_and_overdue": {
+                        "type": "boolean",
+                        "default": False,
+                        "description": "Только задачи на сегодня и просроченные",
+                    },
                     "date_from": {
                         "type": "string",
                         "description": "Начало периода YYYY-MM-DD. Пусто — без нижней границы.",

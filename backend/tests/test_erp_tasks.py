@@ -447,6 +447,7 @@ def test_invoke_docflow_stub(monkeypatch) -> None:
     monkeypatch.setattr("app.services.onec_tools._erp_sql_ready", lambda: False)
     monkeypatch.setattr("app.services.onec_tools.odata_configured", lambda: False)
     monkeypatch.setattr("app.services.docflow_tasks.docflow_configured", lambda: False)
+    monkeypatch.setattr("app.services.docflow_tasks.docflow_url_ready", lambda: False)
     result = invoke_onec(
         "onec.docflow_tasks",
         {},

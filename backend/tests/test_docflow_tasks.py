@@ -113,6 +113,93 @@ def test_map_document_executor_row_subject_and_action() -> None:
     assert item["performer"] == "Жалыбин Максим Дмитриевич"
 
 
+def test_list_docflow_tasks_uses_soap_not_odata(monkeypatch) -> None:
+    from app.services import docflow_tasks
+
+    called = {"odata": 0}
+
+    def _forbidden_get(*_args, **_kwargs):
+        called["odata"] += 1
+        raise AssertionError("OData не должен вызываться для задач ДО")
+
+    monkeypatch.setattr(docflow_tasks, "_get", _forbidden_get)
+    monkeypatch.setattr(
+        "app.tools.onec.docflow_inbox_fetch.fetch_inbox_tasks_soap",
+        lambda fio, **_kwargs: (
+            [
+                {
+                    "number": "do-1",
+                    "title": "Согласовать",
+                    "source": "документооборот",
+                    "done": False,
+                    "created_at": "2026-09-01 10:00:00",
+                    "due_at": "2026-09-10 18:00:00",
+                    "performer": fio,
+                }
+            ],
+            "",
+        ),
+    )
+    rows = docflow_tasks.list_docflow_tasks(
+        fio="Иванов И.И.",
+        only_open=True,
+        limit=20,
+        today_and_overdue=True,
+    )
+    assert called["odata"] == 0
+    assert len(rows) == 1
+    assert rows[0]["title"] == "Согласовать"
+
+
+def test_list_docflow_today_and_overdue_drops_future(monkeypatch) -> None:
+    from app.services import docflow_tasks
+
+    monkeypatch.setattr(docflow_tasks, "_get", lambda *_args, **_kwargs: {})
+    monkeypatch.setattr(
+        "app.tools.onec.docflow_inbox_fetch.fetch_inbox_tasks_soap",
+        lambda fio, **_kwargs: (
+            [
+                {
+                    "number": "late",
+                    "title": "Просрочена",
+                    "done": False,
+                    "due_at": "2026-09-10 18:00:00",
+                    "created_at": "2026-09-01 10:00:00",
+                },
+                {
+                    "number": "future",
+                    "title": "Потом",
+                    "done": False,
+                    "due_at": "2026-12-01 18:00:00",
+                    "created_at": "2026-09-01 10:00:00",
+                },
+            ],
+            "",
+        ),
+    )
+    rows = docflow_tasks.list_docflow_tasks(
+        fio="Иванов И.И.",
+        only_open=True,
+        today_and_overdue=True,
+        limit=20,
+    )
+    assert [row["title"] for row in rows] == ["Просрочена"]
+
+
+def test_list_docflow_for_people_does_not_require_odata(monkeypatch) -> None:
+    from app.services import docflow_tasks
+
+    monkeypatch.setattr(docflow_tasks, "docflow_base_url", lambda: "")
+    monkeypatch.setattr(
+        docflow_tasks,
+        "list_docflow_tasks",
+        lambda **kwargs: [{"number": "1", "title": kwargs["fio"], "source": "документооборот"}],
+    )
+    extra, warning = docflow_tasks.list_docflow_for_people(["Петров П.П."], only_open=True)
+    assert warning == ""
+    assert extra["Петров П.П."][0]["title"] == "Петров П.П."
+
+
 def test_map_task_marks_source_and_late() -> None:
     row = {
         "Number": "38",

@@ -20,28 +20,34 @@ def _parse_due(raw: Any) -> datetime | None:
 
 
 def map_inbox_row(row: dict[str, Any], *, fio: str) -> dict[str, Any]:
-    """Colleague inbox row keys: description, step, due, author, name, target."""
+    """SOAP inbox row keys: description, step, due, begin, author, name, target."""
     title = " ".join(
         str(row.get("description") or row.get("target") or row.get("name") or "").split()
     )
     due = _parse_due(row.get("due"))
+    created = _parse_due(row.get("begin"))
+    done = bool(row.get("executed"))
     author = str(row.get("author") or "").strip()
     step = str(row.get("step") or "").strip()
-    comment_parts = [part for part in (author, step) if part]
+    target = str(row.get("target") or "").strip()
+    comment_parts = [part for part in (author, step, target) if part]
+    performer = str(row.get("performer") or "").strip() or fio
     return {
         "number": str(row.get("number") or row.get("id") or "").strip(),
         "title": title,
-        "status": "открыта",
-        "done": False,
-        "late": task_is_late(done=False, completed_at=None, due_at=due),
-        "created_at": "",
+        "status": "выполнена" if done else "открыта",
+        "done": done,
+        "late": task_is_late(done=done, completed_at=None, due_at=due),
+        "created_at": created.isoformat(sep=" ") if created else "",
         "due_at": due.isoformat(sep=" ") if due else "",
         "completed_at": "",
         "comment": "; ".join(comment_parts),
-        "approval": step or "не согласовано",
+        "approval": step or ("завершена" if done else "не согласовано"),
         "exported_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-        "performer": fio,
+        "performer": performer,
         "source": "документооборот",
+        "ref_key": str(row.get("id") or "").strip(),
+        "target_id": str(row.get("target_id") or "").strip(),
     }
 
 

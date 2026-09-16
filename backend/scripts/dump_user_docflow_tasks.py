@@ -1,18 +1,13 @@
 #!/usr/bin/env python3
 """
-Открытые задачи 1С:Документооборот (inbox SOAP или TasksII/User HTTP).
+Открытые задачи 1С:Документооборот (HTTP SOAP inbox /doc/ws/dm.1cws).
 
-Требует модули коллеги в backend/app/tools/onec/:
-  dok_soap.py  — fetch_user_inbox_tasks
-  dok_http.py  — fetch_user_document_executions, dok_endpoint_url
-  connection.py, lookup_user_ref.py — для --executions
-
-Переменные окружения (имена уточните у коллеги; типично):
-  DOK_SOAP_* / DOK_HTTP_* или ONEC_* в .env backend и workspace MY_NAME/MY_PASSWORD.
+Inbox: app.tools.onec.dok_soap.fetch_user_inbox_tasks (DOK_HTTP_*).
+Предпочтительный CLI: scripts/get_do_user_tasks.py
 
 Пример:
-  cd orchestrator/backend
-  py -3 scripts/dump_user_docflow_tasks.py "Жалыбин Максим Дмитриевич"
+  cd backend
+  py -3 scripts/get_do_user_tasks.py "Жалыбин Максим Дмитриевич"
   py -3 scripts/dump_user_docflow_tasks.py "Жалыбин Максим Дмитриевич" --json
 """
 
@@ -161,7 +156,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--service",
         action="store_true",
-        help="Через backend list_docflow_tasks (OData Исполнитель + TasksII)",
+        help="Через backend list_docflow_tasks (HTTP SOAP inbox)",
     )
     parser.add_argument(
         "--ref",
@@ -194,11 +189,7 @@ def main(argv: list[str] | None = None) -> int:
             )
     except ImportError as error:
         print(f"Ошибка: {error}", file=sys.stderr)
-        print(
-            "Скопируйте dok_soap.py, dok_http.py, connection.py, lookup_user_ref.py "
-            "в orchestrator/backend/app/tools/onec/",
-            file=sys.stderr,
-        )
+        print("Проверьте app.tools.onec.dok_soap и DOK_HTTP_* в backend/.env", file=sys.stderr)
         return 1
     except (RuntimeError, ValueError) as error:
         print(f"Ошибка: {error}", file=sys.stderr)

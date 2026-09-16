@@ -5,21 +5,13 @@ import {
   outlookMailWeekRange,
   skipOutlookCom
 } from '../utils/outlookMail'
-import { hasComPassword } from '../store/session'
 import {
   enrichEmptyOneCErrors,
-  formatComToolError,
-  formatDocflowSecondaryHint,
-  isDocflowOdataWarning,
-  isLanBackendUrl,
   isOneCAuthFailure,
-  lanGatewayZeroTasksHint,
-  missingComPasswordMessage,
   stubSourceMessage,
   isErpMetaHintRecord
 } from './onecSessionHints'
 import { onecGatewayInvokeArgs, turboProjectInvokeArgs } from './userContext'
-import { comSearchTasksToErpRecords, invokeLocalAcTool } from '../utils/localAcTool'
 import {
   erpTaskToRow,
   outlookMessageToMailRow,
@@ -38,9 +30,8 @@ export const ORCH_SOURCE_ID = {
 } as const
 
 /**
- * 1C grid default: gateway SQL via onec.erp_tasks_current (_query_tasks in erp_tasks.py).
- * Local dev (127.0.0.1) or VITE_ERP_TASKS_SOURCE=odata → onec.erp_tasks_odata (+ SQL merge on backend).
- * COM onec.search_tasks runs only when VITE_ONEC_COM_TASKS_FALLBACK=1 and SQL merge is empty.
+ * 1C grid: only HTTP SOAP документооборот (onec.docflow_tasks → /doc/ws/dm.1cws).
+ * onec.erp_tasks_current / OData не вызываем.
  */
 export function erpTasksSourceMode(): 'sql' | 'odata' | 'auto' {
   const flag = String(import.meta.env.VITE_ERP_TASKS_SOURCE ?? '').trim().toLowerCase()
@@ -55,13 +46,9 @@ export function isLocalBackendUrl(backendUrl: string): boolean {
   return /127\.0\.0\.1|localhost/i.test(url)
 }
 
-/** Today / grid ERP tasks: OData tool on local backend; LAN gateway stays SQL-only. */
+/** @deprecated 1C tasks use SOAP docflow only; OData is not called. */
 export function preferErpTasksOdata(): boolean {
-  const mode = erpTasksSourceMode()
-  if (mode === 'sql') return false
-  if (mode === 'odata') return true
-  const backendUrl = String(import.meta.env.VITE_BACKEND_URL ?? '').trim()
-  return isLocalBackendUrl(backendUrl)
+  return false
 }
 
 export function onecComTasksFallbackEnabled(): boolean {
@@ -190,7 +177,7 @@ export function parseErpToolTasks(
     }
   }
   const payload = res.result as Record<string, unknown>
-  const source = normalizeErpGatewaySource(String(payload.source || ORCH_SOURCE_ID.erpPm))
+  const source = normalizeErpGatewaySource(String(payload.source || 'документооборот'))
   const warning = String(payload.docflow_warning || payload.warning || '').trim()
   const raw = Array.isArray(payload.tasks) ? payload.tasks : []
   const records = raw
@@ -215,200 +202,55 @@ function uniqueErrorJoin(...chunks: (string | undefined | null)[]): string {
   return parts.join(' · ')
 }
 
-async function loadComErpTasks(
-  user: UserProfile,
-  erpFio: string,
-  priorError: string
-): Promise<{ rows: SpecTaskRow[]; source: string; error: string }> {
-  if (!hasComPassword()) {
-    return {
-      rows: [],
-      source: '',
-      error: uniqueErrorJoin(priorError, missingComPasswordMessage())
-    }
-  }
-  const comRes = await invokeLocalAcTool(
-    'onec.search_tasks',
-    { mine_only: true, limit: 80 },
-    undefined,
-    user
-  )
-  if (comRes.ok && comRes.result) {
-    const comRecords = comSearchTasksToErpRecords(comRes.result)
-    if (comRecords.length) {
-      const note = priorError.trim()
-        ? `Gateway/SQL без задач; COM 1С (opt-in, ${priorError.trim()})`
-        : 'Задачи через COM 1С (opt-in VITE_ONEC_COM_TASKS_FALLBACK)'
-      return {
-        rows: comRecords.map((item) => erpTaskToRow(item, erpFio)),
-        source: 'onec_com',
-        error: note
-      }
-    }
-    const payloadErr = formatComToolError(
-      String((comRes.result as Record<string, unknown>).error || '').trim()
-    )
-    return {
-      rows: [],
-      source: '',
-      error: uniqueErrorJoin(priorError, payloadErr, formatComToolError(comRes.error || ''))
-    }
-  }
-  return {
-    rows: [],
-    source: '',
-    error: uniqueErrorJoin(priorError, formatComToolError(comRes.error || ''))
-  }
-}
-
 export type OrchestratorErpLoad = {
   tasks: SpecTaskRow[]
   sourceLabel: string
   error: string
-  /** Non-blocking docflow hint when erp_pm tasks loaded. */
+  /** Reserved; SOAP is the only 1C source, so this stays empty. */
   erpSecondaryHint: string
   oneCAuthFailure: boolean
 }
 
-async function externalOdataInvokeExtras(): Promise<Record<string, unknown>> {
-  if (!preferErpTasksOdata()) return {}
-  const loader = window.api?.loadOdataExternalEnv
-  if (typeof loader !== 'function') return {}
-  try {
-    const loaded = await loader()
-    if (!loaded.invokeArgs || typeof loaded.invokeArgs !== 'object') return {}
-    return loaded.invokeArgs as Record<string, unknown>
-  } catch {
-    return {}
-  }
-}
-
 export async function loadOrchestratorErpTasks(
   user: UserProfile,
-  erpFio: string
+  erpFio: string,
+  opts?: { forceRefresh?: boolean }
 ): Promise<OrchestratorErpLoad> {
-  const useOdataTool = preferErpTasksOdata()
-  const odataExtras = useOdataTool ? await externalOdataInvokeExtras() : {}
-  const onecArgs = onecGatewayInvokeArgs(user, { limit: 80, ...odataExtras })
-  const primaryTool = useOdataTool ? 'onec.erp_tasks_odata' : 'onec.erp_tasks_current'
-  let erpRes = await api.invokeServerTool(primaryTool, {
-    ...onecArgs,
-    ...(useOdataTool ? { fallback_sql: true } : {})
+  const onecArgs = onecGatewayInvokeArgs(user, {
+    limit: 80,
+    only_open: true,
+    today_and_overdue: true,
+    force_refresh: Boolean(opts?.forceRefresh)
   })
-  let erpParsed = parseErpToolTasks(erpRes, erpFio)
+  const dfRes = await api.invokeServerTool('onec.docflow_tasks', onecArgs, 300_000)
+  const dfParsed = parseErpToolTasks(dfRes, erpFio)
+  const tasks = dfParsed.rows
+  const sourceLabel = tasks.length ? dfParsed.source || 'документооборот' : dfParsed.source || '—'
 
-  if (
-    useOdataTool &&
-    erpParsed.rows.length === 0 &&
-    (erpParsed.source === 'stub' || !erpRes.ok)
-  ) {
-    const sqlRes = await api.invokeServerTool('onec.erp_tasks_current', onecArgs)
-    const sqlParsed = parseErpToolTasks(sqlRes, erpFio)
-    if (sqlParsed.rows.length || sqlRes.ok) {
-      erpRes = sqlRes
-      erpParsed = sqlParsed
-    }
-  }
-
-  let tasks = erpParsed.rows
-  let sourceLabel = erpParsed.source || ORCH_SOURCE_ID.erpPm
-  let supplementalDocflowWarning = ''
-  const payloadObj =
-    erpRes.ok && erpRes.result && typeof erpRes.result === 'object'
-      ? (erpRes.result as Record<string, unknown>)
-      : null
-  const odataWarning = String(payloadObj?.odata_warning || '').trim()
-
-  const hasDocflowRow = tasks.some((row) => /документооборот|docflow|1С ДО/i.test(row.source))
-  if (!hasDocflowRow) {
-    const dfRes = await api.invokeServerTool('onec.docflow_tasks', {
-      ...onecArgs,
-      only_open: true,
-      limit: 80
-    })
-    const dfParsed = parseErpToolTasks(dfRes, erpFio)
-    supplementalDocflowWarning = dfParsed.warning
-    if (dfParsed.rows.length) {
-      const seen = new Set(tasks.map((row) => row.id))
-      for (const row of dfParsed.rows) {
-        if (seen.has(row.id)) continue
-        seen.add(row.id)
-        tasks.push(row)
-      }
-      if (!/документооборот|docflow/i.test(sourceLabel)) {
-        sourceLabel = `${sourceLabel}+документооборот`
-      }
-    }
-  }
-
-  const docflowWarning = uniqueErrorJoin(
-    erpParsed.warning,
-    odataWarning,
-    supplementalDocflowWarning
-  )
   let mergedError = uniqueErrorJoin(
-    erpRes.error || '',
-    erpParsed.error,
-    !erpRes.ok && !erpParsed.rows.length
-      ? `${primaryTool} недоступен`
-      : '',
-    erpParsed.source === 'stub' ? 'erp_pm stub (нет SQL/OData на backend)' : ''
+    dfRes.error || '',
+    dfParsed.error,
+    dfParsed.warning,
+    !dfRes.ok && !tasks.length && !dfRes.error ? 'onec.docflow_tasks недоступен' : '',
+    dfParsed.source === 'stub' ? 'Документооборот: stub (нет DOK_HTTP_* на backend)' : ''
   )
-
-  if (tasks.length === 0 && onecComTasksFallbackEnabled()) {
-    const comParsed = await loadComErpTasks(user, erpFio, mergedError)
-    if (comParsed.rows.length) {
-      tasks = comParsed.rows
-      sourceLabel = comParsed.source
-      mergedError = comParsed.error
-    } else if (comParsed.error) {
-      mergedError = uniqueErrorJoin(mergedError, comParsed.error)
-    }
-  }
-
-  const backendUrl = String(import.meta.env.VITE_BACKEND_URL ?? '').trim()
-  const lanGateway = isLanBackendUrl(backendUrl)
-  const staleGatewayHint =
-    tasks.length === 0 &&
-    erpParsed.source !== 'stub' &&
-    erpRes.ok &&
-    !mergedError.toLowerCase().includes('stub')
-      ? lanGateway
-        ? lanGatewayZeroTasksHint(backendUrl)
-        : 'Если на LAN gateway (:7812) задач нет, а локальный backend их видит — переключите BACKEND_URL на http://127.0.0.1:7812 и запустите orchestrator/backend/run_dev.bat (нужен VPN до erp_pm на ПК разработчика).'
-      : ''
-
-  const erpCoreError = enrichEmptyOneCErrors(
-    uniqueErrorJoin(mergedError, staleGatewayHint),
-    {
-      erpSource: erpParsed.source,
-      docSource: '',
-      mergedCount: tasks.length
-    }
-  )
-
-  const docflowBlocksErp =
-    tasks.length === 0 ||
-    !docflowWarning.trim() ||
-    !isDocflowOdataWarning(docflowWarning)
-  const erpSecondaryHint =
-    !docflowBlocksErp && docflowWarning.trim()
-      ? formatDocflowSecondaryHint(docflowWarning)
-      : ''
-  const erpErrorJoined = docflowBlocksErp
-    ? uniqueErrorJoin(erpCoreError, docflowWarning)
-    : erpCoreError
+  const erpCoreError =
+    !tasks.length && dfParsed.source === 'stub'
+      ? enrichEmptyOneCErrors(mergedError, {
+          erpSource: dfParsed.source,
+          docSource: dfParsed.source,
+          mergedCount: 0
+        })
+      : mergedError
 
   const oneCAuthFailure =
-    tasks.length === 0 &&
-    (!hasComPassword() ||
-      isOneCAuthFailure(erpRes.error, erpParsed.error, mergedError, erpErrorJoined))
+    tasks.length === 0 && isOneCAuthFailure(dfRes.error, dfParsed.error, erpCoreError)
 
   return {
     tasks,
-    sourceLabel: tasks.length ? sourceLabel : sourceLabel || erpRes.error || '—',
-    error: erpErrorJoined,
-    erpSecondaryHint,
+    sourceLabel,
+    error: erpCoreError,
+    erpSecondaryHint: '',
     oneCAuthFailure
   }
 }
@@ -638,14 +480,15 @@ export type OrchestratorTaskSourcesBundle = {
   mail: OrchestratorMailLoad
 }
 
-/** Single fetch entry for SpecV04SourcesProvider (order: ERP SQL → Turbo portfolio → Outlook week). */
+/** Single fetch entry for SpecV04SourcesProvider (order: SOAP ДО → Turbo portfolio → Outlook week). */
 export async function fetchOrchestratorTaskSources(
   user: UserProfile,
   erpFio: string,
-  outlookMailbox: string
+  outlookMailbox: string,
+  opts?: { forceRefresh?: boolean }
 ): Promise<OrchestratorTaskSourcesBundle> {
   const [erp, turbo] = await Promise.all([
-    loadOrchestratorErpTasks(user, erpFio),
+    loadOrchestratorErpTasks(user, erpFio, opts),
     loadOrchestratorTurboPortfolio(user, erpFio)
   ])
   const turboTasks = await loadOrchestratorTurboTaskRows(

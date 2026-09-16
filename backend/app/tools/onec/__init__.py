@@ -1,1 +1,1 @@
-"""1C Document Flow helpers (SOAP/HTTP inbox). Optional — copy dok_*.py from colleague repo."""
+"""1C Document Flow helpers: HTTP SOAP inbox (dok_soap) and TasksII HTTP."""

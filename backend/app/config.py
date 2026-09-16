@@ -94,6 +94,14 @@ class Settings(BaseSettings):
     docflow_odata_base_url: str = ""
     docflow_odata_username: str = ""
     docflow_odata_password: str = ""
+    dok_http_server: str = "192.168.2.229"
+    dok_http_port: int = 81
+    dok_http_user: str = ""
+    dok_http_password: str = ""
+    dok_http_timeout: float = 210.0
+    dok_http_cache_ttl_sec: float = 1800.0
+    dok_inbox_cache_dir: Path = BACKEND_ROOT / "storage" / "docflow_inbox"
+    dok_http_base_path: str = "/doc"
     erp_login: str = ""
     erp_password: str = ""
     # Temporary: issue JWT as ERP_LOGIN without querying erp_pm SQL.
@@ -115,3 +123,4 @@ settings.avatar_storage_dir.mkdir(parents=True, exist_ok=True)
 settings.regulation_storage_dir.mkdir(parents=True, exist_ok=True)
 settings.workflow_storage_dir.mkdir(parents=True, exist_ok=True)
 settings.onec_artifact_storage_dir.mkdir(parents=True, exist_ok=True)
+settings.dok_inbox_cache_dir.mkdir(parents=True, exist_ok=True)

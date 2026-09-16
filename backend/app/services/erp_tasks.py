@@ -189,29 +189,16 @@ def list_current_tasks(
     auth_args: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     actor_fio, actor_id = resolve_actor(fio=fio, user_id=user_id)
+    _ = auth_args
     rows = _query_tasks(fio=actor_fio, only_open=True, limit=limit)
-    merged = {actor_fio: rows}
-    warning = ""
-    try:
-        warning = _attach_docflow(
-            merged,
-            date_from=None,
-            date_to=None,
-            only_open=True,
-            limit_per_person=limit,
-            auth_args=auth_args,
-        )
-    except Exception as exc:  # noqa: BLE001 — docflow must not hide erp_pm SQL tasks
-        warning = str(exc).strip() or "Документооборот: ошибка слияния"
-    rows = merged[actor_fio]
     return {
         "summary": f"Текущие задачи: {len(rows)} ({actor_fio})",
         "fio": actor_fio,
         "user_id": actor_id,
         "count": len(rows),
         "tasks": rows,
-        "source": "erp_pm+документооборот",
-        "docflow_warning": warning,
+        "source": "erp_pm",
+        "docflow_warning": "",
     }
 
 

@@ -3,6 +3,7 @@ import {
   useContext,
   useEffect,
   useMemo,
+  useRef,
   useState,
   type ReactNode
 } from 'react'
@@ -24,7 +25,7 @@ import {
 } from './specV04Mappers'
 import type { SpecMailRow, SpecProcessRow, SpecProjectRow, SpecTaskRow } from './specV04DemoData'
 import { useWorkplaceData } from './WorkplaceBoard'
-import { useGridRefreshGeneration } from './GridDataRefreshContext'
+import { useGridDataRefreshContext } from './GridDataRefreshContext'
 import { fetchOrchestratorTaskSources, ORCH_SOURCE_ID } from './orchestratorTaskSources'
 import type { SpecV04SourcesState } from './useSpecV04Data'
 
@@ -72,7 +73,7 @@ export function SpecV04SourcesProvider({
 }): React.JSX.Element {
   const erpFio = erpActorFio(user)
   const outlookMailbox = outlookMailboxAddress(user)
-  const generation = useGridRefreshGeneration(user.id)
+  const { generation, takeHardRefresh } = useGridDataRefreshContext()
   const { agents, loading: agentsLoading } = useWorkplaceData({
     userId: user.id || '',
     fio: erpFio
@@ -93,6 +94,7 @@ export function SpecV04SourcesProvider({
   const [mailSource, setMailSource] = useState('—')
   const [meetings, setMeetings] = useState<MeetingEvent[]>([])
   const [oneCAuthFailure, setOneCAuthFailure] = useState(false)
+  const hasLoadedSourcesRef = useRef(false)
 
   useEffect(() => {
     if (!user.id) {
@@ -102,13 +104,14 @@ export function SpecV04SourcesProvider({
     }
     let alive = true
     ;(async () => {
-      setSourcesLoading(true)
+      if (!hasLoadedSourcesRef.current) setSourcesLoading(true)
       setError('')
-      setTurboTasks([])
       setTurboTasksError('')
       setOneCAuthFailure(false)
       try {
-        const bundle = await fetchOrchestratorTaskSources(user, erpFio, outlookMailbox)
+        const bundle = await fetchOrchestratorTaskSources(user, erpFio, outlookMailbox, {
+          forceRefresh: takeHardRefresh()
+        })
         if (!alive) return
 
         setErpTasks(bundle.erp.tasks)
@@ -140,7 +143,10 @@ export function SpecV04SourcesProvider({
       } catch (err) {
         if (alive) setError(err instanceof Error ? err.message : 'Не удалось загрузить данные')
       } finally {
-        if (alive) setSourcesLoading(false)
+        if (alive) {
+          hasLoadedSourcesRef.current = true
+          setSourcesLoading(false)
+        }
       }
     })()
     return () => {

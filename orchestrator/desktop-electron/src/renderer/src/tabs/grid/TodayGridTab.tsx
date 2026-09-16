@@ -7,7 +7,7 @@ import { SpecAskOrchestratorBlock, SpecPanel, SpecPill, SpecSummaryTiles } from 
 import { ASK_CHIPS } from '../../workplace/specV04DemoData'
 import { useTodayKpiData } from '../../workplace/useTodayKpiData'
 import { useTodayOutlookMail } from '../../workplace/useTodayOutlookMail'
-import { comPasswordSessionHint } from '../../workplace/onecSessionHints'
+import { comPasswordSessionHint, isOneCAuthFailure } from '../../workplace/onecSessionHints'
 import { OneCReconnectDialog, OneCReconnectInline } from '../../workplace/OneCReconnectDialog'
 import { erpActorFio } from '../../workplace/userContext'
 import { useTodayProjectTasks } from '../../workplace/useTodayProjectTasks'
@@ -53,7 +53,7 @@ function MiniTableCard({
   headerAction?: React.ReactNode
 }): React.JSX.Element {
   const body = ((): React.ReactNode => {
-    if (loading) {
+    if (loading && !rows.length) {
       return (
         <tr>
           <td colSpan={columns.length} className="today-table-status">
@@ -239,7 +239,7 @@ export function TodayGridTab({
             <button
               type="button"
               className="today-refresh-btn"
-              title="Обновить задачи 1С (OData + agent-pochta .env)"
+              title="Обновить задачи 1С:Документооборот: сегодня и просроченные"
               disabled={data.sourcesLoading}
               onClick={() => forceRefresh()}
             >
@@ -251,10 +251,16 @@ export function TodayGridTab({
             taskRows.length
               ? data.erpError || data.error || undefined
               : data.erpError || data.error
-                ? [data.erpError || data.error, comPasswordSessionHint()].filter(Boolean).join(' · ')
-                : comPasswordSessionHint()
+                ? isOneCAuthFailure(data.erpError || data.error)
+                  ? [data.erpError || data.error, comPasswordSessionHint()].filter(Boolean).join(' · ')
+                  : data.erpError || data.error
+                : undefined
           }
-          emptyText="Нет задач 1С для отображения"
+          emptyText={
+            data.erpError || data.error
+              ? 'Не удалось загрузить задачи документооборота'
+              : 'Нет задач на сегодня и просроченных'
+          }
           hint={
             [data.erpSecondaryHint, data.sources.erp !== '—' ? data.sources.erp : '']
               .filter(Boolean)
