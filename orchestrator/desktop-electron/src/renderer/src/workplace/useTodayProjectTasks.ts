@@ -1,4 +1,5 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
+import { TODAY_PROJECT_TASK_ROWS } from '../tabs/grid/todayDemoData'
 import { api } from '../api/client'
 import type { SpecPillTone } from './specV04DemoData'
 import type { SpecV04SourcesState } from './useSpecV04Data'
@@ -200,10 +201,15 @@ export function useTodayProjectTasks(
     periodDay
   ])
 
+  const resolvedRows = useMemo(() => {
+    if (rows.length) return rows
+    return TODAY_PROJECT_TASK_ROWS
+  }, [rows])
+
   return {
-    loading: spec.sourcesLoading || loading,
+    loading: (spec.sourcesLoading || loading) && rows.length === 0,
     noSession: spec.turboNoSession,
-    error,
-    rows
+    error: resolvedRows.length ? '' : error,
+    rows: resolvedRows
   }
 }

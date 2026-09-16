@@ -29,9 +29,21 @@ export function GridDataRefreshProvider({
   const blurredRef = useRef(false)
   const prevUserIdRef = useRef<string | undefined>(undefined)
 
+  const bumpTimerRef = useRef<number | undefined>(undefined)
+
   const bump = useCallback((): void => {
     setGeneration((value) => value + 1)
   }, [])
+
+  const bumpDebounced = useCallback((): void => {
+    if (bumpTimerRef.current != null) {
+      window.clearTimeout(bumpTimerRef.current)
+    }
+    bumpTimerRef.current = window.setTimeout(() => {
+      bumpTimerRef.current = undefined
+      bump()
+    }, 400)
+  }, [bump])
 
   useEffect(() => {
     const uid = (userId || '').trim()
@@ -51,7 +63,7 @@ export function GridDataRefreshProvider({
       if (!blurredRef.current) return
       blurredRef.current = false
       if (document.visibilityState === 'hidden') return
-      bump()
+      bumpDebounced()
     }
     const onVisibility = (): void => {
       if (document.visibilityState === 'hidden') {
@@ -60,7 +72,7 @@ export function GridDataRefreshProvider({
       }
       if (blurredRef.current) {
         blurredRef.current = false
-        bump()
+        bumpDebounced()
       }
     }
     window.addEventListener('blur', onBlur)
@@ -71,7 +83,7 @@ export function GridDataRefreshProvider({
       window.removeEventListener('focus', onFocus)
       document.removeEventListener('visibilitychange', onVisibility)
     }
-  }, [bump])
+  }, [bumpDebounced])
 
   useEffect(() => {
     const timer = window.setInterval(bump, GRID_DATA_TTL_MS)

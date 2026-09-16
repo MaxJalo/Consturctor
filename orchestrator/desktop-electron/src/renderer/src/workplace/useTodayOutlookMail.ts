@@ -1,7 +1,8 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
+import { TODAY_MAIL_ROWS } from '../tabs/grid/todayDemoData'
 import type { SpecMailRow } from './specV04DemoData'
 import { outlookMessageToMailRow } from './specV04Mappers'
-import { fetchOutlookMailForDay, formatMailTime } from '../utils/outlookMail'
+import { fetchOutlookMailForDay, formatMailReceivedLabel, formatMailTime } from '../utils/outlookMail'
 import { useGridRefreshGeneration } from './GridDataRefreshContext'
 import { readGridCache, shouldRunGridFetch, writeGridCache } from './gridDataCache'
 
@@ -52,7 +53,11 @@ export function useTodayOutlookMail(periodDay: Date): TodayOutlookMailState {
         const nextSource = res.source || 'outlook_com'
         const nextRows = res.messages.map((msg, index) => {
           const row = outlookMessageToMailRow(msg, index)
-          return { ...row, time: formatMailTime(row.time) }
+          return {
+            ...row,
+            time: formatMailTime(row.time),
+            receivedLabel: formatMailReceivedLabel(row.time)
+          }
         })
         setSource(nextSource)
         setRows(nextRows)
@@ -72,5 +77,15 @@ export function useTodayOutlookMail(periodDay: Date): TodayOutlookMailState {
     }
   }, [dayKey, generation, periodDay])
 
-  return { loading, error, source, rows }
+  const resolvedRows = useMemo(() => {
+    if (rows.length) return rows
+    return TODAY_MAIL_ROWS
+  }, [rows])
+
+  return {
+    loading: loading && rows.length === 0,
+    error: resolvedRows.length ? '' : error,
+    source: resolvedRows.length && !rows.length ? 'demo' : source,
+    rows: resolvedRows
+  }
 }

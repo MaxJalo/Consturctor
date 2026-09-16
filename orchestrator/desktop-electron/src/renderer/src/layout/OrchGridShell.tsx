@@ -122,7 +122,6 @@ export function OrchGridShell({
           onOpenSettings={onOpenSettings}
           canSwitchAdminView={canSwitchAdminView}
           onSwitchAdminView={onSwitchAdminView}
-          profileAfterAvatar
         />
       </div>
 

@@ -164,23 +164,26 @@ export function turboProjectToRow(item: Record<string, unknown>): SpecProjectRow
   }
 }
 
-export function outlookMessageToMailRow(msg: Record<string, unknown>, index: number): {
-  id: string
-  sender: string
-  subject: string
-  category: string
-  catTone: SpecPillTone
-  link: string
-  time: string
-  priority: string
-  priTone: SpecPillTone
-  status: string
-  stTone: SpecPillTone
-  assignee: string
-} {
+function mailAttachments(msg: Record<string, unknown>): { name: string }[] {
+  const raw = msg.attachments
+  if (!Array.isArray(raw)) return []
+  return raw
+    .map((item) => {
+      if (typeof item === 'string') return { name: item }
+      if (item && typeof item === 'object' && 'name' in item) {
+        return { name: String((item as { name?: unknown }).name || '') }
+      }
+      return { name: '' }
+    })
+    .filter((item) => item.name)
+}
+
+export function outlookMessageToMailRow(msg: Record<string, unknown>, index: number): SpecMailRow {
   const subject = String(msg.subject || 'Без темы')
   const rawTime = String(msg.datetime || msg.received_at || msg.sent_at || '')
   const direction = String(msg.direction || 'inbox')
+  const body = String(msg.body_preview || msg.body || '').trim()
+  const unread = Boolean(msg.unread)
   return {
     id: String(msg.entry_id ?? msg.uid ?? index),
     sender: String(msg.sender || msg.from || '—'),
@@ -191,9 +194,15 @@ export function outlookMessageToMailRow(msg: Record<string, unknown>, index: num
     time: rawTime,
     priority: 'Средний',
     priTone: 'orange',
-    status: direction === 'sent' ? 'Отправлено' : 'Получено',
-    stTone: direction === 'sent' ? 'green' : 'orange',
-    assignee: '—'
+    status: unread ? 'Непрочитано' : direction === 'sent' ? 'Отправлено' : 'Прочитано',
+    stTone: unread ? 'orange' : direction === 'sent' ? 'green' : 'gray',
+    assignee: '—',
+    to: String(msg.to || '').trim() || undefined,
+    body: body || undefined,
+    preview: body ? body.replace(/\s+/g, ' ').slice(0, 140) : undefined,
+    receivedLabel: rawTime || undefined,
+    unread,
+    attachments: mailAttachments(msg)
   }
 }
 

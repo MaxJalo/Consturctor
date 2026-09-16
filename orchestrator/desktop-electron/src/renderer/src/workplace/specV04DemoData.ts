@@ -220,6 +220,10 @@ export const DEMO_PROJECT_ROWS: SpecProjectRow[] = [
   }
 ]
 
+export interface SpecMailAttachment {
+  name: string
+}
+
 export interface SpecMailRow {
   id: string
   sender: string
@@ -233,6 +237,12 @@ export interface SpecMailRow {
   status: string
   stTone: SpecPillTone
   assignee: string
+  to?: string
+  body?: string
+  preview?: string
+  receivedLabel?: string
+  unread?: boolean
+  attachments?: SpecMailAttachment[]
 }
 
 export const DEMO_MAIL_ROWS: SpecMailRow[] = [

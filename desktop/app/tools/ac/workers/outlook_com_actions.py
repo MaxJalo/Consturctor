@@ -75,7 +75,7 @@ OUTLOOK_NOT_REGISTERED_MESSAGE = (
 DEFAULT_MAIL_MAX_SCAN_ITEMS = 200
 DEFAULT_CALENDAR_MAX_SCAN_ITEMS = 1000
 MAX_SCAN_ITEMS = 2000
-BODY_PREVIEW_LIMIT = 500
+BODY_PREVIEW_LIMIT = 12000
 CALENDAR_BODY_PREVIEW_LIMIT = 300
 
 # MAPI proptag-схемы для чтения адресных свойств через PropertyAccessor.
@@ -1530,10 +1530,35 @@ def _collect_mail_messages(
             "direction": direction,
             "folder": folder_name,
             "body_preview": body[:BODY_PREVIEW_LIMIT],
+            "unread": bool(getattr(message, "UnRead", False)),
+            "attachments": _mail_attachment_names(message),
             "datetime_sort": _datetime_sort_key(message_time),
         }
         results.append(item)
     return results, scanned_count
+
+
+def _mail_attachment_names(message: Any) -> list[dict[str, str]]:
+    """Имена вложений письма без встроенных картинок подписи."""
+    names: list[dict[str, str]] = []
+    try:
+        attachments = getattr(message, "Attachments", None)
+        count = int(getattr(attachments, "Count", 0) or 0)
+    except Exception:
+        return names
+    for index in range(1, count + 1):
+        try:
+            item = attachments.Item(index)
+            name = _safe_str(getattr(item, "FileName", ""))
+            att_type = int(getattr(item, "Type", 1) or 1)
+            if not name or att_type != 1:
+                continue
+            if re.match(r"image\d+\.(png|jpe?g|gif|bmp)$", name, re.I):
+                continue
+            names.append({"name": name})
+        except Exception:
+            continue
+    return names
 
 
 def _clamp_int(value: Any, default: int, minimum: int, maximum: int) -> int:
