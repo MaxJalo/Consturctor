@@ -594,42 +594,6 @@
   color: #b42318;
 }
 
-.today-table-banner {
-  text-align: left;
-  margin: 0 0 8px;
-  padding: 8px 10px !important;
-  border-radius: 8px;
-  background: rgba(180, 35, 24, 0.08);
-  line-height: 1.35;
-}
-
-.today-mini-table-head {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-}
-
-.today-refresh-btn {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  padding: 2px 6px;
-  border: 1px solid rgba(255, 255, 255, 0.2);
-  border-radius: 6px;
-  background: transparent;
-  color: inherit;
-  cursor: pointer;
-}
-
-.today-refresh-btn:disabled {
-  opacity: 0.45;
-  cursor: default;
-}
-
-.today-refresh-btn:not(:disabled):hover {
-  background: rgba(255, 255, 255, 0.08);
-}
-
 .today-table-hint {
   font-size: 11px;
   max-width: 220px;

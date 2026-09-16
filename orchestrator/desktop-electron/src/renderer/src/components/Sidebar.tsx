@@ -115,6 +115,8 @@ interface UpdateStatus {
   availableVersion: string
   percent: number
   error: string
+  source: string
+  devMode: boolean
 }
 
 const IDLE_UPDATE: UpdateStatus = {
@@ -122,7 +124,9 @@ const IDLE_UPDATE: UpdateStatus = {
   currentVersion: '',
   availableVersion: '',
   percent: 0,
-  error: ''
+  error: '',
+  source: '',
+  devMode: false
 }
 
 interface SidebarProps {
@@ -153,7 +157,19 @@ export function Sidebar({
   const [peers, setPeers] = useState<ChatThread[]>([])
   const [peerAvatars, setPeerAvatars] = useState<Record<string, string>>({})
   const [update, setUpdate] = useState<UpdateStatus>(IDLE_UPDATE)
+  const [checking, setChecking] = useState(false)
   const items = showAdminNav ? ADMIN_ITEMS : USER_ITEMS
+
+  const runCheck = (): void => {
+    if (checking) return
+    setChecking(true)
+    void window.api
+      .checkUpdate?.()
+      .then((payload) => {
+        if (payload) setUpdate(payload)
+      })
+      .finally(() => setChecking(false))
+  }
 
   useEffect(() => {
     let alive = true
@@ -218,7 +234,8 @@ export function Sidebar({
     return () => unsubscribe?.()
   }, [currentUserId])
 
-  const peerAvatarKey = peers
+  const peoplePeers = peers.filter((peer) => peer.kind !== 'support')
+  const peerAvatarKey = peoplePeers
     .map((peer) => `${peer.id}\u0000${peer.peerId || peer.id}\u0000${peer.avatarUrl || ''}`)
     .join('\u0001')
   useEffect(() => {
@@ -303,35 +320,55 @@ export function Sidebar({
         })}
       </nav>
 
-      {(update.state === 'available' || update.state === 'downloading' || update.state === 'installing') && (
-        <div className="sidebar-update">
-          {update.state === 'downloading' || update.state === 'installing' ? (
-            <div
-              className={update.percent > 0 ? 'sidebar-update-progress' : 'sidebar-update-progress indeterminate'}
-              role="progressbar"
-              aria-valuemin={0}
-              aria-valuemax={100}
-              aria-valuenow={update.percent}
-            >
-              <i className="sidebar-update-progress-bar" style={update.percent > 0 ? { width: `${update.percent}%` } : undefined} />
-              {!collapsed && (
-                <span className="sidebar-update-progress-label">
-                  {update.state === 'installing' ? 'Установка...' : update.percent > 0 ? `${update.percent}%` : 'Загрузка...'}
-                </span>
-              )}
-            </div>
-          ) : (
-            <button className="sidebar-update-btn" title={update.error || 'Установить обновление Конструктора и Оркестратора'} onClick={() => void window.api.installUpdate?.()}>
-              {!collapsed && <span>Обновить обе программы</span>}
-              {collapsed && <span className="sidebar-update-mark">!</span>}
-            </button>
-          )}
-        </div>
-      )}
+      <div className="sidebar-update">
+        {!collapsed ? (
+          <p className="sidebar-update-meta">
+            {update.currentVersion ? `v${update.currentVersion}` : 'Версия —'}
+            {update.availableVersion && update.availableVersion !== update.currentVersion
+              ? ` → ${update.availableVersion}`
+              : ''}
+          </p>
+        ) : null}
+        {update.error && !collapsed ? <p className="sidebar-update-error">{update.error}</p> : null}
+        {update.state === 'downloading' || update.state === 'installing' ? (
+          <div
+            className={update.percent > 0 ? 'sidebar-update-progress' : 'sidebar-update-progress indeterminate'}
+            role="progressbar"
+            aria-valuemin={0}
+            aria-valuemax={100}
+            aria-valuenow={update.percent}
+          >
+            <i className="sidebar-update-progress-bar" style={update.percent > 0 ? { width: `${update.percent}%` } : undefined} />
+            {!collapsed && (
+              <span className="sidebar-update-progress-label">
+                {update.state === 'installing' ? 'Установка...' : update.percent > 0 ? `${update.percent}%` : 'Загрузка...'}
+              </span>
+            )}
+          </div>
+        ) : update.state === 'available' && !update.devMode ? (
+          <button
+            className="sidebar-update-btn"
+            title={update.error || 'Установить обновление Конструктора и Оркестратора'}
+            onClick={() => void window.api.installUpdate?.()}
+          >
+            {!collapsed && <span>Обновить обе программы</span>}
+            {collapsed && <span className="sidebar-update-mark">!</span>}
+          </button>
+        ) : null}
+        <button
+          type="button"
+          className="sidebar-update-check"
+          disabled={checking || update.state === 'downloading' || update.state === 'installing'}
+          title="Проверить обновление приложения (не перезагрузка данных сеток)"
+          onClick={runCheck}
+        >
+          {collapsed ? '↻' : checking ? 'Проверяем…' : 'Проверить обновление'}
+        </button>
+      </div>
 
       <div className="sidebar-divider" />
       <div className="sidebar-peers">
-        {peers.map((peer) => {
+        {peoplePeers.map((peer) => {
           const isActive = peer.id === activeThreadId || (peer.peerId !== '' && peer.peerId === activeThreadId)
           const preview = lastMessagePreview(peer.preview)
           const unread = peer.unread > 0 && !isActive

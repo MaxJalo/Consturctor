@@ -29,22 +29,18 @@ export function useTodayOutlookMail(periodDay: Date): TodayOutlookMailState {
   useEffect(() => {
     let alive = true
     const cacheKey = `today-outlook-mail:${dayKey}`
-    const cached = readGridCache<{ error: string; source: string; rows: SpecMailRow[] }>(cacheKey)
-    if (!shouldRunGridFetch(cacheKey, generation) && cached) {
-      setError(cached.error)
-      setSource(cached.source)
-      setRows(cached.rows)
-      setLoading(false)
-      return
+    if (!shouldRunGridFetch(cacheKey, generation)) {
+      const cached = readGridCache<{ error: string; source: string; rows: SpecMailRow[] }>(cacheKey)
+      if (cached) {
+        setError(cached.error)
+        setSource(cached.source)
+        setRows(cached.rows)
+        setLoading(false)
+        return
+      }
     }
-    if (cached) {
-      setError(cached.error)
-      setSource(cached.source)
-      setRows(cached.rows)
-    } else {
-      setError('')
-    }
-    setLoading(!cached)
+    setLoading(true)
+    setError('')
     void fetchOutlookMailForDay(periodDay, { folder: 'Inbox', maxResults: 50 })
       .then((res) => {
         if (!alive) return
