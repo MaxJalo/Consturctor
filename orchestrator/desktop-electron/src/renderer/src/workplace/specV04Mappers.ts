@@ -18,6 +18,7 @@ function whoFromDocflowRole(role: string): string {
 }
 
 export function erpTaskToRow(task: Record<string, unknown>, actorFio: string): SpecTaskRow {
+  const refKey = String(task.ref_key || task.refKey || '').trim()
   const number = String(task.number || '').trim()
   const titleRaw = String(task.title || number || 'Задача 1С').trim()
   const title =
@@ -40,7 +41,7 @@ export function erpTaskToRow(task: Record<string, unknown>, actorFio: string): S
     sourceLabel = '1С ERP (OData)'
   }
   return {
-    id: number || title,
+    id: refKey || number || title,
     title,
     source: sourceLabel,
     sourceTone: isDocflow ? 'green' : 'blue',

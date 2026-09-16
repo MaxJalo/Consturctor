@@ -8,7 +8,9 @@ import {
   TAB_CHROME_COLS,
   TAB_CHROME_MARGIN,
   TAB_CHROME_MAX_ROWS,
+  tabChromeGridDimensions,
   computeTabChromeMetrics,
+  TAB_CHROME_SNAP_MIN_ROW,
   isTileWidgetId,
   tileWidgetId,
   type TabChromeMeta,
@@ -275,8 +277,24 @@ export function TabChromeGrid({
   syncViewport?: (height: number, width: number) => void
 }): React.JSX.Element {
   const canvasRef = useRef<HTMLDivElement>(null)
-  const usedRows = Math.max(1, ...layoutWithStatic.map((item) => item.y + item.h), 1)
-  const [metrics, setMetrics] = useState(() => computeTabChromeMetrics(320, 800, usedRows))
+  const { cols: gridCols, maxRows: gridMaxRows } = tabChromeGridDimensions(tabId)
+  const layoutRows = Math.max(1, ...layoutWithStatic.map((item) => item.y + item.h), 1)
+  const usedRows = tabId === 'kpi' ? gridMaxRows : Math.min(gridMaxRows, layoutRows)
+  const snapGrid = tabId === 'kpi'
+  const metricsOptions = useMemo(
+    () =>
+      snapGrid
+        ? {
+            cols: gridCols,
+            fillHeight: true as const,
+            minRowHeight: TAB_CHROME_SNAP_MIN_ROW
+          }
+        : undefined,
+    [gridCols, snapGrid]
+  )
+  const [metrics, setMetrics] = useState(() =>
+    computeTabChromeMetrics(320, 800, usedRows, metricsOptions)
+  )
 
   useEffect(() => {
     const node = canvasRef.current
@@ -284,11 +302,12 @@ export function TabChromeGrid({
     const measure = (): void => {
       const height = Math.max(node.clientHeight, 200)
       const width = node.clientWidth
-      const next = computeTabChromeMetrics(height, width, usedRows)
+      const next = computeTabChromeMetrics(height, width, usedRows, metricsOptions)
       setMetrics((prev) =>
         prev.rowHeight === next.rowHeight &&
         prev.canvasHeight === next.canvasHeight &&
-        prev.containerWidth === next.containerWidth
+        prev.containerWidth === next.containerWidth &&
+        prev.colWidth === next.colWidth
           ? prev
           : next
       )
@@ -298,7 +317,30 @@ export function TabChromeGrid({
     const observer = new ResizeObserver(() => measure())
     observer.observe(node)
     return () => observer.disconnect()
-  }, [syncViewport, usedRows])
+  }, [syncViewport, usedRows, metricsOptions])
+
+  const canvasStyle = useMemo(
+    () =>
+      snapGrid
+        ? ({
+            height: '100%',
+            minHeight: 0,
+            '--kpi-rgl-row-height': `${metrics.rowHeight}px`,
+            '--kpi-rgl-col-width': `${metrics.colWidth}px`,
+            '--kpi-rgl-margin-x': `${metrics.marginX}px`,
+            '--kpi-rgl-margin-y': `${metrics.marginY}px`
+          } as React.CSSProperties)
+        : undefined,
+    [metrics.colWidth, metrics.marginX, metrics.marginY, metrics.rowHeight, snapGrid]
+  )
+
+  const gridLayoutStyle = useMemo(
+    () =>
+      snapGrid
+        ? { height: metrics.canvasHeight, minHeight: metrics.canvasHeight }
+        : undefined,
+    [metrics.canvasHeight, snapGrid]
+  )
 
   const ids = useMemo(() => defaults.map((item) => item.i), [defaults])
   const children = useMemo(
@@ -330,15 +372,25 @@ export function TabChromeGrid({
   return (
     <div
       ref={canvasRef}
-      className={`tab-chrome-canvas${editMode ? ' tab-chrome-canvas--edit' : ''}`}
+      className={[
+        'tab-chrome-canvas',
+        snapGrid ? 'tab-chrome-canvas--snap' : '',
+        editMode ? 'tab-chrome-canvas--edit' : 'tab-chrome-canvas--view'
+      ]
+        .filter(Boolean)
+        .join(' ')}
+      style={canvasStyle}
       data-tab={tabId}
+      data-grid-cols={gridCols}
+      data-grid-rows={gridMaxRows}
       data-user-id={userId || 'default'}
     >
       <GridLayout
         className="tab-chrome-grid"
+        style={gridLayoutStyle}
         width={Math.max(metrics.containerWidth, 1)}
-        cols={TAB_CHROME_COLS}
-        maxRows={TAB_CHROME_MAX_ROWS}
+        cols={gridCols}
+        maxRows={gridMaxRows}
         rowHeight={metrics.rowHeight}
         margin={TAB_CHROME_MARGIN}
         containerPadding={[0, 0]}

@@ -67,10 +67,31 @@ def map_inbox_row(row: dict[str, Any], *, fio: str) -> dict[str, Any]:
     }
 
 
+def _mapped_task_key(row: dict[str, Any]) -> str:
+    ref = str(row.get("ref_key") or "").strip()
+    if ref:
+        return f"ref:{ref.casefold()}"
+    number = str(row.get("number") or "").strip()
+    if number:
+        return f"num:{number.casefold()}"
+    title = " ".join(str(row.get("title") or "").split()).casefold()
+    due = str(row.get("due_at") or "")[:10]
+    author = " ".join(str(row.get("author") or "").split()).casefold()
+    performer = " ".join(str(row.get("performer") or "").split()).casefold()
+    return f"sig:{author}|{performer}|{title}|{due}"
+
+
 def map_inbox_payload(payload: dict[str, Any], *, fio: str) -> list[dict[str, Any]]:
     rows = payload.get("rows") if isinstance(payload.get("rows"), list) else []
     out: list[dict[str, Any]] = []
+    seen: set[str] = set()
     for row in rows:
-        if isinstance(row, dict):
-            out.append(map_inbox_row(row, fio=fio))
+        if not isinstance(row, dict):
+            continue
+        mapped = map_inbox_row(row, fio=fio)
+        key = _mapped_task_key(mapped)
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(mapped)
     return out

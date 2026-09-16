@@ -2,9 +2,19 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import type { Layout, LayoutItem } from 'react-grid-layout/legacy'
 import { resolveLayoutOverlaps } from './gridReflow'
 
-export const TAB_CHROME_STORAGE_KEY = 'orch-tab-chrome-v7'
+export const TAB_CHROME_STORAGE_KEY = 'orch-tab-chrome-v10'
 export const TAB_CHROME_COLS = 16
 export const TAB_CHROME_MAX_ROWS = 12
+/** KPI body widgets — same 8×6 snap as вкладка «Сегодня». */
+export const KPI_TAB_GRID_COLS = 8
+export const KPI_TAB_GRID_ROWS = 6
+
+export function tabChromeGridDimensions(tabId: string): { cols: number; maxRows: number } {
+  if (tabId === 'kpi') {
+    return { cols: KPI_TAB_GRID_COLS, maxRows: KPI_TAB_GRID_ROWS }
+  }
+  return { cols: TAB_CHROME_COLS, maxRows: TAB_CHROME_MAX_ROWS }
+}
 export const TAB_CHROME_MARGIN: [number, number] = [5, 5]
 export const TAB_CHROME_MIN_ROW = 48
 /** Floor cell size: below this, overflow widgets go to the basket. */
@@ -96,11 +106,15 @@ export const DEFAULT_PROCESS_LAYOUT: LayoutItem[] = [
   { i: 'botB', x: 8, y: 10, w: 8, h: 2, minW: 4, minH: 1, maxW: 16, maxH: 4 }
 ]
 
+/**
+ * 8×6 (col×row): side 2×2, botB/botC 2×1, main 8×3, botA 8×1 — сумма рядов = 6.
+ */
 export const DEFAULT_KPI_LAYOUT: LayoutItem[] = [
-  { i: 'main', x: 0, y: 0, w: 16, h: 8, minW: 8, minH: 4, maxW: 16, maxH: 12 },
-  { i: 'botA', x: 0, y: 8, w: 6, h: 4, minW: 4, minH: 2, maxW: 16, maxH: 6 },
-  { i: 'botB', x: 6, y: 8, w: 6, h: 4, minW: 4, minH: 2, maxW: 16, maxH: 6 },
-  { i: 'botC', x: 12, y: 8, w: 4, h: 4, minW: 4, minH: 2, maxW: 16, maxH: 6 }
+  { i: 'side', x: 0, y: 0, w: 2, h: 2, minW: 2, minH: 2, maxW: KPI_TAB_GRID_COLS, maxH: KPI_TAB_GRID_ROWS },
+  { i: 'botB', x: 2, y: 0, w: 2, h: 1, minW: 2, minH: 1, maxW: KPI_TAB_GRID_COLS, maxH: KPI_TAB_GRID_ROWS },
+  { i: 'botC', x: 4, y: 0, w: 2, h: 1, minW: 2, minH: 1, maxW: KPI_TAB_GRID_COLS, maxH: KPI_TAB_GRID_ROWS },
+  { i: 'main', x: 0, y: 2, w: 8, h: 3, minW: 4, minH: 2, maxW: KPI_TAB_GRID_COLS, maxH: KPI_TAB_GRID_ROWS },
+  { i: 'botA', x: 0, y: 5, w: 8, h: 1, minW: 6, minH: 1, maxW: KPI_TAB_GRID_COLS, maxH: KPI_TAB_GRID_ROWS }
 ]
 
 export const DEFAULT_DECISIONS_LAYOUT: LayoutItem[] = [
@@ -126,19 +140,23 @@ function widgetBinPriority(id: string): number {
   return 1
 }
 
-export function viewportFitCells(containerHeight: number, containerWidth: number): { rows: number; cols: number } {
+export function viewportFitCells(
+  containerHeight: number,
+  containerWidth: number,
+  grid = tabChromeGridDimensions('')
+): { rows: number; cols: number } {
   const [marginX, marginY] = TAB_CHROME_MARGIN
   const rows = Math.max(
     1,
     Math.min(
-      TAB_CHROME_MAX_ROWS,
+      grid.maxRows,
       Math.floor((Math.max(0, containerHeight) + marginY) / (TAB_CHROME_MIN_ROW_HARD + marginY))
     )
   )
   const cols = Math.max(
     1,
     Math.min(
-      TAB_CHROME_COLS,
+      grid.cols,
       Math.floor((Math.max(0, containerWidth) + marginX) / (TAB_CHROME_MIN_COL_PX + marginX))
     )
   )
@@ -207,30 +225,42 @@ export function applyViewportShrink(
   })
 }
 
-function mergeLayout(raw: LayoutItem[] | undefined, defaults: LayoutItem[]): LayoutItem[] {
+function mergeLayout(
+  raw: LayoutItem[] | undefined,
+  defaults: LayoutItem[],
+  grid: { cols: number; maxRows: number }
+): LayoutItem[] {
   const list = raw ? [...raw] : []
   const byId = new Map(list.filter((item) => item?.i).map((item) => [item.i, item]))
   return defaults.map((base) => {
     const saved = byId.get(base.i)
     if (!saved) return { ...base }
-    const maxW = Math.min(base.maxW ?? TAB_CHROME_COLS, TAB_CHROME_COLS)
-    const maxH = Math.min(base.maxH ?? TAB_CHROME_MAX_ROWS, TAB_CHROME_MAX_ROWS)
+    const maxW = Math.min(base.maxW ?? grid.cols, grid.cols)
+    const maxH = Math.min(base.maxH ?? grid.maxRows, grid.maxRows)
     const minW = base.minW ?? 1
     const minH = base.minH ?? 1
     const w = Math.max(minW, Math.min(maxW, Math.round(saved.w || base.w)))
     const h = Math.max(minH, Math.min(maxH, Math.round(saved.h || base.h)))
-    const x = Math.max(0, Math.min(TAB_CHROME_COLS - w, Math.round(saved.x ?? base.x)))
-    const y = Math.max(0, Math.min(TAB_CHROME_MAX_ROWS - h, Math.round(saved.y ?? base.y)))
+    const x = Math.max(0, Math.min(grid.cols - w, Math.round(saved.x ?? base.x)))
+    const y = Math.max(0, Math.min(grid.maxRows - h, Math.round(saved.y ?? base.y)))
     return { ...base, x, y, w, h }
   })
 }
 
-function sanitizeLayout(raw: LayoutItem[] | undefined, defaults: LayoutItem[]): LayoutItem[] {
-  return mergeLayout(raw, defaults)
+function sanitizeLayout(
+  raw: LayoutItem[] | undefined,
+  defaults: LayoutItem[],
+  grid: { cols: number; maxRows: number }
+): LayoutItem[] {
+  return mergeLayout(raw, defaults, grid)
 }
 
-function sanitizeLayoutFromStorage(raw: LayoutItem[] | undefined, defaults: LayoutItem[]): LayoutItem[] {
-  return resolveLayoutOverlaps(mergeLayout(raw, defaults), TAB_CHROME_COLS, TAB_CHROME_MAX_ROWS)
+function sanitizeLayoutFromStorage(
+  raw: LayoutItem[] | undefined,
+  defaults: LayoutItem[],
+  grid: { cols: number; maxRows: number }
+): LayoutItem[] {
+  return resolveLayoutOverlaps(mergeLayout(raw, defaults, grid), grid.cols, grid.maxRows)
 }
 
 function sanitizeMeta(
@@ -252,17 +282,39 @@ function sanitizeMeta(
   return next
 }
 
+function kpiEnsureAllWidgetsVisible(
+  meta: Record<string, TabChromeMeta>,
+  ids: string[]
+): Record<string, TabChromeMeta> {
+  const next = { ...meta }
+  for (const id of ids) {
+    const cur = next[id] || { visible: true, color: '', locked: false, binned: false }
+    next[id] = { ...cur, visible: true, binned: false }
+  }
+  return next
+}
+
 function readPersist(tabId: string, userId: string, defaults: LayoutItem[], ids: string[]): TabChromePersist {
+  const grid = tabChromeGridDimensions(tabId)
   try {
     const raw = localStorage.getItem(storageKey(tabId, userId))
-    if (!raw) return { layout: defaults.map((item) => ({ ...item })), meta: defaultMeta(ids) }
+    if (!raw) {
+      return {
+        layout: defaults.map((item) => ({ ...item })),
+        meta: tabId === 'kpi' ? kpiEnsureAllWidgetsVisible(defaultMeta(ids), ids) : defaultMeta(ids)
+      }
+    }
     const parsed = JSON.parse(raw) as TabChromePersist
+    const meta = sanitizeMeta(parsed.meta, ids)
     return {
-      layout: sanitizeLayoutFromStorage(parsed.layout, defaults),
-      meta: sanitizeMeta(parsed.meta, ids)
+      layout: sanitizeLayoutFromStorage(parsed.layout, defaults, grid),
+      meta: tabId === 'kpi' ? kpiEnsureAllWidgetsVisible(meta, ids) : meta
     }
   } catch {
-    return { layout: defaults.map((item) => ({ ...item })), meta: defaultMeta(ids) }
+    return {
+      layout: defaults.map((item) => ({ ...item })),
+      meta: tabId === 'kpi' ? kpiEnsureAllWidgetsVisible(defaultMeta(ids), ids) : defaultMeta(ids)
+    }
   }
 }
 
@@ -285,26 +337,50 @@ function layoutGeomEqual(left: LayoutItem[], right: LayoutItem[]): boolean {
   })
 }
 
+/** Min row height for 8×6 snap grids (KPI) — same floor as «Сегодня». */
+export const TAB_CHROME_SNAP_MIN_ROW = 44
+
+export type TabChromeMetricsOptions = {
+  cols?: number
+  /** Stretch rows to exactly fill containerHeight (Today / KPI 8×6). */
+  fillHeight?: boolean
+  minRowHeight?: number
+}
+
 export function computeTabChromeMetrics(
   containerHeight: number,
   containerWidth: number,
-  usedRows = TAB_CHROME_MAX_ROWS
+  usedRows = TAB_CHROME_MAX_ROWS,
+  options?: TabChromeMetricsOptions
 ): {
   rowHeight: number
   canvasHeight: number
   containerWidth: number
+  colWidth: number
+  marginX: number
+  marginY: number
 } {
-  const [, marginY] = TAB_CHROME_MARGIN
+  const [marginX, marginY] = TAB_CHROME_MARGIN
   const rows = Math.max(1, Math.min(TAB_CHROME_MAX_ROWS, usedRows))
+  const cols = Math.max(1, options?.cols ?? TAB_CHROME_COLS)
   const innerH = Math.max(0, containerHeight)
-  const rowHeight = Math.max(
-    TAB_CHROME_MIN_ROW_HARD,
-    Math.floor((innerH - (rows - 1) * marginY) / rows)
-  )
+  const innerW = Math.max(0, containerWidth)
+  const minRow = options?.minRowHeight ?? TAB_CHROME_MIN_ROW_HARD
+  const slack = Math.max(0, innerH - (rows - 1) * marginY)
+  const rowHeight = options?.fillHeight
+    ? Math.max(minRow, slack / rows)
+    : Math.max(minRow, Math.floor(slack / rows))
+  const canvasHeight = options?.fillHeight
+    ? innerH
+    : rows * rowHeight + (rows - 1) * marginY
+  const colWidth = Math.max(0, (innerW - marginX * (cols - 1)) / cols)
   return {
     rowHeight,
-    canvasHeight: rows * rowHeight + (rows - 1) * marginY,
-    containerWidth: Math.max(0, containerWidth)
+    canvasHeight,
+    containerWidth: innerW,
+    colWidth,
+    marginX,
+    marginY
   }
 }
 
@@ -344,13 +420,15 @@ export function useTabChromeLayout(
     [tabId, userId]
   )
 
+  const grid = useMemo(() => tabChromeGridDimensions(tabId), [tabId])
+
   const onLayoutChange = useCallback(
     (next: Layout) => {
-      const proposed = sanitizeLayout([...next], defaults)
+      const proposed = sanitizeLayout([...next], defaults, grid)
       if (layoutGeomEqual(proposed, persist.layout)) return
       save({ layout: proposed, meta: persist.meta })
     },
-    [defaults, persist.layout, persist.meta, save]
+    [defaults, grid, persist.layout, persist.meta, save]
   )
 
   const patchMeta = useCallback(
@@ -385,8 +463,12 @@ export function useTabChromeLayout(
   )
 
   const resetLayout = useCallback(() => {
-    save({ layout: defaults.map((item) => ({ ...item })), meta: defaultMeta(widgetIds) })
-  }, [defaults, save, widgetIds])
+    const meta = defaultMeta(widgetIds)
+    save({
+      layout: defaults.map((item) => ({ ...item })),
+      meta: tabId === 'kpi' ? kpiEnsureAllWidgetsVisible(meta, widgetIds) : meta
+    })
+  }, [defaults, save, tabId, widgetIds])
 
   const restoreFromBasket = useCallback(
     (id: string) => {
@@ -398,7 +480,8 @@ export function useTabChromeLayout(
   const syncViewport = useCallback(
     (containerHeight: number, containerWidth: number) => {
       if (editMode) return
-      const fit = viewportFitCells(containerHeight, containerWidth)
+      if (tabId === 'kpi') return
+      const fit = viewportFitCells(containerHeight, containerWidth, grid)
       const overflow = new Set(pickOverflowWidgetIds(persist.layout, persist.meta, fit.rows, fit.cols))
       let changed = false
       const meta = { ...persist.meta }
@@ -411,7 +494,7 @@ export function useTabChromeLayout(
       }
       if (changed) save({ layout: persist.layout, meta })
     },
-    [editMode, persist.layout, persist.meta, save, widgetIds]
+    [editMode, grid, persist.layout, persist.meta, save, tabId, widgetIds]
   )
 
   const basketIds = useMemo(

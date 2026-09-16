@@ -58,7 +58,7 @@ export function onecGatewayInvokeArgs(
   const creds = comCredentials()
   const fio = erpActorFio(user)
   const userId = erpActorUserId(user)
-  const password = gatewaySessionPassword()
+  const password = gatewaySessionPassword() || devGatewayCredentials().password
   const typedLogin = (creds.login || '').trim()
   const username = erpActorComUsername(user)
   return {

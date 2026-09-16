@@ -19,6 +19,23 @@ import { turboTaskAssignedToActor } from './turboAssigneeMatch'
 import type { SpecMailRow, SpecProjectRow, SpecTaskRow } from './specV04DemoData'
 import { isTechnicalTurboMessage, isTurboNoSessionError } from './turboSession'
 
+/** Одна задача 1С — один id (повторы из SOAP/кэша или гонки refetch). */
+export function dedupeSpecTaskRows(rows: SpecTaskRow[]): SpecTaskRow[] {
+  const seen = new Set<string>()
+  const out: SpecTaskRow[] = []
+  for (const row of rows) {
+    const id = row.id.trim().toLowerCase()
+    const key =
+      id && id !== '—'
+        ? `id:${id}`
+        : `sig:${row.title.trim().toLowerCase()}|${row.deadline}|${row.executor.trim().toLowerCase()}`
+    if (seen.has(key)) continue
+    seen.add(key)
+    out.push(row)
+  }
+  return out
+}
+
 /** Stable ids for grid refresh / telemetry (see GridDataRefreshProvider generation). */
 export const ORCH_SOURCE_ID = {
   erpPm: 'erp_pm',
@@ -180,7 +197,7 @@ export function parseErpToolTasks(
   const records = raw
     .filter((item): item is Record<string, unknown> => Boolean(item) && typeof item === 'object')
     .filter((item) => !isErpMetaHintRecord(item))
-  const rows = records.map((item) => erpTaskToRow(item, erpFio))
+  const rows = dedupeSpecTaskRows(records.map((item) => erpTaskToRow(item, erpFio)))
   return { rows, source, warning, error: '' }
 }
 
@@ -226,7 +243,7 @@ export async function loadOrchestratorErpTasks(
     today_and_overdue: false,
     force_refresh: Boolean(opts?.forceRefresh)
   })
-  const dfRes = await api.invokeServerTool('onec.docflow_tasks', onecArgs, 300_000)
+  const dfRes = await api.invokeServerTool('onec.docflow_tasks', onecArgs, 90_000)
   const dfParsed = parseErpToolTasks(dfRes, erpFio)
   const tasks = dfParsed.rows
   const invokeError = userFacingOneCError(dfRes.error || '')

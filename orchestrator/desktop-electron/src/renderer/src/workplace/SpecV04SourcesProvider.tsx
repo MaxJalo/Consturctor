@@ -3,6 +3,7 @@ import {
   useContext,
   useEffect,
   useMemo,
+  useRef,
   useState,
   type ReactNode
 } from 'react'
@@ -13,7 +14,7 @@ import {
   ensureOutlookMeetings,
   type MeetingEvent
 } from '../utils/outlookMeetings'
-import { hasComPassword } from '../store/session'
+import { devGatewayCredentials, hasComPassword, gatewaySessionPassword } from '../store/session'
 import { isOneCAuthFailure, userFacingOneCError } from './onecSessionHints'
 import { isTechnicalTurboMessage } from './turboSession'
 import { erpActorFio, outlookMailboxAddress } from './userContext'
@@ -28,6 +29,7 @@ import type { SpecMailRow, SpecProcessRow, SpecProjectRow, SpecTaskRow } from '.
 import { agentLaunchesToday, useWorkplaceData } from './WorkplaceBoard'
 import { useGridDataRefreshContext } from './GridDataRefreshContext'
 import {
+  dedupeSpecTaskRows,
   loadOrchestratorErpTasks,
   loadOrchestratorOutlookMailWeek,
   loadOrchestratorTurboPortfolio,
@@ -118,15 +120,30 @@ export function SpecV04SourcesProvider({
   const [meetings, setMeetings] = useState<MeetingEvent[]>([])
   const [meetingsLoading, setMeetingsLoading] = useState(true)
   const [oneCAuthFailure, setOneCAuthFailure] = useState(false)
+  const erpFetchSeqRef = useRef(0)
+  const turboFetchSeqRef = useRef(0)
+  const takeHardRefreshRef = useRef(takeHardRefresh)
+  takeHardRefreshRef.current = takeHardRefresh
 
   useEffect(() => {
     if (!user.id) {
       setErpLoading(false)
       return
     }
+    const has1cPassword = hasComPassword() || Boolean(gatewaySessionPassword() || devGatewayCredentials().password)
+    if (!has1cPassword) {
+      setErpLoading(false)
+      setErpTasks([])
+      setErpError('')
+      setOneCAuthFailure(true)
+      setErpSource('—')
+      return
+    }
     let alive = true
-    const forceRefresh = takeHardRefresh()
+    const fetchSeq = ++erpFetchSeqRef.current
+    const forceRefresh = takeHardRefreshRef.current()
     setErpLoading(true)
+    setErpTasks([])
     setError('')
     // #region agent log
     const _erpT0 = Date.now()
@@ -134,21 +151,21 @@ export function SpecV04SourcesProvider({
     // #endregion
     void loadOrchestratorErpTasks(user, erpFio, { forceRefresh })
       .then((erp) => {
-        if (!alive) return
-        setErpTasks(erp.tasks)
+        if (!alive || fetchSeq !== erpFetchSeqRef.current) return
+        setErpTasks(dedupeSpecTaskRows(erp.tasks))
         setErpSource(erp.sourceLabel)
         setErpError(userFacingOneCError(erp.error))
         setErpSecondaryHint(erp.erpSecondaryHint || '')
         setOneCAuthFailure(erp.oneCAuthFailure)
       })
       .catch((err: unknown) => {
-        if (!alive) return
+        if (!alive || fetchSeq !== erpFetchSeqRef.current) return
         setErpTasks([])
         setErpError(userFacingOneCError(err instanceof Error ? err.message : ''))
         setOneCAuthFailure(isOneCAuthFailure(err instanceof Error ? err.message : ''))
       })
       .finally(() => {
-        if (alive) setErpLoading(false)
+        if (alive && fetchSeq === erpFetchSeqRef.current) setErpLoading(false)
         // #region agent log
         fetch('http://127.0.0.1:7847/ingest/b2a622e9-6027-4fae-9a68-3d036eb3c49e',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'d8a6bb'},body:JSON.stringify({sessionId:'d8a6bb',runId:'pre-fix',hypothesisId:'H4',location:'SpecV04SourcesProvider.tsx:erp-end',message:'erp fetch end',data:{ms:Date.now()-_erpT0,alive},timestamp:Date.now()})}).catch(()=>{})
         // #endregion
@@ -156,7 +173,7 @@ export function SpecV04SourcesProvider({
     return () => {
       alive = false
     }
-  }, [user.id, erpFio, generation, comCredsRevision, takeHardRefresh])
+  }, [user.id, erpFio, generation, comCredsRevision])
 
   useEffect(() => {
     if (!user.id) {
@@ -165,7 +182,10 @@ export function SpecV04SourcesProvider({
       return
     }
     let alive = true
+    const fetchSeq = ++turboFetchSeqRef.current
     setTurboLoading(true)
+    setTurboTasks([])
+    setProjects([])
     // #region agent log
     const _turboT0 = Date.now()
     fetch('http://127.0.0.1:7847/ingest/b2a622e9-6027-4fae-9a68-3d036eb3c49e',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'d8a6bb'},body:JSON.stringify({sessionId:'d8a6bb',runId:'pre-fix',hypothesisId:'H3',location:'SpecV04SourcesProvider.tsx:turbo-start',message:'turbo fetch start',data:{generation,comCredsRevision},timestamp:Date.now()})}).catch(()=>{})
@@ -173,7 +193,7 @@ export function SpecV04SourcesProvider({
     void (async () => {
       try {
         const turbo = await loadOrchestratorTurboPortfolio(user, erpFio)
-        if (!alive) return
+        if (!alive || fetchSeq !== turboFetchSeqRef.current) return
         setProjects(turbo.projects)
         setTurboSource(turbo.sourceLabel)
         setTurboNoSession(turbo.turboNoSession)
@@ -183,19 +203,19 @@ export function SpecV04SourcesProvider({
           turbo.projects,
           turbo.turboNoSession
         )
-        if (!alive) return
-        setTurboTasks(turboTasksLoad.tasks)
+        if (!alive || fetchSeq !== turboFetchSeqRef.current) return
+        setTurboTasks(dedupeSpecTaskRows(turboTasksLoad.tasks))
         const turboErr = userFacingOneCError(turbo.error || turboTasksLoad.error || '')
         setTurboError(isTechnicalTurboMessage(turboErr) ? '' : turboErr)
       } catch (err) {
-        if (!alive) return
+        if (!alive || fetchSeq !== turboFetchSeqRef.current) return
         setTurboTasks([])
         setTurboError(
           userFacingOneCError(err instanceof Error ? err.message : '') ||
             'Не удалось загрузить TurboProject'
         )
       } finally {
-        if (alive) setTurboLoading(false)
+        if (alive && fetchSeq === turboFetchSeqRef.current) setTurboLoading(false)
         // #region agent log
         fetch('http://127.0.0.1:7847/ingest/b2a622e9-6027-4fae-9a68-3d036eb3c49e',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'d8a6bb'},body:JSON.stringify({sessionId:'d8a6bb',runId:'pre-fix',hypothesisId:'H3',location:'SpecV04SourcesProvider.tsx:turbo-end',message:'turbo fetch end',data:{ms:Date.now()-_turboT0,alive},timestamp:Date.now()})}).catch(()=>{})
         // #endregion

@@ -757,6 +757,21 @@ def _dump_rows(payload: dict[str, Any]) -> list[dict[str, Any]]:
     return [row for row in raw if isinstance(row, dict)]
 
 
+def task_dedup_key(row: dict[str, Any]) -> str:
+    """Stable identity for SOAP dump rows (1C may repeat the same task)."""
+    for field in ("id", "number"):
+        value = str(row.get(field) or "").strip()
+        if value:
+            return f"id:{value.casefold()}"
+    desc = " ".join(str(row.get("description") or row.get("target") or row.get("name") or "").split())
+    due = str(row.get("due") or "").strip()[:10]
+    author = normalize_person(str(row.get("author") or ""))
+    performer = normalize_person(str(row.get("performer") or ""))
+    if desc or due:
+        return f"sig:{author}|{performer}|{desc.casefold()}|{due}"
+    return ""
+
+
 def slice_dump_for_user(
     dump: dict[str, Any],
     user_fio: str,
@@ -770,7 +785,7 @@ def slice_dump_for_user(
         role = task_role_for_user(row, user_fio)
         if role is None:
             continue
-        key = str(row.get("id") or row.get("number") or "").strip()
+        key = task_dedup_key(row)
         if key:
             if key in seen:
                 continue

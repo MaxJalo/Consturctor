@@ -163,6 +163,31 @@ def test_slice_dump_for_user_performer_and_author() -> None:
     assert task_role_for_user(dump["rows"][3], "Иванов И.И.") is None
 
 
+def test_slice_dump_dedupes_repeated_task_id() -> None:
+    dump = {
+        "rows": [
+            {
+                "id": "dup-1",
+                "number": "00001",
+                "performer": "Иванов И.И.",
+                "author": "Петров П.П.",
+                "executed": False,
+                "due": "2026-09-10T18:00:00",
+            },
+            {
+                "id": "dup-1",
+                "number": "00001",
+                "performer": "Иванов И.И.",
+                "author": "Петров П.П.",
+                "executed": False,
+                "due": "2026-09-10T18:00:00",
+            },
+        ],
+    }
+    sliced = slice_dump_for_user(dump, "Иванов И.И.")
+    assert sliced["count"] == 1
+
+
 def test_normalize_person_yo_and_spaces() -> None:
     assert normalize_person("Комарькова  Анастасия") == normalize_person("комарькова анастасия")
     assert normalize_person("Ёлкин") == normalize_person("елкин")

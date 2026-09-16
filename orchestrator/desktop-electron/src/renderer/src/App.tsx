@@ -15,7 +15,8 @@ import {
   saveSession,
   setComCredentials,
   setDevGatewayCredentials,
-  syncComProfileFromUser
+  syncComProfileFromUser,
+  getComCredentialsRevision
 } from './store/session'
 import { formatGatewayToolError, shouldForceReLogin } from './workplace/onecSessionHints'
 import { fetchMyErpTasksOData } from './workplace/fetchMyErpTasksOData'
@@ -43,6 +44,7 @@ import { ChatDock } from './workplace/ChatDock'
 import { isPersonalAgentWorkflowId, personalAgentWorkflowId } from './workplace/personalAgent'
 import { DiagnosticsPage, SettingsTab, TicketsPage } from './workplace/WorkplaceTabs'
 import { GridDataRefreshProvider } from './workplace/GridDataRefreshContext'
+import { clearGridCacheForUser } from './workplace/gridDataCache'
 import { ORCH_OPEN_TAB, type WorkplaceTabIntent } from './workplace/workplaceNav'
 import { SpecV04SourcesProvider } from './workplace/SpecV04SourcesProvider'
 import {
@@ -309,7 +311,11 @@ function AppShell(): React.JSX.Element {
     }
     const token = api.getToken()
     if (token) void window.api.startNotifications?.(token)
+    const beforeRevision = getComCredentialsRevision()
     syncComProfileFromUser(user)
+    if (getComCredentialsRevision() !== beforeRevision) {
+      bumpComCredentialsRevision()
+    }
     const creds = comCredentials()
     void agentClient
       .ready(token, {
@@ -317,7 +323,7 @@ function AppShell(): React.JSX.Element {
         password: creds.password || ''
       })
       .catch(() => undefined)
-  }, [user?.id ?? '', user?.nameMail ?? '', user?.fio ?? '', comCredsRevision])
+  }, [user?.id ?? '', user?.nameMail ?? '', user?.fio ?? '', comCredsRevision, bumpComCredentialsRevision])
 
   useEffect(() => {
     if (!import.meta.env.DEV || !user) {
@@ -406,6 +412,8 @@ function AppShell(): React.JSX.Element {
   }
 
   async function resetToLogin(): Promise<void> {
+    const uid = (user?.id || '').trim()
+    if (uid) clearGridCacheForUser(uid)
     void window.api.stopNotifications?.()
     runs.clearAll()
     clearSession(true)
