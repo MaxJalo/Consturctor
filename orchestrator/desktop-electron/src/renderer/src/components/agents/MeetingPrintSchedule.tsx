@@ -44,6 +44,26 @@ function longDate(day: Date): string {
   return `${day.getDate()} ${MONTHS_GEN[day.getMonth() + 1]} ${day.getFullYear()}`
 }
 
+/**
+ * Время и кабинет по длине текста, тема — сколько нужно заголовку,
+ * участники забирают всю оставшуюся ширину строки.
+ */
+function columnTracks(items: MeetingEvent[], width: number): string {
+  if (width < 240) return '4.4rem minmax(0, 1.2fr) minmax(7rem, 18%) minmax(0, 2fr)'
+  const time = 70
+  let roomChars = 8
+  let themeChars = 10
+  for (const item of items) {
+    roomChars = Math.max(roomChars, (item.location || '').trim().length)
+    themeChars = Math.max(themeChars, (item.subject || '').trim().length || 10)
+  }
+  const room = Math.round(Math.min(Math.max(roomChars * 7.2, 96), width * 0.18))
+  const rest = Math.max(160, width - time - room)
+  const theme = Math.round(Math.min(Math.max(themeChars * 6.4, rest * 0.22), rest * 0.4))
+  const people = Math.max(120, Math.round(width - time - room - theme))
+  return `${time}px ${theme}px ${room}px ${people}px`
+}
+
 function percentOf(minutes: number): number {
   return ((minutes - FROM_HOUR * 60) / SPAN_MINUTES) * 100
 }
@@ -120,13 +140,29 @@ export function PrintSchedule({
   onRange: (day: Date, from: number, to: number) => void
 }): React.JSX.Element {
   const [drag, setDrag] = useState<Drag | null>(null)
+  const [colWidth, setColWidth] = useState(0)
+  const boardRef = useRef<HTMLDivElement>(null)
   const columnRef = useRef<HTMLDivElement | null>(null)
   const dragRef = useRef<Drag | null>(null)
   const single = days.length === 1
   const day = single ? days[0].day : null
 
+  useLayoutEffect(() => {
+    const node = boardRef.current
+    if (!node) return
+    const measure = (): void => {
+      const cols = Math.max(1, days.length)
+      setColWidth(Math.max(0, (node.clientWidth - 42) / cols))
+    }
+    measure()
+    const observer = new ResizeObserver(measure)
+    observer.observe(node)
+    return () => observer.disconnect()
+  }, [days.length])
+
   return (
     <div
+      ref={boardRef}
       className={`mcal-day-v mcp-board${tool ? ' is-tool' : ''}`}
       style={{ ['--mcal-cols' as string]: String(Math.max(1, days.length)) }}
     >
@@ -142,7 +178,10 @@ export function PrintSchedule({
         {days.map((group) => (
           <div key={group.day.toISOString()} className="mcal-day-v-name mcp-colhead">
             <span className="mcal-day-label">{single ? longDate(group.day) : `${DAYS_SHORT[isoWeekday(group.day)]}, ${longDate(group.day)}`}</span>
-            <div className="mcp-cols mcp-cols-head">
+            <div
+              className="mcp-cols mcp-cols-head"
+              style={{ gridTemplateColumns: columnTracks(group.items, colWidth) }}
+            >
               <span>Время</span>
               <span>Тема</span>
               <span>Кабинет</span>
@@ -168,6 +207,7 @@ export function PrintSchedule({
             key={group.day.toISOString()}
             day={group.day}
             items={group.items}
+            columns={columnTracks(group.items, colWidth)}
             tool={tool}
             drag={drag}
             selectedKey={selectedKey}
@@ -211,6 +251,7 @@ function sameToday(day: Date): boolean {
 function DayColumn({
   day,
   items,
+  columns,
   tool,
   drag,
   selectedKey,
@@ -221,6 +262,7 @@ function DayColumn({
 }: {
   day: Date
   items: MeetingEvent[]
+  columns: string
   tool: PrintTool
   drag: Drag | null
   selectedKey: string | null
@@ -253,6 +295,7 @@ function DayColumn({
     <div
       ref={ref}
       className={`mcal-day-v-col${sameToday(day) ? ' is-today' : ''}`}
+      style={{ ['--mcp-col-template' as string]: columns }}
       onPointerDown={(event) => {
         if (!tool || !ref.current || event.button !== 0) return
         event.preventDefault()
@@ -286,7 +329,6 @@ function DayColumn({
         const slotPx = (block.to - block.from) * pxPerMin
         const themeLines = Math.max(1, Math.floor((textPx - 6) / 16))
         const people = peopleOf(block.meeting.attendees)
-        const peopleLines = Math.max(1, Math.floor((textPx - 6) / 16))
         const tone = {
           ['--mcp-fill' as string]: colors.fill,
           ['--mcp-border' as string]: colors.border,
@@ -296,14 +338,14 @@ function DayColumn({
         return (
           <article
             key={block.key}
-            className={`mcal-event mcp-row mcp-cols${selectedKey === block.key ? ' is-selected' : ''}`}
+            className={`mcal-event mcp-row${selectedKey === block.key ? ' is-selected' : ''}`}
             style={{
               ...tone,
               top: `${top}%`,
               height: `${height}%`,
               left: 0,
               right: 0,
-              width: 'auto',
+              width: '100%',
               zIndex: 2 + index,
               color: colors.text
             }}
@@ -313,6 +355,7 @@ function DayColumn({
               onSelect(block.key)
             }}
           >
+            <div className="mcp-cols mcp-sheet" style={{ gridTemplateColumns: columns }}>
             <div className="mcp-track">
               <div className="mcp-time" style={{ height: `${slotPct}%` }} title={`${timeLabel(block.from)}–${timeLabel(block.to)}`}>
                 {slotPx >= 26 ? (
@@ -325,24 +368,19 @@ function DayColumn({
                 )}
               </div>
             </div>
-            <div className="mcp-track">
-              <div className="mcp-theme" style={{ height: `${textPct}%` }}>
+            <div className="mcp-track mcp-fill" style={{ height: `${textPct}%` }}>
+              <div className="mcp-theme">
                 <span className="mcp-theme-text" style={{ WebkitLineClamp: themeLines }}>
                   {block.meeting.subject.trim() || 'Без темы'}
                 </span>
               </div>
             </div>
-            <div className="mcp-track">
-              <div className="mcp-room" style={{ height: `${textPct}%` }}>
-                {block.meeting.location.trim()}
-              </div>
+            <div className="mcp-track mcp-fill" style={{ height: `${textPct}%` }}>
+              <div className="mcp-room">{block.meeting.location.trim()}</div>
             </div>
-            <div className="mcp-track">
-              <div className={`mcp-people${peopleLines > 1 ? ' is-lines' : ''}`} style={{ height: `${textPct}%` }}>
-                {peopleLines > 1
-                  ? people.map((name, personIndex) => <span key={`${personIndex}-${name}`}>{name}</span>)
-                  : people.join(', ')}
-              </div>
+            <div className="mcp-track mcp-fill" style={{ height: `${textPct}%` }}>
+              <div className="mcp-people">{people.join('; ')}</div>
+            </div>
             </div>
           </article>
         )
@@ -376,7 +414,7 @@ function textBounds(blocks: PrintBlock[]): Map<string, number> {
       }
     }
     const minutes = block.to - block.from
-    const readable = minutes < 60 ? 60 : minutes
+    const readable = minutes < 90 ? 90 : minutes
     ends.set(block.key, Math.min(block.from + readable, next, TO_HOUR * 60))
   }
   return ends
