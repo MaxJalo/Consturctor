@@ -247,7 +247,7 @@ export async function loadOrchestratorErpTasks(
   const dfRes = await api.invokeServerTool(
     'onec.docflow_tasks',
     onecArgs,
-    forceRefresh ? ONEC_LIVE_DUMP_TIMEOUT_MS : 300_000
+    ONEC_LIVE_DUMP_TIMEOUT_MS
   )
   const dfParsed = parseErpToolTasks(dfRes, erpFio)
   const tasks = dfParsed.rows

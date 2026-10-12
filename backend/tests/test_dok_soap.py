@@ -733,6 +733,7 @@ def test_inbox_cache_shares_dump_across_users(tmp_path, monkeypatch) -> None:
         }
 
     monkeypatch.setattr(dok_soap, "fetch_open_dump", fake_dump)
+    monkeypatch.setattr(dok_soap, "fetch_scoped_open_tasks", lambda *_args, **_kwargs: None)
     first = dok_soap.fetch_user_inbox_tasks("Иванов И.И.", today_and_overdue=True)
     second = dok_soap.fetch_user_inbox_tasks("Петров П.П.", today_and_overdue=True)
     assert calls["n"] == 1
@@ -743,11 +744,17 @@ def test_inbox_cache_shares_dump_across_users(tmp_path, monkeypatch) -> None:
     assert second["cached"] is True
     assert second["count"] == 1
     assert second["rows"][0]["id"] == "2"
+    import time
+
     third = dok_soap.fetch_user_inbox_tasks(
         "Иванов И.И.", today_and_overdue=True, force_refresh=True
     )
+    assert third["cached"] is True
+    assert third["rows"][0]["id"] == "1"
+    deadline = time.time() + 2
+    while calls["n"] < 2 and time.time() < deadline:
+        time.sleep(0.05)
     assert calls["n"] == 2
-    assert third["cached"] is False
 
 
 def _session_dump_env(tmp_path, monkeypatch):
@@ -787,7 +794,90 @@ def _session_dump_env(tmp_path, monkeypatch):
         }
 
     monkeypatch.setattr(dok_soap, "fetch_open_dump", fake_dump)
+    monkeypatch.setattr(dok_soap, "fetch_scoped_open_tasks", lambda *_args, **_kwargs: None)
     return dok_soap, dumps
+
+
+def test_scoped_user_list_skips_full_dump(tmp_path, monkeypatch) -> None:
+    dok_soap, dumps = _session_dump_env(tmp_path, monkeypatch)
+    retrieves: list[list[str]] = []
+
+    def scoped(_config, user_fio, **_kwargs):
+        return (
+            "user",
+            [{"id": "mine", "performer": user_fio, "executed": False, "due": "2026-09-16T18:00:00"}],
+        )
+
+    def retrieve(_config, ids, **_kwargs):
+        retrieves.append(list(ids))
+        return []
+
+    monkeypatch.setattr(dok_soap, "fetch_scoped_open_tasks", scoped)
+    monkeypatch.setattr(dok_soap, "retrieve_tasks", retrieve)
+    first = dok_soap.fetch_user_inbox_tasks(
+        "Иванов И.И.", username="ivanov", password="a"
+    )
+    assert retrieves == []
+    second = dok_soap.fetch_user_inbox_tasks(
+        "Иванов И.И.", username="ivanov", password="a"
+    )
+    assert dumps == []
+    assert first["cached"] is False
+    assert first["count"] == 1
+    assert first["rows"][0]["id"] == "mine"
+    assert second["cached"] is True
+    assert retrieves == [["mine"]]
+    other = dok_soap.fetch_user_inbox_tasks(
+        "Петров П.П.", username="petrov", password="b"
+    )
+    assert other["count"] == 1
+    assert other["rows"][0]["performer"] == "Петров П.П."
+    assert dumps == []
+
+
+def test_scoped_full_list_is_shared_without_second_dump(tmp_path, monkeypatch) -> None:
+    dok_soap, dumps = _session_dump_env(tmp_path, monkeypatch)
+    calls = {"n": 0}
+
+    def scoped(_config, _user_fio, **_kwargs):
+        calls["n"] += 1
+        return (
+            "all",
+            [
+                {"id": "1", "performer": "Иванов И.И.", "executed": False, "due": "2026-09-16T18:00:00"},
+                {"id": "2", "performer": "Петров П.П.", "executed": False, "due": "2026-09-10T18:00:00"},
+            ],
+        )
+
+    monkeypatch.setattr(dok_soap, "fetch_scoped_open_tasks", scoped)
+    monkeypatch.setattr(
+        dok_soap,
+        "find_user",
+        lambda config, name, **_kwargs: {"id": "u", "name": name, "type": "DMUser"},
+    )
+    first = dok_soap.fetch_user_inbox_tasks(
+        "Иванов И.И.", today_and_overdue=True, username="ivanov", password="a"
+    )
+    second = dok_soap.fetch_user_inbox_tasks(
+        "Петров П.П.", today_and_overdue=True, username="petrov", password="b"
+    )
+    assert calls["n"] == 1
+    assert dumps == []
+    assert first["rows"][0]["id"] == "1"
+    assert second["cached"] is True
+    assert second["rows"][0]["id"] == "2"
+
+
+def test_scoped_timeout_does_not_start_full_dump(tmp_path, monkeypatch) -> None:
+    dok_soap, dumps = _session_dump_env(tmp_path, monkeypatch)
+
+    def scoped(*_args, **_kwargs):
+        raise RuntimeError("Документооборот SOAP: нет ответа за 420 с")
+
+    monkeypatch.setattr(dok_soap, "fetch_scoped_open_tasks", scoped)
+    with pytest.raises(RuntimeError, match="420"):
+        dok_soap.fetch_user_inbox_tasks("Иванов И.И.", username="ivanov", password="a")
+    assert dumps == []
 
 
 def test_session_dump_shared_after_login_check(tmp_path, monkeypatch) -> None:
