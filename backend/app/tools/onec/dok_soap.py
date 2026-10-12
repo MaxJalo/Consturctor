@@ -34,6 +34,9 @@ logger = logging.getLogger(__name__)
 _DEFAULT_LIST_TIMEOUT_SEC = 420.0
 _DEFAULT_CACHE_TTL_SEC = 1800.0
 _LOGIN_CHECK_TIMEOUT_SEC = 30.0
+# Полный список открытых задач этой базы — десятки тысяч строк и несколько минут.
+# В запрос кладём границу по дате начала: старше этого окна задачи не качаем.
+_OPEN_DUMP_WINDOW_DAYS = 180
 _SHARED_DISK_FILES = 3
 _OPEN_DUMP_KIND = "open_dump"
 _cache_guard = threading.Lock()
@@ -602,7 +605,11 @@ def _shared_dump(
     """
     scope = _dump_scope(endpoint, only_open)
     with _cache_guard:
-        hits = [hit for key, hit in list(_inbox_cache.items()) if key.startswith(scope)]
+        hits = [
+            hit
+            for key, hit in list(_inbox_cache.items())
+            if key.startswith(scope) and _is_shareable_dump(hit[1])
+        ]
     best = max(hits, key=lambda hit: hit[0], default=None)
     if best is not None and best[0] > newer_than:
         return best
@@ -648,8 +655,14 @@ def _adopt_shared_dump(
     return shared
 
 
-def _store_own_dump(key: str, config: DokConfig, *, only_open: bool) -> tuple[float, dict[str, Any]]:
-    dump = fetch_open_dump(config, only_open=only_open)
+def _store_own_dump(
+    key: str,
+    config: DokConfig,
+    *,
+    only_open: bool,
+    since: datetime | None = None,
+) -> tuple[float, dict[str, Any]]:
+    dump = fetch_open_dump(config, only_open=only_open, since=since)
     _store_cache(key, dump)
     _mark_login_verified(key)
     return _inbox_cache.get(key) or (time.time(), dump)
@@ -688,7 +701,12 @@ def _schedule_refresh(
             if not _dump_gate.acquire(blocking=False):
                 return
             try:
-                _store_own_dump(key, config, only_open=only_open)
+                _store_own_dump(
+                    key,
+                    config,
+                    only_open=only_open,
+                    since=datetime.now() - timedelta(days=_OPEN_DUMP_WINDOW_DAYS),
+                )
             finally:
                 _dump_gate.release()
         except Exception as exc:  # noqa: BLE001 — background refresh must not crash
@@ -1495,18 +1513,27 @@ def _filter_ignored(rows: list[dict[str, Any]], user_name: str) -> bool:
     return len(others) >= 3
 
 
-def fetch_open_dump(config: DokConfig, *, only_open: bool = True) -> dict[str, Any]:
-    """One unfiltered SOAP list — this DO ignores byUser/limit anyway."""
+def fetch_open_dump(
+    config: DokConfig,
+    *,
+    only_open: bool = True,
+    since: datetime | None = None,
+) -> dict[str, Any]:
+    """Общий список открытых задач. Без человека: эта база часто не режет byUser и limit.
+
+    since ограничивает beginDate, чтобы не выгружать всю историю.
+    """
     started = time.perf_counter()
     timeout = max(float(config.timeout), _DEFAULT_LIST_TIMEOUT_SEC)
-    logger.info("dok_soap dump start")
+    logger.info("dok_soap dump start since=%s", since.date().isoformat() if since else "-")
     from app.services.upstream_error_log import record
 
-    record(f"SOAP dump start timeout={int(timeout)}s {config.soap_url()}")
+    since_label = since.date().isoformat() if since else "-"
+    record(f"SOAP dump start timeout={int(timeout)}s since={since_label} {config.soap_url()}")
     try:
         rows = list_open_tasks(
             config,
-            None,
+            since,
             timeout=timeout,
             only_open=only_open,
             user=None,
@@ -1521,8 +1548,8 @@ def fetch_open_dump(config: DokConfig, *, only_open: bool = True) -> dict[str, A
         )
         raise
     elapsed = time.perf_counter() - started
-    record(f"SOAP dump done in {elapsed:.1f}s raw={len(rows)}")
-    logger.info("dok_soap dump list=%.1fs raw=%s", elapsed, len(rows))
+    record(f"SOAP dump done in {elapsed:.1f}s raw={len(rows)} since={since_label}")
+    logger.info("dok_soap dump list=%.1fs raw=%s since=%s", elapsed, len(rows), since_label)
     return {
         "kind": _OPEN_DUMP_KIND,
         "endpoint": config.soap_url(),
@@ -1530,6 +1557,64 @@ def fetch_open_dump(config: DokConfig, *, only_open: bool = True) -> dict[str, A
         "count": len(rows),
         "rows": rows,
     }
+
+
+def fetch_scoped_open_tasks(
+    config: DokConfig,
+    user_fio: str,
+    *,
+    only_open: bool,
+    since: datetime | None,
+    due_to: datetime | None,
+) -> tuple[str, list[dict[str, Any]]] | None:
+    """Список задач одного человека.
+
+    ('user', rows) — сервер применил фильтр, строк немного.
+    ('all', rows) — в ответе общий список, его можно кешировать как выгрузку.
+    None — запрос не удался, нужна отдельная общая выгрузка.
+    Повторный общий запрос после успешного ответа не делаем.
+    """
+    timeout = max(float(config.timeout), _DEFAULT_LIST_TIMEOUT_SEC)
+    try:
+        user = find_user(config, user_fio, timeout=min(timeout, _LOGIN_CHECK_TIMEOUT_SEC))
+    except (RuntimeError, ValueError) as exc:
+        logger.info("dok_soap scoped user lookup skipped: %s", str(exc)[:200])
+        return None
+    last_error: RuntimeError | None = None
+    for mode in ("byUser", "performer"):
+        try:
+            rows = list_open_tasks(
+                config,
+                since,
+                timeout=timeout,
+                only_open=only_open,
+                user=user,
+                limit=200,
+                filter_mode=mode,
+                due_to=due_to,
+            )
+        except RuntimeError as exc:
+            last_error = exc
+            if _is_timeout_reason(exc) or "нет связи" in str(exc).lower():
+                raise
+            continue
+        # Маленький список — это срез человека, даже если в нём чужие исполнители
+        # (замещение). Общим кешем он не становится: иначе один сотрудник
+        # затрёт выгрузку для остальных. Общий список узнаём по объёму.
+        unfiltered = len(rows) >= _PROBE_MAX_ROWS
+        logger.info(
+            "dok_soap scoped mode=%s raw=%s filtered=%s",
+            mode,
+            len(rows),
+            not unfiltered,
+        )
+        if unfiltered:
+            return "all", rows
+        if rows:
+            return "user", rows
+    if last_error is not None:
+        logger.info("dok_soap scoped failed: %s", str(last_error)[:200])
+    return ("user", []) if last_error is None else None
 
 
 def fetch_user_closed_tasks(
@@ -1587,6 +1672,11 @@ def _dump_rows(payload: dict[str, Any]) -> list[dict[str, Any]]:
     if not isinstance(raw, list):
         return []
     return [row for row in raw if isinstance(row, dict)]
+
+
+def _is_shareable_dump(payload: dict[str, Any]) -> bool:
+    """Чужой сеанс может взять только общий список, не срез одного человека."""
+    return payload.get("kind") != "user_inbox"
 
 
 def _is_open_dump(payload: dict[str, Any]) -> bool:
@@ -1893,7 +1983,9 @@ def fetch_user_inbox_tasks(
 ) -> dict[str, Any]:
     """Public API for inbox SOAP (used by dump script and onec.docflow_tasks).
 
-    1C returns the full open-task dump; we cache that once and slice per user.
+    Сначала один запрос с фильтром по человеку и границей даты. Если сервер
+    его проигнорировал и вернул общий список — кешируем его и режем по ФИО.
+    Второй такой же запрос не запускаем. Срез одного человека в общий кеш не кладём.
     Задачи тех, за кого пользователь работает, добавляются с ролью delegate:
     из пробы byUser под сессией пользователя и из списка в его настройках.
     """
@@ -1926,8 +2018,8 @@ def fetch_user_inbox_tasks(
         logger.info("dok_soap executed check dropped=%s", len(payload["rows"]) - len(rows))
         return {**payload, "rows": rows, "count": len(rows)}
 
-    def _delegates() -> list[str]:
-        if username and password:
+    def _delegates(*, live: bool) -> list[str]:
+        if live and username and password:
             try:
                 probe_by_user_delegates(
                     load_config(env_file=env_file, username=username, password=password), user_fio
@@ -1941,7 +2033,7 @@ def fetch_user_inbox_tasks(
             dump,
             user_fio,
             today_and_overdue=today_and_overdue,
-            delegate_fios=_delegates(),
+            delegate_fios=_delegates(live=cached),
         )
         if retrieve and payload["rows"]:
             try:
@@ -1957,7 +2049,7 @@ def fetch_user_inbox_tasks(
                 payload["rows"] = [details.get(row.get("id"), row) for row in payload["rows"]]
             except Exception:
                 logger.warning("dok_soap retrieve after dump slice failed")
-        elif only_open and payload["rows"]:
+        elif only_open and cached and payload["rows"]:
             payload = _drop_executed_rows(payload)
         logger.info(
             "dok_soap slice fio=%s cached=%s dump=%s kept=%s",
@@ -2006,6 +2098,34 @@ def fetch_user_inbox_tasks(
             shared = _adopt()
             if shared:
                 return _serve(shared[1], cached=True, fetched_at=shared[0])
+            # Свежая выгрузка длится минуты, и клиент обрывает её ответом 503.
+            # Уже скачанный список отдаём сразу, в том числе при обновлении экрана.
+            # Новая выгрузка идёт следом и попадёт в следующий заход.
+            stale = _adopt_shared_dump(
+                key,
+                endpoint=endpoint,
+                only_open=only_open,
+                newer_than=0,
+                config=config,
+                user_fio=user_fio,
+            )
+            if stale:
+                _schedule_refresh(
+                    key,
+                    endpoint=endpoint,
+                    only_open=only_open,
+                    user_fio=user_fio,
+                    stale_at=stale[0],
+                    env_file=env_file,
+                    username=username,
+                    password=password,
+                )
+                logger.info(
+                    "dok_soap serving stale dump age=%.0fs raw=%s",
+                    time.time() - stale[0],
+                    len(_dump_rows(stale[1])),
+                )
+                return _serve(stale[1], cached=True, fetched_at=stale[0])
             if not _dump_gate.acquire(timeout=_DEFAULT_LIST_TIMEOUT_SEC):
                 raise RuntimeError("Документооборот занят другой выгрузкой задач, повторите позже")
             try:
@@ -2013,7 +2133,47 @@ def fetch_user_inbox_tasks(
                 shared = _adopt()
                 cached = shared is not None
                 if shared is None:
-                    shared = _store_own_dump(key, config, only_open=only_open)
+                    window = datetime.now() - timedelta(
+                        days=max(int(since_days), _OPEN_DUMP_WINDOW_DAYS)
+                    )
+                    due_to = None
+                    if today_and_overdue:
+                        due_to = datetime.combine(date.today(), datetime.max.time()).replace(
+                            microsecond=0
+                        )
+                    scoped = fetch_scoped_open_tasks(
+                        config,
+                        user_fio,
+                        only_open=only_open,
+                        since=window,
+                        due_to=due_to,
+                    )
+                    if scoped is not None and scoped[0] == "user":
+                        personal = {
+                            "kind": "user_inbox",
+                            "endpoint": config.soap_url(),
+                            "only_open": only_open,
+                            "count": len(scoped[1]),
+                            "rows": scoped[1],
+                        }
+                        _store_cache(key, personal)
+                        stored = _inbox_cache.get(key) or (time.time(), personal)
+                        return _serve(stored[1], cached=False, fetched_at=stored[0])
+                    if scoped is not None:
+                        full = {
+                            "kind": _OPEN_DUMP_KIND,
+                            "endpoint": config.soap_url(),
+                            "only_open": only_open,
+                            "count": len(scoped[1]),
+                            "rows": scoped[1],
+                        }
+                        _store_cache(key, full)
+                        _mark_login_verified(key)
+                        shared = _inbox_cache.get(key) or (time.time(), full)
+                    else:
+                        shared = _store_own_dump(
+                            key, config, only_open=only_open, since=window
+                        )
             finally:
                 _dump_gate.release()
             return _serve(shared[1], cached=cached, fetched_at=shared[0])

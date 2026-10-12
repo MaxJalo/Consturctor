@@ -17,6 +17,11 @@ from typing import Any
 import httpx
 
 from app.config import settings
+from app.tools.onec.v8_internal_format import (
+    array_of_strings_to_internal,
+    from_internal_string,
+    structure_to_internal,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -291,59 +296,73 @@ def post_task_action(
     return parse_task_action_response(payload, raw_text=text)
 
 
-def _http_post_json(url: str, *, auth: tuple[str, str], body: dict[str, Any]) -> Any:
-    headers = {"Accept": "application/json", "Content-Type": "application/json"}
-    timeout = max(15.0, float(settings.odata_timeout_sec or 60))
-    with httpx.Client(timeout=timeout, auth=auth) as client:
-        response = client.post(url, json=body, headers=headers)
+def _decode_tasksii_response(response: httpx.Response) -> Any:
+    """JSON или ЗначениеВСтрокуВнутр. Служба ДО отвечает таблицей, не JSON."""
     if response.status_code in {401, 403}:
         raise RuntimeError(f"HTTP {response.status_code}: документооборот отклонил учётку")
     if response.status_code >= 400:
         snippet = response.text[:200].strip()
         raise RuntimeError(f"HTTP {response.status_code}: {snippet or response.reason_phrase}")
-    try:
-        return response.json()
-    except json.JSONDecodeError as exc:
-        raise RuntimeError("HTTP TasksII: ответ не JSON") from exc
+    text = (response.text or "").strip()
+    if not text:
+        return []
+    if text[0] in "[{":
+        try:
+            return response.json()
+        except json.JSONDecodeError:
+            pass
+    parsed = from_internal_string(text)
+    return parsed if isinstance(parsed, list) else []
+
+
+def _tasksii_rows(payload: Any) -> list[dict[str, Any]]:
+    if isinstance(payload, list):
+        return [row for row in payload if isinstance(row, dict)]
+    return _parse_tasksii_payload(payload)
 
 
 def fetch_user_document_executions(user_ref: str, *, user_fio: str = "") -> list[dict[str, Any]]:
-    """Строки TasksII/User для пользователя (GUID или ФИО в UserRef)."""
+    """Строки TasksII/User. Тело POST — структура {Пользователь}, как ждёт ЗначениеИзСтрокиВнутр."""
     auth = _resolve_auth()
     base = dok_http_base_url()
     ref = (user_ref or user_fio or "").strip()
     if not base or not auth or not ref:
         return []
 
-    attempts: list[tuple[str, str, dict[str, Any] | None, dict[str, Any] | None]] = [
-        ("GET", f"{base}/TasksII/User", {"UserRef": ref, "UserID": ref}, None),
-        ("GET", f"{base}/TasksII/User", {"UserRef": ref}, None),
-    ]
-    if user_fio.strip() and user_fio.strip() != ref:
-        attempts.append(
-            ("GET", f"{base}/TasksII/User", {"UserRef": user_fio.strip(), "UserID": ref}, None)
-        )
-    attempts.extend(
-        [
-            ("GET", f"{base}/TasksII/User/{ref}", None, None),
-            (
-                "POST",
-                f"{base}/TasksII/User",
-                None,
-                {"UserRef": ref, "UserID": ref, "Ref_Key": ref},
-            ),
-        ]
-    )
+    url = f"{base}/TasksII/User"
+    bodies = [structure_to_internal({"Пользователь": ref})]
+    fio = user_fio.strip()
+    if fio and fio != ref:
+        bodies.append(structure_to_internal({"Пользователь": fio}))
+    bodies.append(array_of_strings_to_internal([ref]))
 
-    for method, url, params, body in attempts:
-        try:
-            if method == "GET":
-                payload = _http_get_json(url, auth=auth, params=params)
-            else:
-                payload = _http_post_json(url, auth=auth, body=body or {})
-        except (httpx.HTTPError, RuntimeError, json.JSONDecodeError):
-            continue
-        rows = _parse_tasksii_payload(payload)
-        if rows:
-            return rows
+    gets: list[tuple[str, dict[str, Any] | None]] = [
+        (url, {"UserRef": ref, "UserID": ref}),
+        (url, {"UserRef": ref}),
+        (f"{url}/{ref}", None),
+    ]
+    if fio and fio != ref:
+        gets.append((url, {"UserRef": fio, "UserID": ref}))
+
+    timeout = max(15.0, float(settings.odata_timeout_sec or 60))
+    headers_post = {"Accept": "*/*", "Content-Type": "text/plain;charset=UTF-8"}
+    headers_get = {"Accept": "*/*"}
+    with httpx.Client(timeout=timeout, auth=auth) as client:
+        for body in bodies:
+            try:
+                response = client.post(url, content=body.encode("utf-8"), headers=headers_post)
+                rows = _tasksii_rows(_decode_tasksii_response(response))
+            except (httpx.HTTPError, RuntimeError, json.JSONDecodeError) as exc:
+                logger.info("TasksII POST skipped: %s", str(exc)[:200])
+                continue
+            if rows:
+                return rows
+        for get_url, params in gets:
+            try:
+                response = client.get(get_url, params=params, headers=headers_get)
+                rows = _tasksii_rows(_decode_tasksii_response(response))
+            except (httpx.HTTPError, RuntimeError, json.JSONDecodeError):
+                continue
+            if rows:
+                return rows
     return []
