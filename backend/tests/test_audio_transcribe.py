@@ -26,6 +26,7 @@ def _isolated_transcripts(tmp_path, monkeypatch):
     monkeypatch.setattr(audio_mod, "_transcript_dir", lambda: tmp_path)
     monkeypatch.setattr(audio_mod, "_decode", lambda path: [0.0] * (9 * audio_mod._SAMPLE_RATE))
     monkeypatch.delenv("WHISPER_BEAM_SIZE", raising=False)
+    monkeypatch.setattr(audio_mod, "_asr_gpu_url", lambda: "")
     audio_mod._cache.clear()
     yield
     audio_mod._cache.clear()
@@ -341,6 +342,50 @@ def test_invoke_audio_transcribe_requires_file_id(monkeypatch) -> None:
             )
     finally:
         clear_tool_context()
+
+
+def test_gpu_payload_becomes_segments() -> None:
+    from app.services.audio_transcribe import segments_from_gpu_payload
+
+    segments, duration = segments_from_gpu_payload(
+        {
+            "duration_sec": 4.2,
+            "segments": [
+                {"start": 0, "end": 1.5, "text": " Добрый день "},
+                {"start": 1.5, "end": 1.0, "text": "   "},
+                {"start": 2, "end": 4.2, "text": "Начинаем."},
+            ],
+        }
+    )
+    assert duration == 4.2
+    assert segments == [
+        {"start": 0.0, "end": 1.5, "text": "Добрый день"},
+        {"start": 2.0, "end": 4.2, "text": "Начинаем."},
+    ]
+    named, _duration = segments_from_gpu_payload(
+        {"duration_sec": 2, "segments": [{"start": 0, "end": 2, "text": "Алло", "speaker": "голос 1"}]}
+    )
+    assert named[0]["speaker"] == "голос 1"
+
+
+def test_configured_gpu_url_skips_cpu_model(monkeypatch) -> None:
+    import app.services.audio_transcribe as audio_mod
+
+    Session = _session_factory()
+    _seed_audio_file(Session)
+    monkeypatch.setattr(db_session, "SessionLocal", Session)
+    monkeypatch.setattr(audio_mod, "_asr_gpu_url", lambda: "http://127.0.0.1:7820")
+    monkeypatch.setattr(audio_mod, "_get_model", lambda: pytest.fail("CPU-модель не должна грузиться"))
+
+    def fake_gpu(raw: bytes, *, suffix: str, filename: str, prompt: str):
+        assert raw == b"fake-audio-bytes"
+        assert filename == "meeting.m4a"
+        return [{"start": 0.0, "end": 2.0, "text": "Текст с видеокарты"}], 2.0
+
+    monkeypatch.setattr(audio_mod, "_transcribe_via_gpu", fake_gpu)
+    result = transcribe_run_attachment(file_id="file-1", user_id="user-1")
+    assert result["segment_count"] == 1
+    assert "Текст с видеокарты" in result["preview"]
 
 
 def test_invoke_audio_transcribe_requires_session_user() -> None:

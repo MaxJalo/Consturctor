@@ -1,4 +1,8 @@
-"""Расшифровка аудио-вложений запуска через faster-whisper (CPU, язык ru).
+"""Расшифровка аудио-вложений запуска (язык ru).
+
+Если задан ASR_GPU_URL, файл уходит на серверный GPU-сервис asr-server
+(whisper-large-v3 на видеокарте). Иначе — faster-whisper на CPU.
+Модель и CUDA в установщики Constructor и Orchestrator не входят.
 
 Инструмент audio.transcribe: file_id вложения запуска → текст и сегменты
 с таймкодами. Модель кэшируется на процесс, читается из env WHISPER_MODEL.
@@ -55,6 +59,22 @@ DEFAULT_BEAM_SIZE = 5
 
 def _wanted_model() -> str:
     return (os.environ.get("WHISPER_MODEL") or DEFAULT_MODEL).strip() or DEFAULT_MODEL
+
+
+def _asr_gpu_url() -> str:
+    from app.config import settings
+
+    return (settings.asr_gpu_url or "").strip().rstrip("/")
+
+
+def _engine_tag() -> str:
+    url = _asr_gpu_url()
+    if not url:
+        return f"{_wanted_model()}:beam{_beam_size()}"
+    from app.config import settings
+
+    model = (settings.asr_gpu_model or "openai/whisper-large-v3").strip()
+    return f"gpu:{model}"
 
 
 def _beam_size() -> int:
@@ -160,12 +180,15 @@ def _write_transcript(filename: str, segments: list[dict[str, Any]], duration_se
         f"Сегментов: {len(segments)}",
         "",
     ]
-    lines.extend(
-        f"[{_clock(float(row['start']))}–{_clock(float(row['end']))}] {row['text']}"
-        for row in segments
-    )
+    lines.extend(_transcript_line(row) for row in segments)
     path.write_text("\n".join(lines).strip() + "\n", encoding="utf-8")
     return path
+
+
+def _transcript_line(row: dict[str, Any]) -> str:
+    speaker = str(row.get("speaker") or "").strip()
+    who = f"{speaker}: " if speaker else ""
+    return f"[{_clock(float(row['start']))}–{_clock(float(row['end']))}] {who}{row['text']}"
 
 
 def transcript_parts(segment_count: int) -> int:
@@ -352,7 +375,7 @@ def transcribe_run_attachment(
 
     prompt = _names_prompt(names, hint)
     digest = hashlib.sha256(raw).hexdigest()
-    cache_key = f"{digest}:{_wanted_model()}:beam{_beam_size()}:{prompt}"
+    cache_key = f"{digest}:{_engine_tag()}:{prompt}"
     with _inflight_lock:
         cached = _cache.get(cache_key)
         if cached is not None and Path(str(cached.get("transcript_path") or "")).is_file():
@@ -406,9 +429,70 @@ def _decode(path: Path) -> Any:
     return decode_audio(str(path), sampling_rate=_SAMPLE_RATE)
 
 
+def segments_from_gpu_payload(payload: dict[str, Any]) -> tuple[list[dict[str, Any]], float]:
+    raw_rows = payload.get("segments")
+    if not isinstance(raw_rows, list):
+        raise RuntimeError("Сервис распознавания не вернул сегменты")
+    segments: list[dict[str, Any]] = []
+    for row in raw_rows:
+        if not isinstance(row, dict):
+            continue
+        text = str(row.get("text") or "").strip()
+        if not text:
+            continue
+        start = float(row.get("start") or 0.0)
+        end = float(row.get("end") or start)
+        item: dict[str, Any] = {"start": round(start, 2), "end": round(max(end, start), 2), "text": text}
+        speaker = str(row.get("speaker") or "").strip()
+        if speaker:
+            item["speaker"] = speaker
+        segments.append(item)
+    duration = payload.get("duration_sec")
+    if duration is None and segments:
+        duration = segments[-1]["end"]
+    return segments, round(float(duration or 0.0), 2)
+
+
+def _transcribe_via_gpu(raw: bytes, *, suffix: str, filename: str, prompt: str) -> tuple[list[dict[str, Any]], float]:
+    import httpx
+
+    from app.config import settings
+
+    url = _asr_gpu_url()
+    timeout = float(settings.asr_gpu_timeout_sec or 3600)
+    try:
+        response = httpx.post(
+            f"{url}/transcribe",
+            files={"file": (filename or f"audio{suffix}", raw, "application/octet-stream")},
+            data={"prompt": prompt},
+            timeout=timeout,
+        )
+    except httpx.HTTPError as exc:
+        raise RuntimeError(
+            f"Сервис распознавания на видеокарте недоступен ({url}). Запустите asr-server\\run.bat"
+        ) from exc
+    if response.status_code >= 400:
+        detail = ""
+        try:
+            body = response.json()
+            detail = str(body.get("detail") or "") if isinstance(body, dict) else ""
+        except ValueError:
+            detail = (response.text or "")[:300]
+        raise RuntimeError(detail or f"Сервис распознавания ответил {response.status_code}")
+    try:
+        payload = response.json()
+    except ValueError as exc:
+        raise RuntimeError("Сервис распознавания вернул не JSON") from exc
+    if not isinstance(payload, dict):
+        raise RuntimeError("Сервис распознавания вернул пустой ответ")
+    return segments_from_gpu_payload(payload)
+
+
 def _transcribe_bytes(
     raw: bytes, *, suffix: str, filename: str, prompt: str
 ) -> tuple[list[dict[str, Any]], float]:
+    if _asr_gpu_url():
+        return _transcribe_via_gpu(raw, suffix=suffix, filename=filename, prompt=prompt)
     model = _get_model()
     tmp_path: Path | None = None
     try:

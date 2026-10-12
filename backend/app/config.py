@@ -148,6 +148,11 @@ class Settings(BaseSettings):
     onec_enforce_user_access: bool = True
     odata_local_catalog_path: Path = BACKEND_ROOT / "app" / "data" / "odata_document_structures.json"
     onec_artifact_storage_dir: Path = BACKEND_ROOT / "storage" / "onec_artifacts"
+    # GPU speech-to-text on this server (asr-server). Empty keeps the in-process CPU path.
+    # The model and CUDA stack stay in asr-server and are not packaged into desktop installers.
+    asr_gpu_url: str = ""
+    asr_gpu_model: str = "openai/whisper-large-v3"
+    asr_gpu_timeout_sec: float = 3600.0
 
 
 settings = Settings()
