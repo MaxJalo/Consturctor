@@ -23,6 +23,7 @@ import { isNewOneCTask } from '../../workplace/onecTaskSnapshot'
 import { ASK_CHIPS } from '../../workplace/specV04DemoData'
 import { useTodayKpiData } from '../../workplace/useTodayKpiData'
 import { formatProtocolDay, useBoardReportReadiness } from '../../workplace/boardReportReadiness'
+import { requestProtocolFocus } from '../../workplace/protocolFocus'
 import { useTodayOutlookMail } from '../../workplace/useTodayOutlookMail'
 import { comPasswordSessionHint, isOneCAuthFailure } from '../../workplace/onecSessionHints'
 import { OneCReconnectDialog, OneCReconnectInline } from '../../workplace/OneCReconnectDialog'
@@ -30,7 +31,6 @@ import { erpActorFio } from '../../workplace/userContext'
 import { useTodayProjectTasks } from '../../workplace/useTodayProjectTasks'
 import { isCanceledMeeting, parseMeetingTime } from '../../utils/outlookMeetings'
 import { isIlchenkoAccount } from '../../workplace/boardReportReadiness'
-import { meetingSelfLabel } from '../../workplace/meetingCalendars'
 import { isSelfCalendarMeeting, ownMeetingsHidden, useShowOwnMeetings } from '../../workplace/ownMeetings'
 import { sameDay } from '../../utils/calendar'
 import { useTodayPreparedDecisions } from '../../workplace/useTodayPreparedDecisions'
@@ -392,6 +392,7 @@ export function TodayGridTab({
   user,
   onOpenDecisions,
   onOpenMeetings,
+  onOpenDocflow,
   onOpenRun,
   onAskOrchestrator
 }: {
@@ -399,6 +400,8 @@ export function TodayGridTab({
   onOpenDecisions: () => void
   /** Кнопка «Открыть план»: переход во вкладку совещаний на выбранный день. */
   onOpenMeetings?: (day: Date) => void
+  /** Плитка «Совет директоров»: журнал протоколов и карточка, по которой считалась готовность. */
+  onOpenDocflow?: () => void
   onOpenMetrics: () => void
   onOpenPassport: (workflowId: string, title: string, tab?: 'info' | 'files' | 'results') => void
   onRun: (workflowId: string, title: string) => void
@@ -440,7 +443,7 @@ export function TodayGridTab({
         label: 'Совет директоров',
         value: board.loading ? '—' : board.readiness.total ? `${board.readiness.percent}%` : '—',
         hint,
-        tooltip: `Поставленные задачи отчётности за 2 рабочих дня до совета директоров по ГК. ${protocol}. Выполнено ${board.readiness.done} из ${board.readiness.total}.`,
+        tooltip: `Задачи на контроле: отчётность за 2 рабочих дня до совета директоров по ГК. ${protocol}. Выполнено ${board.readiness.done} из ${board.readiness.total}.`,
         tone: 'blue' as const,
         progress: board.loading || !board.readiness.total ? undefined : board.readiness.percent,
         ring: false
@@ -482,7 +485,6 @@ export function TodayGridTab({
   const erpFio = erpActorFio(user)
   const [showOwnToday, setShowOwnToday] = useShowOwnMeetings(erpFio)
   const hideOwnToday = ownMeetingsHidden(user, showOwnToday)
-  const todaySelfLabel = useMemo(() => meetingSelfLabel(erpFio) || erpFio, [erpFio])
   const outlookMail = useTodayOutlookMail(periodDay)
   const preparedDecisions = useTodayPreparedDecisions(periodDay, user.id)
   const projectTasks = useTodayProjectTasks(periodDay, data)
@@ -519,7 +521,7 @@ export function TodayGridTab({
     return data.meetings
       .filter((meeting) => {
         if (isCanceledMeeting(meeting)) return false
-        if (hideOwnToday && isSelfCalendarMeeting(meeting, todaySelfLabel)) return false
+        if (hideOwnToday && isSelfCalendarMeeting(meeting, erpFio)) return false
         const start = parseMeetingTime(meeting.start)
         return start ? sameDay(start, periodDay) : false
       })
@@ -538,7 +540,7 @@ export function TodayGridTab({
           participants: attendees.length ? `${attendees.length} чел.` : '—'
         }
       })
-  }, [data.meetings, periodDay, hideOwnToday, todaySelfLabel])
+  }, [data.meetings, periodDay, hideOwnToday, erpFio])
 
   const ask = (message: string): void => {
     onAskOrchestrator(message, 'Вкладка «Сегодня»')
@@ -557,6 +559,17 @@ export function TodayGridTab({
   }, [kpiFocusWidgetIds])
 
   const onKpiTileSelect = (id: string): void => {
+    if (id === 'sd-board') {
+      const protocolId = board.readiness.protocolId.trim()
+      if (!protocolId) return
+      requestProtocolFocus({
+        id: protocolId,
+        date: board.readiness.protocolDate,
+        number: board.readiness.protocolNumber
+      })
+      onOpenDocflow?.()
+      return
+    }
     setKpiTiles((current) => applyTodayKpiTileClick(current, id))
   }
 

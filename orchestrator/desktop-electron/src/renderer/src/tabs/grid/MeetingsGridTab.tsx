@@ -19,6 +19,7 @@ import {
 import { useMeetingProtocol } from '../../workplace/meetingProtocolStore'
 import {
   ensureOutlookMeetings,
+  useOutlookSyncTick,
   findNextMeetingOccurrence,
   formatMeetingStamp,
   isCanceledMeeting,
@@ -916,9 +917,9 @@ export function MeetingsGridTab({ user }: { user: UserProfile }): React.JSX.Elem
     [colorIndex]
   )
 
-  const load = useCallback((force = false) => {
-    setLoading(true)
-    void ensureOutlookMeetings(view, anchor, { owner: fio, force })
+  const load = useCallback((force = false, quiet = false) => {
+    if (!quiet) setLoading(true)
+    void ensureOutlookMeetings(view, anchor, { owner: fio, force, includeOwn: !hideOwn })
       .then((cal) => {
         if (cal.ok || cal.meetings.length) {
           setMeetings(cal.meetings || [])
@@ -934,7 +935,7 @@ export function MeetingsGridTab({ user }: { user: UserProfile }): React.JSX.Elem
         setError(err instanceof Error ? err.message : 'Ошибка календаря')
       })
       .finally(() => setLoading(false))
-  }, [anchor, fio, view, trackedVersion])
+  }, [anchor, fio, view, trackedVersion, hideOwn])
 
   useEffect(() => {
     if (!sharedMeetings.length) return
@@ -945,6 +946,12 @@ export function MeetingsGridTab({ user }: { user: UserProfile }): React.JSX.Elem
   useEffect(() => {
     load(false)
   }, [load])
+
+  const outlookSync = useOutlookSyncTick()
+  useEffect(() => {
+    if (!outlookSync) return
+    load(true, true)
+  }, [outlookSync, load])
 
   // Приглашение из календаря «Совещания» доходит до участников через Exchange не мгновенно.
   const refreshAfterPlanning = useCallback(() => {
@@ -957,7 +964,7 @@ export function MeetingsGridTab({ user }: { user: UserProfile }): React.JSX.Elem
       meetings.filter(
         (item) =>
           !isCanceledMeeting(item) &&
-          !(hideOwn && isSelfCalendarMeeting(item, selfLabel)) &&
+          !(hideOwn && isSelfCalendarMeeting(item, fio)) &&
           visibleOwners.some((person) => samePersonName(meetingOwnerName(item, selfLabel), person))
       ),
     [meetings, visibleOwners, selfLabel, hideOwn]
@@ -1247,6 +1254,10 @@ export function MeetingsGridTab({ user }: { user: UserProfile }): React.JSX.Elem
             <MeetingEditorDialog
               mode={editor.mode}
               meeting={editor.meeting}
+              day={anchor}
+              meetings={ownerScoped}
+              plannerFio={user.fio || fio}
+              plannerPosition={user.position || ''}
               onClose={() => setEditor(null)}
               onSaved={() => {
                 void load(true)

@@ -15019,13 +15019,44 @@ button.spec-v04-tile {
 }
 
 /* Форма совещания (Outlook-подобная). */
-.meeting-editor {
+.modal-card.meeting-editor {
   display: flex;
   flex-direction: column;
   gap: 10px;
-  width: min(560px, 94vw);
-  min-width: 360px;
-  padding: 18px 20px;
+  width: min(1180px, 98vw);
+  max-width: 98vw;
+  height: calc(100vh - 16px);
+  max-height: calc(100vh - 16px);
+  min-width: 720px;
+  padding: 16px 18px;
+  overflow: hidden;
+}
+
+.meeting-editor-body {
+  display: grid;
+  grid-template-columns: minmax(360px, 1fr) minmax(320px, 0.9fr);
+  gap: 18px;
+  flex: 1;
+  min-height: 0;
+}
+
+.meeting-editor-fields {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-height: 0;
+  overflow: auto;
+  padding-right: 4px;
+}
+
+.meeting-editor-text {
+  flex: 1;
+  min-height: 160px;
+}
+
+.meeting-editor-text textarea {
+  flex: 1;
+  min-height: 140px;
 }
 
 .meeting-editor-head {
@@ -15075,6 +15106,44 @@ button.spec-v04-tile {
   resize: vertical;
 }
 
+.meeting-attendees-field {
+  position: relative;
+}
+
+.meeting-attendees-list {
+  position: absolute;
+  z-index: 4;
+  left: 0;
+  right: 0;
+  top: calc(100% + 4px);
+  max-height: 180px;
+  overflow: auto;
+  margin: 0;
+  padding: 4px;
+  list-style: none;
+  background: #fff;
+  border: 1px solid #c5d0de;
+  border-radius: 8px;
+  box-shadow: 0 8px 24px rgba(13, 59, 115, 0.16);
+}
+
+.meeting-attendees-list button {
+  display: block;
+  width: 100%;
+  text-align: left;
+  border: 0;
+  background: transparent;
+  border-radius: 6px;
+  padding: 6px 8px;
+  font: inherit;
+  cursor: pointer;
+}
+
+.meeting-attendees-list button.is-active,
+.meeting-attendees-list button:hover {
+  background: #e8f0fa;
+}
+
 .meeting-editor-times {
   display: grid;
   grid-template-columns: 1fr 1fr;
@@ -15112,5 +15181,233 @@ button.spec-v04-tile {
   display: flex;
   justify-content: flex-end;
   gap: 8px;
-  margin-top: 4px;
+  margin-top: auto;
+  position: sticky;
+  bottom: 0;
+  padding-top: 8px;
+  background: #fff;
+}
+
+.meeting-editor-toggles,
+.meeting-repeat-panel {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.meeting-editor-toggle {
+  border: 1px solid #c5d0de;
+  background: #fff;
+  color: #1c334d;
+  border-radius: 8px;
+  padding: 6px 10px;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.meeting-editor-toggle.is-on {
+  background: #0d3b73;
+  border-color: #0d3b73;
+  color: #fff;
+}
+
+.meeting-repeat-day {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+}
+
+.meeting-repeat-day input {
+  width: 64px;
+}
+
+.meeting-editor.is-create {
+  width: min(1180px, 98vw);
+}
+
+.meeting-slot {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+}
+
+.meeting-slot-head,
+.meeting-slot-note,
+.meeting-slot-conflict {
+  flex-shrink: 0;
+}
+
+.meeting-slot-head {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 8px;
+}
+
+.meeting-slot-head label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 12px;
+  color: #5c6770;
+}
+
+.meeting-slot-head input {
+  font: inherit;
+  font-size: 13px;
+  padding: 6px 8px;
+  border: 1px solid #c5ced6;
+  border-radius: 6px;
+}
+
+.meeting-slot-head strong {
+  font-size: 15px;
+  color: #0d3b73;
+}
+
+.meeting-slot-head em {
+  font-style: normal;
+  font-weight: 500;
+  color: #5c6770;
+}
+
+.meeting-slot-board {
+  position: relative;
+  flex: 1;
+  height: auto;
+  min-height: 0;
+  margin-left: 46px;
+  border: 1px solid #d5dee6;
+  border-radius: 8px;
+  background:
+    repeating-linear-gradient(
+      to bottom,
+      transparent 0,
+      transparent calc(100% / 13 - 1px),
+      #e6edf3 calc(100% / 13 - 1px),
+      #e6edf3 calc(100% / 13)
+    );
+  touch-action: none;
+  user-select: none;
+}
+
+.meeting-slot-hour {
+  position: absolute;
+  left: -46px;
+  width: 40px;
+  transform: translateY(-50%);
+  font-size: 11px;
+  color: #7b8794;
+  text-align: right;
+}
+
+.meeting-slot-busy,
+.meeting-slot-pick {
+  position: absolute;
+  left: 6px;
+  right: 6px;
+  overflow: hidden;
+  border-radius: 6px;
+  pointer-events: none;
+}
+
+.meeting-slot-busy {
+  background: rgba(13, 59, 115, 0.12);
+  border: 1px solid rgba(13, 59, 115, 0.28);
+  padding: 2px 6px;
+}
+
+.meeting-slot-busy b,
+.meeting-slot-busy i {
+  display: block;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.meeting-slot-busy b {
+  font-size: 12px;
+  font-weight: 600;
+  color: #16324f;
+}
+
+.meeting-slot-busy i {
+  font-style: normal;
+  font-size: 11px;
+  color: #5c6770;
+}
+
+.meeting-slot-pick {
+  background: rgba(21, 101, 192, 0.28);
+  border: 2px solid #1565c0;
+  color: #0d3b73;
+  font-size: 12px;
+  font-weight: 600;
+  padding: 2px 6px;
+  pointer-events: auto;
+  cursor: grab;
+}
+
+.meeting-slot-pick.is-conflict {
+  background: rgba(198, 40, 40, 0.18);
+  border-color: #c62828;
+  color: #8e1b1b;
+}
+
+.meeting-slot-pick button {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: -4px;
+  height: 10px;
+  border: 0;
+  background: transparent;
+  cursor: ns-resize;
+}
+
+.meeting-slot-note {
+  margin: 6px 0 0;
+  font-size: 12px;
+  color: #7b8794;
+}
+
+.meeting-slot-conflict {
+  margin-top: 8px;
+  max-height: 132px;
+  overflow: auto;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: #fff6e8;
+  color: #8a5a12;
+  font-size: 13px;
+}
+
+.meeting-slot-conflict p {
+  margin: 0;
+}
+
+.meeting-slot-options {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.meeting-slot-options button {
+  border: 1px solid #e0c48a;
+  background: #fff;
+  color: #6d4a10;
+  border-radius: 999px;
+  padding: 4px 10px;
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.meeting-slot-options button:hover {
+  background: #fffaf0;
 }

@@ -84,7 +84,12 @@ class ProtocolWriteError(RuntimeError):
 def _odata_get(args: dict[str, Any]) -> dict[str, Any]:
     from app.services.onec_tools import _fetch_odata_list
 
-    return _fetch_odata_list(args)
+    # Имена разбираем пачкой сами. Иначе список регистра превращается в отдельный
+    # GET автора и исполнителя на каждую строку, а карточка справочника — в обход
+    # всех его табличных частей.
+    payload = dict(args)
+    payload.setdefault("resolve_navigation", False)
+    return _fetch_odata_list(payload)
 
 
 def _odata_post(args: dict[str, Any]) -> dict[str, Any]:
@@ -327,6 +332,32 @@ def _next_day_by_cadence(previous: dict[str, Any], day: str) -> str:
     return f"{target.isoformat()}T00:00:00"
 
 
+def _standing_task_rows(items: Any, *, author_key: str, day_only: str) -> list[dict[str, Any]]:
+    """ПостоянныеЗадачиПротокола: исполнитель — строка ФИО, не ссылка."""
+    rows: list[dict[str, Any]] = []
+    for item in _as_list(items)[:_MAX_ROWS]:
+        text = _text_of(item, "text", "task", "title", "Задача", "what")
+        if not text:
+            continue
+        line_no = str(len(rows) + 1)
+        point = str(_field_of(item, "item", "point", "n", "НомерПунктаПротокола") or line_no)
+        row: dict[str, Any] = {
+            "LineNumber": line_no,
+            "НомерПунктаПротокола": point,
+            "Задача": text,
+            "Автор_Key": author_key,
+            "ДатаПостановкиЗадачи": day_only,
+            "Ответственный": _field_of(item, "executor", "responsible", "who", "assignee", "Ответственный"),
+            "Примечание": _field_of(item, "note", "comment", "Примечание"),
+            "Приоритет": _field_of(item, "priority", "Приоритет"),
+        }
+        due = _day_value(_field_of(item, "due", "deadline", "term", "Срок"), end=True)
+        if due:
+            row["ДатаФактическогоИсполнения"] = due
+        rows.append(row)
+    return rows
+
+
 def build_protocol_create_body(
     args: dict[str, Any],
     *,
@@ -553,6 +584,11 @@ def build_protocol_create_body(
             row["ДатаФактическогоИсполнения"] = due
         task_rows.append(row)
 
+    standing_rows: list[dict[str, Any]] | None = None
+    if any(key in args for key in ("control_tasks", "standing_tasks")):
+        raw_control = next(args[key] for key in ("control_tasks", "standing_tasks") if key in args)
+        standing_rows = _standing_task_rows(raw_control, author_key=leader["ref_key"], day_only=day_only)
+
     raw_comment = _UNRESOLVED_NOTE_RE.sub("", str(_first(args, "comment", "Комментарий") or ""))
     comment = "\n".join(filter(None, (_clean(line) for line in raw_comment.splitlines())))
     if unresolved:
@@ -578,6 +614,8 @@ def build_protocol_create_body(
         "Решения": decision_rows,
         TASKS_PART: task_rows,
     }
+    if standing_rows is not None:
+        body[STANDING_TASKS_PART] = standing_rows
     if theme_key:
         body["ТемаСовещания_Key"] = theme_key
     if department_key:
@@ -656,7 +694,9 @@ def _description_of(entity: str, key: Any, cache: dict[str, str]) -> str:
         return cache[cache_key]
     name = ""
     try:
-        rows = _rows(_odata_get({"entity": entity, "ref_key": guid, "top": 1}))
+        rows = _rows(
+            _odata_get({"entity": entity, "ref_key": guid, "top": 1, "resolve_navigation": False})
+        )
         if rows:
             name = _clean(rows[0].get("Description") or rows[0].get("Наименование"))
     except Exception:  # noqa: BLE001
@@ -678,11 +718,53 @@ def _protocol_rows(card: dict[str, Any], section: str) -> list[dict[str, Any]]:
     return ordered
 
 
+_CARD_NAVS = (
+    "ТемаСовещания",
+    "Кабинет",
+    "ГрифДоступа",
+    "Подразделение",
+    "Проект",
+    "Руководитель",
+    "Ответственный",
+    "Подготовил",
+)
+
+
 def read_protocol_card(ref_key: str) -> dict[str, Any]:
+    """Один список с $expand: шапка, имена справочников и табличные части в одном ответе.
+
+    Точечный GET по guid заставляет OData следом обойти каждую табличную часть и каждую
+    навигационную ссылку. $expand в списке 1С принимает, одиночный GET — нет.
+    """
     guid = _clean(ref_key)
     if not _looks_like_guid(guid):
         raise ProtocolWriteError("ref_key протокола должен быть GUID")
-    rows = _rows(_odata_get({"entity": PROTOCOL_ENTITY, "ref_key": guid, "top": 1}))
+    from urllib.parse import quote
+
+    path = (
+        f"{PROTOCOL_ENTITY}?$format=json&$top=1"
+        f"&$filter={quote(f"Ref_Key eq guid'{guid}'", safe="=,'")}"
+        f"&$expand={','.join(_CARD_NAVS)}"
+    )
+    try:
+        rows = _rows(
+            _odata_get(
+                {
+                    "entity": PROTOCOL_ENTITY,
+                    "path": path,
+                    "top": 1,
+                    "resolve_navigation": False,
+                }
+            )
+        )
+    except Exception:  # noqa: BLE001 — старый точечный GET, если список с expand не принят
+        rows = []
+    if not rows:
+        rows = _rows(
+            _odata_get(
+                {"entity": PROTOCOL_ENTITY, "ref_key": guid, "top": 1, "resolve_navigation": False}
+            )
+        )
     if not rows:
         raise ProtocolWriteError(f"Протокол {guid} не найден в 1С")
     return rows[0]
@@ -702,7 +784,7 @@ def _prefetch_descriptions(
 
     def want(entity: str, key: Any) -> None:
         guid = _clean(key)
-        if _looks_like_guid(guid) and guid != _EMPTY_GUID:
+        if _looks_like_guid(guid) and guid != _EMPTY_GUID and f"{entity}:{guid}" not in cache:
             wanted.setdefault(entity, []).append(guid)
 
     for field in ("Руководитель_Key", "Ответственный_Key", "Подготовил_Key"):
@@ -733,7 +815,16 @@ def _prefetch_descriptions(
         requested = set(keys)
         odata_filter = " or ".join(f"Ref_Key eq guid'{key}'" for key in keys)
         try:
-            rows = _rows(_odata_get({"entity": entity, "filter": odata_filter, "top": len(keys)}))
+            rows = _rows(
+                _odata_get(
+                    {
+                        "entity": entity,
+                        "filter": odata_filter,
+                        "top": len(keys),
+                        "resolve_navigation": False,
+                    }
+                )
+            )
         except Exception:  # noqa: BLE001
             return entity, {}
         names: dict[str, str] = {}
@@ -758,7 +849,25 @@ def _register_rows_or_empty(protocol_key: str) -> list[dict[str, Any]]:
         return []
 
 
-def read_protocol_form(ref_key: str, *, card: dict[str, Any] | None = None) -> dict[str, Any]:
+def _mark_control_from_docflow(tasks: list[dict[str, Any]], session: dict[str, Any], base_ref: str) -> None:
+    """Выполнение в Документообороте закрывает задачу на контроле, даже если в регистре «Выполнена» пустая."""
+    import logging
+
+    try:
+        from app.services.docflow_protocols import _docflow_tasks, apply_docflow_execution
+
+        rows, _note = _docflow_tasks(session, [base_ref])
+        apply_docflow_execution(tasks, rows.get(base_ref, []))
+    except Exception as exc:  # noqa: BLE001 — карточка протокола открывается и без ДО
+        logging.getLogger(__name__).warning("control docflow execution %s failed: %s", base_ref, str(exc)[:200])
+
+
+def read_protocol_form(
+    ref_key: str,
+    *,
+    card: dict[str, Any] | None = None,
+    session: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     """Document_ТД_Протокол → form fields (names instead of GUIDs) for the desktop editor."""
     card = card if isinstance(card, dict) and card else read_protocol_card(ref_key)
     status = _clean(card.get("Статус"))
@@ -904,6 +1013,8 @@ def read_protocol_form(ref_key: str, *, card: dict[str, Any] | None = None) -> d
         ],
         "comment": _clean(card.get("Комментарий")),
     }
+    if base_ref and session:
+        _mark_control_from_docflow(form["control_tasks"], session, base_ref)
     return {
         "ref_key": _clean(card.get("Ref_Key")) or _clean(ref_key),
         "number": _clean(card.get("Number")),

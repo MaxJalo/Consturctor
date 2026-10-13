@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import importlib
 from pathlib import Path
+import queue
 import re
 import sys
 import tempfile
@@ -203,29 +204,135 @@ def _outlook_access_message(prefix: str, exc: Exception) -> str:
 # Outlook COM — один STA-сервер. Параллельный обход почты и клик «В Outlook»
 # дают MK_E_UNAVAILABLE, и кнопка молча не открывает письмо.
 _OUTLOOK_COM_LOCK = threading.Lock()
+# Одна живая сессия на всё время процесса: новый CoInitialize на каждый запрос
+# снова показывает «разрешить на 10 минут» и рвёт связь примерно через час.
+_SESSION_TIMEOUT_SEC = 200
+_session_queue: queue.Queue | None = None
+_session_thread: threading.Thread | None = None
+_session_ident = 0
+_cached_outlook: Any = None
+_com_initialized = False
+_programmatic_access_applied = False
+
+
+def _allow_programmatic_access() -> None:
+    """Убрать окно Outlook «разрешить доступ на 10 минут» для этого пользователя.
+
+    Диалог центра управления безопасностью не умеет «всегда»: максимум 10 минут,
+    после чего следующий вызов снова ждёт подтверждения и молча отваливается.
+    """
+    global _programmatic_access_applied
+    if _programmatic_access_applied or sys.platform != "win32":
+        return
+    _programmatic_access_applied = True
+    try:
+        import winreg
+    except ImportError:
+        return
+    prompts = (
+        "PromptOOMAddressInformationAccess",
+        "PromptOOMAddressBookAccess",
+        "PromptOOMMeetingTaskRequestResponse",
+        "PromptOOMSend",
+        "PromptOOMFormulaAccess",
+        "PromptSimpleMAPISend",
+        "PromptSimpleMAPINameResolve",
+        "PromptSimpleMAPIOpenMessage",
+    )
+    for version in ("16.0", "15.0", "14.0"):
+        try:
+            with winreg.CreateKey(
+                winreg.HKEY_CURRENT_USER,
+                rf"Software\Microsoft\Office\{version}\Outlook\Security",
+            ) as key:
+                winreg.SetValueEx(key, "ObjectModelGuard", 0, winreg.REG_DWORD, 2)
+        except OSError as exc:
+            _log_progress(f"step=outlook_guard_skip version={version}: {exc}")
+        try:
+            with winreg.CreateKey(
+                winreg.HKEY_CURRENT_USER,
+                rf"Software\Policies\Microsoft\Office\{version}\outlook\security",
+            ) as key:
+                winreg.SetValueEx(key, "AdminSecurityMode", 0, winreg.REG_DWORD, 3)
+                for name in prompts:
+                    winreg.SetValueEx(key, name, 0, winreg.REG_DWORD, 2)
+        except OSError as exc:
+            _log_progress(f"step=outlook_policy_skip version={version}: {exc}")
+    _log_progress("step=outlook_programmatic_access ok")
+
+
+def _drop_cached_outlook() -> None:
+    global _cached_outlook
+    _cached_outlook = None
 
 
 def _run_com_read(operation: Callable[[Any], dict], access_error_prefix: str) -> dict:
-    """Выполнить read-only COM-операцию с CoInitialize и повтором транзиентных ошибок.
+    """Выполнить COM-операцию в постоянной STA-сессии Outlook.
 
     ``operation`` получает модуль ``win32com.client`` и возвращает готовый payload.
     ComUnavailableError из загрузки pywin32 пробрасывается как есть (нужно тестам).
     """
-    with _OUTLOOK_COM_LOCK:
+    if threading.get_ident() == _session_ident:
         return _run_com_read_locked(operation, access_error_prefix)
+    box: dict[str, Any] = {"event": threading.Event(), "result": None, "error": None}
+    with _OUTLOOK_COM_LOCK:
+        _outlook_session_queue().put((operation, access_error_prefix, box))
+        finished = box["event"].wait(_SESSION_TIMEOUT_SEC)
+    if not finished:
+        raise OutlookAccessError(
+            f"{access_error_prefix}: Outlook не ответил за {_SESSION_TIMEOUT_SEC} с. "
+            "Соединение удерживается, повторите обновление."
+        )
+    if box["error"] is not None:
+        raise box["error"]
+    return box["result"]
+
+
+def _outlook_session_queue() -> queue.Queue:
+    global _session_queue, _session_thread
+    if _session_thread is not None and _session_thread.is_alive() and _session_queue is not None:
+        return _session_queue
+    work: queue.Queue = queue.Queue()
+    _session_queue = work
+    thread = threading.Thread(
+        target=_outlook_session_main,
+        name="outlook-com-session",
+        daemon=True,
+    )
+    _session_thread = thread
+    thread.start()
+    return work
+
+
+def _outlook_session_main() -> None:
+    global _session_ident
+    _session_ident = threading.get_ident()
+    work = _session_queue
+    if work is None:
+        return
+    while True:
+        operation, prefix, box = work.get()
+        try:
+            box["result"] = _run_com_read_locked(operation, prefix)
+        except Exception as exc:  # noqa: BLE001 — отдать ошибку ждущему вызову
+            box["error"] = exc
+        finally:
+            box["event"].set()
 
 
 def _run_com_read_locked(operation: Callable[[Any], dict], access_error_prefix: str) -> dict:
+    global _com_initialized
     pythoncom, win32com_client = _load_pywin32_modules()
     _log_progress("step=load_pywin32 ok")
+    if not _com_initialized:
+        _log_progress("step=co_initialize start")
+        pythoncom.CoInitialize()
+        _com_initialized = True
+        _allow_programmatic_access()
+        _log_progress("step=co_initialize ok")
     last_exc: Exception | None = None
     for attempt in range(1, MAX_COM_ATTEMPTS + 1):
-        com_initialized = False
         try:
-            _log_progress(f"step=co_initialize start attempt={attempt}")
-            pythoncom.CoInitialize()
-            com_initialized = True
-            _log_progress("step=co_initialize ok")
             return operation(win32com_client)
         except OutlookComError:
             raise
@@ -241,21 +348,10 @@ def _run_com_read_locked(operation: Callable[[Any], dict], access_error_prefix: 
                 f"step=com_error attempt={attempt} transient={transient}: {exc}"
             )
             if transient and attempt < MAX_COM_ATTEMPTS:
-                if com_initialized:
-                    try:
-                        pythoncom.CoUninitialize()
-                    except Exception:
-                        pass
-                    com_initialized = False
+                _drop_cached_outlook()
                 time.sleep(COM_RETRY_DELAY_SECONDS * attempt)
                 continue
             raise OutlookAccessError(_outlook_access_message(access_error_prefix, exc)) from exc
-        finally:
-            if com_initialized:
-                try:
-                    pythoncom.CoUninitialize()
-                except Exception:
-                    pass
     raise OutlookAccessError(
         _outlook_access_message(access_error_prefix, last_exc or RuntimeError("Outlook COM failed"))
     )
@@ -286,6 +382,10 @@ def _decode_mime_header(value: str) -> str:
 
 OL_MEETING = 1
 OL_RECIPIENT_REQUIRED = 1
+OL_RECURS_WEEKLY = 1
+OL_RECURS_MONTHLY = 2
+# Сколько вперёд переносить выходные, не меняя правило серии.
+_WORKWEEK_HORIZON_DAYS = 366
 _PEOPLE_KEYS = (
     "people",
     "attendees",
@@ -556,6 +656,19 @@ def _resolve_person_calendar_folder(
     folder, status = _open_shared_calendar(namespace, person)
     if folder is not None:
         return folder, status
+    # Личный ящик в адресной книге часто не резолвится, а совещания руководителя
+    # уже лежат в открытом общем календаре «Совещания».
+    if str(status).startswith("unresolved"):
+        shared = _find_public_meeting_folders(outlook, namespace, own_name)
+        if shared:
+            _log_progress(
+                f"step=calendar_fallback_meetings person={person} folders={len(shared)}"
+            )
+            return shared[0][1], "meetings"
+        labels = [label for label, _folder, is_own in visible if not is_own]
+        _log_progress(
+            f"step=calendar_unresolved person={person} shared_labels={labels[:8]}"
+        )
     return None, status
 
 
@@ -599,6 +712,20 @@ def _folder_entry_id(folder: Any) -> str:
 
 def _folder_label(folder: Any, fallback: str = "") -> str:
     return _safe_str(getattr(folder, "Name", "")).strip() or fallback or "Календарь"
+
+
+def _display_calendar_label(folder: Any, fallback: str = "") -> str:
+    """Папка «Календарь» в чужом ящике подписывается именем ящика, не словом «Календарь»."""
+    name = _folder_label(folder, fallback)
+    store = ""
+    try:
+        store = _safe_str(getattr(folder.Store, "DisplayName", "")).strip()
+    except Exception:
+        store = ""
+    generic = name.casefold() in {"", "календарь", "calendar", "календари", "calendars"}
+    if generic and store:
+        return store
+    return name or store or fallback or "Календарь"
 
 
 def _is_appointment_folder(folder: Any) -> bool:
@@ -648,7 +775,7 @@ def _iter_visible_calendar_folders(
                         folder = nav.Folder
                     except Exception:
                         continue
-                    add(folder, _folder_label(folder, group_name))
+                    add(folder, _display_calendar_label(folder, group_name))
         if seen_explorers == 0:
             _log_progress("step=nav_calendars skipped: no explorer")
     except Exception as exc:
@@ -668,7 +795,7 @@ def _iter_visible_calendar_folders(
         try:
             for sub in folder.Folders:
                 if _is_appointment_folder(sub):
-                    extra.append((_folder_label(sub, label), sub))
+                    extra.append((_display_calendar_label(sub, label), sub))
         except Exception:
             continue
     for label, folder in extra:
@@ -991,6 +1118,243 @@ def _attach_attendees(appt: Any, names: list[str]) -> list[str]:
     except Exception:
         _log_progress("step=attendees_resolve skipped")
     return added
+
+
+def _replace_attendees(appt: Any, names: list[str]) -> list[str]:
+    """Заменить состав совещания, а не дописать тех же людей ещё раз."""
+    try:
+        recipients = appt.Recipients
+        for index in range(int(getattr(recipients, "Count", 0) or 0), 0, -1):
+            recipients.Remove(index)
+    except Exception:
+        _log_progress("step=attendees_clear skipped")
+    return _attach_attendees(appt, names)
+
+
+def _recipient_smtp(recipient: Any) -> str:
+    """SMTP участника после Resolve: адресная книга, затем свойство письма."""
+    entry = None
+    try:
+        entry = recipient.AddressEntry
+    except Exception:
+        entry = None
+    if entry is not None:
+        smtp = _exchange_smtp(entry)
+        if "@" in smtp:
+            return smtp
+        address = _safe_str(getattr(entry, "Address", "")).strip()
+        if "@" in address:
+            return address
+    try:
+        value = recipient.PropertyAccessor.GetProperty(
+            "http://schemas.microsoft.com/mapi/proptag/0x39FE001E"
+        )
+        text = _safe_str(value).strip()
+        if "@" in text:
+            return text
+    except Exception:
+        pass
+    return ""
+
+
+def _participant_lines(appt: Any, fallback: list[str]) -> list[str]:
+    lines: list[str] = []
+    try:
+        recipients = appt.Recipients
+        count = int(getattr(recipients, "Count", 0) or 0)
+    except Exception:
+        recipients, count = None, 0
+    for index in range(1, count + 1):
+        try:
+            recipient = recipients.Item(index)
+        except Exception:
+            continue
+        name = _recipient_display_name(recipient) or _safe_str(getattr(recipient, "Name", "")).strip()
+        email = _recipient_smtp(recipient)
+        if name and email:
+            lines.append(f"{name} <{email}>")
+        elif name:
+            lines.append(name)
+    if lines:
+        return lines
+    return [item.strip() for item in fallback if item and item.strip()]
+
+
+def short_person_name(fio: str) -> str:
+    """«Жалыбин Максим Дмитриевич» → «Жалыбин М.Д.»."""
+    parts = [part for part in (fio or "").replace(".", " ").split() if part]
+    if len(parts) >= 3 and parts[1][:1] and parts[2][:1]:
+        return f"{parts[0]} {parts[1][:1]}.{parts[2][:1]}."
+    if len(parts) == 2 and parts[1][:1]:
+        return f"{parts[0]} {parts[1][:1]}."
+    return (fio or "").strip()
+
+
+def meeting_planner_line(fio: str, position: str) -> str:
+    tail = " ".join(part for part in (short_person_name(fio), (position or "").strip()) if part)
+    if not tail:
+        return "запланировал(а)"
+    return f"запланировал(а) {tail}"
+
+
+def compose_participants_body(lines: list[str], planner: str, notes: str) -> str:
+    """Текст совещания: список участников с почтой и кто запланировал."""
+    cleaned = [line.strip() for line in lines if line and line.strip()]
+    if not cleaned:
+        return (notes or "").strip()
+    rows = ["Участники", ""]
+    for index, line in enumerate(cleaned):
+        rows.append(f"{line};" if index < len(cleaned) - 1 else line)
+    rows.extend(["", planner.strip() or "запланировал(а)"])
+    text = "\n".join(rows)
+    extra = _notes_after_participants(notes)
+    if extra:
+        text = f"{text}\n\n{extra}"
+    return text
+
+
+def _notes_after_participants(notes: str) -> str:
+    text = (notes or "").strip()
+    if not text.casefold().startswith("участники"):
+        return text
+    lines = text.splitlines()
+    for index, line in enumerate(lines):
+        if line.strip().casefold().startswith("запланировал"):
+            return "\n".join(lines[index + 1 :]).strip()
+    return ""
+
+
+def outlook_weekday_mask(weekday: int) -> int:
+    """Python Monday=0 … Sunday=6 → битовая маска дня Outlook."""
+    return 1 << ((int(weekday) + 1) % 7)
+
+
+def nearest_workday(moment: datetime) -> datetime:
+    """Суббота → пятница, воскресенье → понедельник. Будний день не сдвигается."""
+    if moment.weekday() == 5:
+        return moment - timedelta(days=1)
+    if moment.weekday() == 6:
+        return moment + timedelta(days=1)
+    return moment
+
+
+def next_workday(moment: datetime) -> datetime:
+    cursor = moment
+    while cursor.weekday() >= 5:
+        cursor += timedelta(days=1)
+    return cursor
+
+
+def first_monthly_start(start: datetime, day_of_month: int) -> datetime:
+    """Первая дата серии: выбранное число месяца, не раньше дня встречи."""
+    day = min(31, max(1, int(day_of_month or start.day)))
+    year, month = start.year, start.month
+    for _ in range(18):
+        try:
+            candidate = start.replace(year=year, month=month, day=day)
+        except ValueError:
+            candidate = None
+        if candidate is not None and candidate.date() >= start.date():
+            return candidate
+        month += 1
+        if month == 13:
+            month = 1
+            year += 1
+    return start
+
+
+def _recurrence_dates(start: datetime, kind: str, day_of_month: int) -> list[datetime]:
+    limit = start + timedelta(days=_WORKWEEK_HORIZON_DAYS)
+    found: list[datetime] = []
+    if kind == "weekly":
+        cursor = start
+        while cursor <= limit and len(found) < 60:
+            found.append(cursor)
+            cursor += timedelta(days=7)
+        return found
+    year, month = start.year, start.month
+    day = min(31, max(1, int(day_of_month or start.day)))
+    while len(found) < 24:
+        try:
+            cursor = start.replace(year=year, month=month, day=day)
+        except ValueError:
+            cursor = None
+        if cursor is not None and cursor >= start:
+            if cursor > limit:
+                break
+            found.append(cursor)
+        month += 1
+        if month == 13:
+            month = 1
+            year += 1
+        if datetime(year, month, 1) > limit + timedelta(days=40):
+            break
+    return found
+
+
+def _meeting_span(spec: dict) -> tuple[datetime, datetime]:
+    """Подогнать первую дату под число месяца или сдвинуть разовую встречу с выходного."""
+    start: datetime = spec["start"]
+    end: datetime = spec["end"]
+    duration = end - start
+    kind = spec.get("recurrence_kind") or ""
+    if kind == "monthly":
+        start = first_monthly_start(start, int(spec.get("day_of_month") or start.day))
+        end = start + duration
+    elif not kind and spec.get("work_week") and start.weekday() >= 5:
+        start = nearest_workday(start)
+        end = start + duration
+    return start, end
+
+
+def _apply_recurrence(appt: Any, start: datetime, kind: str, day_of_month: int) -> Any:
+    pattern = appt.GetRecurrencePattern()
+    if kind == "monthly":
+        pattern.RecurrenceType = OL_RECURS_MONTHLY
+        pattern.Interval = 1
+        pattern.DayOfMonth = min(31, max(1, int(day_of_month or start.day)))
+    else:
+        pattern.RecurrenceType = OL_RECURS_WEEKLY
+        pattern.Interval = 1
+        pattern.DayOfWeekMask = outlook_weekday_mask(start.weekday())
+    pattern.PatternStartDate = datetime(start.year, start.month, start.day)
+    pattern.NoEndDate = True
+    return pattern
+
+
+def _shift_weekend_occurrences(pattern: Any, start: datetime, end: datetime, kind: str, day_of_month: int) -> int:
+    """Выходной экземпляр серии переносится на рабочий день. Правило повтора не меняется."""
+    duration = end - start
+    clock = (start.hour, start.minute, start.second)
+    moved = 0
+    for occurrence in _recurrence_dates(start, kind, day_of_month):
+        if occurrence.weekday() < 5:
+            continue
+        original = occurrence.replace(hour=clock[0], minute=clock[1], second=clock[2], microsecond=0)
+        target = nearest_workday(original)
+        if target < start:
+            target = next_workday(original)
+        if target == original:
+            continue
+        item = None
+        for probe in (original, original.strftime("%d.%m.%Y %H:%M:%S")):
+            try:
+                item = pattern.GetOccurrence(probe)
+                break
+            except Exception:
+                item = None
+        if item is None:
+            _log_progress(f"step=workweek_occurrence_missing date={original:%Y-%m-%d}")
+            continue
+        try:
+            _set_appointment_times(item, target, target + duration)
+            item.Save()
+            moved += 1
+        except Exception as exc:
+            _log_progress(f"step=workweek_shift_failed date={original:%Y-%m-%d}: {exc}")
+    if moved:
+        _log_progress(f"step=workweek_shifted count={moved}")
+    return moved
 
 
 def _matches_query(subject: str, body: str, query: str | None) -> bool:
@@ -1400,6 +1764,7 @@ def read_calendar(input_data: dict) -> dict:
         seen_owners.add(name.casefold())
         calendar_owners.append(name)
     calendar_owner = bool(calendar_owners)
+    include_own = _truthy(input_data.get("include_own", True))
 
     def _read(win32com_client: Any) -> dict:
         _log_progress("step=dispatch_outlook start")
@@ -1526,6 +1891,8 @@ def read_calendar(input_data: dict) -> dict:
             folders = _iter_visible_calendar_folders(outlook, namespace, own_name)
             if not folders:
                 folders = [(own_name or "Календарь", _own_calendar_folder(namespace), True)]
+            if not include_own:
+                folders = [row for row in folders if not row[2]]
             _log_progress(f"step=visible_calendars count={len(folders)}")
             for label, folder, is_own in folders:
                 remaining_results = max_results - len(events)
@@ -1587,8 +1954,12 @@ def read_calendar(input_data: dict) -> dict:
                 "range_end": end_at.isoformat(),
             }
         targets = list(calendar_owners or people or [own_name or ""])
-        if calendar_owner and not any(
-            not person or _same_calendar_person(person, own_name) for person in targets
+        if (
+            include_own
+            and calendar_owner
+            and not any(
+                not person or _same_calendar_person(person, own_name) for person in targets
+            )
         ):
             targets.insert(0, own_name or "")
         for person in targets:
@@ -1763,12 +2134,31 @@ def create_event(input_data: dict) -> dict:
                 folder = _own_calendar_folder(namespace)
             appt = _new_appointment(outlook, folder)
             appt.Subject = spec["subject"]
-            _set_appointment_times(appt, spec["start"], spec["end"])
+            start, end = _meeting_span(spec)
+            _set_appointment_times(appt, start, end)
             try:
                 appt.ReminderSet = False
             except Exception:
                 pass
+            kind = spec.get("recurrence_kind") or ""
+            if kind:
+                try:
+                    _apply_recurrence(appt, start, kind, int(spec.get("day_of_month") or start.day))
+                    appt.Save()
+                    pattern = appt.GetRecurrencePattern()
+                except Exception as exc:
+                    raise OutlookComError(f"Outlook не записал повтор совещания: {exc}") from exc
+                if spec.get("work_week"):
+                    _shift_weekend_occurrences(
+                        pattern, start, end, kind, int(spec.get("day_of_month") or start.day)
+                    )
             added = _attach_attendees(appt, attendees)
+            if attendees:
+                spec["body"] = compose_participants_body(
+                    _participant_lines(appt, attendees),
+                    meeting_planner_line(spec.get("planner_fio") or "", spec.get("planner_position") or ""),
+                    spec["body"],
+                )
             appt.Save()
             entry_id = _verify_saved_appointment(outlook, appt)
             if spec["body"]:
@@ -1801,8 +2191,8 @@ def create_event(input_data: dict) -> dict:
                 {
                     "entry_id": entry_id,
                     "subject": spec["subject"],
-                    "start": spec["start"].isoformat(timespec="minutes"),
-                    "end": spec["end"].isoformat(timespec="minutes"),
+                    "start": start.isoformat(timespec="minutes"),
+                    "end": end.isoformat(timespec="minutes"),
                     "location": spec["location"],
                     "organizer": organizer or own_name,
                     "organizer_status": organizer_status,
@@ -1852,17 +2242,50 @@ def update_event(input_data: dict) -> dict:
             raise OutlookComError("Встреча не найдена в Outlook")
         if "subject" in input_data:
             appt.Subject = _safe_str(input_data.get("subject") or "").strip() or "Совещание"
-        if start is not None:
-            finish = end if end is not None and end > start else start + timedelta(minutes=DEFAULT_MEETING_MINUTES)
-            _set_appointment_times(appt, start, finish)
+        kind, day_of_month, work_week = _recurrence_request(input_data, input_data)
+        span_start, span_end = start, end
+        if span_start is not None:
+            finish = span_end if span_end is not None and span_end > span_start else span_start + timedelta(minutes=DEFAULT_MEETING_MINUTES)
+            span_start, finish = _meeting_span(
+                {
+                    "start": span_start,
+                    "end": finish,
+                    "recurrence_kind": kind,
+                    "day_of_month": day_of_month,
+                    "work_week": work_week,
+                }
+            )
+            _set_appointment_times(appt, span_start, finish)
+            span_end = finish
+        if kind and span_start is not None:
+            try:
+                _apply_recurrence(appt, span_start, kind, int(day_of_month or span_start.day))
+                appt.Save()
+                pattern = appt.GetRecurrencePattern()
+            except Exception as exc:
+                raise OutlookComError(f"Outlook не записал повтор совещания: {exc}") from exc
+            if work_week:
+                _shift_weekend_occurrences(
+                    pattern, span_start, span_end or span_start, kind, int(day_of_month or span_start.day)
+                )
         if "location" in input_data:
             appt.Location = _safe_str(input_data.get("location") or "")
-        if "body" in input_data:
-            appt.Body = _safe_str(input_data.get("body") or "")
         attendees = _people_from_input(input_data)
         added: list[str] = []
         if "attendees" in input_data:
-            added = _attach_attendees(appt, attendees)
+            added = _replace_attendees(appt, attendees)
+        notes = _safe_str(input_data.get("body") or "") if "body" in input_data else ""
+        if attendees:
+            notes = compose_participants_body(
+                _participant_lines(appt, attendees),
+                meeting_planner_line(
+                    _safe_str(input_data.get("planner_fio") or ""),
+                    _safe_str(input_data.get("planner_position") or ""),
+                ),
+                notes,
+            )
+        if notes or "body" in input_data:
+            appt.Body = notes
         appt.Save()
         entry = _verify_saved_appointment(outlook, appt)
         send_invites = _truthy(input_data.get("send_invites", bool(attendees)))
@@ -1878,8 +2301,8 @@ def update_event(input_data: dict) -> dict:
         event = {
             "entry_id": entry,
             "subject": _safe_str(getattr(appt, "Subject", "") or ""),
-            "start": start.isoformat(timespec="minutes") if start else "",
-            "end": end.isoformat(timespec="minutes") if end else "",
+            "start": span_start.isoformat(timespec="minutes") if span_start else "",
+            "end": span_end.isoformat(timespec="minutes") if span_end else "",
             "location": _safe_str(getattr(appt, "Location", "") or ""),
             "attendees": added,
             "invites_sent": invites_sent,
@@ -1896,7 +2319,16 @@ def update_event(input_data: dict) -> dict:
 
 
 def _dispatch_outlook(win32com_client: Any) -> Any:
-    """Взять уже открытый Outlook, иначе создать COM-сессию и залогинить профиль."""
+    """Держать один Outlook.Application на сессию, не поднимать новый процесс на запрос."""
+    global _cached_outlook
+    if _cached_outlook is not None:
+        try:
+            _ensure_mapi_logon(_cached_outlook.GetNamespace("MAPI"))
+            _log_progress("step=dispatch_cached ok")
+            return _cached_outlook
+        except Exception as exc:
+            _log_progress(f"step=dispatch_cached dropped: {exc}")
+            _cached_outlook = None
     _log_progress("step=dispatch_outlook start")
     last_exc: Exception | None = None
     for attempt in range(1, 4):
@@ -1904,6 +2336,7 @@ def _dispatch_outlook(win32com_client: Any) -> Any:
             outlook = win32com_client.GetActiveObject("Outlook.Application")
             _ensure_mapi_logon(outlook.GetNamespace("MAPI"))
             _log_progress(f"step=dispatch_active ok attempt={attempt}")
+            _cached_outlook = outlook
             return outlook
         except Exception as exc:
             last_exc = exc
@@ -1916,6 +2349,7 @@ def _dispatch_outlook(win32com_client: Any) -> Any:
         _log_progress(f"step=dispatch_new_logon skipped: {exc}")
     if last_exc is not None:
         _log_progress(f"step=dispatch_new after_active_fail: {last_exc}")
+    _cached_outlook = outlook
     return outlook
 
 
@@ -1977,31 +2411,54 @@ def _new_appointment(outlook: Any, folder: Any = None) -> Any:
     return outlook.CreateItem(1)
 
 
+def _wall_clock_shift(wanted: datetime, observed: datetime) -> timedelta | None:
+    """На сколько сдвинуть запись, если Outlook сохранил настенное время как UTC.
+
+    Для Москвы это ровно 3 часа: поставили 13:00, в календаре оказалось 10:00.
+    """
+    wanted = wanted.replace(tzinfo=None, microsecond=0)
+    observed = observed.replace(tzinfo=None, microsecond=0)
+    seconds = int((wanted - observed).total_seconds())
+    if seconds == 0 or abs(seconds) > 14 * 3600 or seconds % 3600 != 0:
+        return None
+    return timedelta(seconds=seconds)
+
+
+def _com_wall_clock(value: Any) -> datetime | None:
+    if isinstance(value, datetime):
+        return value.replace(tzinfo=None)
+    return _coerce_datetime(value)
+
+
+def _assign_wall_times(appt: Any, start: datetime, end: datetime) -> None:
+    """Локальная строка, не pywintypes.Time: тот переводит 13:00 в 10:00 UTC."""
+    try:
+        appt.Start = start.strftime("%d.%m.%Y %H:%M:%S")
+        appt.End = end.strftime("%d.%m.%Y %H:%M:%S")
+        return
+    except Exception:
+        _log_progress("step=locale_time_failed")
+    try:
+        appt.Start = start.strftime("%Y-%m-%d %H:%M:%S")
+        appt.End = end.strftime("%Y-%m-%d %H:%M:%S")
+        return
+    except Exception:
+        _log_progress("step=iso_time_failed")
+    appt.Start = start
+    appt.End = end
+
+
 def _set_appointment_times(appt: Any, start: datetime, end: datetime) -> None:
-    """Start/End: pywintypes, затем datetime, затем строка — Outlook капризен к типу."""
-    try:
-        pywintypes = importlib.import_module("pywintypes")
-        appt.Start = pywintypes.Time(start)
-        appt.End = pywintypes.Time(end)
+    """Записать начало и конец как настенное время календаря Outlook."""
+    start = start.replace(tzinfo=None)
+    end = end.replace(tzinfo=None)
+    _assign_wall_times(appt, start, end)
+    observed = _com_wall_clock(getattr(appt, "Start", None))
+    shift = _wall_clock_shift(start, observed) if observed is not None else None
+    if shift is None:
         return
-    except Exception:
-        _log_progress("step=pywintypes_time_failed")
-    try:
-        appt.Start = start
-        appt.End = end
-        return
-    except Exception:
-        _log_progress("step=datetime_assign_failed")
-    start_text = start.strftime("%Y-%m-%d %H:%M:%S")
-    end_text = end.strftime("%Y-%m-%d %H:%M:%S")
-    try:
-        appt.Start = start_text
-        appt.End = end_text
-        return
-    except Exception:
-        _log_progress("step=start_iso_failed try_locale")
-    appt.Start = start.strftime("%d.%m.%Y %H:%M:%S")
-    appt.End = end.strftime("%d.%m.%Y %H:%M:%S")
+    _log_progress(f"step=time_shift minutes={int(shift.total_seconds() // 60)}")
+    _assign_wall_times(appt, start + shift, end + shift)
 
 
 def _meeting_specs(input_data: dict) -> list[dict]:
@@ -2042,6 +2499,7 @@ def _meeting_specs(input_data: dict) -> list[dict]:
             send_invites = bool(attendees)
         else:
             send_invites = _truthy(send_raw)
+        recurrence_kind, day_of_month, work_week = _recurrence_request(row, input_data)
         specs.append(
             {
                 "subject": subject,
@@ -2053,9 +2511,34 @@ def _meeting_specs(input_data: dict) -> list[dict]:
                 "organizer": organizer,
                 "send_invites": send_invites,
                 "stamp": stamp,
+                "recurrence_kind": recurrence_kind,
+                "day_of_month": day_of_month,
+                "work_week": work_week,
+                "planner_fio": _safe_str(row.get("planner_fio") or input_data.get("planner_fio") or "").strip(),
+                "planner_position": _safe_str(
+                    row.get("planner_position") or input_data.get("planner_position") or ""
+                ).strip(),
             }
         )
     return specs
+
+
+def _recurrence_request(row: dict, input_data: dict) -> tuple[str, int, bool]:
+    raw = row.get("recurrence", input_data.get("recurrence"))
+    kind = ""
+    day = 0
+    if isinstance(raw, dict):
+        label = _safe_str(raw.get("kind") or "").strip().casefold()
+        if label in {"week", "weekly", "неделя"}:
+            kind = "weekly"
+        elif label in {"month", "monthly", "число", "month_day"}:
+            kind = "monthly"
+        try:
+            day = int(raw.get("day_of_month") or 0)
+        except (TypeError, ValueError):
+            day = 0
+    work_week = _truthy(row.get("work_week", input_data.get("work_week")))
+    return kind, day, work_week
 
 
 def _coerce_datetime(value: Any) -> datetime | None:

@@ -714,15 +714,17 @@ export function MeetingProtocolForm({
                           <th className="df1c-col-measure">Задача</th>
                           <th className="df1c-col-ref">Исполнитель</th>
                           <th className="df1c-col-date">Срок</th>
+                          <th className="df1c-col-enum">Выполнение</th>
                         </tr>
                       </thead>
                       <tbody>
                         {controlTasks.map((row, index) => (
-                          <tr key={`${row.text}-${index}`}>
+                          <tr key={`${row.text}-${index}`} className={row.done ? 'is-done' : ''}>
                             <td className="df1c-num">{index + 1}</td>
                             <td className="df1c-col-measure">{row.text}</td>
                             <td className="df1c-col-ref">{row.executor}</td>
                             <td className="df1c-col-date">{ruDay(row.due)}</td>
+                            <td className="df1c-col-enum">{row.done ? 'Выполнена' : 'Не выполнена'}</td>
                           </tr>
                         ))}
                       </tbody>

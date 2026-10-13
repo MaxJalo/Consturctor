@@ -1,5 +1,6 @@
 import { api } from '../api/client'
 import { meetingOutlookMarker, parseMeetingTime, type MeetingEvent } from '../utils/outlookMeetings'
+import { onecGatewayInvokeArgs } from './userContext'
 
 export type ProtocolQuestionDraft = {
   key: string
@@ -18,6 +19,7 @@ export type ProtocolControlTask = {
   text: string
   executor: string
   due: string
+  done: boolean
 }
 
 export type ProtocolTaskDraft = {
@@ -232,7 +234,8 @@ export function parseOnecProtocolForm(payload: unknown): OnecProtocolForm | null
       control_tasks: list(form.control_tasks).map((row) => ({
         text: str(row.text),
         executor: str(row.executor),
-        due: str(row.due)
+        due: str(row.due),
+        done: row.done === true
       })),
       comment: str(form.comment)
     }
@@ -246,7 +249,11 @@ const FORM_CACHE_TTL_MS = 3 * 60_000
 const formLoads = new Map<string, { at: number; promise: Promise<ProtocolFormResult> }>()
 
 async function loadProtocolForm(key: string): Promise<ProtocolFormResult> {
-  const response = await api.invokeServerTool('onec.meeting_protocols', { meeting_kind: 'any', ref_key: key }, 120_000)
+  const response = await api.invokeServerTool(
+    'onec.meeting_protocols',
+    onecGatewayInvokeArgs(null, { meeting_kind: 'any', ref_key: key }),
+    120_000
+  )
   if (!response.ok) return { ok: false, error: response.error || 'Не удалось прочитать протокол из 1С' }
   const card = parseOnecProtocolForm(response.result)
   if (!card) return { ok: false, error: 'Протокол не найден в 1С' }

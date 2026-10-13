@@ -744,16 +744,21 @@ def test_inbox_cache_shares_dump_across_users(tmp_path, monkeypatch) -> None:
     assert second["cached"] is True
     assert second["count"] == 1
     assert second["rows"][0]["id"] == "2"
-    import time
 
     third = dok_soap.fetch_user_inbox_tasks(
         "Иванов И.И.", today_and_overdue=True, force_refresh=True
     )
     assert third["cached"] is True
     assert third["rows"][0]["id"] == "1"
-    deadline = time.time() + 2
-    while calls["n"] < 2 and time.time() < deadline:
-        time.sleep(0.05)
+    assert calls["n"] == 1
+
+    for key, (fetched_at, payload) in list(dok_soap._inbox_cache.items()):
+        dok_soap._inbox_cache[key] = (fetched_at - dok_soap._FORCE_REUSE_SEC - 5, payload)
+    fourth = dok_soap.fetch_user_inbox_tasks(
+        "Иванов И.И.", today_and_overdue=True, force_refresh=True
+    )
+    assert fourth["cached"] is False
+    assert fourth["rows"][0]["id"] == "1"
     assert calls["n"] == 2
 
 

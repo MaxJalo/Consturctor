@@ -11,6 +11,7 @@ export type BoardReportTask = {
 }
 
 export type BoardReportReadiness = {
+  protocolId: string
   protocolNumber: string
   protocolDate: string
   total: number
@@ -21,6 +22,7 @@ export type BoardReportReadiness = {
 }
 
 const EMPTY: BoardReportReadiness = {
+  protocolId: '',
   protocolNumber: '',
   protocolDate: '',
   total: 0,
@@ -69,6 +71,7 @@ export async function loadBoardReportReadiness(user: UserProfile | null): Promis
     }
   }) : []
   return {
+    protocolId: str(protocol.id),
     protocolNumber: str(protocol.number),
     protocolDate: str(protocol.date).slice(0, 10),
     total,
