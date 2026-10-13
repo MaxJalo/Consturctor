@@ -923,6 +923,10 @@ function AppShell(): React.JSX.Element {
               setLastTab('meetings')
               setView({ kind: 'tab', key: 'meetings' })
             }}
+            onOpenDocflow={() => {
+              setLastTab('docflow')
+              setView({ kind: 'tab', key: 'docflow' })
+            }}
             onOpenMetrics={() => setView({ kind: 'tab', key: 'kpi' })}
             onOpenPassport={(workflowId, title, tab) => setView({ kind: 'passport', workflowId, title, tab })}
             onRun={(workflowId, title) => void openAgentRun(workflowId, '', true, title)}

@@ -37,6 +37,8 @@ _LOGIN_CHECK_TIMEOUT_SEC = 30.0
 # Полный список открытых задач этой базы — десятки тысяч строк и несколько минут.
 # В запрос кладём границу по дате начала: старше этого окна задачи не качаем.
 _OPEN_DUMP_WINDOW_DAYS = 180
+# Повторный заход сразу после выгрузки не ждёт ещё несколько минут.
+_FORCE_REUSE_SEC = 10 * 60
 _SHARED_DISK_FILES = 3
 _OPEN_DUMP_KIND = "open_dump"
 _cache_guard = threading.Lock()
@@ -2065,7 +2067,8 @@ def fetch_user_inbox_tasks(
     requested_at = time.time()
     with lock:
         hit = _cache_entry(key)
-        if hit and (not force_refresh or hit[0] >= requested_at):
+        reuse_recent = bool(hit and force_refresh and (time.time() - hit[0]) <= _FORCE_REUSE_SEC)
+        if hit and (not force_refresh or hit[0] >= requested_at or reuse_recent):
             fetched_at, dump = hit
             age = time.time() - fetched_at
             if not force_refresh and age >= _cache_ttl_sec():
@@ -2098,35 +2101,40 @@ def fetch_user_inbox_tasks(
             shared = _adopt()
             if shared:
                 return _serve(shared[1], cached=True, fetched_at=shared[0])
-            # Свежая выгрузка длится минуты, и клиент обрывает её ответом 503.
-            # Уже скачанный список отдаём сразу, в том числе при обновлении экрана.
-            # Новая выгрузка идёт следом и попадёт в следующий заход.
-            stale = _adopt_shared_dump(
-                key,
-                endpoint=endpoint,
-                only_open=only_open,
-                newer_than=0,
-                config=config,
-                user_fio=user_fio,
-            )
-            if stale:
-                _schedule_refresh(
+            # Обычный заход может показать уже скачанный список и обновить его следом.
+            # Запуск программы и кнопка «Обновить» (force_refresh) ждут живую выгрузку:
+            # иначе сотрудник видит многодневный кэш и считает, что 1С не обновилась.
+            if not force_refresh:
+                stale = _adopt_shared_dump(
                     key,
                     endpoint=endpoint,
                     only_open=only_open,
+                    newer_than=0,
+                    config=config,
                     user_fio=user_fio,
-                    stale_at=stale[0],
-                    env_file=env_file,
-                    username=username,
-                    password=password,
                 )
-                logger.info(
-                    "dok_soap serving stale dump age=%.0fs raw=%s",
-                    time.time() - stale[0],
-                    len(_dump_rows(stale[1])),
-                )
-                return _serve(stale[1], cached=True, fetched_at=stale[0])
+                if stale:
+                    _schedule_refresh(
+                        key,
+                        endpoint=endpoint,
+                        only_open=only_open,
+                        user_fio=user_fio,
+                        stale_at=stale[0],
+                        env_file=env_file,
+                        username=username,
+                        password=password,
+                    )
+                    logger.info(
+                        "dok_soap serving stale dump age=%.0fs raw=%s",
+                        time.time() - stale[0],
+                        len(_dump_rows(stale[1])),
+                    )
+                    return _serve(stale[1], cached=True, fetched_at=stale[0])
             if not _dump_gate.acquire(timeout=_DEFAULT_LIST_TIMEOUT_SEC):
+                stale = _cache_entry(key)
+                if stale:
+                    logger.warning("dok_soap dump gate busy, serving cache age=%.0fs", time.time() - stale[0])
+                    return _serve(stale[1], cached=True, fetched_at=stale[0])
                 raise RuntimeError("Документооборот занят другой выгрузкой задач, повторите позже")
             try:
                 # Пока ждали очередь, выгрузку мог закончить другой пользователь.

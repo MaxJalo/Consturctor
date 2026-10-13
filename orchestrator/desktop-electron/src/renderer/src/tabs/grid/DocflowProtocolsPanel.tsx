@@ -34,6 +34,7 @@ import {
   type BoardReportReadiness
 } from '../../workplace/boardReportReadiness'
 import { createProtocolOnBasis } from '../../workplace/meetingProtocolCreate'
+import { clearProtocolFocus, peekProtocolFocus } from '../../workplace/protocolFocus'
 import { DocflowFileOpenButton } from './DocflowAttachments'
 import { DocflowOpenFormBar } from './DocflowOpenFormBar'
 import { MeetingProtocolForm } from './MeetingProtocolForm'
@@ -641,8 +642,8 @@ function ProtocolCardView({ card, onSaved }: { card: ProtocolCard; onSaved: () =
             </ol>
           </section>
         ) : null}
-        {tab === 'control' ? controlDocflowBlock : null}
-        {tab === 'assigned' ? assignedDocflowBlock : null}
+        {tab === 'control' && controlDocflow.length ? controlDocflowBlock : null}
+        {tab === 'assigned' && assignedDocflow.length ? assignedDocflowBlock : null}
         {tab === 'control' && editing ? (
           <TaskEditor
             title="Задачи для контроля · таблица протокола"
@@ -681,7 +682,7 @@ function ProtocolCardView({ card, onSaved }: { card: ProtocolCard; onSaved: () =
             <TaskList tasks={assignedRegister} empty="" />
           </section>
         ) : null}
-        {tab === 'control' && !editing && controlTasks.length ? (
+        {tab === 'control' && !editing && controlTasks.length && !controlRegister.length ? (
           <section className="docflow-card-block">
             <h4>
               <ListChecks size={14} aria-hidden /> Таблица протокола в 1С
@@ -690,7 +691,7 @@ function ProtocolCardView({ card, onSaved }: { card: ProtocolCard; onSaved: () =
             <TaskList tasks={controlTasks} empty="" />
           </section>
         ) : null}
-        {tab === 'assigned' && !editing && assignedTasks.length ? (
+        {tab === 'assigned' && !editing && assignedTasks.length && !assignedRegister.length ? (
           <section className="docflow-card-block">
             <h4>
               <ListChecks size={14} aria-hidden /> Таблица протокола в 1С
@@ -805,7 +806,7 @@ function BoardReadyBar({
     : 'Протокол совета директоров по ГК'
   const tasks = [...readiness.tasks].sort((left, right) => Number(left.done) - Number(right.done))
   return (
-    <div className={`ready-bar${open ? ' is-open' : ''}`} title="Поставленные задачи: управленческая отчётность за 2 рабочих дня до совета директоров по ГК">
+    <div className={`ready-bar${open ? ' is-open' : ''}`} title="Задачи на контроле: управленческая отчётность за 2 рабочих дня до совета директоров по ГК. Выполнение берётся из регистра и из закрытой задачи Документооборота.">
       <button type="button" className="ready-bar-toggle" disabled={loading || !readiness.total} onClick={() => setOpen((value) => !value)}>
         <span className="ready-bar-head">
           <span>Готовность к совету директоров</span>
@@ -816,7 +817,7 @@ function BoardReadyBar({
           <i style={{ width: `${width}%` }} />
         </span>
         <small>
-          {loading ? '' : readiness.total ? `выполнено ${readiness.done} из ${readiness.total}` : 'поставленных задач нет'}
+          {loading ? '' : readiness.total ? `выполнено ${readiness.done} из ${readiness.total}` : 'задач на контроле нет'}
           {readiness.total ? (
             <ChevronDown size={14} aria-hidden className={open ? 'is-open' : ''} />
           ) : null}
@@ -871,7 +872,7 @@ export function DocflowProtocolsPanel({
   const [participant, setParticipant] = useState('')
   const [query, setQuery] = useState('')
   const [selectedId, setSelectedId] = useState('')
-  const [formRef, setFormRef] = useState('')
+  const [formRef, setFormRef] = useState(() => peekProtocolFocus()?.id || '')
   const [card, setCard] = useState<ProtocolCard | null>(null)
   const [cardLoading, setCardLoading] = useState(false)
   const [cardError, setCardError] = useState('')
@@ -1016,6 +1017,23 @@ export function DocflowProtocolsPanel({
         if (cardForRef.current === row.id) setCardLoading(false)
       })
   }
+
+  const focusedProtocolId = useRef(formRef)
+  useEffect(() => {
+    if (!formRef) return
+    // StrictMode снимает эффект до повторного монтирования: отмена таймера
+    // оставляет ссылку, и второй запуск снова открывает тот же протокол.
+    const timer = window.setTimeout(() => clearProtocolFocus(), 0)
+    return () => window.clearTimeout(timer)
+  }, [formRef])
+  useEffect(() => {
+    const id = focusedProtocolId.current
+    if (!id) return
+    const row = rows.find((item) => item.id === id)
+    if (!row) return
+    focusedProtocolId.current = ''
+    openCard(row)
+  }, [rows])
 
   const refreshCard = async (id: string): Promise<void> => {
     forgetProtocolCard(id)
