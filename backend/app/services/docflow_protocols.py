@@ -340,7 +340,7 @@ def _register_rows(ref: str) -> list[dict[str, Any]]:
 
 
 def _register_task_view(item: dict[str, Any], today: str) -> dict[str, Any]:
-    executed = _flag(item.get("Выполнена"))
+    executed = _flag(item.get("Подтверждена"))
     due = "" if _text(item.get("СрокИсполнения")).startswith("0001") else _date(item.get("СрокИсполнения"))
     done_at = "" if _text(item.get("ДатаИсполнения")).startswith("0001") else _date(item.get("ДатаИсполнения"))
     overdue = bool(not executed and due and due[:10] < today)
@@ -358,6 +358,8 @@ def _register_task_view(item: dict[str, Any], today: str) -> dict[str, Any]:
         "status": TASK_DONE if executed else TASK_OVERDUE if overdue else TASK_OPEN,
         "priority": _text(item.get("Приоритет")),
         "sent": _flag(item.get("Отправлена")),
+        "completed": _flag(item.get("Выполнена")),
+        "confirmed": executed,
         "note": "\n".join(filter(None, (_text(item.get("Примечание")), _text(item.get("Комментарий"))))),
         "files": [],
         "source": "register",
@@ -436,20 +438,160 @@ def _docflow_tasks(args: dict[str, Any], refs: list[str]) -> tuple[dict[str, lis
     return _dump_open_rows(refs), note
 
 
-def _docflow_task_views(rows: list[dict[str, Any]], today: str) -> list[dict[str, Any]]:
-    """Как список в форме 1С: строка на пункт и исполнителя; перенос срока в ДО — новая задача той же строки."""
-    groups: dict[tuple[int, str], list[dict[str, Any]]] = {}
-    for row in rows:
-        name, step = _text(row.get("name")), _text(row.get("step"))
-        if not (step.startswith("Исполн") or name.startswith("Исполнить")):
+def _point_no(value: Any) -> int:
+    match = re.match(r"\d+", str(value or "").strip())
+    return int(match.group(0)) if match else 0
+
+
+def _same_task_text(left: str, right: str) -> bool:
+    """Совпадение текста задачи. Общее начало «За 2 рабочих дня до совета…» само по себе не считается."""
+    if not left or not right:
+        return False
+    if left == right:
+        return True
+    short, long = (left, right) if len(left) <= len(right) else (right, left)
+    if len(short) < 80 or not long.startswith(short):
+        return False
+    return True
+
+
+def _route_column(row: dict[str, Any]) -> str:
+    """Колонка маршрута ДО.
+
+    Первая («отправлено» / «исполнить») значит, что задача есть.
+    Последняя («утверждено») значит, что она исполнена. Середина маршрута не считается.
+    """
+    text = _fold(f"{_text(row.get('step'))} {_text(row.get('name'))}")
+    if "ознаком" in text:
+        return ""
+    if "утверд" in text or "подтверд" in text:
+        return "approved"
+    if "отправ" in text or text.startswith("исполн") or " исполн" in f" {text}":
+        return "sent"
+    return ""
+
+
+def _approved_points(docflow_rows: list[dict[str, Any]]) -> tuple[set[int], list[str]]:
+    """Пункты, у которых закрыта именно последняя колонка маршрута."""
+    by_point: dict[int, list[dict[str, Any]]] = {}
+    loose: list[dict[str, Any]] = []
+    for row in docflow_rows:
+        if _route_column(row) != "approved":
             continue
+        match = _DO_TASK_NO_RE.search(_text(row.get("name")))
+        if match:
+            by_point.setdefault(int(match.group(1)), []).append(row)
+        else:
+            loose.append(row)
+    done_points: set[int] = set()
+    for point, items in by_point.items():
+        items.sort(key=lambda item: _text(item.get("begin")))
+        if items[-1].get("executed"):
+            done_points.add(point)
+    done_texts = [
+        _fold(row.get("description"))
+        for row in loose
+        if row.get("executed") and len(_fold(row.get("description"))) >= 40
+    ]
+    return done_points, done_texts
+
+
+def apply_docflow_execution(tasks: list[dict[str, Any]], docflow_rows: list[dict[str, Any]]) -> None:
+    """Закрытая последняя колонка маршрута отмечает строку на контроле.
+
+    «Отправлено» и «Исполнить» задачу не закрывают: это только наличие поручения.
+    Общее начало «За 2 рабочих дня…» чужие строки не закрывает.
+    """
+    done_points, done_texts = _approved_points(docflow_rows)
+    if not done_points and not done_texts:
+        return
+    for task in tasks:
+        if task.get("executed") or task.get("done"):
+            continue
+        point = _point_no(task.get("n") or task.get("item") or task.get("point"))
+        folded = _fold(task.get("text"))
+        hit = bool(point and point in done_points)
+        if not hit and folded:
+            hit = any(folded == item for item in done_texts)
+        if not hit:
+            continue
+        task["executed"] = True
+        task["done"] = True
+        task["confirmed"] = True
+        task["overdue"] = False
+        if "status" in task:
+            task["status"] = TASK_DONE
+
+
+def _mark_task_done(task: dict[str, Any]) -> None:
+    task["executed"] = True
+    task["done"] = True
+    task["confirmed"] = True
+    task["overdue"] = False
+    if "status" in task:
+        task["status"] = TASK_DONE
+
+
+def _same_listed_task(left: dict[str, Any], right: dict[str, Any]) -> bool:
+    """Одна строка на контроле: тот же пункт и тот же исполнитель.
+
+    Одинаковый текст «За 2 рабочих дня…» у разных людей — разные задачи.
+    """
+    left_n = _point_no(left.get("n"))
+    right_n = _point_no(right.get("n"))
+    left_who = normalize_fio(_text(left.get("responsible")))
+    right_who = normalize_fio(_text(right.get("responsible")))
+    if left_n and right_n:
+        if left_n != right_n:
+            return False
+        if not left_who or not right_who or left_who == right_who:
+            return True
+        return left_who.startswith(right_who) or right_who.startswith(left_who)
+    if left_who and right_who and left_who != right_who:
+        return False
+    return _same_task_text(_fold(left.get("text"))[:180], _fold(right.get("text"))[:180])
+
+
+def _merge_listed_tasks(primary: list[dict[str, Any]], extra: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Строка Документооборота, которая повторяет регистр, в счётчик не входит.
+
+    Выполнение с повторной строки переносится на регистр: иначе вкладка
+    показывает 12 при 11 задачах, из которых одна выполнена и попала в список дважды.
+    """
+    fresh: list[dict[str, Any]] = []
+    for row in extra:
+        match = next((item for item in primary if _same_listed_task(row, item)), None)
+        if match is None:
+            match = next((item for item in fresh if _same_listed_task(row, item)), None)
+        if match is None:
+            fresh.append(row)
+            continue
+        if (row.get("executed") or row.get("done")) and not (match.get("executed") or match.get("done")):
+            _mark_task_done(match)
+    return fresh
+
+
+def _docflow_task_views(rows: list[dict[str, Any]], today: str) -> list[dict[str, Any]]:
+    """Строка на пункт и исполнителя. Исполнение — только последняя колонка «Утвердить»."""
+    groups: dict[tuple[int, str], list[dict[str, Any]]] = {}
+    approvals_by_point: dict[int, list[dict[str, Any]]] = {}
+    for row in rows:
+        name = _text(row.get("name"))
+        column = _route_column(row)
         match = _DO_TASK_NO_RE.search(name)
-        groups.setdefault((int(match.group(1)) if match else 0, normalize_fio(_text(row.get("performer")))), []).append(row)
+        number = int(match.group(1)) if match else 0
+        if column == "approved":
+            approvals_by_point.setdefault(number, []).append(row)
+            continue
+        if column != "sent":
+            continue
+        groups.setdefault((number, normalize_fio(_text(row.get("performer")))), []).append(row)
     views: list[dict[str, Any]] = []
     for (number, _), items in groups.items():
         items.sort(key=lambda item: _text(item.get("begin")))
         first, last = items[0], items[-1]
-        executed = bool(last.get("executed"))
+        approvals = sorted(approvals_by_point.get(number, []), key=lambda item: _text(item.get("begin")))
+        executed = bool(number and approvals and approvals[-1].get("executed"))
         due = _text(last.get("due"))
         overdue = bool(not executed and due and due[:10] < today)
         text = next((_text(item.get("description")) for item in reversed(items) if _text(item.get("description"))), "")
@@ -586,6 +728,9 @@ def protocol_card(args: dict[str, Any]) -> dict[str, Any]:
     docflow, docflow_note = _docflow_tasks(args, [ref, base_ref])
     control_docflow = _docflow_task_views(docflow.get(base_ref, []), today) if base_ref else []
     assigned_docflow = _docflow_task_views(docflow.get(ref, []), today)
+    if base_ref:
+        apply_docflow_execution(control_register, docflow.get(base_ref, []))
+        apply_docflow_execution(control, docflow.get(base_ref, []))
     base_number = ""
     if base_ref:
         try:
@@ -596,8 +741,14 @@ def protocol_card(args: dict[str, Any]) -> dict[str, Any]:
         except DocflowProtocolError as exc:
             logger.warning("protocol %s base number failed: %s", ref, str(exc)[:200])
     # Регистр — то, что форма 1С показывает во вкладках; таблица документа — его старая копия.
-    control_all = control_docflow + (control_register or control)
-    assigned_all = assigned_docflow + (assigned_register or assigned)
+    # Задача ДО, которая уже есть в регистре, в счётчик не добавляется: выполненная
+    # строка иначе стоит и в Документообороте, и в регистре.
+    control_base = control_register or control
+    control_docflow = _merge_listed_tasks(control_base, control_docflow)
+    assigned_base = assigned_register or assigned
+    assigned_docflow = _merge_listed_tasks(assigned_base, assigned_docflow)
+    control_all = control_docflow + control_base
+    assigned_all = assigned_docflow + assigned_base
     decision_rows = [
         {
             "n": int(item.get("LineNumber") or 0),
@@ -698,8 +849,8 @@ def pick_month_protocol(rows: list[dict[str, Any]], today: date | None = None) -
 
 
 def board_report_readiness(args: dict[str, Any] | None = None) -> dict[str, Any]:
-    """План-факт поставленных задач отчётности к совету директоров по ГК."""
-    _ = args
+    """План-факт задач отчётности к совету директоров по ГК, которые стоят на контроле."""
+    args = args or {}
     themes = _odata(
         "Catalog_ТД_ТемыСовещаний?$format=json&$top=5&$select=Ref_Key,Description"
         f"&$filter={_q(f"DeletionMark eq false and Description eq '{BOARD_THEME_TITLE}'")}"
@@ -727,7 +878,7 @@ def board_report_readiness(args: dict[str, Any] | None = None) -> dict[str, Any]
     theme_key = _text(theme.get("Ref_Key"))
     found = _odata(
         f"{ENTITY}?$format=json&$top=8&$orderby=Date desc"
-        "&$select=Ref_Key,Number,Date,Статус"
+        "&$select=Ref_Key,Number,Date,Статус,ДокументОснование,ДокументОснование_Type"
         f"&$filter={_q(f"DeletionMark eq false and ТемаСовещания_Key eq guid'{theme_key}'")}"
     ).get("value") or []
     today = date.today()
@@ -737,14 +888,46 @@ def board_report_readiness(args: dict[str, Any] | None = None) -> dict[str, Any]
     from app.services.meeting_protocol_write import read_task_register
 
     ref = _text(chosen.get("Ref_Key"))
-    try:
-        register = read_task_register(ref)
-    except Exception as exc:  # noqa: BLE001 — полоска не должна ронять журнал
-        logger.warning("board readiness register %s failed: %s", ref, str(exc)[:200])
-        register = []
-    tasks = [row for row in register if is_board_report_task(_text(row.get("Задача")))]
+    base_ref = (
+        _text(chosen.get("ДокументОснование"))
+        if "ТД_Протокол" in _text(chosen.get("ДокументОснование_Type"))
+        else ""
+    )
+    if not _GUID_RE.match(base_ref):
+        base_ref = ""
+
+    def register_of(key: str) -> list[dict[str, Any]]:
+        if not key:
+            return []
+        try:
+            return read_task_register(key)
+        except Exception as exc:  # noqa: BLE001 — полоска не должна ронять журнал
+            logger.warning("board readiness register %s failed: %s", key, str(exc)[:200])
+            return []
+
+    # На контроле у текущего протокола лежат задачи протокола-основания.
+    control_rows = [row for row in register_of(base_ref) if is_board_report_task(_text(row.get("Задача")))]
+    own_rows = [row for row in register_of(ref) if is_board_report_task(_text(row.get("Задача")))]
+    tasks = control_rows or own_rows
+    source_ref = base_ref if control_rows else ref
     _resolve_names({_text(row.get("Ответственный_Key")) for row in tasks})
-    items = [_board_task_view(row) for row in tasks]
+    today_iso = today.isoformat()
+    views = [_register_task_view(row, today_iso) for row in tasks]
+    if source_ref:
+        docflow, _note = _docflow_tasks(args, [source_ref])
+        apply_docflow_execution(views, docflow.get(source_ref, []))
+        # Выполненная задача ДО не увеличивает «из 11»: она уже есть в регистре.
+        _merge_listed_tasks(views, _docflow_task_views(docflow.get(source_ref, []), today_iso))
+    views = _merge_listed_tasks([], views)
+    items = [
+        {
+            "text": view["text"],
+            "done": bool(view.get("executed")),
+            "responsible": view["responsible"],
+            "point": str(view.get("n") or ""),
+        }
+        for view in views
+    ]
     done = sum(1 for item in items if item["done"])
     total = len(items)
     stamp = _text(chosen.get("Date"))[:10]
@@ -764,15 +947,6 @@ def board_report_readiness(args: dict[str, Any] | None = None) -> dict[str, Any]
         "percent": percent,
         "current_month": stamp.startswith(today.strftime("%Y-%m")),
         "tasks": items,
-    }
-
-
-def _board_task_view(row: dict[str, Any]) -> dict[str, Any]:
-    return {
-        "text": _text(row.get("Задача")),
-        "done": _flag(row.get("Выполнена")),
-        "responsible": _person(row.get("Ответственный_Key")),
-        "point": _text(row.get("НомерПунктаПротокола")),
     }
 
 

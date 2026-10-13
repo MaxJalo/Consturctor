@@ -18,6 +18,7 @@ import type { UserProfile } from '../../api/types'
 import { OrchSlotMain } from '../../layout/GridSlots'
 import { KpiRangePicker, type KpiRangeShortcut } from '../../pages/KpiRangePicker'
 import { rollingKpiRange } from '../../workplace/kpiPeriod'
+import { peekProtocolFocus } from '../../workplace/protocolFocus'
 import {
   correspondenceInPeriod,
   forgetDocflowCorrespondenceSession,
@@ -258,11 +259,17 @@ function CorrespondenceCard({
 
 export function DocflowGridTab({ user }: { user: UserProfile }): React.JSX.Element {
   const initial = rollingKpiRange('7')
-  const [journal, setJournal] = useState<JournalId>('correspondence')
+  const openedProtocol = peekProtocolFocus()
+  const protocolDay = (openedProtocol?.date || '').slice(0, 10)
+  const periodFrom = protocolDay && protocolDay < initial.from ? protocolDay : initial.from
+  const periodTo = protocolDay && protocolDay > initial.to ? protocolDay : initial.to
+  const [journal, setJournal] = useState<JournalId>(openedProtocol ? 'protocols' : 'correspondence')
   const [kind, setKind] = useState<CorrespondenceKind>('incoming')
-  const [from, setFrom] = useState(initial.from)
-  const [to, setTo] = useState(initial.to)
-  const [shortcut, setShortcut] = useState<KpiRangeShortcut | null>('7')
+  const [from, setFrom] = useState(periodFrom)
+  const [to, setTo] = useState(periodTo)
+  const [shortcut, setShortcut] = useState<KpiRangeShortcut | null>(
+    protocolDay && (protocolDay < initial.from || protocolDay > initial.to) ? null : '7'
+  )
   const [cachedRows, setCachedRows] = useState<CorrespondenceRow[]>([])
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')

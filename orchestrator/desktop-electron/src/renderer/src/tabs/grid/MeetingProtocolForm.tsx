@@ -1,6 +1,6 @@
 import { useEffect, useId, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
-import { Lock, Plus, Trash2, X } from 'lucide-react'
+import { Check, Lock, Plus, Trash2, X } from 'lucide-react'
 import { api } from '../../api/client'
 import { meetingInstanceKey, type MeetingEvent } from '../../utils/outlookMeetings'
 import {
@@ -14,6 +14,7 @@ import {
   updateProtocolInOneC,
   type MeetingRoom,
   type OnecProtocolForm,
+  type ProtocolControlTask,
   type ProtocolCreateDraft,
   type ProtocolCreateResult,
   type ProtocolDecisionDraft,
@@ -59,6 +60,22 @@ function GrowText({
       readOnly={readOnly}
       onChange={(event) => onChange(event.target.value)}
     />
+  )
+}
+
+function controlTone(row: ProtocolControlTask): string {
+  if (row.confirmed) return 'is-confirmed'
+  if (row.completed) return 'is-completed'
+  if (row.sent) return 'is-sent'
+  return ''
+}
+
+function StateMark({ on, tone }: { on: boolean; tone: 'sent' | 'completed' | 'confirmed' }): React.JSX.Element {
+  return (
+    <span className={`df1c-state is-${tone}${on ? ' is-on' : ''}`}>
+      {on ? <Check size={12} aria-hidden /> : null}
+      {on ? 'Да' : 'Нет'}
+    </span>
   )
 }
 
@@ -702,7 +719,7 @@ export function MeetingProtocolForm({
               ) : null}
 
               {tab === 'control' ? (
-                <section className="df1c-table">
+                <section className="df1c-table is-control">
                   <div className="df1c-table-head">
                     <h3>Задачи на контроле</h3>
                   </div>
@@ -714,15 +731,28 @@ export function MeetingProtocolForm({
                           <th className="df1c-col-measure">Задача</th>
                           <th className="df1c-col-ref">Исполнитель</th>
                           <th className="df1c-col-date">Срок</th>
+                          <th className="df1c-col-state" title="Отправлено">Отп</th>
+                          <th className="df1c-col-state" title="Выполнено">Вып</th>
+                          <th className="df1c-col-state" title="Подтверждено">Под</th>
                         </tr>
                       </thead>
                       <tbody>
                         {controlTasks.map((row, index) => (
-                          <tr key={`${row.text}-${index}`}>
+                          <tr key={`${row.text}-${index}`} className={controlTone(row)}>
                             <td className="df1c-num">{index + 1}</td>
                             <td className="df1c-col-measure">{row.text}</td>
                             <td className="df1c-col-ref">{row.executor}</td>
                             <td className="df1c-col-date">{ruDay(row.due)}</td>
+                            <td className="df1c-col-state">
+                              <StateMark on={row.sent} tone="sent" />
+                            </td>
+                            <td className="df1c-col-state">
+                              <StateMark on={row.completed} tone="completed" />
+                            </td>
+                            <td className="df1c-col-state">
+                              <StateMark on={row.confirmed} tone="confirmed" />
+                              {row.confirmed && row.doneDate ? <span className="df1c-state-date">{ruDay(row.doneDate)}</span> : null}
+                            </td>
                           </tr>
                         ))}
                       </tbody>

@@ -390,17 +390,14 @@ def bind_speakers(
         speaker = str(item.get("speaker") or "").strip()
         if speaker:
             incoming[speaker] = item
-    missing = [label for label in labels if label not in incoming]
-    if missing:
-        raise RuntimeError(
-            "Назови человека для каждого голоса: " + ", ".join(missing)
-        )
     mapping: dict[str, str] = {}
     people: list[dict[str, Any]] = []
     embeddings = _clean_embeddings(row.embeddings if isinstance(row.embeddings, dict) else {})
     for label in labels:
-        item = incoming[label]
+        item = incoming.get(label) or {}
         fio_raw = str(item.get("fio") or "").strip()
+        if not fio_raw:
+            continue
         employee_id, fio, in_directory = _directory_fio(
             db, fio_raw, str(item.get("user_id") or "")
         )

@@ -1,3 +1,4 @@
+import { useEffect, useState } from 'react'
 import { addDays, mondayOf, type CalendarView } from './calendar'
 import {
   calendarStatusFor,
@@ -236,6 +237,24 @@ interface MeetingCache {
   to: string
   owner: string
   meetings: MeetingEvent[]
+  fetchedAt?: number
+}
+
+/** Как часто перечитывать Outlook, пока программа открыта. */
+export const OUTLOOK_SYNC_MS = 2 * 60_000
+
+export function useOutlookSyncTick(): number {
+  const [tick, setTick] = useState(0)
+  useEffect(() => {
+    const bump = (): void => setTick((value) => value + 1)
+    const timer = window.setInterval(bump, OUTLOOK_SYNC_MS)
+    window.addEventListener('focus', bump)
+    return () => {
+      window.clearInterval(timer)
+      window.removeEventListener('focus', bump)
+    }
+  }, [])
+  return tick
 }
 
 function readCache(): MeetingCache | null {
@@ -284,6 +303,7 @@ function requestOutlookMeetings(range: {
   forUser?: string
   allVisible?: boolean
   calendarOwners?: string[]
+  includeOwn?: boolean
 }): Promise<CalendarRequestResult> {
   return new Promise((resolve) => {
     const requestId = `cal-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
@@ -333,7 +353,8 @@ function requestOutlookMeetings(range: {
       people: range.people,
       forUser: range.forUser,
       allVisible: range.allVisible,
-      calendarOwners: range.calendarOwners
+      calendarOwners: range.calendarOwners,
+      includeOwn: range.includeOwn !== false
     })
   })
 }
@@ -354,6 +375,21 @@ export function countMeetingsOnDay(meetings: MeetingEvent[], anchor = new Date()
     if (!start) return false
     return start.getFullYear() === y && start.getMonth() === m && start.getDate() === d
   }).length
+}
+
+/** Ключ тумблера «Показывать мои совещания» — тот же, что в ownMeetings.ts. */
+function showOwnStored(fio: string): boolean {
+  try {
+    return window.localStorage.getItem(`orch.meetings.show-own.v2:${fio.trim().toLowerCase()}`) === '1'
+  } catch {
+    return false
+  }
+}
+
+/** У Ильченко личный календарь читается только при включённом тумблере. Остальным — всегда. */
+function includeOwnCalendar(owner: string): boolean {
+  if (!sharedMeetingCalendarFor(owner)) return true
+  return showOwnStored(owner)
 }
 
 function calendarScope(owner: string): { baseCalendar: string; calendarOwners: string[]; askOwners: boolean } {
@@ -400,20 +436,23 @@ export async function findNextMeetingOccurrence(meeting: MeetingEvent, owner: st
 export async function ensureOutlookMeetings(
   view: CalendarView,
   anchor: Date,
-  options: { force?: boolean; owner?: string; allVisible?: boolean } = {}
+  options: { force?: boolean; owner?: string; allVisible?: boolean; includeOwn?: boolean } = {}
 ): Promise<{ ok: boolean; meetings: MeetingEvent[]; error?: string; cached: boolean }> {
   const win = meetingWindow(view, anchor)
   const fromKey = dayKey(win.from)
   const toKey = dayKey(addDays(win.to, -1))
   const today = dayKey(new Date())
   const owner = (options.owner || '').trim()
+  const includeOwn = options.includeOwn ?? includeOwnCalendar(owner)
   const { baseCalendar, calendarOwners, askOwners } = calendarScope(owner)
-  const cacheOwner = askOwners ? `${owner}@${calendarOwners.join('|')}` : owner
+  const cacheOwner = `${askOwners ? `${owner}@${calendarOwners.join('|')}` : owner}|own=${includeOwn ? 1 : 0}`
 
   if (!options.force) {
     const cache = readCache()
+    const fresh = cache?.fetchedAt != null && Date.now() - cache.fetchedAt < OUTLOOK_SYNC_MS
     if (
       cache &&
+      fresh &&
       cache.day === today &&
       cache.owner === cacheOwner &&
       cache.from <= fromKey &&
@@ -434,12 +473,13 @@ export async function ensureOutlookMeetings(
 
   const result = await requestOutlookMeetings(
     askOwners
-      ? { dateFrom: fromKey, dateTo: toKey, calendarOwners }
+      ? { dateFrom: fromKey, dateTo: toKey, calendarOwners, includeOwn }
       : {
           dateFrom: fromKey,
           dateTo: toKey,
           forUser: options.allVisible ? owner : undefined,
-          allVisible: Boolean(options.allVisible)
+          allVisible: Boolean(options.allVisible),
+          includeOwn
         }
   )
   if (!result.ok) return { ...result, cached: false }
@@ -448,6 +488,13 @@ export async function ensureOutlookMeetings(
   if (baseStatus?.hint && !result.meetings.length) {
     return { ok: false, meetings: [], error: `Календарь «${baseCalendar}»: ${baseStatus.hint}`, cached: false }
   }
-  writeCache({ day: today, from: fromKey, to: toKey, owner: cacheOwner, meetings: result.meetings })
+  writeCache({
+    day: today,
+    from: fromKey,
+    to: toKey,
+    owner: cacheOwner,
+    meetings: result.meetings,
+    fetchedAt: Date.now()
+  })
   return { ...result, cached: false }
 }

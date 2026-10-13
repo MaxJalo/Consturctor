@@ -621,6 +621,17 @@ def test_read_protocol_form_posted_takes_tasks_from_register(monkeypatch):
 BASE_KEY = "77777777-8888-4999-8aaa-bbbbbbbbbbbb"
 
 
+def test_register_task_view_exposes_sent_completed_confirmed(monkeypatch):
+    rows = _register_rows()
+    rows[1]["Выполнена"] = True
+    rows[1]["Подтверждена"] = True
+    card = _card(Posted=True, Статус="НаИсполнении")
+    monkeypatch.setattr(mpw, "_odata_get", _fake_get_with_register(card, rows))
+    sent, open_task = mpw.read_protocol_form(PROTOCOL_KEY)["form"]["tasks"]
+    assert sent["sent"] is True and sent["completed"] is True and sent["confirmed"] is True
+    assert open_task["sent"] is False and open_task["completed"] is False and open_task["confirmed"] is False
+
+
 def test_read_protocol_form_returns_control_tasks_of_base_protocol(monkeypatch):
     card = _card(ДокументОснование=BASE_KEY, ДокументОснование_Type="StandardODATA.Document_ТД_Протокол")
     base = _fake_get(card)

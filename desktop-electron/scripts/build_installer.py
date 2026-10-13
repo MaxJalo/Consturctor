@@ -404,13 +404,12 @@ def publish_github_release(*, constructor_only: bool = False) -> None:
             "Constructor-Setup.exe installs Constructor."
         )
     else:
-        title = f"Constructor {version} + Orchestrator"
+        title = f"Constructor {version} + Orchestrator {version}"
         notes = (
-            f"Constructor {version} and Orchestrator {version}. "
-            "Constructor-Setup.exe installs both programs. "
-            "Clients use backend http://192.168.1.157:7812. "
-            "An update from either app installs both Constructor and Orchestrator. "
-            "Orchestrator workplace: Today grid, KPI, assignments registry, 1C tasks, admin UI."
+            f"Constructor {version} and Orchestrator {version} are separate installers. "
+            "Updating Constructor installs only Constructor-Setup.exe. "
+            "Updating Orchestrator installs only Orchestrator-Setup.exe. "
+            "Clients use backend http://192.168.1.157:7812."
         )
     if view.returncode == 0:
         run([gh, "release", "upload", tag, *paths, "--repo", repo, "--clobber"], cwd=REPO_ROOT, env=env)
@@ -510,8 +509,9 @@ def write_installer_nsh(has_companion: bool) -> None:
 
 
 def build_electron(dir_only: bool, *, constructor_only: bool = False, backend_url: str = "") -> None:
-    companion = ELECTRON_ROOT / "build" / "companion" / "Orchestrator-Setup.exe"
-    write_installer_nsh(companion.is_file() and not constructor_only)
+    # Constructor-Setup.exe installs only Constructor. Orchestrator is a separate exe.
+    del constructor_only
+    write_installer_nsh(False)
     env = build_env()
     chosen = backend_url.strip().rstrip("/")
     if chosen:
