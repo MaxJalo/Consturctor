@@ -11,10 +11,14 @@ import type { SpecSummaryTile } from '../../workplace/specV04Shell'
 import { erpActorFio } from '../../workplace/userContext'
 import {
   buildProtocolMessage,
+  buildSpeakerMessage,
+  buildTranscribeOnlyMessage,
   buildSupplementMessage,
   PROTOCOL_AGENT_TITLE,
   PROTOCOL_AUDIO_EXTENSIONS as AUDIO_EXTENSIONS,
-  resolveProtocolAgentWorkflowId
+  resolveProtocolAgentWorkflowId,
+  resolveSpeakerAgentWorkflowId,
+  type IdentifiedTranscript
 } from '../../workplace/meetingProtocolAgent'
 import { useMeetingProtocol } from '../../workplace/meetingProtocolStore'
 import {
@@ -111,6 +115,43 @@ function basename(filePath: string): string {
   return parts[parts.length - 1] || filePath
 }
 
+function lastToolResult(
+  items: { kind: string; tool?: string; done?: boolean; error?: boolean; result?: Record<string, unknown> | null }[],
+  name: string
+): Record<string, unknown> | null {
+  for (let index = items.length - 1; index >= 0; index -= 1) {
+    const item = items[index]
+    if (item.kind !== 'tool') continue
+    if (!item.done || item.error || !item.result) continue
+    const tool = item.tool || ''
+    if (tool === name || tool.endsWith(`.${name}`) || tool.endsWith(`__${name}`)) return item.result
+  }
+  return null
+}
+
+function rosterLines(value: unknown): string {
+  if (!Array.isArray(value)) return ''
+  return value
+    .map((item) => {
+      if (!item || typeof item !== 'object') return ''
+      const row = item as { speaker?: string; fio?: string }
+      const speaker = String(row.speaker || '').trim()
+      const fio = String(row.fio || '').trim()
+      return speaker && fio ? `${speaker} — ${fio}` : ''
+    })
+    .filter(Boolean)
+    .join('\n')
+}
+
+function identifiedFrom(result: Record<string, unknown> | null): IdentifiedTranscript | null {
+  if (!result) return null
+  const transcriptId = String(result.transcript_id || '').trim()
+  const transcriptPath = String(result.transcript_path || '').trim()
+  const roster = rosterLines(result.people)
+  if (!transcriptId || !transcriptPath || !roster) return null
+  return { transcriptId, transcriptPath, roster }
+}
+
 function MeetingDetailCard({
   meeting,
   userId,
@@ -201,7 +242,7 @@ function MeetingDetailCard({
           new Promise<string>((resolve) => window.setTimeout(() => resolve(''), 20_000))
         ])
       ])
-      const message = buildProtocolMessage(meeting, audioPath, { nextMeetingStart })
+      const message = buildTranscribeOnlyMessage(meeting, audioPath)
       const runId = runs.startRun({
         workflowId,
         title: PROTOCOL_AGENT_TITLE,
@@ -218,7 +259,10 @@ function MeetingDetailCard({
         startedAt: new Date().toISOString(),
         reportFileId: '',
         reportName: '',
-        reportUrl: ''
+        reportUrl: '',
+        stage: 'transcribe',
+        mode: 'create',
+        nextMeetingStart
       })
     } catch (err) {
       setActionError(err instanceof Error ? err.message : 'Не удалось запустить формирование протокола')
@@ -256,12 +300,7 @@ function MeetingDetailCard({
       }
 
       const workflowId = await resolveProtocolAgentWorkflowId()
-      const message = buildSupplementMessage(meeting, audioPath, {
-        number: String(card.number || protocol?.number || ''),
-        refKey: protocolRefKey,
-        editable: card.editable !== false,
-        form: card.form
-      })
+      const message = buildTranscribeOnlyMessage(meeting, audioPath)
       const runId = runs.startRun({
         workflowId,
         title: PROTOCOL_AGENT_TITLE,
@@ -278,7 +317,10 @@ function MeetingDetailCard({
         startedAt: new Date().toISOString(),
         reportFileId: '',
         reportName: '',
-        reportUrl: ''
+        reportUrl: '',
+        stage: 'transcribe',
+        mode: 'supplement',
+        refKey: protocolRefKey
       })
     } catch (err) {
       setActionError(err instanceof Error ? err.message : 'Не удалось запустить дополнение протокола')
@@ -286,6 +328,98 @@ function MeetingDetailCard({
       setBusy(false)
     }
   }, [busy, isRunning, meeting, protocol?.number, protocolRefKey, rememberStart, runs])
+
+  const chainKey = useRef('')
+  useEffect(() => {
+    const stage = record?.stage
+    if (!stage || stage === 'protocol' || !runEntry) return
+    const state = runEntry.state
+    if (state.running || state.pendingHitl || state.pendingQuestion) return
+    if (stage === 'transcribe') {
+      const result = lastToolResult(state.items, 'audio.transcribe')
+      const transcriptId = String(result?.transcript_id || '').trim()
+      if (!transcriptId) return
+      const key = `speakers:${transcriptId}`
+      if (chainKey.current === key) return
+      chainKey.current = key
+      void (async () => {
+        try {
+          const workflowId = await resolveSpeakerAgentWorkflowId()
+          const runId = runs.startRun({
+            workflowId,
+            title: 'Определение говорящих по расшифровке',
+            message: buildSpeakerMessage(transcriptId, meeting, rosterLines(result?.known_speakers)),
+            fresh: true,
+            forceRestart: true
+          })
+          patchRecord({
+            workflowId,
+            runId: runId || '',
+            backendRunId: '',
+            status: 'running',
+            stage: 'speakers',
+            transcriptId
+          })
+        } catch (err) {
+          chainKey.current = ''
+          setActionError(err instanceof Error ? err.message : 'Не удалось запустить определение говорящих')
+        }
+      })()
+      return
+    }
+    const bound = identifiedFrom(lastToolResult(state.items, 'audio.bind_speakers'))
+    if (!bound) return
+    const key = `protocol:${bound.transcriptId}`
+    if (chainKey.current === key) return
+    chainKey.current = key
+    void (async () => {
+      try {
+        const workflowId = await resolveProtocolAgentWorkflowId()
+        let message = ''
+        if (record?.mode === 'supplement' && record.refKey) {
+          const res = await api.invokeServerTool('onec.meeting_protocols', { ref_key: record.refKey }, 60_000)
+          const card = (res.ok && res.result && typeof res.result === 'object'
+            ? (res.result as { protocol?: { number?: string; editable?: boolean; form?: Record<string, unknown> } }).protocol
+            : undefined)
+          if (!card?.form) throw new Error(res.error || 'Не удалось прочитать протокол из 1С')
+          message = buildSupplementMessage(
+            meeting,
+            record.audioPath,
+            {
+              number: String(card.number || ''),
+              refKey: record.refKey,
+              editable: card.editable !== false,
+              form: card.form
+            },
+            { identified: bound }
+          )
+        } else {
+          message = buildProtocolMessage(meeting, record?.audioPath || '', {
+            nextMeetingStart: record?.nextMeetingStart,
+            identified: bound
+          })
+        }
+        const runId = runs.startRun({
+          workflowId,
+          title: PROTOCOL_AGENT_TITLE,
+          message,
+          fresh: true,
+          forceRestart: true
+        })
+        patchRecord({
+          workflowId,
+          runId: runId || '',
+          backendRunId: '',
+          status: 'running',
+          stage: 'protocol',
+          transcriptId: bound.transcriptId
+        })
+      } catch (err) {
+        chainKey.current = ''
+        setActionError(err instanceof Error ? err.message : 'Не удалось передать расшифровку в протокол')
+      }
+    })()
+  }, [meeting, patchRecord, record, runEntry, runs])
 
   const detachProtocol = (): void => {
     if (isRunning) return
@@ -420,7 +554,13 @@ function MeetingDetailCard({
             <span className="meeting-protocol-label">Статус</span>
             <span>
               {isRunning
-                ? state?.status || 'В работе…'
+                ? record.stage === 'transcribe'
+                  ? 'Расшифровка…'
+                  : record.stage === 'speakers'
+                    ? 'Определение говорящих…'
+                    : record.stage === 'protocol'
+                      ? 'Запись протокола в 1С…'
+                      : state?.status || 'В работе…'
                 : protocol?.number
                   ? `Протокол в 1С: ${protocol.number}`
                   : createdProtocol?.number

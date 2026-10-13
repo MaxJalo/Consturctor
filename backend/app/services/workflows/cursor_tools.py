@@ -648,6 +648,10 @@ def invoke_creation_tool(
         return _invoke_data_process(args)
     if tool in {"audio.transcribe", "transcribe"}:
         return _invoke_audio_transcribe(args)
+    if tool == "audio.speakers":
+        return _invoke_audio_speakers(args)
+    if tool == "audio.bind_speakers":
+        return _invoke_audio_bind_speakers(args)
 
     ctx = current_tool_context()
     if ctx is None:
@@ -1106,8 +1110,15 @@ def _stream_cursor_with_tools_body(
                 _emit(
                     on_event,
                     "decision",
-                    "«audio.transcribe»: расшифровываю аудио-вложение "
-                    "(faster-whisper, может занять несколько минут)…",
+                    "«audio.transcribe»: расшифровываю аудио на видеокарте сервера…",
+                )
+            if name == "audio.speakers":
+                _emit(on_event, "decision", "«audio.speakers»: читаю голоса расшифровки…")
+            if name == "audio.bind_speakers":
+                _emit(
+                    on_event,
+                    "decision",
+                    "«audio.bind_speakers»: записываю, кому какой голос принадлежит…",
                 )
             try:
                 result = invoke_creation_tool(
@@ -1809,6 +1820,37 @@ def _invoke_audio_transcribe(arguments: dict[str, Any]) -> dict[str, Any]:
     return transcribe_run_attachment(
         file_id=file_id, user_id=user_id, names=names, hint=hint
     )
+
+
+def _session_user_id() -> str:
+    ctx = current_tool_context()
+    user_id = ctx[1] if ctx else ""
+    if not user_id:
+        raise RuntimeError("Нет пользователя сессии")
+    return user_id
+
+
+def _invoke_audio_speakers(arguments: dict[str, Any]) -> dict[str, Any]:
+    from app.services.speaker_bank import speakers_for_user
+
+    transcript_id = str(arguments.get("transcript_id") or "").strip()
+    if not transcript_id:
+        raise RuntimeError("Для audio.speakers нужен transcript_id из ответа audio.transcribe")
+    return speakers_for_user(transcript_id, _session_user_id())
+
+
+def _invoke_audio_bind_speakers(arguments: dict[str, Any]) -> dict[str, Any]:
+    from app.services.speaker_bank import confirm_speakers
+
+    transcript_id = str(arguments.get("transcript_id") or "").strip()
+    raw = arguments.get("voices") or arguments.get("speakers") or []
+    if isinstance(raw, dict):
+        raw = [raw]
+    if not isinstance(raw, list) or not raw:
+        raise RuntimeError("Передай voices: список {speaker, fio, user_id}")
+    if not transcript_id:
+        raise RuntimeError("Для audio.bind_speakers нужен transcript_id")
+    return confirm_speakers(transcript_id, _session_user_id(), [item for item in raw if isinstance(item, dict)])
 
 
 def _invoke_data_process(arguments: dict[str, Any]) -> dict[str, Any]:

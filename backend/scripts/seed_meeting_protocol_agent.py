@@ -62,6 +62,10 @@ TOOLS = [
 
 INSTRUCTIONS = """Ты — агент «Формирование протокола по аудиозаписи совещания». Главная задача — не упустить ни одного решения и поручения из записи и записать их в 1С. Порядок: расшифровка → чтение ВСЕЙ записи по частям → решения и поручения → протокол в 1С → файл расшифровки .md → файл протокола .docx → уведомления.
 
+Если задание начинается со слов «ТОЛЬКО РАСШИФРОВКА» — вызови audio.transcribe ровно один раз и сразу остановись. В 1С не пиши, файлы не создавай, notify.send не вызывай. В ответе достаточно transcript_id из инструмента. Голоса после этого определяет другой агент.
+
+Если задание начинается со слов «РАСШИФРОВКА УЖЕ ГОТОВА» — audio.transcribe не вызывай. В задании есть transcript_path и список, кому какой голос принадлежит. Читай audio.transcript по частям (в репликах уже ФИО) и продолжай с шага 4. «Голос N» в протокол не переноси.
+
 1. Найди аудио-вложение текущего запуска: возьми его file_id из блока вложений в промпте. Если аудио-вложения нет — попроси человека приложить аудиофайл совещания и остановись. Если в задаче переданы данные совещания из Outlook (тема, дата, место, участники) — запомни их: тема идёт в шапку протокола, участники — для исполнителей поручений и сопоставления говорящих.
 2. Вызови audio.transcribe ровно один раз: file_id вложения и names — список ФИО из Outlook (без строк «Совещания» и почтовых ящиков), чтобы фамилии не искажались. Ответ — transcript_path, segment_count, parts (число частей) и duration_sec, не текст. Повторно audio.transcribe не вызывай. Если инструмент вернул ошибку или segment_count=0 — в 1С не пиши, файлы не создавай, напиши человеку «расшифровка не получена».
 3. Прочитай ВСЮ расшифровку по частям: audio.transcript(transcript_path, part=1), затем part=2 … до part=parts, строго по порядку, ни одной не пропуская. Файл transcript_path напрямую не читай — длинный текст обрезается посередине, и решения из середины совещания теряются. Сразу после каждой части, до чтения следующей, выпиши в сообщении «Часть k [от–до]»:
@@ -213,6 +217,113 @@ def _adopted_copies(db, source_id: str) -> list[Workflow]:
     return out
 
 
+SPEAKER_TITLE = "Определение говорящих по расшифровке"
+
+SPEAKER_GOAL = (
+    "По расшифровке совещания определить, какой голос какому сотруднику принадлежит: "
+    "известный голос узнать по базе, неизвестный — только по явному контексту и после "
+    "подтверждения человека, затем записать отпечаток голоса."
+)
+
+SPEAKER_TOOLS = [
+    "audio.speakers",
+    "audio.bind_speakers",
+    "users.list",
+    "audio.transcript",
+]
+
+SPEAKER_INSTRUCTIONS = """Ты определяешь, кому принадлежит каждый голос в уже готовой расшифровке. Новый протокол не создаёшь и в 1С ничего не пишешь.
+
+1. Вызови audio.speakers с transcript_id из задания. Ответ — список голосов.
+2. Голос с known=true уже узнан по отпечатку. Его fio не меняй и человека о нём не спрашивай.
+3. Для каждого known=false прочитай lines. Сопоставь сотрудника только если из реплик прямо ясно, кто говорит: человек назвал себя, к нему обратились по фамилии и он ответил, или его должность названа вместе с репликой. Список сотрудников бери через users.list (query — фамилия, которая прозвучала), не выдумывай ФИО. Если уверенности нет — не назначай сам.
+4. По каждому такому голосу спроси человека через askQuestion. В вопросе дай метку и ключевую фразу, например: «Голос 2 — Амураль Игорь Борисович? Он сказал: „мне нужен план факта“». В options — предложенное ФИО и «Это другой человек». Если сам не уверен, в вопросе приведи 2–3 ключевые фразы и в options — только тех сотрудников, чья фамилия реально прозвучала рядом; если фамилии не было, попроси человека назвать ФИО ответом.
+5. Ответ «это другой человек» или своё ФИО — уточни ещё раз, пока у голоса не будет одного человека. Все голоса из ответа audio.speakers должны получить человека, пропусков не оставляй.
+6. Когда человек подтвердил всех, один раз вызови audio.bind_speakers: transcript_id и voices=[{speaker, fio, user_id}] на каждый голос, включая уже known. fio — как в списке сотрудников или как написал человек. Инструмент запишет новый отпечаток в базу: в следующий раз этот голос узнается сам.
+7. Итог — список: ФИО и о чём человек говорил (по said_preview и lines, коротко, с таймкодом). Напиши, чей голос записан в базу впервые.
+"""
+
+SPEAKER_STEPS = [
+    {"id": "s1", "title": "Голоса расшифровки", "action": "audio.speakers по transcript_id. known=true не переназначать."},
+    {"id": "s2", "title": "Контекст", "action": "Неизвестный голос сопоставлять с сотрудником только при прямой уверенности по репликам. ФИО — из users.list."},
+    {"id": "s3", "title": "Подтверждение", "action": "askQuestion на каждый неизвестный голос: метка, ФИО и ключевая фраза. Без уверенности — спросить человека."},
+    {"id": "s4", "title": "Запись голоса", "action": "audio.bind_speakers на все голоса. Новый отпечаток остаётся в базе."},
+    {"id": "s5", "title": "Итог", "action": "Список людей и о чём каждый говорил."},
+]
+
+
+def _speaker_playbook() -> dict:
+    return {
+        "name": SPEAKER_TITLE,
+        "goal": SPEAKER_GOAL,
+        "instructions": SPEAKER_INSTRUCTIONS.strip(),
+        "example_run": "",
+        "steps": SPEAKER_STEPS,
+        "tools": SPEAKER_TOOLS,
+    }
+
+
+def _apply_named_playbook(row: Workflow, title: str, goal: str, playbook: dict, tools: list[str]) -> None:
+    local = dict(row.local_run or {})
+    local["playbook"] = playbook
+    local["published"] = True
+    local["status"] = "published"
+    local["purpose"] = "functional"
+    local["tools"] = tools
+    local.pop("kind", None)
+    local.pop("unformed", None)
+    row.local_run = local
+    plan = dict(row.plan_json or {})
+    plan["title"] = title
+    plan["goal"] = plan.get("goal") or goal
+    runtime = dict(plan.get("runtime") or {})
+    runtime["tools"] = tools
+    plan["runtime"] = runtime
+    row.plan_json = plan
+    row.phase = "done"
+    if not (row.notes or "").strip():
+        row.notes = goal
+    flag_modified(row, "local_run")
+    flag_modified(row, "plan_json")
+
+
+def _seed_speaker_agent(db, user_id: str) -> None:
+    row = (
+        db.query(Workflow)
+        .filter(Workflow.user_id == user_id, Workflow.title == SPEAKER_TITLE, Workflow.phase == "done")
+        .order_by(Workflow.updated_at.desc())
+        .all()
+    )
+    existing = next((item for item in row if not workflow_is_deleted(item)), None)
+    created = existing is None
+    if existing is None:
+        existing = Workflow(
+            id=str(uuid4()),
+            user_id=user_id,
+            title=SPEAKER_TITLE,
+            phase="done",
+            notes=SPEAKER_GOAL,
+        )
+        db.add(existing)
+    _apply_named_playbook(existing, SPEAKER_TITLE, SPEAKER_GOAL, _speaker_playbook(), SPEAKER_TOOLS)
+    db.flush()
+    copies = (
+        db.query(Workflow)
+        .filter(Workflow.title == SPEAKER_TITLE, Workflow.phase == "done", Workflow.id != existing.id)
+        .all()
+    )
+    for copy_row in copies:
+        if workflow_is_deleted(copy_row):
+            continue
+        local = copy_row.local_run if isinstance(copy_row.local_run, dict) else {}
+        if str(local.get("library_source_id") or "").strip() != existing.id:
+            continue
+        _apply_named_playbook(copy_row, SPEAKER_TITLE, SPEAKER_GOAL, _speaker_playbook(), SPEAKER_TOOLS)
+        print(f"speaker copy synced: {copy_row.id}")
+    print(f"speaker workflow_id: {existing.id}")
+    print("speaker created" if created else "speaker updated")
+
+
 def seed(*, user_query: str) -> None:
     init_db()
     db = SessionLocal()
@@ -249,6 +360,8 @@ def seed(*, user_query: str) -> None:
         for copy_row in copies:
             copy_row.title = TITLE
             _apply_playbook(copy_row)
+
+        _seed_speaker_agent(db, user.id)
 
         db.commit()
         db.refresh(row)

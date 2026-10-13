@@ -26,6 +26,7 @@ from app.models.position_kpi import (
     PositionKpiSource,
     PositionKpiSubjectFact,
 )
+from app.models.meeting_audio import MeetingTranscript, VoiceProfile
 from app.models.workflow import Workflow, WorkflowFile
 
 __all__ = [
@@ -46,6 +47,8 @@ __all__ = [
     "RegulationDocument",
     "RoleMatchRun",
     "AgentTrigger",
+    "MeetingTranscript",
+    "VoiceProfile",
     "Workflow",
     "WorkflowFile",
     "WorkplaceKpiDailyMetric",

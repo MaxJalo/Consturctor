@@ -22,6 +22,9 @@ export type ProtocolAudioMark = {
   backendRunId?: string
   at: string
   result?: ProtocolAudioResult
+  stage?: 'transcribe' | 'speakers' | 'protocol'
+  transcriptId?: string
+  audioPath?: string
 }
 
 const STORAGE_KEY = 'docflow.protocolAudio.v1'
@@ -55,6 +58,16 @@ export function saveProtocolAudioResult(protocolId: string, runId: string, resul
   const index = list.findIndex((mark) => mark.runId === runId)
   if (index < 0 || JSON.stringify(list[index].result) === JSON.stringify(result)) return
   list[index] = { ...list[index], result }
+  marks[protocolId] = list
+  writeMarks(marks)
+}
+
+export function patchProtocolAudio(protocolId: string, at: string, partial: Partial<ProtocolAudioMark>): void {
+  const marks = readMarks()
+  const list = marks[protocolId] || []
+  const index = list.findIndex((mark) => mark.at === at)
+  if (index < 0) return
+  list[index] = { ...list[index], ...partial, protocolId, at }
   marks[protocolId] = list
   writeMarks(marks)
 }

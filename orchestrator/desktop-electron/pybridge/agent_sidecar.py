@@ -224,6 +224,8 @@ _READ_EXACT = frozenset(
         "users.subordinates",
         "audio.transcribe",
         "audio.transcript",
+        "audio.speakers",
+        "audio.bind_speakers",
         "agent.schedule",
         "agent.schedule.cancel",
     }

@@ -4,6 +4,7 @@ import { adoptAgentFromLibrary, fetchAgentLibrary } from './agentLibraryApi'
 
 export const PROTOCOL_SOURCE_WORKFLOW_ID = '599eaf4e-3b0c-4a6f-a370-c719e11a44ce'
 export const PROTOCOL_AGENT_TITLE = 'Формирование протокола по аудиозаписи совещания'
+export const SPEAKER_AGENT_TITLE = 'Определение говорящих по расшифровке'
 export const PROTOCOL_AUDIO_EXTENSIONS = ['wav', 'mp3', 'm4a', 'aac', 'ogg', 'opus', 'flac', 'wma', 'amr', 'webm', 'mp4', 'mkv']
 
 /**
@@ -34,6 +35,32 @@ export async function resolveProtocolAgentWorkflowId(): Promise<string> {
 
   throw new Error(
     `Агент «${PROTOCOL_AGENT_TITLE}» не найден в библиотеке. Добавьте его из каталога или обратитесь к администратору.`
+  )
+}
+
+/** Агент, который после расшифровки сопоставляет «Голос N» с сотрудником. */
+export async function resolveSpeakerAgentWorkflowId(): Promise<string> {
+  const library = await fetchAgentLibrary({ force: true })
+  const adopted = library.adopted.find((entry) => entry.title.trim() === SPEAKER_AGENT_TITLE)
+  const adoptedId = (adopted?.adoptedWorkflowId || adopted?.workflowId || '').trim()
+  if (adoptedId) return adoptedId
+
+  const catalog = library.catalog.find((entry) => entry.title.trim() === SPEAKER_AGENT_TITLE)
+  if (catalog?.workflowId) {
+    if (catalog.alreadyAdded && catalog.adoptedWorkflowId?.trim()) {
+      return catalog.adoptedWorkflowId.trim()
+    }
+    const adoptedCopy = await adoptAgentFromLibrary(catalog.workflowId)
+    const id = (adoptedCopy.workflowId || '').trim()
+    if (id) return id
+  }
+
+  const workflows = await api.listWorkflows()
+  const byTitle = workflows.find((item) => item.title.trim() === SPEAKER_AGENT_TITLE)
+  if (byTitle?.id) return byTitle.id
+
+  throw new Error(
+    `Агент «${SPEAKER_AGENT_TITLE}» не найден в библиотеке. Обратитесь к администратору.`
   )
 }
 
@@ -115,7 +142,7 @@ export function buildSupplementMessage(
   meeting: MeetingEvent | null,
   audioPath: string | string[],
   protocol: ExistingProtocol,
-  opts: { extra?: boolean; previousAudio?: string[] } = {}
+  opts: { extra?: boolean; previousAudio?: string[]; identified?: IdentifiedTranscript } = {}
 ): string {
   const participants = Array.isArray(protocol.form.participants)
     ? protocol.form.participants.map((name) => String(name || '').trim()).filter(Boolean)
@@ -153,12 +180,19 @@ export function buildSupplementMessage(
         `5. В том же ходе вызови onec.meeting_protocol_write action="add_tasks" ref_key="${protocol.refKey}" один раз (если новых задач и правок нет — не вызывай). В tasks передай ТОЛЬКО новые задачи {text, executor, due} и правки {id, text?, executor?, due?}; задачи без изменений не передавай. Проверь в ответе added / changed / errors / unresolved и сообщи человеку.`,
         writeExecution
       ]
+  const ready = opts.identified
   const paths = (Array.isArray(audioPath) ? audioPath : [audioPath]).filter(Boolean)
   const previous = (opts.previousAudio || []).filter(Boolean)
   const intro = opts.extra
     ? `Догрузка голосовых сообщений к протоколу совещания ${protocol.number || ''} в 1С: по ним дополни протокол и проверь выполнение задач. Новый протокол не создавай.`
     : `Дополни существующий протокол совещания ${protocol.number || ''} в 1С по новой аудиозаписи и проверь по ней выполнение задач. Новый протокол не создавай.`
+  const readStep = ready
+    ? '1. audio.transcribe не вызывай. Прочитай расшифровку целиком через audio.transcript part=1…parts по transcript_path из задания. В репликах уже ФИО. После каждой части выпиши решения и поручения.'
+    : paths.length > 1
+      ? `1. audio.transcribe ровно один раз на КАЖДЫЙ приложенный файл (names — ${namesHint}). Каждую расшифровку прочитай целиком через audio.transcript part=1…parts по порядку, без пропусков (файл напрямую не читай — середина обрезается); после каждой части выпиши решения и поручения (кто / что / срок / файл и [мм:сс]) и отчёты о выполнении задач.`
+      : `1. audio.transcribe один раз для приложенного аудио (names — ${namesHint}). Прочитай расшифровку целиком через audio.transcript part=1…parts по порядку, без пропусков (файл напрямую не читай — середина обрезается); после каждой части выпиши решения и поручения (кто / что / срок / [мм:сс]) и отчёты о выполнении задач.`
   return [
+    ...(ready ? identifiedBlock(ready) : []),
     intro,
     '',
     ...meetingLines,
@@ -179,9 +213,7 @@ export function buildSupplementMessage(
     '```',
     '',
     'Порядок работы:',
-    paths.length > 1
-      ? `1. audio.transcribe ровно один раз на КАЖДЫЙ приложенный файл (names — ${namesHint}). Каждую расшифровку прочитай целиком через audio.transcript part=1…parts по порядку, без пропусков (файл напрямую не читай — середина обрезается); после каждой части выпиши решения и поручения (кто / что / срок / файл и [мм:сс]) и отчёты о выполнении задач.`
-      : `1. audio.transcribe один раз для приложенного аудио (names — ${namesHint}). Прочитай расшифровку целиком через audio.transcript part=1…parts по порядку, без пропусков (файл напрямую не читай — середина обрезается); после каждой части выпиши решения и поручения (кто / что / срок / [мм:сс]) и отчёты о выполнении задач.`,
+    readStep,
     ...steps.filter(Boolean),
     '   Подтверждение записи человек даёт в карточке инструмента — отдельного ответа в чате не жди и вопрос не повторяй.',
     '6. notify.send — только исполнителям новых или изменённых задач, для которых users.list вернул ровно одного пользователя (суть, срок, номер протокола); остальных перечисли одной строкой.',
@@ -197,18 +229,79 @@ function isoDay(raw: string): string {
   return match ? match[1] : ''
 }
 
+export type IdentifiedTranscript = {
+  transcriptId: string
+  transcriptPath: string
+  roster: string
+}
+
+/** Первый запуск: только расшифровка нашим сервисом. В 1С этот запуск не пишет. */
+export function buildTranscribeOnlyMessage(meeting: MeetingEvent | null, audioPath: string): string {
+  return [
+    'ТОЛЬКО РАСШИФРОВКА.',
+    'Вызови audio.transcribe ровно один раз для приложенного аудио и остановись.',
+    meeting
+      ? 'names — участники совещания из списка ниже, без строк «Совещания» и почтовых ящиков.'
+      : 'names не передавай, если список участников в задании не указан.',
+    'В 1С не пиши, файлы протокола не создавай, уведомления не отправляй.',
+    'В ответе укажи transcript_id из инструмента.',
+    '',
+    ...(meeting
+      ? [
+          `Тема: ${field(meeting.subject)}`,
+          `Дата / время: ${formatMeetingStamp(meeting.start)}`,
+          'Участники:',
+          attendeesList(meeting)
+        ]
+      : []),
+    '',
+    `Абсолютный путь к аудиофайлу: ${audioPath}`
+  ].join('\n')
+}
+
+/** Второй агент: кому какой голос принадлежит. */
+export function buildSpeakerMessage(transcriptId: string, meeting: MeetingEvent | null, rosterHint: string): string {
+  const who = meeting ? attendeesList(meeting) : '—'
+  return [
+    'Определи, кому принадлежит каждый голос в расшифровке.',
+    `transcript_id: ${transcriptId}`,
+    meeting ? `Совещание: ${field(meeting.subject)}, ${formatMeetingStamp(meeting.start)}` : '',
+    'Участники из календаря (это подсказка, не доказательство):',
+    who,
+    rosterHint ? `Уже узнаны по отпечатку голоса:\n${rosterHint}` : 'По отпечатку пока никого не узнали.',
+    'Дальше работай по своей инструкции: audio.speakers, подтверждение человека, audio.bind_speakers.'
+  ]
+    .filter(Boolean)
+    .join('\n')
+}
+
+export function identifiedBlock(identified: IdentifiedTranscript): string[] {
+  return [
+    'РАСШИФРОВКА УЖЕ ГОТОВА.',
+    `transcript_id: ${identified.transcriptId}`,
+    `transcript_path: ${identified.transcriptPath}`,
+    'Кому какой голос принадлежит:',
+    identified.roster || '—',
+    'audio.transcribe не вызывай. Читай audio.transcript по частям: в репликах уже ФИО.'
+  ]
+}
+
 /** Russian task message with Outlook meeting fields and absolute audio path. */
 export function buildProtocolMessage(
   meeting: MeetingEvent,
   audioPath: string,
-  opts: { nextMeetingStart?: string } = {}
+  opts: { nextMeetingStart?: string; identified?: IdentifiedTranscript } = {}
 ): string {
   const when = formatMeetingStamp(meeting.start)
   const end = meeting.end ? formatMeetingStamp(meeting.end) : ''
   const period = end ? `${when} – ${end}` : when
   const nextDay = isoDay(opts.nextMeetingStart || '')
+  const ready = opts.identified
   return [
-    'Сформируй протокол совещания по приложенной аудиозаписи.',
+    ...(ready ? identifiedBlock(ready) : []),
+    ready
+      ? 'Сформируй протокол совещания по уже готовой расшифровке.'
+      : 'Сформируй протокол совещания по приложенной аудиозаписи.',
     '',
     'Данные совещания из календаря Outlook:',
     `Тема: ${field(meeting.subject)}`,

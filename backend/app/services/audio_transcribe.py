@@ -74,7 +74,7 @@ def _engine_tag() -> str:
     from app.config import settings
 
     model = (settings.asr_gpu_model or "openai/whisper-large-v3").strip()
-    return f"gpu:{model}"
+    return f"gpu:{model}:voices"
 
 
 def _beam_size() -> int:
@@ -409,7 +409,9 @@ def transcribe_run_attachment(
         raise RuntimeError("Расшифровка этого файла уже шла и не завершилась. Повторите вызов.")
 
     try:
-        segments, duration_sec = _transcribe_bytes(raw, suffix=suffix, filename=filename, prompt=prompt)
+        segments, duration_sec, extra = _transcribe_bytes(
+            raw, suffix=suffix, filename=filename, prompt=prompt
+        )
         path = _write_transcript(filename, segments, duration_sec, digest)
         result = _short_result(
             filename=filename,
@@ -419,6 +421,19 @@ def transcribe_run_attachment(
             cached=False,
             prompt=prompt,
         )
+        saved = _persist_transcript(
+            user_id=user_id,
+            filename=filename,
+            sha256=digest,
+            duration_sec=duration_sec,
+            transcript_path=str(path),
+            segments=segments,
+            embeddings=(extra or {}).get("speaker_embeddings"),
+        )
+        if saved:
+            result["transcript_id"] = saved["transcript_id"]
+            result["known_speakers"] = saved["known_speakers"]
+            result["unknown_speakers"] = saved["unknown_speakers"]
         with _inflight_lock:
             _cache[cache_key] = result
         _write_disk_cache(cache_key, result)
@@ -429,6 +444,37 @@ def transcribe_run_attachment(
             _inflight.pop(cache_key, None)
 
 
+def _persist_transcript(
+    *,
+    user_id: str,
+    filename: str,
+    sha256: str,
+    duration_sec: float,
+    transcript_path: str,
+    segments: list[dict[str, Any]],
+    embeddings: Any,
+) -> dict[str, Any] | None:
+    from app.db import session as db_session
+    from app.services.speaker_bank import save_transcript
+
+    full_text = "\n".join(_transcript_line(row) for row in segments)
+    db = db_session.SessionLocal()
+    try:
+        return save_transcript(
+            db,
+            user_id=user_id,
+            filename=filename,
+            sha256=sha256,
+            duration_sec=duration_sec,
+            transcript_path=transcript_path,
+            full_text=full_text,
+            segments=segments,
+            embeddings=embeddings if isinstance(embeddings, dict) else {},
+        )
+    finally:
+        db.close()
+
+
 def _decode(path: Path) -> Any:
     """Mono float32 samples at 16 kHz (PyAV inside faster-whisper: wav, mp3, m4a, …)."""
     from faster_whisper.audio import decode_audio
@@ -436,7 +482,9 @@ def _decode(path: Path) -> Any:
     return decode_audio(str(path), sampling_rate=_SAMPLE_RATE)
 
 
-def segments_from_gpu_payload(payload: dict[str, Any]) -> tuple[list[dict[str, Any]], float]:
+def segments_from_gpu_payload(
+    payload: dict[str, Any],
+) -> tuple[list[dict[str, Any]], float, dict[str, Any]]:
     raw_rows = payload.get("segments")
     if not isinstance(raw_rows, list):
         raise RuntimeError("Сервис распознавания не вернул сегменты")
@@ -457,10 +505,14 @@ def segments_from_gpu_payload(payload: dict[str, Any]) -> tuple[list[dict[str, A
     duration = payload.get("duration_sec")
     if duration is None and segments:
         duration = segments[-1]["end"]
-    return segments, round(float(duration or 0.0), 2)
+    embeddings = payload.get("speaker_embeddings")
+    extra = {"speaker_embeddings": embeddings if isinstance(embeddings, dict) else {}}
+    return segments, round(float(duration or 0.0), 2), extra
 
 
-def _transcribe_via_gpu(raw: bytes, *, suffix: str, filename: str, prompt: str) -> tuple[list[dict[str, Any]], float]:
+def _transcribe_via_gpu(
+    raw: bytes, *, suffix: str, filename: str, prompt: str
+) -> tuple[list[dict[str, Any]], float, dict[str, Any]]:
     import httpx
 
     from app.config import settings
@@ -497,7 +549,7 @@ def _transcribe_via_gpu(raw: bytes, *, suffix: str, filename: str, prompt: str) 
 
 def _transcribe_bytes(
     raw: bytes, *, suffix: str, filename: str, prompt: str
-) -> tuple[list[dict[str, Any]], float]:
+) -> tuple[list[dict[str, Any]], float, dict[str, Any]]:
     if _asr_gpu_url():
         return _transcribe_via_gpu(raw, suffix=suffix, filename=filename, prompt=prompt)
     model = _get_model()
@@ -536,4 +588,4 @@ def _transcribe_bytes(
             for segment in segments_iter
             if segment.text and segment.text.strip()
         )
-    return segments, round(len(audio) / _SAMPLE_RATE, 2)
+    return segments, round(len(audio) / _SAMPLE_RATE, 2), {}

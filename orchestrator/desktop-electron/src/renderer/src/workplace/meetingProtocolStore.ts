@@ -19,6 +19,12 @@ export type MeetingProtocolRecord = {
   reportFileId: string
   reportName: string
   reportUrl: string
+  /** transcribe — расшифровка, speakers — кому голос, protocol — запись в 1С. */
+  stage?: 'transcribe' | 'speakers' | 'protocol'
+  transcriptId?: string
+  mode?: 'create' | 'supplement'
+  refKey?: string
+  nextMeetingStart?: string
 }
 
 type ProtocolBucket = Record<string, MeetingProtocolRecord>

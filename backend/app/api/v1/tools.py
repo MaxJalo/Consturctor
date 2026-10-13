@@ -65,7 +65,9 @@ _USERS_TOOLS = frozenset(
         "chat.send_direct",
     }
 )
-_AUDIO_TOOLS = frozenset({"audio.transcribe", "audio.transcript"})
+_AUDIO_TOOLS = frozenset(
+    {"audio.transcribe", "audio.transcript", "audio.speakers", "audio.bind_speakers"}
+)
 _SERVER_TOOLS = (
     _IMAP_TOOLS
     | ONEC_TOOLS
@@ -443,6 +445,16 @@ def _invoke_audio_tool(
         from app.services.audio_transcribe import read_transcript
 
         return read_transcript(str(arguments.get("transcript_path") or ""), arguments.get("part"))
+    if tool_name == "audio.speakers":
+        from app.services.speaker_bank import speakers_for_user
+
+        return speakers_for_user(str(arguments.get("transcript_id") or ""), auth.user_id)
+    if tool_name == "audio.bind_speakers":
+        from app.services.speaker_bank import confirm_speakers
+
+        raw = arguments.get("voices") or []
+        voices = [item for item in raw if isinstance(item, dict)] if isinstance(raw, list) else []
+        return confirm_speakers(str(arguments.get("transcript_id") or ""), auth.user_id, voices)
     set_tool_context(run_id="", user_id=auth.user_id)
     try:
         return _invoke_audio_transcribe(arguments)

@@ -481,6 +481,39 @@ _SERVER_TOOL_DEFS: list[tuple[str, str, dict[str, Any]]] = [
         ),
     ),
     (
+        "audio.speakers",
+        (
+            "Голоса сохранённой расшифровки. known=true — человек уже узнан по отпечатку голоса, "
+            "его не переназначай. У остальных в lines ключевые реплики. "
+            "transcript_id бери из ответа audio.transcribe. Только чтение. Сервер."
+        ),
+        _schema(
+            {
+                "transcript_id": _prop("string", "transcript_id из ответа audio.transcribe"),
+            },
+            ["transcript_id"],
+        ),
+    ),
+    (
+        "audio.bind_speakers",
+        (
+            "Подтверждённое сопоставление голосов с людьми. voices — по одному объекту на каждый голос: "
+            "speaker («Голос N»), fio (как назвал человек или как в списке сотрудников), user_id если есть. "
+            "Неизвестный голос записывается в базу и в следующий раз узнаётся сам. "
+            "В ответ — кто что сказал, и расшифровка с ФИО вместо «Голос N». Сервер."
+        ),
+        _schema(
+            {
+                "transcript_id": _prop("string", "transcript_id из ответа audio.transcribe"),
+                "voices": _prop(
+                    "array",
+                    "Список {speaker, fio, user_id} на каждый голос, без пропусков",
+                ),
+            },
+            ["transcript_id", "voices"],
+        ),
+    ),
+    (
         "notify.send",
         (
             "Отправить уведомление получателю (Windows-тост + inbox). user_id бери из users.list - "

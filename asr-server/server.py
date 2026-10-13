@@ -89,6 +89,7 @@ def transcribe(path: Path, prompt: str) -> dict[str, Any]:
         "segments": _rows(payload),
         "full_text": payload.get("full_text") or "",
         "per_speaker_text": payload.get("per_speaker_text") or {},
+        "speaker_embeddings": payload.get("speaker_embeddings") or {},
         "names_hint": hint,
     }
 

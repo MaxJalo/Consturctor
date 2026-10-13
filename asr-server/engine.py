@@ -631,31 +631,44 @@ def peak_norm(values: np.ndarray) -> np.ndarray:
     return array
 
 
-def load_separation(device: str):
+def _speechbrain_factory(device: str):
     try:
-        try:
-            from speechbrain.inference.separation import SepformerSeparation
-            from speechbrain.inference.speaker import EncoderClassifier
-        except ImportError:
-            from speechbrain.pretrained import EncoderClassifier, SepformerSeparation
-        from speechbrain.utils.fetching import LocalStrategy
+        from speechbrain.inference.separation import SepformerSeparation
+        from speechbrain.inference.speaker import EncoderClassifier
+    except ImportError:
+        from speechbrain.pretrained import EncoderClassifier, SepformerSeparation
+    from speechbrain.utils.fetching import LocalStrategy
 
-        def hparams(factory, source: str, savedir: Path):
-            return factory.from_hparams(
-                source=source,
-                savedir=str(savedir),
-                run_opts={"device": device},
-                local_strategy=LocalStrategy.COPY,
-            )
+    def hparams(factory, source: str, savedir: Path):
+        return factory.from_hparams(
+            source=source,
+            savedir=str(savedir),
+            run_opts={"device": device},
+            local_strategy=LocalStrategy.COPY,
+        )
 
+    return hparams, SepformerSeparation, EncoderClassifier
+
+
+def load_encoder(device: str):
+    try:
+        hparams, _separator_cls, encoder_cls = _speechbrain_factory(device)
+        print("Снимаю отпечаток голоса", flush=True)
+        return hparams(encoder_cls, EMB_MODEL, model_dir("ecapa"))
+    except Exception as exc:
+        print(f"Отпечаток голоса снять не удалось ({exc}).", flush=True)
+        return None
+
+
+def load_separator(device: str):
+    try:
+        hparams, separator_cls, _encoder_cls = _speechbrain_factory(device)
         print("Загружаю модель разделения одновременной речи", flush=True)
-        separator = hparams(SepformerSeparation, SEP_MODEL, model_dir("sepformer-whamr16k"))
-        encoder = hparams(EncoderClassifier, EMB_MODEL, model_dir("ecapa"))
-        return separator, encoder
+        return hparams(separator_cls, SEP_MODEL, model_dir("sepformer-whamr16k"))
     except Exception as exc:
         print(f"Разделить одновременную речь моделью не удалось ({exc}).", flush=True)
         print("Такие места останутся общей репликой обоих голосов.", flush=True)
-        return None, None
+        return None
 
 
 def clip_of(start: float, end: float, audio: np.ndarray, speakers: tuple[int, ...], overlap: bool) -> dict:
@@ -677,16 +690,20 @@ def build_clips(audio: np.ndarray, sr: int, segments: list[dict], device: str):
             speaker = piece["speakers"][0]
             exclusive.setdefault(speaker, []).append(slice_audio(audio, sr, piece["start"], piece["end"]))
 
-    separator, encoder = (None, None)
     has_pair = any(len(piece["speakers"]) == 2 and piece["end"] - piece["start"] >= 0.6 for piece in timeline)
-    if has_pair:
-        separator, encoder = load_separation(device)
+    encoder = load_encoder(device)
+    separator = load_separator(device) if has_pair else None
 
     enroll = {}
+    embeddings: dict[str, list[float]] = {}
     if encoder is not None:
         for speaker, pieces in exclusive.items():
             sample = take_up_to(pieces, sr, 20.0)
-            enroll[speaker] = embed(encoder, sample)
+            vector = embed(encoder, sample)
+            if vector is None:
+                continue
+            enroll[speaker] = vector
+            embeddings[speaker_name(speaker)] = [round(float(item), 5) for item in vector.reshape(-1)]
 
     tracks: dict[int, list[dict]] = {}
     shared: list[dict] = []
@@ -737,7 +754,7 @@ def build_clips(audio: np.ndarray, sr: int, segments: list[dict], device: str):
     for speaker in tracks:
         tracks[speaker].sort(key=lambda item: item["start"])
     shared.sort(key=lambda item: item["start"])
-    return tracks, shared, overlap_sec, separated_sec
+    return tracks, shared, overlap_sec, separated_sec, embeddings
 
 
 def build_track(clips: list[dict], sr: int, gap_sec: float = 0.3) -> tuple[np.ndarray, list[dict]]:
@@ -1007,6 +1024,7 @@ def write_outputs(
     overlap_sec: float,
     separated_sec: float,
     gpu_fraction: float,
+    speaker_embeddings: dict | None = None,
 ) -> dict:
     out_dir.mkdir(parents=True, exist_ok=True)
     stats = speech_stats(segments)
@@ -1056,6 +1074,7 @@ def write_outputs(
         "utterances": utterances,
         "full_text": "\n".join(full_lines),
         "per_speaker_text": per_speaker,
+        "speaker_embeddings": speaker_embeddings or {},
     }
     (out_dir / "результат.json").write_text(
         json.dumps(payload, ensure_ascii=False, indent=2),
@@ -1124,7 +1143,7 @@ def recognize(
         if len(piece["speakers"]) >= 2:
             rough_overlap += piece["end"] - piece["start"]
     print_voices(segments, rough_overlap)
-    tracks, shared, overlap_sec, separated_sec = build_clips(audio, sr, segments, device)
+    tracks, shared, overlap_sec, separated_sec, embeddings = build_clips(audio, sr, segments, device)
     model, processor = load_asr(device)
     if language == "auto":
         chosen = detect_language(model, processor, first_speech(audio, sr, segments), device)
@@ -1151,6 +1170,7 @@ def recognize(
         overlap_sec,
         separated_sec,
         fraction,
+        embeddings,
     )
 
 

@@ -72,6 +72,8 @@ export const TOOL_LABELS: Record<string, string> = {
   'users.subordinates': 'Подчинённые из erp_pm',
   'notify.send': 'Уведомление',
   'audio.transcribe': 'Расшифровка аудио',
+  'audio.speakers': 'Голоса расшифровки',
+  'audio.bind_speakers': 'Кто говорит',
   'agent.schedule': 'Расписание агента',
   'agent.schedule.cancel': 'Отмена расписания'
 }

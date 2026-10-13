@@ -347,7 +347,7 @@ def test_invoke_audio_transcribe_requires_file_id(monkeypatch) -> None:
 def test_gpu_payload_becomes_segments() -> None:
     from app.services.audio_transcribe import segments_from_gpu_payload
 
-    segments, duration = segments_from_gpu_payload(
+    segments, duration, extra = segments_from_gpu_payload(
         {
             "duration_sec": 4.2,
             "segments": [
@@ -362,10 +362,11 @@ def test_gpu_payload_becomes_segments() -> None:
         {"start": 0.0, "end": 1.5, "text": "Добрый день"},
         {"start": 2.0, "end": 4.2, "text": "Начинаем."},
     ]
-    named, _duration = segments_from_gpu_payload(
+    named, _duration, _extra = segments_from_gpu_payload(
         {"duration_sec": 2, "segments": [{"start": 0, "end": 2, "text": "Алло", "speaker": "голос 1"}]}
     )
     assert named[0]["speaker"] == "голос 1"
+    assert extra["speaker_embeddings"] == {}
 
 
 def test_configured_gpu_url_skips_cpu_model(monkeypatch) -> None:
@@ -380,7 +381,7 @@ def test_configured_gpu_url_skips_cpu_model(monkeypatch) -> None:
     def fake_gpu(raw: bytes, *, suffix: str, filename: str, prompt: str):
         assert raw == b"fake-audio-bytes"
         assert filename == "meeting.m4a"
-        return [{"start": 0.0, "end": 2.0, "text": "Текст с видеокарты"}], 2.0
+        return [{"start": 0.0, "end": 2.0, "text": "Текст с видеокарты"}], 2.0, {}
 
     monkeypatch.setattr(audio_mod, "_transcribe_via_gpu", fake_gpu)
     result = transcribe_run_attachment(file_id="file-1", user_id="user-1")

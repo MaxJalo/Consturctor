@@ -36,6 +36,7 @@ def init_db() -> None:
     from app.models import user as _user  # noqa: F401
     from app.models import kpi_daily_metric as _kpi_daily_metric  # noqa: F401
     from app.models import position_kpi as _position_kpi  # noqa: F401
+    from app.models import meeting_audio as _meeting_audio  # noqa: F401
     from app.models import workflow as _workflow  # noqa: F401
     from app.modules.chat import models as _chat  # noqa: F401
 
