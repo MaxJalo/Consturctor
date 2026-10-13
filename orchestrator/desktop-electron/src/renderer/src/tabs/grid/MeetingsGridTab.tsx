@@ -36,6 +36,7 @@ import {
   toggleSimpleTile
 } from '../../workplace/tileFilters'
 import { MeetingsCalendar, type DayRowSpec } from '../../components/agents/MeetingsCalendar'
+import { FioCombobox } from './FioCombobox'
 import { GridFilterBar } from './gridFilters'
 import { MeetingPopover } from './MeetingPopover'
 import { MeetingsSidePanel, type MeetingCalendarRow } from './MeetingsSidePanel'
@@ -168,6 +169,20 @@ async function transcriptIdFromHistory(workflowId: string, runId: string, audioN
   const history = await api.listAgentRuns(workflowId)
   const match = history.find((item) => item.status === 'ok' && (item.message || '').includes(name))
   return match ? read(match.runId) : ''
+}
+
+function transcriptLines(text: string): string[] {
+  const parts = text
+    .split(/(?=\[\d{1,2}:\d{2}(?::\d{2})?\])/)
+    .map((part) => part.trim())
+    .filter(Boolean)
+  return parts.length ? parts : text.trim() ? [text.trim()] : []
+}
+
+function voiceSourceLabel(source: string): string {
+  if (source === 'voice') return 'по голосу'
+  if (source === 'context') return 'по контексту'
+  return ''
 }
 
 function MeetingDetailCard({
@@ -410,7 +425,6 @@ function MeetingDetailCard({
   >([])
   const [transcriptFile, setTranscriptFile] = useState<{ name: string; url: string } | null>(null)
   const transcriptPathRef = useRef('')
-  const peopleListId = useId()
   const showReview =
     Boolean(record?.transcriptId) && record?.stage === 'review' && !isRunning && !hasProtocol
 
@@ -453,6 +467,9 @@ function MeetingDetailCard({
       cancelled = true
     }
   }, [record?.protocolWorkflowId, record?.transcriptId, record?.workflowId, showReview])
+
+  const voicesReady = voiceDraft.length > 0 && voiceDraft.every((row) => !row.speaker || row.fio.trim())
+  const fioHints = attendees.filter((name) => name.trim() && name.trim() !== 'Совещания')
 
   const confirmAndCreateProtocol = useCallback(async () => {
     const transcriptId = (record?.transcriptId || '').trim()
@@ -606,7 +623,8 @@ function MeetingDetailCard({
   }
 
   return (
-    <div className="spec-detail-card wp-card">
+    <div className={showReview ? 'spec-detail-card wp-card meeting-protocol-card--review' : 'spec-detail-card wp-card'}>
+      <div className={showReview ? 'meeting-protocol-scroll' : undefined}>
       <h2>{meetingField(meeting.subject)}</h2>
       <dl className="spec-detail-meta">
         <div>
@@ -669,6 +687,8 @@ function MeetingDetailCard({
                       : record.stage === 'review'
                         ? 'Проверьте, кто говорил'
                         : state?.status || 'В работе…'
+                : record.stage === 'review'
+                  ? 'Проверьте, кто говорил'
                 : protocol?.number
                   ? `Протокол в 1С: ${protocol.number}`
                   : createdProtocol?.number
@@ -733,12 +753,13 @@ function MeetingDetailCard({
 
       {showReview ? (
         <div className="meeting-protocol-review">
-          <div className="meeting-protocol-progress-row">
+          <div className="meeting-protocol-progress-row meeting-protocol-file-row">
             <span className="meeting-protocol-label">Расшифровка</span>
             {transcriptFile ? (
               <button
                 type="button"
-                className="cal-btn"
+                className="cal-btn meeting-protocol-file"
+                title={transcriptFile.name}
                 onClick={() => void api.download(transcriptFile.url, transcriptFile.name)}
               >
                 {transcriptFile.name}
@@ -750,44 +771,51 @@ function MeetingDetailCard({
           <p className="meeting-protocol-hint">
             Кто что сказал. ФИО можно поменять: в протокол 1С и в задачи попадёт то, что указано здесь.
           </p>
-          <ul className="spec-detail-list">
-            {voiceDraft.map((row, index) => (
-              <li key={row.speaker || index}>
-                <div>
-                  {row.speaker}
-                  {row.source === 'voice' ? ' · по голосу' : row.source === 'context' ? ' · по контексту' : ''}
-                </div>
-                <input
-                  className="meeting-protocol-fio"
-                  value={row.fio}
-                  list={peopleListId}
-                  placeholder="ФИО участника"
-                  onChange={(event) => {
-                    const value = event.target.value
-                    setVoiceDraft((current) =>
-                      current.map((item, itemIndex) => (itemIndex === index ? { ...item, fio: value, userId: '' } : item))
-                    )
-                  }}
-                />
-                {row.said ? <p className="meeting-protocol-said">{row.said}</p> : null}
-              </li>
-            ))}
+          <ul className="meeting-voice-list">
+            {voiceDraft.map((row, index) => {
+              const source = voiceSourceLabel(row.source)
+              const lines = transcriptLines(row.said)
+              return (
+                <li key={row.speaker || index} className="meeting-voice">
+                  <div className="meeting-voice-head">
+                    <span className="meeting-voice-name">{row.speaker || 'Голос'}</span>
+                    {source ? <span className="meeting-voice-source">{source}</span> : null}
+                  </div>
+                  <label className="meeting-voice-field">
+                    <span>ФИО участника</span>
+                    <FioCombobox
+                      value={row.fio}
+                      hints={fioHints}
+                      placeholder="Начните вводить фамилию"
+                      onChange={(value) => {
+                        setVoiceDraft((current) =>
+                          current.map((item, itemIndex) =>
+                            itemIndex === index ? { ...item, fio: value, userId: '' } : item
+                          )
+                        )
+                      }}
+                    />
+                  </label>
+                  {lines.length ? (
+                    <div className="meeting-voice-said">
+                      {lines.map((line, lineIndex) => (
+                        <p key={`${lineIndex}-${line.slice(0, 24)}`}>{line}</p>
+                      ))}
+                    </div>
+                  ) : null}
+                </li>
+              )
+            })}
           </ul>
-          <datalist id={peopleListId}>
-            {attendees
-              .filter((name) => name.trim() && name.trim() !== 'Совещания')
-              .map((name) => (
-                <option key={name} value={name} />
-              ))}
-          </datalist>
         </div>
       ) : null}
+      </div>
 
       {actionError ? <p className="meeting-protocol-error">{actionError}</p> : null}
 
       {isRunning && !hasProtocol ? null : (
         <footer className="spec-detail-actions meeting-protocol-actions">
-          {onEdit ? (
+          {onEdit && !showReview ? (
             <button type="button" className="cal-btn" onClick={() => onEdit(meeting)}>
               Изменить встречу
             </button>
@@ -809,11 +837,12 @@ function MeetingDetailCard({
           ) : showReview ? (
             <button
               type="button"
-              className="cal-btn primary"
+              className="cal-btn primary meeting-protocol-continue"
               onClick={() => void confirmAndCreateProtocol()}
-              disabled={busy || !voiceDraft.length}
+              disabled={busy || !voicesReady}
+              title={voicesReady ? 'Записать ФИО и продолжить протокол' : 'Укажите ФИО у каждого голоса'}
             >
-              {busy ? 'Запуск…' : 'Создать протокол'}
+              {busy ? 'Продолжаем…' : 'Продолжить'}
             </button>
           ) : (
             <button
@@ -825,7 +854,7 @@ function MeetingDetailCard({
               {busy ? 'Запуск…' : 'Создать протокол'}
             </button>
           )}
-          {hasProtocol ? null : (
+          {hasProtocol || showReview ? null : (
             <button
               type="button"
               className="cal-btn"
@@ -836,7 +865,7 @@ function MeetingDetailCard({
               Подгрузить из 1С
             </button>
           )}
-          {hasProtocol || hasDocx ? (
+          {!showReview && (hasProtocol || hasDocx) ? (
             <button
               type="button"
               className="cal-btn primary"
@@ -857,7 +886,7 @@ function MeetingDetailCard({
               {busy ? 'Запуск…' : 'Дополнить аудиозаписью'}
             </button>
           ) : null}
-          {hasProtocol || hasDocx ? (
+          {!showReview && (hasProtocol || hasDocx) ? (
             <button
               type="button"
               className="cal-btn"
