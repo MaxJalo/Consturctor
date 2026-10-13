@@ -431,23 +431,18 @@ function MeetingDetailCard({
     }
   }, [record?.protocolWorkflowId, record?.transcriptId, record?.workflowId, showReview])
 
-  const voicesReady = voiceDraft.length > 0 && voiceDraft.every((row) => !row.speaker || row.fio.trim())
   const fioHints = attendees.filter((name) => name.trim() && name.trim() !== 'Совещания')
 
   const confirmAndCreateProtocol = useCallback(async () => {
     const transcriptId = (record?.transcriptId || '').trim()
     if (!transcriptId || busy) return
-    const missing = voiceDraft.filter((row) => row.speaker && !row.fio.trim())
-    if (missing.length) {
-      setActionError(`Укажите ФИО: ${missing.map((row) => row.speaker).join(', ')}`)
-      return
-    }
     setActionError('')
     setBusy(true)
     try {
+      const named = voiceDraft.filter((row) => row.speaker && row.fio.trim())
       const bound = await api.invokeServerTool('audio.bind_speakers', {
         transcript_id: transcriptId,
-        voices: voiceDraft.map((row) => ({
+        voices: named.map((row) => ({
           speaker: row.speaker,
           fio: row.fio.trim(),
           user_id: row.userId
@@ -458,7 +453,13 @@ function MeetingDetailCard({
       const identified = {
         transcriptId,
         transcriptPath: String(result.transcript_path || transcriptPathRef.current).trim(),
-        roster: rosterLines(result.people) || voiceDraft.map((row) => `${row.speaker} — ${row.fio.trim()}`).join('\n')
+        roster:
+          rosterLines(result.people) ||
+          voiceDraft
+            .filter((row) => row.fio.trim())
+            .map((row) => `${row.speaker} — ${row.fio.trim()}`)
+            .join('\n') ||
+          'ФИО не указаны: в протоколе оставляй метки «Голос N».'
       }
       const workflowId = (record?.protocolWorkflowId || '').trim() || (await resolveProtocolAgentWorkflowId())
       let message = ''
@@ -802,8 +803,8 @@ function MeetingDetailCard({
               type="button"
               className="cal-btn primary meeting-protocol-continue"
               onClick={() => void confirmAndCreateProtocol()}
-              disabled={busy || !voicesReady}
-              title={voicesReady ? 'Записать ФИО и продолжить протокол' : 'Укажите ФИО у каждого голоса'}
+              disabled={busy}
+              title="Продолжить. Голоса без ФИО останутся как «Голос N»"
             >
               {busy ? 'Продолжаем…' : 'Продолжить'}
             </button>
