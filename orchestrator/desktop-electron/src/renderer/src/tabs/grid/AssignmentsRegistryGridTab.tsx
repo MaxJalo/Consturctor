@@ -6,7 +6,7 @@ import { StandardTabChrome, summaryTilesAsChrome } from './TabChromeGrid'
 import { DEFAULT_ASSIGNMENTS_REGISTRY_LAYOUT } from './useTabChromeLayout'
 import { KpiDayPicker } from '../../pages/KpiRangePicker'
 import { useAssignmentRegistry } from '../../workplace/useAssignmentRegistry'
-import { isDueWithinDays } from '../../workplace/assignmentRegistryMappers'
+import { isCompletedAssignment, isDueWithinDays, parseRegistryDay } from '../../workplace/assignmentRegistryMappers'
 import { selectRegistryReportRows } from '../../workplace/registryReportRows'
 import {
   fetchAssignmentLines,
@@ -24,7 +24,12 @@ import { usePageSearch, valuesMatchPageSearch } from '../../layout/pageSearchCon
 import { canUseExtension } from '../../extensions/extensionRegistry'
 import { AssignmentsRegistryReportTable, AssignmentsRegistryTable } from './AssignmentsRegistryTable'
 import { AssignmentsRegistryDetailPanel } from './AssignmentsRegistryDetailPanel'
-import { AssignmentsRegistryCreateDialog } from './AssignmentsRegistryCreateDialog'
+import { DocflowCreateDialog } from './DocflowCreateDialog'
+import {
+  loadDocflowCreateSchema,
+  type DocflowFormRequest,
+  type DocflowKindSchema
+} from '../../workplace/docflowDocumentCreate'
 import { useRuns } from '../../store/runs'
 import {
   buildClosureCheckMessage,
@@ -37,7 +42,7 @@ import { useRegisterGlobalSearch, type GlobalSearchEntry } from '../../layout/gl
 import './extensionsGrid.css'
 import './registryGrid.css'
 
-const TILE_FILTER_IDS = new Set<string>(['done', 'overdue', 'due_soon', 'report'])
+const TILE_FILTER_IDS = new Set<string>(['done', 'overdue', 'due_soon', 'in_work', 'report'])
 
 type RegistryColumnFilterKey = 'reporter' | 'secretary' | 'status' | 'manager'
 
@@ -88,10 +93,37 @@ function isoDate(d: Date): string {
   return `${y}-${m}-${day}`
 }
 
+function startOfYear(now = new Date()): string {
+  return isoDate(new Date(now.getFullYear(), 0, 1))
+}
+
+function legacySixMonthStart(now = new Date()): string {
+  return isoDate(new Date(now.getFullYear(), now.getMonth() - 6, now.getDate()))
+}
+
+/** Старый период «минус полгода» мог остаться в sessionStorage. */
+function isLegacyPeriodStart(saved: string, now = new Date()): boolean {
+  for (let shift = 0; shift <= 21; shift += 1) {
+    const day = new Date(now.getFullYear(), now.getMonth(), now.getDate() - shift)
+    if (legacySixMonthStart(day) === saved) return true
+  }
+  return false
+}
+
 function defaultRange(): { from: string; to: string } {
-  const to = new Date()
-  const from = new Date(to.getFullYear(), to.getMonth() - 6, to.getDate())
-  return { from: isoDate(from), to: isoDate(to) }
+  return { from: startOfYear(), to: isoDate(new Date()) }
+}
+
+function dueHasArrived(row: { fullRemediationDue: string }, today = new Date()): boolean {
+  const due = parseRegistryDay(row.fullRemediationDue)
+  if (!due) return false
+  const start = new Date(today.getFullYear(), today.getMonth(), today.getDate())
+  return due.getTime() <= start.getTime()
+}
+
+function percentOf(part: number, total: number): string {
+  if (total <= 0) return '0%'
+  return `${Math.round((part / total) * 100)}%`
 }
 
 function buildRegistryTiles(
@@ -99,22 +131,27 @@ function buildRegistryTiles(
   aiHint: string
 ): SpecSummaryTile[] {
   const open = rows.filter((row) => row.open)
-  const done = rows.filter((row) => !row.open)
+  const done = rows.filter((row) => isCompletedAssignment(row))
   const overdue = open.filter((row) => row.overdue)
   const dueSoon = open.filter((row) => isDueWithinDays(row, 3))
+  // Белые: открытые, но не просроченные и без срока в ближайшие 3 рабочих дня.
+  const inWork = open.filter((row) => !row.overdue && !isDueWithinDays(row, 3))
+  const dueReached = rows.filter((row) => dueHasArrived(row))
+  const doneOfDue = dueReached.filter((row) => isCompletedAssignment(row))
   return [
     {
-      id: 'done',
-      label: 'Выполненные',
-      value: String(done.length),
-      hint: 'Закрытые / принятые поручения',
-      tone: 'green'
+      id: 'all',
+      label: 'Все',
+      value: String(rows.length),
+      tooltip: 'Все поручения за выбранный период',
+      tone: 'blue'
     },
     {
       id: 'overdue',
       label: 'Просроченные',
       value: String(overdue.length),
-      hint: 'Открытые с истёкшим сроком',
+      note: `(${percentOf(overdue.length, done.length)})`,
+      tooltip: 'Открытые с истёкшим сроком. В скобках — доля от выполненных',
       tone: overdue.length ? 'red' : 'neutral'
     },
     {
@@ -123,6 +160,20 @@ function buildRegistryTiles(
       value: String(dueSoon.length),
       hint: '3 рабочих дня от сегодня',
       tone: dueSoon.length ? 'orange' : 'neutral'
+    },
+    {
+      id: 'in_work',
+      label: 'В работе',
+      value: String(inWork.length),
+      tone: 'neutral'
+    },
+    {
+      id: 'done',
+      label: 'Выполненные',
+      value: String(done.length),
+      note: `(${percentOf(doneOfDue.length, dueReached.length)})`,
+      tooltip: 'Выполненные и отменённые. В скобках — доля среди поручений, у которых срок уже наступил',
+      tone: 'green'
     },
     {
       id: 'ai',
@@ -164,7 +215,10 @@ export function AssignmentsRegistryGridTab({
         columns?: unknown
       }
       return {
-        from: /^\d{4}-\d{2}-\d{2}$/.test(parsed.from || '') ? String(parsed.from) : fallback.from,
+        from:
+          /^\d{4}-\d{2}-\d{2}$/.test(parsed.from || '') && !isLegacyPeriodStart(String(parsed.from))
+            ? String(parsed.from)
+            : fallback.from,
         to: /^\d{4}-\d{2}-\d{2}$/.test(parsed.to || '') ? String(parsed.to) : fallback.to,
         tile: TILE_FILTER_IDS.has(parsed.tile || '')
           ? (parsed.tile as AssignmentRegistryTileId)
@@ -199,6 +253,12 @@ export function AssignmentsRegistryGridTab({
     setDateFrom(value)
     persistFilters(value, dateTo, tileFilter)
   }
+  useEffect(() => {
+    if (!isLegacyPeriodStart(dateFrom)) return
+    const next = startOfYear()
+    setDateFrom(next)
+    persistFilters(next, dateTo, tileFilter)
+  }, [dateFrom, dateTo, tileFilter])
   const changeDateTo = (value: string): void => {
     setDateTo(value)
     persistFilters(dateFrom, value, tileFilter)
@@ -306,8 +366,10 @@ export function AssignmentsRegistryGridTab({
   const filteredRows = useMemo(() => {
     let list = rowsHydrated
     if (tileFilter === 'report') list = selectRegistryReportRows(list).all
-    else if (tileFilter === 'done') list = list.filter((row) => !row.open)
+    else if (tileFilter === 'done') list = list.filter((row) => isCompletedAssignment(row))
     else if (tileFilter === 'overdue') list = list.filter((row) => row.open && row.overdue)
+    else if (tileFilter === 'in_work')
+      list = list.filter((row) => row.open && !row.overdue && !isDueWithinDays(row, 3))
     else if (tileFilter === 'due_soon') list = list.filter((row) => row.open && isDueWithinDays(row, 3))
 
     for (const { id } of REGISTRY_COLUMN_FILTERS) {
@@ -365,12 +427,6 @@ export function AssignmentsRegistryGridTab({
     }
   }, [tileFilter, filteredRows])
 
-  const filterRowCountLabel = useMemo((): string | null => {
-    if (!firstRowReady && !filteredRows.length) return null
-    if (loadingMore && filteredRows.length) return `${filteredRows.length} поручений…`
-    return `${filteredRows.length} поручений`
-  }, [filteredRows.length, firstRowReady, loadingMore])
-
   const startClosureCheck = async (): Promise<void> => {
     if (aiStarting) return
     setAiStarting(true)
@@ -401,10 +457,14 @@ export function AssignmentsRegistryGridTab({
       void startClosureCheck()
       return
     }
+    if (id === 'all') {
+      changeTileFilter('all')
+      return
+    }
     changeTileFilter(tileFilter === id ? 'all' : (id as AssignmentRegistryTileId))
   }
 
-  const activeTileId = tileFilter === 'all' || tileFilter === 'report' ? null : tileFilter
+  const activeTileId = tileFilter === 'report' ? null : tileFilter
 
   const resetRegistryFilters = (): void => {
     const next = defaultRange()
@@ -425,8 +485,44 @@ export function AssignmentsRegistryGridTab({
 
   const [printBusy, setPrintBusy] = useState(false)
   const [printError, setPrintError] = useState('')
-  const [createOpen, setCreateOpen] = useState(false)
   const [createNotice, setCreateNotice] = useState('')
+  const [formError, setFormError] = useState('')
+  const [formRequest, setFormRequest] = useState<DocflowFormRequest | null>(null)
+  const [createSchemas, setCreateSchemas] = useState<DocflowKindSchema[]>([])
+  const [savedWhileOpen, setSavedWhileOpen] = useState(false)
+
+  const openForm = (next: DocflowFormRequest): void => {
+    setCreateNotice('')
+    setFormError('')
+    if (createSchemas.some((item) => item.id === next.kind)) {
+      setFormRequest(next)
+      return
+    }
+    void loadDocflowCreateSchema(user)
+      .then((schemas) => {
+        setCreateSchemas(schemas)
+        if (schemas.some((item) => item.id === next.kind)) setFormRequest(next)
+        else setFormError('Форма поручения в 1С недоступна')
+      })
+      .catch((err: unknown) =>
+        setFormError(err instanceof Error ? err.message : 'Не удалось открыть форму поручения')
+      )
+  }
+
+  const openAssignmentForm = (row: AssignmentRegistryRow): void => {
+    const refKey = row.refKey.trim()
+    if (!refKey) {
+      setFormError('У поручения нет ссылки 1С')
+      return
+    }
+    openForm({ mode: 'edit', kind: 'assignment', refKey })
+  }
+
+  const closeForm = (): void => {
+    setFormRequest(null)
+    if (savedWhileOpen) refresh()
+    setSavedWhileOpen(false)
+  }
 
   const hydrateReportRows = async (): Promise<typeof rowsHydrated> => {
     const { all } = selectRegistryReportRows(rowsHydrated)
@@ -557,12 +653,15 @@ export function AssignmentsRegistryGridTab({
 
   return (
     <>
-    <AssignmentsRegistryCreateDialog
-      open={createOpen}
-      onClose={() => setCreateOpen(false)}
-      onCreated={(message) => {
+    <DocflowCreateDialog
+      user={user}
+      request={formRequest}
+      schemas={createSchemas}
+      onClose={closeForm}
+      onRequest={openForm}
+      onSaved={(message) => {
         setCreateNotice(message)
-        refresh()
+        setSavedWhileOpen(true)
       }}
     />
     <StandardTabChrome
@@ -641,20 +740,12 @@ export function AssignmentsRegistryGridTab({
               <button
                 type="button"
                 className="today-filter-layout-btn registry-create-open-btn"
-                title="Создать поручение в журнале АСТ00"
-                onClick={() => {
-                  setCreateNotice('')
-                  setCreateOpen(true)
-                }}
+                title="Создать поручение"
+                onClick={() => openForm({ mode: 'create', kind: 'assignment' })}
               >
                 <Plus size={14} aria-hidden /> Создать
               </button>
             </div>
-            {filterRowCountLabel ? (
-              <span className="registry-filter-row-count" aria-live="polite">
-                {filterRowCountLabel}
-              </span>
-            ) : null}
             <span className="registry-filter-strip-spacer" aria-hidden />
             <button type="button" className="spec-filter-reset" onClick={resetRegistryFilters}>
               Сбросить
@@ -668,6 +759,7 @@ export function AssignmentsRegistryGridTab({
             {printError ? <p className="registry-table-error">{printError}</p> : null}
             {aiError ? <p className="registry-table-error">{aiError}</p> : null}
             {closureNotice ? <p className="registry-table-hint registry-table-success">{closureNotice}</p> : null}
+            {formError ? <p className="registry-table-error">{formError}</p> : null}
             {createNotice ? <p className="registry-table-hint registry-table-success">{createNotice}</p> : null}
             {refreshing && rows.length && !loadingMore ? (
               <p className="registry-table-hint">Обновление данных…</p>
@@ -683,6 +775,7 @@ export function AssignmentsRegistryGridTab({
                 linesLoading={reportLinesLoading}
                 selectedId={selectedId}
                 onSelectRow={(row) => pickRow(row)}
+                onOpenForm={openAssignmentForm}
               />
             ) : (
               <AssignmentsRegistryTable
@@ -700,6 +793,7 @@ export function AssignmentsRegistryGridTab({
                   })
                 }
                 onSelectRow={(row) => pickRow(row)}
+                onOpenForm={openAssignmentForm}
                 columnFilters={tableColumnFilters}
                 emptyText={
                   pageQuery.trim() || Object.values(columnFilters).some(Boolean)
@@ -718,6 +812,7 @@ export function AssignmentsRegistryGridTab({
               row={selectedRow}
               linesLoading={detailLinesLoading}
               onClose={() => pickRow(null)}
+              onOpenForm={selectedRow ? () => openAssignmentForm(selectedRow) : undefined}
             />
           </div>
         )

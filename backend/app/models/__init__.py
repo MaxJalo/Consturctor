@@ -2,7 +2,7 @@ from app.models.user import AppUser
 from app.models.agent_run import AgentRun
 from app.models.calendar_overlay import CalendarOverlay
 from app.models.notification import Notification
-from app.models.finance import FinanceImport, FinanceSalaryEntry
+from app.models.finance import FinanceImport, FinanceSalaryEntry, FinanceSalarySource
 from app.models.org import (
     AdminPanelAssignment,
     AdminUserPanelAssignment,
@@ -26,6 +26,7 @@ from app.models.position_kpi import (
     PositionKpiSource,
     PositionKpiSubjectFact,
 )
+from app.models.meeting_audio import MeetingTranscript, VoiceProfile
 from app.models.workflow import Workflow, WorkflowFile
 
 __all__ = [
@@ -35,6 +36,7 @@ __all__ = [
     "Notification",
     "FinanceImport",
     "FinanceSalaryEntry",
+    "FinanceSalarySource",
     "OrgUnit",
     "OrgPosition",
     "OrgPerson",
@@ -45,6 +47,8 @@ __all__ = [
     "RegulationDocument",
     "RoleMatchRun",
     "AgentTrigger",
+    "MeetingTranscript",
+    "VoiceProfile",
     "Workflow",
     "WorkflowFile",
     "WorkplaceKpiDailyMetric",

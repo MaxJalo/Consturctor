@@ -6,6 +6,9 @@ export const TOOL_LABELS: Record<string, string> = {
   'outlook.search_mail': 'Поиск писем Outlook',
   'outlook.read_calendar': 'Календарь Outlook',
   'outlook.create_event': 'Встреча в Outlook',
+  'outlook.ews_availability': 'Занятость в Outlook',
+  'outlook.ews_create_meeting': 'Совещание в календаре «Совещания»',
+  'meetings.memo_requests': 'Служебные записки на совещания',
   'calendar.show_meetings': 'План совещаний',
   'browser.list_installed_browsers': 'Список браузеров',
   'browser.open_browser': 'Открытие браузера',
@@ -69,6 +72,8 @@ export const TOOL_LABELS: Record<string, string> = {
   'users.subordinates': 'Подчинённые из erp_pm',
   'notify.send': 'Уведомление',
   'audio.transcribe': 'Расшифровка аудио',
+  'audio.speakers': 'Голоса расшифровки',
+  'audio.bind_speakers': 'Кто говорит',
   'agent.schedule': 'Расписание агента',
   'agent.schedule.cancel': 'Отмена расписания'
 }

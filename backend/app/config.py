@@ -90,6 +90,18 @@ class Settings(BaseSettings):
     imap_password: str = ""
     imap_mailbox: str = "INBOX"
 
+    # Exchange (EWS): служебный ящик, от имени которого агенты создают совещания.
+    outlook_email: str = ""
+    outlook_password: str = ""
+    outlook_server: str = ""
+    outlook_mailbox: str = ""
+    outlook_company_calendar: str = ""
+    outlook_timezone: str = "Europe/Moscow"
+    outlook_timeout_sec: float = 60.0
+    outlook_smtp_host: str = ""
+    outlook_smtp_port: int = 587
+    outlook_smtp_tls: bool = True
+
     # TurboProject API (server-side tool turboproject; desktop only proxies)
     turboproject_api_base: str = ""
     turboproject_email: str = ""
@@ -136,6 +148,11 @@ class Settings(BaseSettings):
     onec_enforce_user_access: bool = True
     odata_local_catalog_path: Path = BACKEND_ROOT / "app" / "data" / "odata_document_structures.json"
     onec_artifact_storage_dir: Path = BACKEND_ROOT / "storage" / "onec_artifacts"
+    # GPU speech-to-text on this server (asr-server). Empty keeps the in-process CPU path.
+    # The model and CUDA stack stay in asr-server and are not packaged into desktop installers.
+    asr_gpu_url: str = ""
+    asr_gpu_model: str = "openai/whisper-large-v3"
+    asr_gpu_timeout_sec: float = 3600.0
 
 
 settings = Settings()

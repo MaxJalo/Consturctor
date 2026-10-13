@@ -40,6 +40,8 @@ CLOSED_STATUSES = {
     "закрыто",
     "выполнено",
     "принято и закрыто",
+    "отменено",
+    "отменен",
 }
 
 _GUID_EMPTY = "00000000-0000-0000-0000-000000000000"
@@ -724,12 +726,14 @@ def _list_assignments(args: dict[str, Any]) -> dict[str, Any]:
         files = file_map.get(str(row.get("Ref_Key") or ""), []) if include_files else []
         items.append(_normalize_assignment(row, files=files))
     t_names = time.perf_counter()
+    # Полный журнал 1С отдаёт строки ТЧ и без include_lines — без имён они уйдут с пустым исполнителем.
+    has_lines = include_lines or any(item.get("lines") for item in items)
     _enrich_assignment_names(
         items,
         customer=customer,
         customer_key=customer_key,
         raw_rows=raw_rows,
-        enrich_line_executors=include_lines,
+        enrich_line_executors=has_lines,
         enrich_organizations=include_lines,
     )
     if profile:

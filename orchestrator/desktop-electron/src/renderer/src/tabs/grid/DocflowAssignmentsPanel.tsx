@@ -21,6 +21,9 @@ import {
   type AssignmentRow,
   type AssignmentStatus
 } from '../../workplace/fetchDocflowAssignments'
+import { DocflowFileOpenButton } from './DocflowAttachments'
+import type { DocflowKindId } from '../../workplace/docflowDocumentCreate'
+import { DocflowOpenFormBar } from './DocflowOpenFormBar'
 import { SortTh, useDocflowTable } from './docflowTableTools'
 import {
   useRegisterGlobalSearch,
@@ -203,8 +206,8 @@ function AssignmentCardView({ card }: { card: AssignmentCard }): React.JSX.Eleme
                 <li key={line.n} className={line.overdue ? 'is-overdue' : ''}>
                   <p>{line.text || '—'}</p>
                   <div>
-                    <span>
-                      <UserCheck size={12} aria-hidden /> {cell(line.executor)}
+                    <span className={line.executor ? '' : 'docflow-muted'} title="Ответственное лицо">
+                      <UserCheck size={12} aria-hidden /> {line.executor || 'ответственный не указан в 1С'}
                     </span>
                     <span className={line.overdue ? 'is-overdue' : ''}>срок {day(line.due)}</span>
                     <PriorityTag value={line.priority} />
@@ -251,7 +254,10 @@ function AssignmentCardView({ card }: { card: AssignmentCard }): React.JSX.Eleme
             <ul className="docflow-files">
               {files.map((file) => (
                 <li key={file.id}>
-                  <strong>{file.name}{file.extension ? `.${file.extension}` : ''}</strong>
+                  <DocflowFileOpenButton file={file}>
+                    {file.name}
+                    {file.extension ? `.${file.extension}` : ''}
+                  </DocflowFileOpenButton>
                   <span>{file.created ? day(file.created) : ''}</span>
                 </li>
               ))}
@@ -266,11 +272,13 @@ function AssignmentCardView({ card }: { card: AssignmentCard }): React.JSX.Eleme
 export function DocflowAssignmentsPanel({
   user,
   from,
-  to
+  to,
+  onOpenDocument
 }: {
   user: UserProfile
   from: string
   to: string
+  onOpenDocument?: (kind: DocflowKindId, refKey: string) => void
 }): React.JSX.Element {
   const [rows, setRows] = useState<AssignmentRow[]>([])
   const [statuses, setStatuses] = useState<AssignmentStatus[]>(FALLBACK_STATUSES)
@@ -521,6 +529,7 @@ export function DocflowAssignmentsPanel({
                     className={`docflow-row${selectedId === row.id ? ' is-selected' : ''}`}
                     tabIndex={0}
                     onClick={() => openCard(row)}
+                    onDoubleClick={() => onOpenDocument?.('assignment', row.id)}
                     onKeyDown={(event) => {
                       if (event.key === 'Enter' || event.key === ' ') {
                         event.preventDefault()
@@ -548,6 +557,12 @@ export function DocflowAssignmentsPanel({
         </div>
       </div>
       <aside className="docflow-side wp-card" aria-label="Карточка поручения">
+        {selected ? (
+          <DocflowOpenFormBar
+            refKey={selected.id}
+            onOpen={onOpenDocument && (() => onOpenDocument('assignment', selected.id))}
+          />
+        ) : null}
         {!selected ? (
           <p className="docflow-status">Выберите поручение, чтобы увидеть карточку</p>
         ) : cardLoading ? (

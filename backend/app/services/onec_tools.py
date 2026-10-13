@@ -26,6 +26,11 @@ from app.services.docflow_create import (
     handle_docflow_create as _docflow_create,
     stub_docflow_create as _stub_docflow_create,
 )
+from app.services.docflow_document_create import (
+    DocumentCreateError,
+    handle_docflow_document_create as _docflow_document_create,
+    stub_docflow_document_create as _stub_docflow_document_create,
+)
 from app.services.docflow_assignments import (
     handle_docflow_assignment_card as _docflow_assignment_card,
     handle_docflow_assignments as _docflow_assignments,
@@ -37,6 +42,18 @@ from app.services.docflow_protocols import (
 from app.services.docflow_memos import (
     handle_docflow_memo_card as _docflow_memo_card,
     handle_docflow_memos as _docflow_memos,
+)
+from app.services.docflow_payment_requests import (
+    handle_docflow_payment_request_card as _docflow_payment_request_card,
+    handle_docflow_payment_requests as _docflow_payment_requests,
+)
+from app.services.docflow_forwarding import (
+    handle_docflow_forwarding as _docflow_forwarding,
+    handle_docflow_forwarding_card as _docflow_forwarding_card,
+)
+from app.services.docflow_incentive_orders import (
+    handle_docflow_incentive_order_card as _docflow_incentive_order_card,
+    handle_docflow_incentive_orders as _docflow_incentive_orders,
 )
 from app.services.erp_assignments import (
     ASSIGNMENT_ENTITY,
@@ -131,6 +148,8 @@ _SUBJECT_KEYS = (
     "Комментарий",
 )
 _ODATA_TYPE_PREFIX = "StandardODATA."
+# Журнал приказов читает эти документы списком. Догрузка связей здесь не нужна.
+_ORDER_LIST_ENTITIES = frozenset({"Document_ТД_Приказ", "Document_ТД_Распоряжение"})
 _KIND_RANK = {"document": 0, "other": 1, "register": 2, "catalog": 3}
 _PRIORITY_NAV_FIELDS = (
     "Руководитель",
@@ -199,8 +218,15 @@ ONEC_TOOLS = frozenset(
         "onec.docflow_assignment_card",
         "onec.docflow_protocols",
         "onec.docflow_protocol_card",
+        "onec.docflow_payment_requests",
+        "onec.docflow_payment_request_card",
+        "onec.docflow_forwarding",
+        "onec.docflow_forwarding_card",
+        "onec.docflow_incentive_orders",
+        "onec.docflow_incentive_order_card",
         "onec.meeting_protocols",
         "onec.meeting_protocol_write",
+        "onec.docflow_document_create",
     }
 )
 ONEC_ODATA_WRITE_TOOLS = frozenset(
@@ -217,6 +243,7 @@ ONEC_WRITE_TOOLS = ONEC_ODATA_WRITE_TOOLS | frozenset(
         "onec.docflow_task_action",
         "onec.docflow_create",
         "onec.meeting_protocol_write",
+        "onec.docflow_document_create",
     }
 )
 _ERP_TASK_TOOLS = frozenset(
@@ -233,6 +260,7 @@ _JWT_ONEC_TOOLS = _ERP_TASK_TOOLS | {
     "onec.docflow_create",
     "onec.erp_write_probe",
     "onec.meeting_protocol_write",
+    "onec.docflow_document_create",
 }
 _ACCESS_TOOLS = frozenset(
     {
@@ -393,6 +421,7 @@ def invoke_onec(
         IncomingCorrespondenceError,
         ArtifactError,
         ProtocolWriteError,
+        DocumentCreateError,
     ) as exc:
         raise OnecToolError(str(exc)) from exc
     except Exception as exc:  # noqa: BLE001
@@ -865,6 +894,19 @@ def _resolve_navigation_names(row: dict[str, Any], args: dict[str, Any], *, budg
     _refresh_subject(row)
 
 
+def _as_bool(value: Any) -> bool | None:
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return None
+    text = str(value).strip().lower()
+    if text in {"1", "true", "yes"}:
+        return True
+    if text in {"0", "false", "no"}:
+        return False
+    return None
+
+
 def _fetch_odata_list(args: dict[str, Any]) -> dict[str, Any]:
     path = str(args.get("path", "")).strip()
     entity = _entity_from_args(args)
@@ -969,7 +1011,12 @@ def _fetch_odata_list(args: dict[str, Any]) -> dict[str, Any]:
     tabular_parts: dict[str, list[dict[str, Any]]] = {}
     nav_suffix = cleaned_path.split(")", 1)[-1] if ")" in cleaned_path else ""
     is_navigation = keyed and nav_suffix.startswith("/")
-    if value and not is_navigation:
+    # Список приказа/распоряжения и явный resolve_navigation=false не должны
+    # после страницы журнала ходить в каждую связь и табличную часть: эти
+    # дополнительные GET упираются в таймаут, пока 1С занята выгрузкой задач.
+    resolve_navigation = _as_bool(args.get("resolve_navigation"))
+    light_list = entity in _ORDER_LIST_ENTITIES and not keyed and len(value) > 1
+    if value and not is_navigation and resolve_navigation is not False and not light_list:
         # Journal list: erp_assignments resolves FIO in batches — skip N×M navigation GETs.
         if entity == "Document_ТД_Поручения" and len(value) > 1 and not keyed:
             nav_budget = 0
@@ -1156,6 +1203,22 @@ def _odata_post(args: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _odata_key_segment(args: dict[str, Any]) -> str:
+    """`guid'…'` for objects; `Поле=guid'…',…` for register records keyed by dimensions."""
+    key = args.get("key")
+    if isinstance(key, dict) and key:
+        parts = []
+        for name, value in key.items():
+            text = str(value or "").strip()
+            literal = f"guid'{text}'" if _GUID_RE.match(text) else "'" + text.replace("'", "''") + "'"
+            parts.append(f"{name}={literal}")
+        return ",".join(parts)
+    ref_key = str(args.get("ref_key", "")).strip()
+    if not ref_key:
+        raise OnecToolError("ref_key required")
+    return f"guid'{ref_key}'"
+
+
 def _odata_patch(args: dict[str, Any]) -> dict[str, Any]:
     entity = validate_odata_entity(
         str(args.get("entity", "")),
@@ -1164,9 +1227,7 @@ def _odata_patch(args: dict[str, Any]) -> dict[str, Any]:
     )
     ref_key = str(args.get("ref_key", "")).strip()
     body = args.get("body") or {}
-    if not ref_key:
-        raise OnecToolError("ref_key required")
-    url = _odata_url(f"{entity}(guid'{ref_key}')")
+    url = _odata_url(f"{entity}({_odata_key_segment(args)})")
     auth = _odata_auth(args)
     if not auth:
         raise OnecToolError("OData credentials not configured")
@@ -1184,9 +1245,7 @@ def _odata_delete(args: dict[str, Any]) -> dict[str, Any]:
         extra_allowed=_odata_extra_entities(),
     )
     ref_key = str(args.get("ref_key", "")).strip()
-    if not ref_key:
-        raise OnecToolError("ref_key required")
-    url = _odata_url(f"{entity}(guid'{ref_key}')")
+    url = _odata_url(f"{entity}({_odata_key_segment(args)})")
     auth = _odata_auth(args)
     if not auth:
         raise OnecToolError("OData credentials not configured")
@@ -1610,8 +1669,15 @@ STUB_HANDLERS = {
     "onec.docflow_assignment_card": _docflow_assignment_card,
     "onec.docflow_protocols": _docflow_protocols,
     "onec.docflow_protocol_card": _docflow_protocol_card,
+    "onec.docflow_payment_requests": _docflow_payment_requests,
+    "onec.docflow_payment_request_card": _docflow_payment_request_card,
+    "onec.docflow_forwarding": _docflow_forwarding,
+    "onec.docflow_forwarding_card": _docflow_forwarding_card,
+    "onec.docflow_incentive_orders": _docflow_incentive_orders,
+    "onec.docflow_incentive_order_card": _docflow_incentive_order_card,
     "onec.meeting_protocols": _stub_meeting_protocols,
     "onec.meeting_protocol_write": _stub_meeting_protocol_write,
+    "onec.docflow_document_create": _stub_docflow_document_create,
 }
 
 REAL_HANDLERS = {
@@ -1641,6 +1707,13 @@ REAL_HANDLERS = {
     "onec.docflow_assignment_card": _docflow_assignment_card,
     "onec.docflow_protocols": _docflow_protocols,
     "onec.docflow_protocol_card": _docflow_protocol_card,
+    "onec.docflow_payment_requests": _docflow_payment_requests,
+    "onec.docflow_payment_request_card": _docflow_payment_request_card,
+    "onec.docflow_forwarding": _docflow_forwarding,
+    "onec.docflow_forwarding_card": _docflow_forwarding_card,
+    "onec.docflow_incentive_orders": _docflow_incentive_orders,
+    "onec.docflow_incentive_order_card": _docflow_incentive_order_card,
     "onec.meeting_protocols": _list_meeting_protocols,
     "onec.meeting_protocol_write": _meeting_protocol_write,
+    "onec.docflow_document_create": _docflow_document_create,
 }

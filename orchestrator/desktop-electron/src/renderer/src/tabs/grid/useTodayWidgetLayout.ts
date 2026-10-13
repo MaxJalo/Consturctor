@@ -435,9 +435,7 @@ export function useTodayWidgetLayout(userId: string): {
 
   const layoutWithStatic = useMemo(() => {
     const flagged = applyTodayLayoutStaticFlags(layout, editMode, locked)
-    if (editMode) return flagged
-    const filtered = flagged.filter((item) => visible[item.i as TodayWidgetId] !== false)
-    return filtered.length ? filtered : flagged
+    return flagged.filter((item) => visible[item.i as TodayWidgetId] !== false)
   }, [layout, editMode, locked, visible])
 
   return {

@@ -19,6 +19,14 @@ export type MeetingProtocolRecord = {
   reportFileId: string
   reportName: string
   reportUrl: string
+  /** transcribe — расшифровка, speakers — кому голос, review — автор правит ФИО, protocol — запись в 1С. */
+  stage?: 'transcribe' | 'speakers' | 'review' | 'protocol'
+  transcriptId?: string
+  /** Агент протокола. Не затирается, когда карточка переключается на агента говорящих. */
+  protocolWorkflowId?: string
+  mode?: 'create' | 'supplement'
+  refKey?: string
+  nextMeetingStart?: string
 }
 
 type ProtocolBucket = Record<string, MeetingProtocolRecord>
@@ -68,6 +76,12 @@ export function saveMeetingProtocol(
   const key = meetingProtocolKey(meeting)
   const bucket = readBucket(userId)
   bucket[key] = record
+  writeBucket(userId, bucket)
+}
+
+export function clearMeetingProtocol(userId: string, meeting: MeetingEvent): void {
+  const bucket = readBucket(userId)
+  delete bucket[meetingProtocolKey(meeting)]
   writeBucket(userId, bucket)
 }
 
@@ -163,6 +177,7 @@ export type MeetingProtocolHook = {
   runEntry: RunEntry | undefined
   rememberStart: (next: MeetingProtocolRecord) => void
   patchRecord: (partial: Partial<MeetingProtocolRecord>) => void
+  forgetRecord: () => void
 }
 
 export function useMeetingProtocol(
@@ -274,7 +289,9 @@ export function useMeetingProtocol(
       return
     }
     if (!sharedLive) {
-      patchRecord({ status: 'done' })
+      patchRecord({
+        status: record.stage === 'transcribe' && !record.transcriptId ? 'error' : 'done'
+      })
     }
   }, [
     record?.status,
@@ -366,8 +383,14 @@ export function useMeetingProtocol(
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [meetingKey, record?.workflowId])
 
+  const forgetRecord = useCallback(() => {
+    if (!meeting) return
+    clearMeetingProtocol(userId, meeting)
+    setRecord(null)
+  }, [meeting, userId])
+
   return useMemo(
-    () => ({ record, runEntry, rememberStart, patchRecord }),
-    [record, runEntry, rememberStart, patchRecord]
+    () => ({ record, runEntry, rememberStart, patchRecord, forgetRecord }),
+    [record, runEntry, rememberStart, patchRecord, forgetRecord]
   )
 }

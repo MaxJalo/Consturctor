@@ -224,7 +224,10 @@ def _raw_tools() -> list[dict[str, Any]]:
                 "СД — «ПСД» (основной), также «СПГ»/«СД». По умолчанию — черновики на проверку "
                 "(Posted=false или Статус=«Подготовлен»). "
                 "psd_mark=true — только пометка ПСД (номер ПСД*), все статусы, включая закрытые. "
-                "meeting_kind: rk или sd. date или date_from/date_to — период."
+                "meeting_kind: rk или sd. date или date_from/date_to — период. "
+                "pair=true — протоколы текущего и прошлого заседания «Совет директоров по ГК» "
+                "(или topic) с построчной сверкой поручений («Решения»), «Поставленных задач» и "
+                "повестки (reconciliation: строка + ошибки) и списком пробелов."
             ),
             "execution": "server",
             "input_schema": {
@@ -238,6 +241,15 @@ def _raw_tools() -> list[dict[str, Any]]:
                     "date_from": _prop("string", "Начало периода YYYY-MM-DD"),
                     "date_to": _prop("string", "Конец периода YYYY-MM-DD"),
                     "number": _prop("string", "Точный номер протокола, например РК__001_О_037"),
+                    "pair": _prop(
+                        "boolean",
+                        "Текущий + прошлый протокол заседания и проверка задач. "
+                        "date — день текущего заседания; без date — последний черновик «Подготовлен»",
+                    ),
+                    "topic": _prop(
+                        "string",
+                        "Точное название темы совещания (для pair по умолчанию «Совет директоров по ГК»)",
+                    ),
                     "review_only": _prop(
                         "boolean",
                         "Только на проверку (Posted=false или Подготовлен). По умолчанию true",
@@ -254,6 +266,97 @@ def _raw_tools() -> list[dict[str, Any]]:
                     "max_results": _prop("integer", "Максимум протоколов, не больше 100"),
                 },
                 "required": ["meeting_kind"],
+            },
+        },
+        {
+            "name": "onec.meeting_protocol_write",
+            "description": (
+                "Черновик протокола Document_ТД_Протокол в 1С (статус «Подготовлен», не проведён). "
+                "action=next + source_ref_key — протокол на основании прошлого, как в 1С: "
+                "копирует шапку, присутствующих и повестку, ставит ДокументОснование, "
+                "и все задачи прошлого протокола видны на контроле (в новый документ не копируются); "
+                "дата — date или «Дата следующего совещания» прошлого протокола; любое поле можно "
+                "передать явно. action=create — новый протокол, action=update + ref_key — перезаписать "
+                "черновик. action=add_tasks + ref_key — проведённый протокол: дописать задачи в регистр "
+                "ТД_ЗадачиПротоколов (документ не меняется); tasks — только новые {text, executor, due} "
+                "и правки неотправленных {id, …} (id из tasks[].id протокола). "
+                "action=check_tasks + ref_key протокола-владельца задач — отметить выполненные: "
+                "tasks=[{id, done_date YYYY-MM-DD, comment}] (Выполнена + ДатаИсполнения в регистре; "
+                "задачи с запущенным процессом ДО сервер пропустит). "
+                "ФИО передавай как в 1С. Требует подтверждения человека."
+            ),
+            "execution": "server",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "action": _prop(
+                        "string", "create | update | next | add_tasks | check_tasks", default="create"
+                    ),
+                    "source_ref_key": _prop("string", "Ref_Key прошлого протокола (action=next)"),
+                    "ref_key": _prop("string", "Ref_Key протокола (action=update / add_tasks / check_tasks)"),
+                    "topic": _prop("string", "Тема совещания как в справочнике «Темы совещаний»"),
+                    "date": _prop("string", "Дата совещания YYYY-MM-DD"),
+                    "time_start": _prop("string", "Время начала HH:MM"),
+                    "time_end": _prop("string", "Время окончания HH:MM"),
+                    "leader": _prop("string", "ФИО руководителя совещания"),
+                    "responsible": _prop("string", "ФИО проверяющего"),
+                    "next_meeting_date": _prop("string", "Дата следующего совещания YYYY-MM-DD"),
+                    "participants": _prop("array", "ФИО присутствующих"),
+                    "agenda": _prop("array", "Вопросы повестки: строка или {question, responsible}"),
+                    "decisions": _prop(
+                        "array",
+                        "Решения: строка или {text, since, due}. since — дата начала YYYY-MM-DD, "
+                        "её пишет форма; due — дата окончания, только если названа отдельно",
+                    ),
+                    "tasks": _prop(
+                        "array",
+                        "Задачи: {text, executor (ФИО), due YYYY-MM-DD, priority, note}; "
+                        "для add_tasks правка существующей — {id, …изменённые поля}; "
+                        "для check_tasks — {id, done_date, comment} выполненных",
+                    ),
+                    "comment": _prop("string", "Комментарий к протоколу"),
+                },
+                "required": ["action"],
+            },
+        },
+        {
+            "name": "onec.docflow_document_create",
+            "description": (
+                "Документ журнала «Документооборот» в 1С: incoming, outgoing, memo, assignment, payment, "
+                "forwarding, order, directive — ERP; incentive — база ДО под учёткой сеанса. "
+                "action=schema — поля формы, списки, виды «на основании»; action=lookup + kind + catalog + query — "
+                "поиск в справочнике формы; action=create + kind + values {поле: значение} (+ tables, files, "
+                "basis {kind, ref_key}, post=true — провести) — черновик, либо проведённый документ ERP; "
+                "action=read + ref_key — карточка; "
+                "action=update + ref_key + values + changed [поля] — изменить черновик (проведённый — только в 1С); "
+                "action=attach + ref_key + files — прикрепить файлы; action=basis + ref_key + target — значения "
+                "для «Создать на основании» / копии. Ссылки передавай наименованием как в 1С. "
+                "Перед первой записью вида сервер сам делает пробу CONSTRUCTOR_PROBE и удаляет её. "
+                "Требует подтверждения человека."
+            ),
+            "execution": "server",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "action": _prop(
+                        "string", "schema | lookup | probe | create | read | update | attach | basis", default="schema"
+                    ),
+                    "kind": _prop(
+                        "string",
+                        "incoming | outgoing | memo | assignment | payment | forwarding | order | directive | incentive",
+                    ),
+                    "ref_key": _prop("string", "Ref_Key документа (read / update / attach / basis)"),
+                    "target": _prop("string", "Вид создаваемого документа (action=basis)"),
+                    "changed": _prop("array", "Ключи изменённых полей (action=update)"),
+                    "basis": _prop("object", "Документ-основание {kind, ref_key} (action=create)"),
+                    "catalog": _prop("string", "Справочник поля формы (action=lookup)"),
+                    "query": _prop("string", "Текст поиска (action=lookup)"),
+                    "values": _prop("object", "Значения полей формы: ключи из action=schema"),
+                    "tables": _prop("object", "Табличные части: {ключ: [{колонка: значение}]}"),
+                    "files": _prop("array", "Файлы к документу ERP: [{name, base64}], до 10 шт. по 20 МБ"),
+                    "post": _prop("boolean", "true — провести документ ERP при записи (action=create)"),
+                },
+                "required": ["action"],
             },
         },
         {
@@ -752,6 +855,16 @@ def _turboproject_advanced_tools() -> list[dict[str, Any]]:
             ["project_id"],
         ),
         (
+            "turboproject.tasks_for_people",
+            "Задачи TurboProject, назначенные переданным сотрудникам. "
+            "Берёт до 8 проектов, где эти люди есть в карточке, и оставляет их задачи.",
+            {
+                "fios": _prop("array", "ФИО сотрудников, чьи задачи нужны"),
+                "limit_projects": _prop("integer", "Сколько проектов открыть, не больше 8"),
+            },
+            ["fios"],
+        ),
+        (
             "turboproject.get_project_metrics",
             "Компактные метрики по ограниченному списку project_ids, не для полного портфеля.",
             {
@@ -1074,6 +1187,11 @@ def _desktop_ac_tools() -> list[dict[str, Any]]:
             "send_at": _prop("string", "Когда отправить, ISO. Пусто — сразу"),
             "workflow_id": _prop("string", "id агента. Пусто — текущий"),
         }, ["user_id", "title"]),
+        ("chat.send_direct", "Личное сообщение в чат Constructor от имени владельца агента (помечается «[ИИ-агент]»). Получатель — user_id из users.list или ФИО (как в 1С/протоколе); если ФИО не найдено или неоднозначно, сообщение не уходит и в ответе note — зафиксируй это как пробел. Подтверждение не нужно.", {
+            "user_id": _prop("string", "id получателя из users.list"),
+            "fio": _prop("string", "ФИО получателя, если id нет"),
+            "text": _prop("string", "Текст сообщения"),
+        }, ["text"]),
         ("agent.schedule", "Запланировать запуск агента: в момент at (ISO), через after_seconds, или когда выполнится condition (свободный текст: файл, письмо, любое событие). Пустой workflow_id = текущий агент.", {
             "workflow_id": _prop("string", "id агента. Пусто — текущий"),
             "message": _prop("string", "Что сказать агенту при запуске"),
@@ -1086,7 +1204,14 @@ def _desktop_ac_tools() -> list[dict[str, Any]]:
             "trigger_id": _prop("string", "id триггера из ответа agent.schedule"),
         }, ["trigger_id"]),
     ]
-    server_tools = {"users.current", "users.list", "users.subordinates", "notify.send", "data.process"}
+    server_tools = {
+        "users.current",
+        "users.list",
+        "users.subordinates",
+        "notify.send",
+        "chat.send_direct",
+        "data.process",
+    }
     tools: list[dict[str, Any]] = []
     for item in items:
         name, description, properties = item[0], item[1], item[2]
@@ -1144,6 +1269,22 @@ _CONTRACTS: dict[str, tuple[str, str, str | tuple[str, ...], list[str], list[str
         ["meeting_kind"],
         ["protocols"],
         "count",
+    ),
+    "onec.meeting_protocol_write": (
+        "onec",
+        "protocol",
+        ("create", "update"),
+        ["action"],
+        ["ref_key", "number"],
+        "none",
+    ),
+    "onec.docflow_document_create": (
+        "onec",
+        "docflow_document",
+        ("list", "search", "read", "create", "update"),
+        ["action"],
+        ["ref_key", "number", "kinds", "items"],
+        "none",
     ),
     "onec.sql_query": ("onec", "sql_table", "search", ["sql"], ["rows"], "count"),
     "onec.erp_tasks_current": ("onec", "task", "list", [], ["tasks"], "count"),
@@ -1351,6 +1492,7 @@ _CONTRACTS: dict[str, tuple[str, str, str | tuple[str, ...], list[str], list[str
         ["id", "delivered"],
         "none",
     ),
+    "chat.send_direct": ("constructor", "chat_message", "notify", ["text"], ["sent"], "none"),
     "agent.schedule": ("constructor", "trigger", "create", [], ["trigger_id"], "none"),
     "agent.schedule.cancel": ("constructor", "trigger", "delete", ["trigger_id"], [], "none"),
 }
