@@ -179,11 +179,12 @@ export function AgentRunPage({
     if (!autoStart || autoStartedRef.current) return
     if (running) return
     autoStartedRef.current = true
+    const task = initialMessage.trim()
     runs.startRun({
       workflowId,
       title,
-      message: '',
-      shownMessage: 'Запуск агента',
+      message: task,
+      shownMessage: task || 'Запуск агента',
       resumeAgentId: resumeAgentRef.current || undefined,
       forceRestart: true
     })
@@ -193,7 +194,7 @@ export function AgentRunPage({
   // Поле «Задать вопрос оркестратору» на Сегодня: сразу отправляем вопрос.
   useEffect(() => {
     const message = initialMessage.trim()
-    if (!message || initialSentRef.current) return
+    if (autoStart || !message || initialSentRef.current) return
     initialSentRef.current = true
     runs.startRun({
       workflowId,
@@ -359,7 +360,7 @@ export function AgentRunPage({
   return (
     <div className={`wf-page${personalAgent ? ' wf-page--orchestrator' : ''}`}>
       <div className="wf-topbar">
-        <button className="btn-ghost" onClick={onBack}>
+        <button className="wf-back" onClick={onBack}>
           Назад
         </button>
         <div className="wf-title-block">
@@ -368,7 +369,7 @@ export function AgentRunPage({
         </div>
         <div className="wf-topbar-spacer" />
         {onOpenHistory && !personalAgent && (
-          <button className="btn-ghost" onClick={() => onOpenHistory(workflowId, title)}>
+          <button className="wf-back" onClick={() => onOpenHistory(workflowId, title)}>
             История
           </button>
         )}
@@ -427,7 +428,7 @@ export function AgentRunPage({
               <textarea
                 ref={inputRef}
                 className="wf-composer-input"
-                placeholder="Что должен сделать агент?"
+                placeholder={running ? 'Агент работает — дождитесь ответа или остановите' : 'Продолжить диалог с агентом'}
                 value={input}
                 disabled={false}
                 onChange={(e) => setInput(e.target.value)}

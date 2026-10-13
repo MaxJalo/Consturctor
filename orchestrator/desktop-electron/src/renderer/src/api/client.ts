@@ -1280,6 +1280,16 @@ export class ApiClient {
   }
 
   // ---------- Auth ----------
+  async createDesktopHandoff(): Promise<{ code: string; url: string }> {
+    const data = await this.request<Record<string, unknown>>('POST', '/api/v1/auth/desktop-handoff', {
+      timeoutMs: 30_000
+    })
+    const code = String(data.code || '').trim()
+    const url = String(data.url || '').trim()
+    if (!code || !url) throw new ApiError('Сервер не выдал код входа в конструктор')
+    return { code, url }
+  }
+
   async login(fio: string, password: string): Promise<LoginResult> {
     const data = await this.request<Record<string, unknown>>('POST', '/api/v1/auth/login', {
       body: { fio, password, client: 'orchestrator' },

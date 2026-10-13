@@ -25,7 +25,7 @@ import { OrchSlotMain } from '../../layout/GridSlots'
 import { PositionKpiBuildPage } from '../../pages/PositionKpiBuildPage'
 import { usePositionCompensation } from '../../workplace/usePositionCompensation'
 import { usePositionKpi } from '../../workplace/usePositionKpi'
-import { KpiEmployeePanel } from './KpiEmployeePanel'
+import { KpiEmployeePanel, KpiMethodOffer } from './KpiEmployeePanel'
 import { KpiMetricCodeModal } from './KpiMetricCodeModal'
 import './kpiGrid.css'
 import { useRegisterGlobalSearch, type GlobalSearchEntry } from '../../layout/globalSearch'
@@ -62,10 +62,27 @@ function cardsToTiles(cards: WorkplaceKpiCard[]): SpecSummaryTile[] {
   }))
 }
 
+const KPI_GENERATOR_PLATFORM_ID = 'f856136c-d75a-493b-8814-99bf6b06d721'
+const KPI_GENERATOR_TITLE = 'генератор модулей kpi'
+
+function sameAgentTitle(title: string): boolean {
+  return title.trim().toLowerCase().replace(/ё/g, 'е') === KPI_GENERATOR_TITLE
+}
+
+function kpiGeneratorTask(position: string, department: string): string {
+  const place = department ? `, подразделение «${department}»` : ''
+  return (
+    `Считай только должность «${position}»${place}. ` +
+    'Не обходи другие должности, даже если журнал прошлого запуска перечисляет их. ' +
+    'Выполни план из materials/agent.md только для этой должности.'
+  )
+}
+
 export function KpiGridTab(_props: {
   user?: UserProfile
   onOpenProcesses?: () => void
   onOpenDecisions?: () => void
+  onRunAgent?: (workflowId: string, title: string, message: string) => void
 }): React.JSX.Element {
   const { from, to } = useWorkplacePeriod()
   const selfFio = (_props.user?.fio || '').trim()
@@ -81,6 +98,8 @@ export function KpiGridTab(_props: {
   const positionKpi = usePositionKpi(_props.user?.position || '')
   const positionCompensation = usePositionCompensation()
   const [buildingMethod, setBuildingMethod] = useState(false)
+  const [launchingGenerator, setLaunchingGenerator] = useState(false)
+  const [launchError, setLaunchError] = useState('')
   const [codeFor, setCodeFor] = useState('')
 
   useEffect(() => {
@@ -94,6 +113,54 @@ export function KpiGridTab(_props: {
   const periodSources = useKpiPeriodSources()
   const { board: workflowBoard } = useKpiWorkflowBoard(from, to)
   const dailySyncKeyRef = useRef('')
+
+  const launchGenerator = async (): Promise<void> => {
+    if (launchingGenerator) return
+    setLaunchError('')
+    setLaunchingGenerator(true)
+    try {
+      const fromBoard = workflowBoard.agents.find((item) => sameAgentTitle(item.title))
+      let workflowId = ''
+      let title = 'Генератор модулей KPI'
+      if (fromBoard?.id) {
+        const record = await api.getWorkflow(fromBoard.id).catch(() => null)
+        const notes = record?.notes || ''
+        if (!record || notes.includes(KPI_GENERATOR_PLATFORM_ID) || sameAgentTitle(record.title)) {
+          workflowId = fromBoard.id
+          title = record?.title || fromBoard.title || title
+        }
+      }
+      if (!workflowId) {
+        const rows = await api.listWorkflows()
+        const candidates = rows.filter(
+          (item) => item.phase === 'done' && (sameAgentTitle(item.title) || item.title.toLowerCase().includes('генератор модулей'))
+        )
+        for (const item of candidates) {
+          const record = await api.getWorkflow(item.id)
+          if ((record.notes || '').includes(KPI_GENERATOR_PLATFORM_ID) || sameAgentTitle(record.title)) {
+            workflowId = record.id
+            title = record.title || item.title
+            break
+          }
+        }
+      }
+      if (!workflowId || !_props.onRunAgent) {
+        setLaunchError('В «Моих агентах» нет карточки «Генератор модулей KPI».')
+        return
+      }
+      const position = (positionKpi.methodology?.position || _props.user?.position || '').trim()
+      const department = (positionKpi.methodology?.department || _props.user?.department || '').trim()
+      if (!position) {
+        setLaunchError('У пользователя не указана должность.')
+        return
+      }
+      _props.onRunAgent(workflowId, title, kpiGeneratorTask(position, department))
+    } catch (err) {
+      setLaunchError(err instanceof Error ? err.message : 'Не удалось запустить агента')
+    } finally {
+      setLaunchingGenerator(false)
+    }
+  }
 
   const dashboard = useMemo(
     () => mergeEmployeeKpiAndZones(data, periodSources, from, to, workflowBoard),
@@ -249,7 +316,15 @@ export function KpiGridTab(_props: {
       }}
       widgets={{
         tiles: (
-          <div className="kpi-two-tier-tiles">
+          <div className="kpi-tiles-stack">
+            <KpiMethodOffer
+              methodologyStatus={positionKpi.methodologyStatus}
+              methodology={positionKpi.methodology}
+              busy={launchingGenerator}
+              error={launchError}
+              onCalculate={() => void launchGenerator()}
+            />
+            <div className="kpi-two-tier-tiles">
             <KpiEmployeePanel
               variant="bar"
               metrics={positionKpi.metrics}
@@ -263,7 +338,7 @@ export function KpiGridTab(_props: {
               needsMethodology={positionKpi.needsBuild}
               methodologyStatus={positionKpi.methodologyStatus}
               methodology={positionKpi.methodology}
-              onCalculate={() => setBuildingMethod(true)}
+              onCalculate={() => void launchGenerator()}
               onInfo={(code) => setCodeFor(code)}
             />
             <SpecSummaryTiles
@@ -272,6 +347,7 @@ export function KpiGridTab(_props: {
               onSelect={(id) => setTileFilter((current) => toggleSimpleTile(current, id))}
               className="kpi-agent-top-tiles"
             />
+            </div>
           </div>
         ),
         filters: (

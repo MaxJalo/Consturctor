@@ -54,18 +54,31 @@ function ResultBlock({
   )
 }
 
+function ThinkingBlock({ text, live }: { text: string; live: boolean }): React.JSX.Element | null {
+  const body = text.trim()
+  if (!body) return null
+  return (
+    <details className={live ? 'feed-thinking live' : 'feed-thinking'} {...(live ? { open: true } : {})}>
+      <summary>{live ? 'Размышляет…' : 'Размышления'}</summary>
+      <p>{body}</p>
+    </details>
+  )
+}
+
 function FeedRow({
   item,
   resultMeetings,
-  liftCalendar
+  liftCalendar,
+  liveThinking
 }: {
   item: FeedItem
   resultMeetings: ReturnType<typeof meetingsFromFeed>
   liftCalendar: boolean
+  liveThinking: boolean
 }): React.JSX.Element | null {
   switch (item.kind) {
     case 'thinking':
-      return null
+      return <ThinkingBlock text={item.text} live={liveThinking} />
     case 'message':
       if (item.role === 'user') {
         return (
@@ -131,12 +144,13 @@ export function AgentFeed({
   return (
     <div className="agent-feed" ref={scrollRef} onScroll={handleScroll}>
       {isEmpty && emptyHint && <div className="agent-feed-empty">{emptyHint}</div>}
-      {visibleItems.map((item) => (
+      {visibleItems.map((item, index) => (
         <FeedRow
           key={item.id}
           item={item}
           resultMeetings={resultMeetings}
           liftCalendar={liftCalendar}
+          liveThinking={running && item.kind === 'thinking' && index === visibleItems.length - 1}
         />
       ))}
       {!hasResultItem && liftCalendar ? <ResultBlock meetings={resultMeetings} /> : null}

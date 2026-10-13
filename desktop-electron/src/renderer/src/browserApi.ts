@@ -68,6 +68,10 @@ function installBrowserApi(): void {
     onInboxChanged: noopUnsub,
     onBoardUpdated: noopUnsub,
     onSessionKicked: noopUnsub,
+    consumeHandoff: async () => '',
+    takeHandoffPassword: async () => null,
+    ackHandoff: async () => ({ ok: true }),
+    onSessionHandoff: noopUnsub,
     onChatEvent: noopUnsub,
     getUpdateStatus: async () => ({
       state: 'idle' as const,

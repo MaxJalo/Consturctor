@@ -844,6 +844,12 @@ input {
 }
 
 /* ---------- Sidebar quick access (как быстрый доступ в ChatGPT) ---------- */
+.nav-open-constructor {
+  margin-top: 8px;
+}
+.nav-open-constructor:disabled {
+  opacity: 0.6;
+}
 .nav-quick-toggle {
   position: relative;
   margin-top: 4px;
@@ -14782,4 +14788,204 @@ button.spec-v04-tile {
     flex-direction: column;
     align-items: flex-start;
   }
+}
+
+/* Запуск агента — лента как в TurboTest: плоский фон, светлая реплика, тихие шаги, круглое поле. */
+.content:has(.wf-page) {
+  background: #fff;
+}
+.content-inner:has(.wf-page) {
+  padding: 8px 12px 8px;
+}
+.wf-page {
+  gap: 0;
+  padding: 4px 20px 10px;
+  background: #fff;
+}
+.wf-page .wf-topbar {
+  margin-bottom: 12px;
+  gap: 12px;
+}
+.wf-page .wf-back {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 6px 12px;
+  border: 1px solid #e5e5e5;
+  border-radius: 999px;
+  background: transparent;
+  color: #6b6b6b;
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+}
+.wf-page .wf-back:hover {
+  background: #f4f4f4;
+  color: #1a1a1a;
+}
+.wf-page .wf-title {
+  font-size: 20px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  color: #1a1a1a;
+}
+.wf-page .wf-body {
+  gap: 16px;
+}
+.wf-page .wf-left,
+.wf-page .wf-right {
+  background: transparent;
+  border: none;
+  border-radius: 0;
+  padding: 0;
+  box-shadow: none;
+}
+.wf-page .wf-right {
+  width: 300px;
+  padding: 12px 8px 10px 14px;
+  border: 1px solid #e5e5e5;
+  border-radius: 16px;
+  background: rgba(244, 244, 244, 0.72);
+}
+.wf-page .agent-feed {
+  gap: 10px;
+  padding: 4px 6px 88px 2px;
+}
+.wf-page .feed-message.user {
+  align-self: flex-end;
+  max-width: 82%;
+  padding: 10px 14px;
+  border-radius: 18px 18px 6px 18px;
+  background: #f4f4f4;
+  color: #1a1a1a;
+}
+.wf-page .feed-assistant {
+  padding: 2px 4px;
+  color: #1a1a1a;
+  font-size: 14.5px;
+  line-height: 1.6;
+}
+.wf-page .feed-thinking {
+  border: none;
+  background: transparent;
+}
+.wf-page .feed-thinking summary {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 2px 4px;
+  color: #8f8f8f;
+  font-size: 13px;
+  list-style: none;
+  cursor: pointer;
+  user-select: none;
+}
+.wf-page .feed-thinking summary::-webkit-details-marker {
+  display: none;
+}
+.wf-page .feed-thinking.live summary {
+  color: #6b6b6b;
+}
+.wf-page .feed-thinking p {
+  margin: 4px 4px 6px;
+  padding-left: 10px;
+  border-left: 2px solid #e5e5e5;
+  color: #6b6b6b;
+  font-size: 13px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.wf-page .feed-tool {
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  overflow: visible;
+}
+.wf-page .feed-tool-head {
+  align-items: center;
+  gap: 7px;
+  padding: 3px 6px;
+  border-radius: 8px;
+}
+.wf-page button.feed-tool-head:hover {
+  background: rgba(244, 244, 244, 0.9);
+}
+.wf-page .feed-tool-dot {
+  width: 7px;
+  height: 7px;
+  margin-top: 0;
+}
+.wf-page .feed-tool-title {
+  font-size: 12.5px;
+  font-weight: 500;
+  color: #1a1a1a;
+}
+.wf-page .feed-tool-status:not(.error):not(.live) {
+  display: none;
+}
+.wf-page .feed-tool-body {
+  margin: 4px 0 2px 18px;
+  padding: 0 0 0 10px;
+  border-left: 1px solid #e5e5e5;
+  background: transparent;
+}
+.wf-page .feed-tool-block pre,
+.wf-page .feed-tool-request {
+  max-height: 260px;
+  margin: 0;
+  padding: 9px 11px;
+  overflow: auto;
+  border-radius: 10px;
+  background: #f4f4f4;
+  color: #1a1a1a;
+  font-family: Consolas, 'Courier New', monospace;
+  font-size: 12px;
+  line-height: 1.5;
+}
+.wf-page .feed-tool-label {
+  color: #8f8f8f;
+  font-size: 11.5px;
+}
+.wf-page .wf-dock {
+  width: min(720px, calc(100% - 8px));
+  bottom: 28px;
+}
+.wf-page .wf-composer {
+  align-items: flex-end;
+  gap: 6px;
+  padding: 7px 8px;
+  border: 1px solid #e5e5e5;
+  border-radius: 28px;
+  background: #fff;
+  box-shadow: 0 8px 24px rgba(16, 20, 26, 0.06);
+}
+.wf-page .wf-composer-input {
+  min-height: 36px;
+  padding: 8px 4px;
+  line-height: 20px;
+}
+.wf-page .wf-composer-input::placeholder {
+  color: #8f8f8f;
+}
+.wf-page .wf-send {
+  width: 36px;
+  height: 36px;
+  background: #2f7cf6;
+}
+.wf-page .wf-send:disabled {
+  background: #e8e8e8;
+  color: #8f8f8f;
+}
+.wf-page .feed-hitl {
+  border: 1px solid #e5e5e5;
+  border-radius: 14px;
+  background: #fafafa;
+}
+.wf-page .feed-hitl .btn-primary,
+.wf-page .feed-hitl .btn-ghost {
+  width: auto;
+  height: 36px;
+  padding: 0 16px;
+  border-radius: 999px;
 }

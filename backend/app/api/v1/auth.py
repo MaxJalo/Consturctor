@@ -5,6 +5,8 @@ from app.api.deps import get_current_user
 from app.core.jwt import AuthContext
 from app.schemas.auth import (
     DepartmentListResponse,
+    DesktopHandoffRedeemRequest,
+    DesktopHandoffResponse,
     LoginRequest,
     LoginResponse,
     UpdateDepartmentRequest,
@@ -83,6 +85,27 @@ async def update_my_activity(
     status = str((body or {}).get("status") or "")
     client_id = enqueue_command({"type": "set_activity", "user_id": auth.user_id, "status": status})
     return {"accepted": True, "client_id": client_id}
+
+
+@router.post("/desktop-handoff", response_model=DesktopHandoffResponse)
+async def create_desktop_handoff(auth: AuthContext = Depends(get_current_user)) -> DesktopHandoffResponse:
+    from app.services.desktop_handoff import HandoffError, create_handoff, handoff_url
+
+    try:
+        code = create_handoff(auth)
+    except HandoffError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
+    return DesktopHandoffResponse(code=code, url=handoff_url(code))
+
+
+@router.post("/desktop-handoff/redeem", response_model=LoginResponse)
+async def redeem_desktop_handoff(body: DesktopHandoffRedeemRequest) -> LoginResponse:
+    from app.services.desktop_handoff import HandoffError, redeem_handoff
+
+    try:
+        return await redeem_handoff(body.code)
+    except HandoffError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
 
 
 @router.get("/me", response_model=UserOut)

@@ -111,6 +111,8 @@ const api = {
     message?: string
   }> =>
     ipcRenderer.invoke('shell:launchTurboProject'),
+  launchConstructor: (url: string): Promise<{ ok: boolean; error?: string }> =>
+    ipcRenderer.invoke('shell:launchConstructor', url),
   printToPdf: (opts: {
     html?: string
     landscape?: boolean

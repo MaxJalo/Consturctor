@@ -118,6 +118,129 @@ def is_complete_kpi_list_answer(text: str) -> bool:
 
 SdkEventCallback = Callable[[dict[str, Any]], None]
 
+_SDK_OWNER_ENV = "CONSTRUCTOR_SDK_OWNER"
+
+
+def _norm_cmd(text: str) -> str:
+    return text.replace("/", "\\").casefold()
+
+
+def foreign_runner_pids(
+    rows: list[tuple[int, int, str]],
+    *,
+    owner: str,
+    me: int,
+) -> list[int]:
+    """Pids of SDK runners that belong to a previous sidecar of this app, or to none.
+
+    A runner whose parent chain still reaches this process is kept. A runner
+    owned by another app (a different sidecar path) is kept too.
+    """
+    owner_norm = _norm_cmd(owner)
+    if not owner_norm:
+        return []
+    by_pid = {pid: (ppid, cmd) for pid, ppid, cmd in rows}
+    doomed: list[int] = []
+    seen: set[int] = set()
+    for pid, _ppid, cmd in rows:
+        folded = cmd.casefold()
+        if "runner.ts" not in folded or "sdk-agent" not in folded:
+            continue
+        kill_pid, sidecar_pid, sidecar_cmd = _runner_owner(pid, by_pid)
+        if kill_pid is None or sidecar_pid == me:
+            continue
+        if sidecar_pid and owner_norm not in _norm_cmd(sidecar_cmd):
+            continue
+        if kill_pid in seen:
+            continue
+        seen.add(kill_pid)
+        doomed.append(kill_pid)
+    return doomed
+
+
+def _runner_owner(
+    runner_pid: int, by_pid: dict[int, tuple[int, str]]
+) -> tuple[int | None, int, str]:
+    """Return (pid to kill, sidecar pid or 0, sidecar command)."""
+    seen: set[int] = set()
+    current = runner_pid
+    child_of_sidecar = runner_pid
+    while current and current not in seen:
+        seen.add(current)
+        row = by_pid.get(current)
+        if row is None:
+            return runner_pid, 0, ""
+        ppid, cmd = row
+        if "agent_sidecar.py" in cmd.casefold():
+            return child_of_sidecar, current, cmd
+        if ppid <= 0 or ppid == current or ppid not in by_pid:
+            return current, 0, ""
+        child_of_sidecar = current
+        current = ppid
+    return None, 0, ""
+
+
+def _kill_pid_tree(pid: int) -> None:
+    if not pid or pid == os.getpid():
+        return
+    if sys.platform != "win32":
+        try:
+            os.kill(pid, 15)
+        except OSError:
+            return
+        return
+    try:
+        subprocess.run(
+            ["taskkill", "/F", "/T", "/PID", str(pid)],
+            capture_output=True,
+            check=False,
+            timeout=15,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return
+
+
+def _win_process_rows() -> list[tuple[int, int, str]]:
+    script = (
+        "Get-CimInstance Win32_Process | "
+        "ForEach-Object { '{0}|{1}|{2}' -f $_.ProcessId, $_.ParentProcessId, "
+        "(($_.CommandLine) -replace '[\\r\\n|]', ' ') }"
+    )
+    try:
+        result = subprocess.run(
+            ["powershell", "-NoProfile", "-Command", script],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=20,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return []
+    rows: list[tuple[int, int, str]] = []
+    for line in (result.stdout or "").splitlines():
+        parts = line.split("|", 2)
+        if len(parts) != 3:
+            continue
+        try:
+            pid = int(parts[0])
+            ppid = int(parts[1])
+        except ValueError:
+            continue
+        rows.append((pid, ppid, parts[2]))
+    return rows
+
+
+def reap_foreign_sdk_runners() -> None:
+    """Drop model processes left behind by a replaced or killed sidecar."""
+    owner = os.environ.get(_SDK_OWNER_ENV, "").strip()
+    if sys.platform != "win32" or not owner:
+        return
+    rows = _win_process_rows()
+    for pid in foreign_runner_pids(rows, owner=owner, me=os.getpid()):
+        _kill_pid_tree(pid)
+
 
 class CursorSdkBridge:
     def __init__(self, *, node: str = "node", runner: Path | None = None) -> None:
@@ -132,6 +255,28 @@ class CursorSdkBridge:
         self._active_tool_names: dict[str, str] = {}
         self._tool_workers: list[threading.Thread] = []
         self._process: subprocess.Popen[str] | None = None
+
+    def close(self) -> None:
+        """Stop the SDK runner and the model process it spawned."""
+        self._kill_tree(self._process)
+
+    def _kill_tree(self, process: subprocess.Popen[str] | None) -> None:
+        if process is None or process.poll() is not None:
+            return
+        pid = process.pid
+        if sys.platform == "win32" and pid:
+            # tsx.cmd is cmd.exe. Killing only that pid leaves the node model running.
+            _kill_pid_tree(pid)
+            if process.poll() is None:
+                try:
+                    process.kill()
+                except OSError:
+                    return
+            return
+        try:
+            process.kill()
+        except OSError:
+            return
 
     def skip_tool(self, request_id: str = "") -> bool:
         rid = (request_id or "").strip()
@@ -312,6 +457,26 @@ class CursorSdkBridge:
         )
         stderr_thread.start()
         self._process = process
+        if should_stop is not None:
+            def _watch_stop() -> None:
+                # The stdout loop only notices a stop when the next line arrives.
+                # A model waiting on the network emits nothing, so the previous
+                # runner has to be killed from here or it stays beside the next one.
+                while process.poll() is None:
+                    try:
+                        stopped = bool(should_stop())
+                    except Exception:
+                        return
+                    if stopped:
+                        self._kill_tree(process)
+                        return
+                    time.sleep(0.4)
+
+            threading.Thread(
+                target=_watch_stop,
+                name="sdk-stop-watch",
+                daemon=True,
+            ).start()
         try:
             final: dict[str, Any] | None = None
             interview = mode == "interview"
@@ -420,7 +585,7 @@ class CursorSdkBridge:
                         self._send(process, {"type": "cancel", "id": run_id})
                     except CursorSdkError:
                         pass
-                    process.kill()
+                    self._kill_tree(process)
                     return {
                         "answer": collected_answer(),
                         "status": "ok",
@@ -461,7 +626,7 @@ class CursorSdkBridge:
                         self._send(process, {"type": "cancel", "id": run_id})
                     except CursorSdkError:
                         pass
-                    process.kill()
+                    self._kill_tree(process)
                     return {
                         "answer": collected_answer(),
                         "status": "ok",
@@ -471,7 +636,7 @@ class CursorSdkBridge:
             try:
                 process.wait(timeout=8)
             except subprocess.TimeoutExpired:
-                process.kill()
+                self._kill_tree(process)
             if final is None:
                 collected = collected_answer()
                 if collected:
@@ -520,7 +685,7 @@ class CursorSdkBridge:
         finally:
             self._process = None
             if process.poll() is None:
-                process.kill()
+                self._kill_tree(process)
 
     def _ensure_ready(self) -> None:
         reload_cursor_api_key()

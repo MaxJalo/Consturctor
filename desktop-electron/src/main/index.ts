@@ -6,6 +6,7 @@ import {
   APP_PROTOCOL,
   consumeToastActivation,
   findConstructorUrl,
+  findHandoffCode,
   focusAppWindows,
   installToastActivation,
   NotificationGuard,
@@ -14,6 +15,7 @@ import {
   type ToastPayload
 } from './notifications'
 import { AgentSidecar, type AgentSidecarMessage } from './agentSidecar'
+import { takeHandoffPassword, type HandoffPassword } from './handoffSecret'
 import { getUpdateStatus, installAvailableUpdate, startUpdater, stopUpdater } from './updater'
 
 interface RequestOptions {
@@ -277,11 +279,30 @@ process.on('uncaughtException', (err) => {
   dialog.showErrorBox('Error', err instanceof Error ? `${err.message}\n${err.stack || ''}` : String(err))
 })
 
+let pendingHandoffCode = ''
+let pendingHandoffPassword: HandoffPassword | null = null
+
+function deliverSessionHandoff(code: string): void {
+  const value = (code || '').trim()
+  if (!value) return
+  pendingHandoffCode = value
+  pendingHandoffPassword = takeHandoffPassword(value)
+  focusAppWindows()
+  for (const win of BrowserWindow.getAllWindows()) {
+    if (!win.isDestroyed()) win.webContents.send('session:handoff', value)
+  }
+}
+
 const isPrimaryInstance = app.requestSingleInstanceLock()
 if (!isPrimaryInstance) {
   app.quit()
 } else {
   app.on('second-instance', (_event, argv) => {
+    const code = findHandoffCode(argv)
+    if (code) {
+      deliverSessionHandoff(code)
+      return
+    }
     const url = findConstructorUrl(argv)
     if (url) consumeToastActivation(url)
     else focusAppWindows()
@@ -801,6 +822,16 @@ function registerMainIpcHandlers(): void {
     backendUrl: CONFIG.backendUrl,
     testUser: CONFIG.testUser
   }))
+  ipcHandle('session:consumeHandoff', () => pendingHandoffCode)
+  ipcHandle('session:takeHandoffPassword', () => {
+    const secret = pendingHandoffPassword
+    pendingHandoffPassword = null
+    return secret
+  })
+  ipcHandle('session:ackHandoff', (_evt, code: unknown) => {
+    if (typeof code === 'string' && code && pendingHandoffCode === code) pendingHandoffCode = ''
+    return { ok: true }
+  })
   ipcHandle('api:request', handleRequest)
   ipcHandle('api:upload', handleUpload)
   ipcHandle('api:fetchDataUrl', handleFetchDataUrl)
@@ -960,8 +991,10 @@ app.whenReady().then(() => {
   })
 
   createWindow()
+  const handoffCode = findHandoffCode(process.argv)
+  if (handoffCode) deliverSessionHandoff(handoffCode)
   const launchUrl = findConstructorUrl(process.argv)
-  if (launchUrl) consumeToastActivation(launchUrl)
+  if (launchUrl && !handoffCode) consumeToastActivation(launchUrl)
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow()

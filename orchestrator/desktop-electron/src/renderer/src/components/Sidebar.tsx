@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import {
+  Blocks,
   Check,
   ChevronDown,
   ChevronRight,
@@ -234,6 +235,7 @@ export function Sidebar({
   }
   const [quickStored, setQuickStored] = useState<string[]>(() => loadQuickAccess(currentUserId))
   const [quickPickerOpen, setQuickPickerOpen] = useState(false)
+  const [openingConstructor, setOpeningConstructor] = useState(false)
   const quickPickerRef = useRef<HTMLDivElement | null>(null)
   const quickToggleRef = useRef<HTMLButtonElement | null>(null)
   const [peers, setPeers] = useState<ChatThread[]>([])
@@ -840,6 +842,28 @@ export function Sidebar({
     if (collapsed) setCollapsed(false)
   }
 
+  async function openConstructor(): Promise<void> {
+    if (openingConstructor) return
+    const launch = window.api.launchConstructor
+    if (!launch) {
+      window.alert('Открытие конструктора доступно в приложении Оркестратор')
+      return
+    }
+    setOpeningConstructor(true)
+    try {
+      const handoff = await api.createDesktopHandoff()
+      const launched = await launch(handoff.url)
+      if (!launched.ok) {
+        window.alert(launched.error || 'Не удалось открыть конструктор')
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Не удалось открыть конструктор'
+      window.alert(message)
+    } finally {
+      setOpeningConstructor(false)
+    }
+  }
+
   return (
     <aside className={['sidebar', collapsed ? 'collapsed' : '', light ? 'light' : ''].filter(Boolean).join(' ')}>
       <div className="sidebar-brand">
@@ -892,6 +916,19 @@ export function Sidebar({
             </span>
             {!collapsed && <span className="nav-label">Все вкладки</span>}
             {hiddenBadges > 0 ? <i className="nav-quick-dot" aria-label={`Новых: ${hiddenBadges}`} /> : null}
+          </button>
+          <button
+            type="button"
+            className="nav-item nav-open-constructor"
+            title="Открыть конструктор"
+            aria-label="Открыть конструктор"
+            disabled={openingConstructor}
+            onClick={() => void openConstructor()}
+          >
+            <span className="nav-icon" aria-hidden>
+              <Blocks size={20} strokeWidth={2.2} />
+            </span>
+            {!collapsed && <span className="nav-label">Конструктор</span>}
           </button>
         </nav>
       ) : null}

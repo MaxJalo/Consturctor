@@ -60,6 +60,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+os.environ["CONSTRUCTOR_SDK_OWNER"] = str(Path(__file__).resolve())
+
 
 def _is_orchestrator_desktop(path: Path) -> bool:
     normalized = str(path).replace("\\", "/").lower()
@@ -138,6 +140,7 @@ from app.sdk_agent.bridge import (  # noqa: E402
     CursorSdkError,
     CursorSdkUnavailable,
     is_transient_cursor_error,
+    reap_foreign_sdk_runners,
 )
 from app.sdk_agent.files import (  # noqa: E402
     _safe_filename,
@@ -896,6 +899,8 @@ def _tool_specs_for_workflow(record: Any) -> list[dict[str, Any]] | None:
         allowed = _RK_MEETING_TOOLS
     if allowed is None:
         return None
+    allowed.add("get_current_date")
+    allowed.add("kpi.read_methodology")
     return [
         item
         for item in sdk_tool_specs()
@@ -2706,7 +2711,9 @@ def _with_run_journal_prompt(prompt: str, cwd: str, workflow_id: str) -> str:
         rel = scoped.relative_to(Path(cwd).resolve()).as_posix()
         hint = (
             f"Skim {rel} once (first ~50 lines, one Read). "
-            "Do not re-read it; then call Constructor tools."
+            "Do not re-read it; then call Constructor tools. "
+            "Если задача называет одну должность, считай только её: "
+            "другие должности из журнала не продолжай."
         )
         return f"{hint}\n\n{prompt}"
     legacy = _legacy_run_journal_path(cwd)
@@ -3019,6 +3026,10 @@ class Sidecar:
                         )
                         existing.stop.set()
                         try:
+                            existing.bridge.close()
+                        except Exception:
+                            pass
+                        try:
                             existing.bridge.skip_tool("")
                         except Exception:
                             pass
@@ -3031,6 +3042,10 @@ class Sidecar:
                             + _ascii(f"{dedup_key} (active run {existing.run_id})")
                         )
                         existing.stop.set()
+                        try:
+                            existing.bridge.close()
+                        except Exception:
+                            pass
                         try:
                             existing.bridge.skip_tool("")
                         except Exception:
@@ -5177,6 +5192,10 @@ class Sidecar:
                     continue
             active.stop.set()
             try:
+                active.bridge.close()
+            except Exception:
+                pass
+            try:
                 active.bridge.skip_tool("")
             except Exception:
                 pass
@@ -5193,6 +5212,10 @@ class Sidecar:
         workflows = {active.workflow_id for active in actives if active.workflow_id}
         for active in actives:
             active.stop.set()
+            try:
+                active.bridge.close()
+            except Exception:
+                pass
             self._finish_active_history(active, "Cursor SDK не отвечает")
         for workflow_id in workflows:
             self._fail_unbacked_started(workflow_id)
@@ -5681,6 +5704,10 @@ def _run_kpi_workspace_tests(
 
 
 def main() -> None:
+    try:
+        reap_foreign_sdk_runners()
+    except Exception:
+        log("reap sdk runners failed")
     sidecar = Sidecar()
     emit({"type": "ready"})
     for raw in sys.stdin:

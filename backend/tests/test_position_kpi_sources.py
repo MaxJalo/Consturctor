@@ -199,7 +199,7 @@ def test_explain_metric_returns_code_and_source() -> None:
 
 def test_explain_builtin_scorer_reads_repo_source() -> None:
     db = _session()
-    card = explain_metric(db, "Помощник Председателя совета директоров", "package_on_time")
+    card = explain_metric(db, "Помощник руководителя", "unplanned_meetings")
     assert card["module"] is not None
     assert card["module"]["origin"] == "builtin"
     assert "def " in card["module"]["code"]

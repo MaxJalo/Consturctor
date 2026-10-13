@@ -149,6 +149,39 @@ function metricWord(count: number): string {
   return 'показателей'
 }
 
+export function KpiMethodOffer({
+  methodologyStatus,
+  methodology,
+  onCalculate,
+  busy,
+  error
+}: {
+  methodologyStatus?: 'none' | 'needs_modules' | 'ready'
+  methodology?: PositionKpiMethodology | null
+  onCalculate?: () => void
+  busy?: boolean
+  error?: string
+}): React.JSX.Element | null {
+  const pendingMetrics = (methodology?.metrics ?? []).filter((item) => !item.moduleReady)
+  if (methodologyStatus !== 'needs_modules' || !pendingMetrics.length) return null
+  return (
+    <div className="kpi-method-offer">
+      <div>
+        <strong>Рассчитать методику</strong>
+        <p className={error ? 'is-error' : undefined}>
+          {error ||
+            `В профиле должности «${methodology?.position || 'вашей'}»${
+              methodology?.sourceTitle ? ` есть методика «${methodology.sourceTitle}»` : ' есть методика'
+            }. Не посчитаны ${pendingMetrics.length} ${metricWord(pendingMetrics.length)}. Запустится агент «Генератор модулей KPI».`}
+        </p>
+      </div>
+      <button type="button" className="btn-primary" disabled={busy} onClick={() => onCalculate?.()}>
+        {busy ? 'Запуск…' : 'Рассчитать'}
+      </button>
+    </div>
+  )
+}
+
 export function KpiEmployeePanel({
   metrics,
   compensation,
@@ -222,6 +255,13 @@ export function KpiEmployeePanel({
         </button>
         </header>
       ) : null}
+      {variant === 'panel' ? (
+        <KpiMethodOffer
+          methodologyStatus={methodologyStatus}
+          methodology={methodology}
+          onCalculate={onCalculate}
+        />
+      ) : null}
       <div className="kpi-employee-grid">
         <KpiSalaryTile
           compensation={compensation}
@@ -256,7 +296,7 @@ export function KpiEmployeePanel({
               <span className="kpi-pending-tile-state">
                 Модуль не создан{item.weight ? ` · вес ${item.weight}%` : ''}
               </span>
-              <span className="kpi-pending-tile-action">Создать модуль →</span>
+              <span className="kpi-pending-tile-action">Рассчитать методику →</span>
             </button>
           ))
         : null}

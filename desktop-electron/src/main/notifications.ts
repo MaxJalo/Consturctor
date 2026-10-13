@@ -164,6 +164,24 @@ export function findConstructorUrl(argv: string[]): string {
   )
 }
 
+/** constructor://handoff?code=… from Orchestrator's «Открыть конструктор». */
+export function findHandoffCode(argv: string[]): string {
+  for (const item of argv || []) {
+    const text = String(item || '').trim()
+    if (!/^constructor:/i.test(text)) continue
+    try {
+      const url = new URL(text)
+      const host = (url.hostname || '').toLowerCase()
+      if (host !== 'handoff') continue
+      const code = (url.searchParams.get('code') || '').trim()
+      if (/^[A-Za-z0-9_-]{16,128}$/.test(code)) return code
+    } catch {
+      /* ignore a malformed launch argument */
+    }
+  }
+  return ''
+}
+
 export function consumeToastActivation(raw: string): boolean {
   const parsed = parseHitlActivation(raw)
   if (!parsed) {

@@ -10,7 +10,12 @@ from app.api_client import (
     WorkflowPlanStep,
     WorkflowRecord,
 )
-from app.sdk_agent.bridge import DEFAULT_SDK_MODEL, CursorSdkBridge, CursorSdkUnavailable
+from app.sdk_agent.bridge import (
+    DEFAULT_SDK_MODEL,
+    CursorSdkBridge,
+    CursorSdkUnavailable,
+    foreign_runner_pids,
+)
 from app.sdk_agent.files import (
     _sanitize_prior_run_excerpt,
     seed_agent_brief,
@@ -1166,6 +1171,44 @@ def test_meeting_run_prompt_skips_manifest_bulk_reads() -> None:
     assert "только materials/agent.md" in prompt
     assert "Не делай Glob" in prompt
     assert "Outlook" in prompt
+
+
+def test_foreign_runner_pids_drops_replaced_sidecar_and_orphans() -> None:
+    owner = r"C:\orch\pybridge\agent_sidecar.py"
+    other = r"C:\desktop\pybridge\agent_sidecar.py"
+    rows = [
+        (10, 1, f"python.exe {owner}"),
+        (20, 10, r"cmd.exe /c tsx.cmd"),
+        (30, 20, r"node.exe C:\proj\desktop\sdk-agent\src\runner.ts"),
+        (11, 1, f"python.exe {other}"),
+        (21, 11, r"cmd.exe /c tsx.cmd"),
+        (31, 21, r"node.exe C:\proj\desktop\sdk-agent\src\runner.ts"),
+        (40, 99, r"node.exe C:\proj\desktop\sdk-agent\src\runner.ts"),
+    ]
+    assert foreign_runner_pids(rows, owner=owner, me=10) == [40]
+    assert foreign_runner_pids(rows, owner=owner, me=12) == [20, 40]
+
+
+def test_close_kills_runner_tree(monkeypatch, tmp_path: Path) -> None:
+    bridge = CursorSdkBridge(runner=tmp_path / "runner.ts")
+
+    class Proc:
+        pid = 77
+
+        def poll(self) -> None:
+            return None
+
+        def kill(self) -> None:
+            killed.append("kill")
+
+    killed: list[str] = []
+    calls: list[int] = []
+    bridge._process = Proc()  # type: ignore[assignment]
+    monkeypatch.setattr("app.sdk_agent.bridge.sys.platform", "win32")
+    monkeypatch.setattr("app.sdk_agent.bridge._kill_pid_tree", lambda pid: calls.append(pid))
+    bridge.close()
+    assert calls == [77]
+    assert killed == ["kill"]
 
 
 def test_sanitize_prior_run_strips_work_result_markers() -> None:

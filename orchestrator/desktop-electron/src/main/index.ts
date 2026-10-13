@@ -27,6 +27,7 @@ import {
   setComSessionSecret
 } from './comSessionSecret'
 import { launchTurboProject } from './turboProjectLauncher'
+import { launchConstructorApp } from './constructorLauncher'
 
 interface RequestOptions {
   method?: string
@@ -1359,6 +1360,18 @@ function registerMainIpcHandlers(): void {
     })
     child.unref()
     return { ok: true }
+  })
+  ipcHandle('shell:launchConstructor', (_evt, url: string) => {
+    const secret = getComSessionSecret()
+    return launchConstructorApp(
+      String(url || ''),
+      {
+        execPath: process.execPath,
+        appPath: app.getAppPath(),
+        packaged: app.isPackaged
+      },
+      secret?.password ? { login: secret.login, password: secret.password } : null
+    )
   })
   ipcHandle('shell:launchTurboProject', async () => {
     if (process.platform !== 'win32') {
