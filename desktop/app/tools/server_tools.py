@@ -514,6 +514,36 @@ _SERVER_TOOL_DEFS: list[tuple[str, str, dict[str, Any]]] = [
         ),
     ),
     (
+        "audio.propose_speakers",
+        (
+            "Предложить, кому принадлежит каждый голос. Не спрашивай человека и не вызывай "
+            "audio.bind_speakers: список правит автор на карточке совещания. "
+            "voices — все голоса: {speaker, fio, user_id, source}. "
+            "source=voice, если голос уже узнан; source=context, если ФИО явно следует из реплик "
+            "и есть в списке участников совещания. Неуверенное сопоставление — fio пустое. Сервер."
+        ),
+        _schema(
+            {
+                "transcript_id": _prop("string", "transcript_id из ответа audio.transcribe"),
+                "voices": _prop("array", "Список {speaker, fio, user_id, source} на каждый голос"),
+            },
+            ["transcript_id", "voices"],
+        ),
+    ),
+    (
+        "audio.transcript_docx",
+        (
+            "Файл Word с текстом расшифровки. Кладётся в файлы агента протокола. Сервер."
+        ),
+        _schema(
+            {
+                "transcript_id": _prop("string", "transcript_id расшифровки"),
+                "workflow_id": _prop("string", "id агента протокола, куда сохранить файл"),
+            },
+            ["transcript_id", "workflow_id"],
+        ),
+    ),
+    (
         "notify.send",
         (
             "Отправить уведомление получателю (Windows-тост + inbox). user_id бери из users.list - "

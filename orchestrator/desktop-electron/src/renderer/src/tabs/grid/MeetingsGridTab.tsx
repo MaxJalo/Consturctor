@@ -17,8 +17,7 @@ import {
   PROTOCOL_AGENT_TITLE,
   PROTOCOL_AUDIO_EXTENSIONS as AUDIO_EXTENSIONS,
   resolveProtocolAgentWorkflowId,
-  resolveSpeakerAgentWorkflowId,
-  type IdentifiedTranscript
+  resolveSpeakerAgentWorkflowId
 } from '../../workplace/meetingProtocolAgent'
 import { useMeetingProtocol } from '../../workplace/meetingProtocolStore'
 import {
@@ -143,15 +142,6 @@ function rosterLines(value: unknown): string {
     .join('\n')
 }
 
-function identifiedFrom(result: Record<string, unknown> | null): IdentifiedTranscript | null {
-  if (!result) return null
-  const transcriptId = String(result.transcript_id || '').trim()
-  const transcriptPath = String(result.transcript_path || '').trim()
-  const roster = rosterLines(result.people)
-  if (!transcriptId || !transcriptPath || !roster) return null
-  return { transcriptId, transcriptPath, roster }
-}
-
 function MeetingDetailCard({
   meeting,
   userId,
@@ -262,6 +252,7 @@ function MeetingDetailCard({
         reportUrl: '',
         stage: 'transcribe',
         mode: 'create',
+        protocolWorkflowId: workflowId,
         nextMeetingStart
       })
     } catch (err) {
@@ -320,6 +311,7 @@ function MeetingDetailCard({
         reportUrl: '',
         stage: 'transcribe',
         mode: 'supplement',
+        protocolWorkflowId: workflowId,
         refKey: protocolRefKey
       })
     } catch (err) {
@@ -367,59 +359,135 @@ function MeetingDetailCard({
       })()
       return
     }
-    const bound = identifiedFrom(lastToolResult(state.items, 'audio.bind_speakers'))
-    if (!bound) return
-    const key = `protocol:${bound.transcriptId}`
+    const transcriptId = (record?.transcriptId || '').trim()
+    if (!transcriptId) return
+    const key = `review:${transcriptId}`
     if (chainKey.current === key) return
     chainKey.current = key
+    patchRecord({ stage: 'review', status: 'done', transcriptId })
+  }, [meeting, patchRecord, record, runEntry, runs])
+
+  const [voiceDraft, setVoiceDraft] = useState<
+    { speaker: string; fio: string; userId: string; source: string; said: string }[]
+  >([])
+  const [transcriptFile, setTranscriptFile] = useState<{ name: string; url: string } | null>(null)
+  const transcriptPathRef = useRef('')
+  const peopleListId = useId()
+  const showReview =
+    Boolean(record?.transcriptId) && record?.stage === 'review' && !isRunning && !hasProtocol
+
+  useEffect(() => {
+    const transcriptId = (record?.transcriptId || '').trim()
+    const workflowId = (record?.protocolWorkflowId || record?.workflowId || '').trim()
+    if (!showReview || !transcriptId) return
+    let cancelled = false
     void (async () => {
-      try {
-        const workflowId = await resolveProtocolAgentWorkflowId()
-        let message = ''
-        if (record?.mode === 'supplement' && record.refKey) {
-          const res = await api.invokeServerTool('onec.meeting_protocols', { ref_key: record.refKey }, 60_000)
-          const card = (res.ok && res.result && typeof res.result === 'object'
-            ? (res.result as { protocol?: { number?: string; editable?: boolean; form?: Record<string, unknown> } }).protocol
-            : undefined)
-          if (!card?.form) throw new Error(res.error || 'Не удалось прочитать протокол из 1С')
-          message = buildSupplementMessage(
-            meeting,
-            record.audioPath,
-            {
-              number: String(card.number || ''),
-              refKey: record.refKey,
-              editable: card.editable !== false,
-              form: card.form
-            },
-            { identified: bound }
-          )
-        } else {
-          message = buildProtocolMessage(meeting, record?.audioPath || '', {
-            nextMeetingStart: record?.nextMeetingStart,
-            identified: bound
-          })
-        }
-        const runId = runs.startRun({
-          workflowId,
-          title: PROTOCOL_AGENT_TITLE,
-          message,
-          fresh: true,
-          forceRestart: true
-        })
-        patchRecord({
-          workflowId,
-          runId: runId || '',
-          backendRunId: '',
-          status: 'running',
-          stage: 'protocol',
-          transcriptId: bound.transcriptId
-        })
-      } catch (err) {
-        chainKey.current = ''
-        setActionError(err instanceof Error ? err.message : 'Не удалось передать расшифровку в протокол')
+      const spoken = await api.invokeServerTool('audio.speakers', { transcript_id: transcriptId })
+      if (cancelled || !spoken.ok || !spoken.result || typeof spoken.result !== 'object') return
+      const payload = spoken.result as {
+        transcript_path?: string
+        voices?: { speaker?: string; fio?: string; user_id?: string; source?: string; said?: string }[]
+      }
+      transcriptPathRef.current = String(payload.transcript_path || '').trim()
+      const rows = Array.isArray(payload.voices) ? payload.voices : []
+      setVoiceDraft(
+        rows.map((row) => ({
+          speaker: String(row.speaker || '').trim(),
+          fio: String(row.fio || '').trim(),
+          userId: String(row.user_id || '').trim(),
+          source: String(row.source || '').trim(),
+          said: String(row.said || '').trim()
+        }))
+      )
+      if (!workflowId) return
+      const doc = await api.invokeServerTool('audio.transcript_docx', {
+        transcript_id: transcriptId,
+        workflow_id: workflowId
+      })
+      if (cancelled || !doc.ok) return
+      const files = await api.listWorkflowFiles(workflowId)
+      const match = files.find((item) => /^Расшифровка-/i.test(item.name || ''))
+      if (match?.downloadUrl) {
+        setTranscriptFile({ name: match.name, url: match.downloadUrl })
       }
     })()
-  }, [meeting, patchRecord, record, runEntry, runs])
+    return () => {
+      cancelled = true
+    }
+  }, [record?.protocolWorkflowId, record?.transcriptId, record?.workflowId, showReview])
+
+  const confirmAndCreateProtocol = useCallback(async () => {
+    const transcriptId = (record?.transcriptId || '').trim()
+    if (!transcriptId || busy) return
+    const missing = voiceDraft.filter((row) => row.speaker && !row.fio.trim())
+    if (missing.length) {
+      setActionError(`Укажите ФИО: ${missing.map((row) => row.speaker).join(', ')}`)
+      return
+    }
+    setActionError('')
+    setBusy(true)
+    try {
+      const bound = await api.invokeServerTool('audio.bind_speakers', {
+        transcript_id: transcriptId,
+        voices: voiceDraft.map((row) => ({
+          speaker: row.speaker,
+          fio: row.fio.trim(),
+          user_id: row.userId
+        }))
+      })
+      if (!bound.ok) throw new Error(bound.error || 'Не удалось записать, кто говорил')
+      const result = (bound.result || {}) as { transcript_path?: string; people?: unknown }
+      const identified = {
+        transcriptId,
+        transcriptPath: String(result.transcript_path || transcriptPathRef.current).trim(),
+        roster: rosterLines(result.people) || voiceDraft.map((row) => `${row.speaker} — ${row.fio.trim()}`).join('\n')
+      }
+      const workflowId = (record?.protocolWorkflowId || '').trim() || (await resolveProtocolAgentWorkflowId())
+      let message = ''
+      if (record?.mode === 'supplement' && record.refKey) {
+        const res = await api.invokeServerTool('onec.meeting_protocols', { ref_key: record.refKey }, 60_000)
+        const card = (res.ok && res.result && typeof res.result === 'object'
+          ? (res.result as { protocol?: { number?: string; editable?: boolean; form?: Record<string, unknown> } }).protocol
+          : undefined)
+        if (!card?.form) throw new Error(res.error || 'Не удалось прочитать протокол из 1С')
+        message = buildSupplementMessage(
+          meeting,
+          record.audioPath,
+          {
+            number: String(card.number || ''),
+            refKey: record.refKey,
+            editable: card.editable !== false,
+            form: card.form
+          },
+          { identified }
+        )
+      } else {
+        message = buildProtocolMessage(meeting, record?.audioPath || '', {
+          nextMeetingStart: record?.nextMeetingStart,
+          identified
+        })
+      }
+      const runId = runs.startRun({
+        workflowId,
+        title: PROTOCOL_AGENT_TITLE,
+        message,
+        fresh: true,
+        forceRestart: true
+      })
+      patchRecord({
+        workflowId,
+        runId: runId || '',
+        backendRunId: '',
+        status: 'running',
+        stage: 'protocol',
+        transcriptId
+      })
+    } catch (err) {
+      setActionError(err instanceof Error ? err.message : 'Не удалось создать протокол')
+    } finally {
+      setBusy(false)
+    }
+  }, [busy, meeting, patchRecord, record, runs, voiceDraft])
 
   const detachProtocol = (): void => {
     if (isRunning) return
@@ -560,7 +628,9 @@ function MeetingDetailCard({
                     ? 'Определение говорящих…'
                     : record.stage === 'protocol'
                       ? 'Запись протокола в 1С…'
-                      : state?.status || 'В работе…'
+                      : record.stage === 'review'
+                        ? 'Проверьте, кто говорил'
+                        : state?.status || 'В работе…'
                 : protocol?.number
                   ? `Протокол в 1С: ${protocol.number}`
                   : createdProtocol?.number
@@ -584,7 +654,7 @@ function MeetingDetailCard({
               ))}
             </ul>
           ) : null}
-          {state?.error || (record.status === 'error' && !state?.error) ? (
+          {record.stage !== 'review' && (state?.error || (record.status === 'error' && !state?.error)) ? (
             <p className="meeting-protocol-error">{state?.error || 'Запуск завершился с ошибкой'}</p>
           ) : null}
           {state?.pendingHitl ? (
@@ -623,6 +693,58 @@ function MeetingDetailCard({
         </div>
       ) : null}
 
+      {showReview ? (
+        <div className="meeting-protocol-review">
+          <div className="meeting-protocol-progress-row">
+            <span className="meeting-protocol-label">Расшифровка</span>
+            {transcriptFile ? (
+              <button
+                type="button"
+                className="cal-btn"
+                onClick={() => void api.download(transcriptFile.url, transcriptFile.name)}
+              >
+                {transcriptFile.name}
+              </button>
+            ) : (
+              <span>Файл Word ещё готовится</span>
+            )}
+          </div>
+          <p className="meeting-protocol-hint">
+            Кто что сказал. ФИО можно поменять: в протокол 1С и в задачи попадёт то, что указано здесь.
+          </p>
+          <ul className="spec-detail-list">
+            {voiceDraft.map((row, index) => (
+              <li key={row.speaker || index}>
+                <div>
+                  {row.speaker}
+                  {row.source === 'voice' ? ' · по голосу' : row.source === 'context' ? ' · по контексту' : ''}
+                </div>
+                <input
+                  className="meeting-protocol-fio"
+                  value={row.fio}
+                  list={peopleListId}
+                  placeholder="ФИО участника"
+                  onChange={(event) => {
+                    const value = event.target.value
+                    setVoiceDraft((current) =>
+                      current.map((item, itemIndex) => (itemIndex === index ? { ...item, fio: value, userId: '' } : item))
+                    )
+                  }}
+                />
+                {row.said ? <p className="meeting-protocol-said">{row.said}</p> : null}
+              </li>
+            ))}
+          </ul>
+          <datalist id={peopleListId}>
+            {attendees
+              .filter((name) => name.trim() && name.trim() !== 'Совещания')
+              .map((name) => (
+                <option key={name} value={name} />
+              ))}
+          </datalist>
+        </div>
+      ) : null}
+
       {actionError ? <p className="meeting-protocol-error">{actionError}</p> : null}
 
       {isRunning && !hasProtocol ? null : (
@@ -645,6 +767,15 @@ function MeetingDetailCard({
               }
             >
               Изменить протокол
+            </button>
+          ) : showReview ? (
+            <button
+              type="button"
+              className="cal-btn primary"
+              onClick={() => void confirmAndCreateProtocol()}
+              disabled={busy || !voiceDraft.length}
+            >
+              {busy ? 'Запуск…' : 'Создать протокол'}
             </button>
           ) : (
             <button

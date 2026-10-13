@@ -76,6 +76,8 @@ _READ_EXACT = frozenset(
         "audio.transcript",
         "audio.speakers",
         "audio.bind_speakers",
+        "audio.propose_speakers",
+        "audio.transcript_docx",
         "users.current",
         "users.subordinates",
         "agent.schedule",

@@ -19,9 +19,11 @@ export type MeetingProtocolRecord = {
   reportFileId: string
   reportName: string
   reportUrl: string
-  /** transcribe — расшифровка, speakers — кому голос, protocol — запись в 1С. */
-  stage?: 'transcribe' | 'speakers' | 'protocol'
+  /** transcribe — расшифровка, speakers — кому голос, review — автор правит ФИО, protocol — запись в 1С. */
+  stage?: 'transcribe' | 'speakers' | 'review' | 'protocol'
   transcriptId?: string
+  /** Агент протокола. Не затирается, когда карточка переключается на агента говорящих. */
+  protocolWorkflowId?: string
   mode?: 'create' | 'supplement'
   refKey?: string
   nextMeetingStart?: string
@@ -287,7 +289,9 @@ export function useMeetingProtocol(
       return
     }
     if (!sharedLive) {
-      patchRecord({ status: 'done' })
+      patchRecord({
+        status: record.stage === 'transcribe' && !record.transcriptId ? 'error' : 'done'
+      })
     }
   }, [
     record?.status,

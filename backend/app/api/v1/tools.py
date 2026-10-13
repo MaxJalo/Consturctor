@@ -66,7 +66,14 @@ _USERS_TOOLS = frozenset(
     }
 )
 _AUDIO_TOOLS = frozenset(
-    {"audio.transcribe", "audio.transcript", "audio.speakers", "audio.bind_speakers"}
+    {
+        "audio.transcribe",
+        "audio.transcript",
+        "audio.speakers",
+        "audio.bind_speakers",
+        "audio.propose_speakers",
+        "audio.transcript_docx",
+    }
 )
 _SERVER_TOOLS = (
     _IMAP_TOOLS
@@ -455,6 +462,30 @@ def _invoke_audio_tool(
         raw = arguments.get("voices") or []
         voices = [item for item in raw if isinstance(item, dict)] if isinstance(raw, list) else []
         return confirm_speakers(str(arguments.get("transcript_id") or ""), auth.user_id, voices)
+    if tool_name == "audio.propose_speakers":
+        from app.db.session import SessionLocal
+        from app.services.speaker_bank import propose_speakers
+
+        raw = arguments.get("voices") or []
+        voices = [item for item in raw if isinstance(item, dict)] if isinstance(raw, list) else []
+        db = SessionLocal()
+        try:
+            return propose_speakers(
+                db,
+                transcript_id=str(arguments.get("transcript_id") or ""),
+                user_id=auth.user_id,
+                voices=voices,
+            )
+        finally:
+            db.close()
+    if tool_name == "audio.transcript_docx":
+        from app.services.speaker_bank import export_transcript_docx
+
+        return export_transcript_docx(
+            str(arguments.get("transcript_id") or ""),
+            auth.user_id,
+            str(arguments.get("workflow_id") or ""),
+        )
     set_tool_context(run_id="", user_id=auth.user_id)
     try:
         return _invoke_audio_transcribe(arguments)

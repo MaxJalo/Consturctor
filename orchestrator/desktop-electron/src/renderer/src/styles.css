@@ -13369,6 +13369,22 @@ button.spec-v04-tile {
   color: #1565c0;
   font-size: 12px;
 }
+.meeting-protocol-review {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 8px;
+}
+.meeting-protocol-fio {
+  width: 100%;
+  margin-top: 4px;
+  box-sizing: border-box;
+}
+.meeting-protocol-said {
+  margin: 4px 0 8px;
+  color: #555;
+  font-size: 12px;
+}
 .meeting-protocol-fieldset {
   display: flex;
   flex-direction: column;

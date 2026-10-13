@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import re
+from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
@@ -194,6 +195,100 @@ def _lines_for(segments: list[dict[str, Any]], label: str, limit: int) -> list[s
     return lines
 
 
+def _stored_proposals(row: MeetingTranscript) -> list[dict[str, Any]]:
+    raw = row.speaker_map if isinstance(row.speaker_map, dict) else {}
+    items = raw.get("proposals")
+    if not isinstance(items, list):
+        return []
+    return [item for item in items if isinstance(item, dict)]
+
+
+def propose_speakers(
+    db: Session,
+    *,
+    transcript_id: str,
+    user_id: str,
+    voices: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Сохранить предложенные ФИО. В 1С и в базу голосов ещё не пишет — это делает автор на карточке."""
+    row = _own_transcript(db, transcript_id, user_id)
+    labels = voice_labels(list(row.segments or []))
+    incoming: dict[str, dict[str, Any]] = {}
+    for item in voices:
+        speaker = str(item.get("speaker") or "").strip()
+        if speaker:
+            incoming[speaker] = item
+    missing = [label for label in labels if label not in incoming]
+    if missing:
+        raise RuntimeError("Предложи человека для каждого голоса: " + ", ".join(missing))
+    proposals = []
+    for label in labels:
+        item = incoming[label]
+        fio = " ".join(str(item.get("fio") or "").split())
+        proposals.append(
+            {
+                "speaker": label,
+                "fio": fio,
+                "user_id": str(item.get("user_id") or "").strip(),
+                "source": str(item.get("source") or "").strip() or ("voice" if fio else ""),
+            }
+        )
+    row.speaker_map = {"proposals": proposals}
+    db.commit()
+    return speaker_context(db, transcript_id, user_id)
+
+
+def transcript_docx_bytes(title: str, segments: list[dict[str, Any]]) -> bytes:
+    import io
+
+    from docx import Document
+
+    document = Document()
+    document.add_heading(title or "Расшифровка совещания", level=1)
+    for row in segments:
+        speaker = str(row.get("speaker") or "").strip()
+        text = str(row.get("text") or "").strip()
+        if not text:
+            continue
+        document.add_paragraph(f"{speaker}: {text}" if speaker else text)
+    buffer = io.BytesIO()
+    document.save(buffer)
+    return buffer.getvalue()
+
+
+def export_transcript_docx(transcript_id: str, user_id: str, workflow_id: str) -> dict[str, Any]:
+    from app.db.session import SessionLocal
+    from app.models.workflow import Workflow
+    from app.services.workflow_files import register_agent_files
+
+    db = SessionLocal()
+    try:
+        row = _own_transcript(db, transcript_id, user_id)
+        workflow = db.get(Workflow, (workflow_id or "").strip())
+        if workflow is None or workflow.user_id != user_id:
+            raise RuntimeError("Нет агента, к которому прикрепить файл расшифровки")
+        title = Path(row.filename).stem if row.filename else "Расшифровка"
+        raw = transcript_docx_bytes(f"Расшифровка {title}", list(row.segments or []))
+        filename = f"Расшифровка-{title}.docx"
+        saved = register_agent_files(
+            db,
+            row=workflow,
+            files=[(filename, raw)],
+            run_id="",
+            origin="transcript",
+        )
+        db.commit()
+        item = saved[0]
+        return {
+            "ok": True,
+            "file_id": item.id,
+            "filename": item.filename,
+            "workflow_id": workflow.id,
+        }
+    finally:
+        db.close()
+
+
 def speakers_for_user(transcript_id: str, user_id: str) -> dict[str, Any]:
     from app.db.session import SessionLocal
 
@@ -223,17 +318,23 @@ def speaker_context(db: Session, transcript_id: str, user_id: str) -> dict[str, 
     labels = voice_labels(segments)
     known, unknown = _known_and_unknown(db, labels, embeddings)
     known_by = {item["speaker"]: item for item in known}
+    proposed = {str(item.get("speaker") or ""): item for item in _stored_proposals(row)}
     voices = []
     for label in labels:
         match = known_by.get(label)
+        suggestion = proposed.get(label) or {}
+        fio = str(suggestion.get("fio") or (match or {}).get("fio") or "").strip()
+        lines = _lines_for(segments, label, 12)
         voices.append(
             {
                 "speaker": label,
                 "known": bool(match),
-                "fio": (match or {}).get("fio") or "",
-                "user_id": (match or {}).get("user_id") or "",
+                "fio": fio,
+                "user_id": str(suggestion.get("user_id") or (match or {}).get("user_id") or "").strip(),
+                "source": str(suggestion.get("source") or ("voice" if match else "")).strip(),
                 "similarity": (match or {}).get("similarity"),
-                "lines": _lines_for(segments, label, 8 if match else 15),
+                "said": " ".join(lines)[:700],
+                "lines": lines,
             }
         )
     return {

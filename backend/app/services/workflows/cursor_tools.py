@@ -652,6 +652,10 @@ def invoke_creation_tool(
         return _invoke_audio_speakers(args)
     if tool == "audio.bind_speakers":
         return _invoke_audio_bind_speakers(args)
+    if tool == "audio.propose_speakers":
+        return _invoke_audio_propose_speakers(args)
+    if tool == "audio.transcript_docx":
+        return _invoke_audio_transcript_docx(args)
 
     ctx = current_tool_context()
     if ctx is None:
@@ -1851,6 +1855,42 @@ def _invoke_audio_bind_speakers(arguments: dict[str, Any]) -> dict[str, Any]:
     if not transcript_id:
         raise RuntimeError("Для audio.bind_speakers нужен transcript_id")
     return confirm_speakers(transcript_id, _session_user_id(), [item for item in raw if isinstance(item, dict)])
+
+
+def _voice_rows(arguments: dict[str, Any]) -> list[dict[str, Any]]:
+    raw = arguments.get("voices") or arguments.get("speakers") or []
+    if isinstance(raw, dict):
+        raw = [raw]
+    if not isinstance(raw, list):
+        return []
+    return [item for item in raw if isinstance(item, dict)]
+
+
+def _invoke_audio_propose_speakers(arguments: dict[str, Any]) -> dict[str, Any]:
+    from app.db.session import SessionLocal
+    from app.services.speaker_bank import propose_speakers
+
+    transcript_id = str(arguments.get("transcript_id") or "").strip()
+    voices = _voice_rows(arguments)
+    if not transcript_id or not voices:
+        raise RuntimeError("Для audio.propose_speakers нужны transcript_id и voices")
+    db = SessionLocal()
+    try:
+        return propose_speakers(
+            db, transcript_id=transcript_id, user_id=_session_user_id(), voices=voices
+        )
+    finally:
+        db.close()
+
+
+def _invoke_audio_transcript_docx(arguments: dict[str, Any]) -> dict[str, Any]:
+    from app.services.speaker_bank import export_transcript_docx
+
+    transcript_id = str(arguments.get("transcript_id") or "").strip()
+    workflow_id = str(arguments.get("workflow_id") or "").strip()
+    if not transcript_id or not workflow_id:
+        raise RuntimeError("Для файла Word нужны transcript_id и workflow_id")
+    return export_transcript_docx(transcript_id, _session_user_id(), workflow_id)
 
 
 def _invoke_data_process(arguments: dict[str, Any]) -> dict[str, Any]:

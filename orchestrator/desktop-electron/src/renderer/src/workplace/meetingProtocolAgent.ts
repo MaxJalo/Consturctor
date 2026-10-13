@@ -266,10 +266,11 @@ export function buildSpeakerMessage(transcriptId: string, meeting: MeetingEvent 
     'Определи, кому принадлежит каждый голос в расшифровке.',
     `transcript_id: ${transcriptId}`,
     meeting ? `Совещание: ${field(meeting.subject)}, ${formatMeetingStamp(meeting.start)}` : '',
-    'Участники из календаря (это подсказка, не доказательство):',
+    'Участники этого совещания — единственный список людей, из которого можно ставить ФИО по контексту:',
     who,
     rosterHint ? `Уже узнаны по отпечатку голоса:\n${rosterHint}` : 'По отпечатку пока никого не узнали.',
-    'Дальше работай по своей инструкции: audio.speakers, подтверждение человека, audio.bind_speakers.'
+    'Не спрашивай человека и не вызывай audio.bind_speakers.',
+    'Вызови audio.speakers, сопоставь неизвестные голоса только с этими участниками и только если это прямо слышно, затем один раз audio.propose_speakers и остановись.'
   ]
     .filter(Boolean)
     .join('\n')
