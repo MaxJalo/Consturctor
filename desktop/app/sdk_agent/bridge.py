@@ -24,8 +24,13 @@ from app.sdk_agent.tool_adapter import (
 )
 from app.tools import ToolHostError
 
-DEFAULT_SDK_MODEL = "grok-4.6"
+DEFAULT_SDK_MODEL = "grok-4.7"
 REGULATION_SDK_MODEL = "grok-4.6"
+# grok-4.7: Extra High + Fast. reasoning_effort, не effort (это параметр grok-4.6).
+WORKFLOW_SDK_MODEL_PARAMS = (
+    {"id": "reasoning_effort", "value": "xhigh"},
+    {"id": "fast", "value": "true"},
+)
 REGULATION_PREFETCH_MODEL = "composer-2.5"
 REGULATION_SDK_MODEL_PARAMS = (
     {"id": "effort", "value": "low"},
@@ -330,7 +335,7 @@ class CursorSdkBridge:
             elif (mode or "").strip().casefold() == "kpi":
                 run_params = [dict(item) for item in KPI_SDK_MODEL_PARAMS]
             else:
-                run_params = []
+                run_params = [dict(item) for item in WORKFLOW_SDK_MODEL_PARAMS]
             try:
                 self._send(
                     process,

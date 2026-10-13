@@ -11,13 +11,11 @@ import type { SpecSummaryTile } from '../../workplace/specV04Shell'
 import { erpActorFio } from '../../workplace/userContext'
 import {
   buildProtocolMessage,
-  buildSpeakerMessage,
   buildTranscribeOnlyMessage,
   buildSupplementMessage,
   PROTOCOL_AGENT_TITLE,
   PROTOCOL_AUDIO_EXTENSIONS as AUDIO_EXTENSIONS,
-  resolveProtocolAgentWorkflowId,
-  resolveSpeakerAgentWorkflowId
+  resolveProtocolAgentWorkflowId
 } from '../../workplace/meetingProtocolAgent'
 import { useMeetingProtocol } from '../../workplace/meetingProtocolStore'
 import {
@@ -140,6 +138,36 @@ function rosterLines(value: unknown): string {
     })
     .filter(Boolean)
     .join('\n')
+}
+
+function transcriptIdOf(result: Record<string, unknown> | null | undefined): string {
+  return String(result?.transcript_id || '').trim()
+}
+
+/** transcript_id из сохранённого запуска, если карточка уже закрылась и лента в памяти стёрта. */
+async function transcriptIdFromHistory(workflowId: string, runId: string, audioName: string): Promise<string> {
+  const read = async (id: string): Promise<string> => {
+    if (!workflowId || !id) return ''
+    const detail = await api.getAgentRunDetail(workflowId, id)
+    for (let index = detail.events.length - 1; index >= 0; index -= 1) {
+      const event = detail.events[index]
+      if (event.type !== 'tool_result' || event.ok === false) continue
+      const tool = event.tool || ''
+      if (tool !== 'audio.transcribe' && !tool.endsWith('.audio.transcribe')) continue
+      const result = event.result
+      if (!result || typeof result !== 'object') continue
+      const found = transcriptIdOf(result as Record<string, unknown>)
+      if (found) return found
+    }
+    return ''
+  }
+  const direct = await read(runId)
+  if (direct) return direct
+  const name = audioName.trim()
+  if (!name) return ''
+  const history = await api.listAgentRuns(workflowId)
+  const match = history.find((item) => item.status === 'ok' && (item.message || '').includes(name))
+  return match ? read(match.runId) : ''
 }
 
 function MeetingDetailCard({
@@ -322,39 +350,49 @@ function MeetingDetailCard({
   }, [busy, isRunning, meeting, protocol?.number, protocolRefKey, rememberStart, runs])
 
   const chainKey = useRef('')
+  const workflowEntry = record?.workflowId ? runs.entries[record.workflowId] : undefined
   useEffect(() => {
     const stage = record?.stage
-    if (!stage || stage === 'protocol' || !runEntry) return
-    const state = runEntry.state
-    if (state.running || state.pendingHitl || state.pendingQuestion) return
-    if (stage === 'transcribe') {
-      const result = lastToolResult(state.items, 'audio.transcribe')
-      const transcriptId = String(result?.transcript_id || '').trim()
-      if (!transcriptId) return
-      const key = `speakers:${transcriptId}`
+    if (!stage || stage === 'protocol') return
+    const live = runEntry?.state
+    if (live?.running && stage === 'transcribe') {
+      const seen = transcriptIdOf(lastToolResult(live.items, 'audio.transcribe'))
+      if (seen && seen !== record?.transcriptId) patchRecord({ transcriptId: seen })
+      return
+    }
+    if (stage === 'transcribe' || stage === 'speakers') {
+      const fromFeed = transcriptIdOf(
+        lastToolResult(live?.items || workflowEntry?.state.items || [], 'audio.transcribe')
+      )
+      const known = (record?.transcriptId || fromFeed).trim()
+      const key = known ? `review:${known}` : `review:history:${record?.backendRunId || record?.audioName || ''}`
       if (chainKey.current === key) return
       chainKey.current = key
       void (async () => {
         try {
-          const workflowId = await resolveSpeakerAgentWorkflowId()
-          const runId = runs.startRun({
-            workflowId,
-            title: 'Определение говорящих по расшифровке',
-            message: buildSpeakerMessage(transcriptId, meeting, rosterLines(result?.known_speakers)),
-            fresh: true,
-            forceRestart: true
-          })
+          const transcriptId =
+            known ||
+            (await transcriptIdFromHistory(
+              record?.protocolWorkflowId || record?.workflowId || '',
+              record?.backendRunId || '',
+              record?.audioName || ''
+            ))
+          if (!transcriptId) {
+            chainKey.current = ''
+            return
+          }
+          if (stage === 'speakers' && record?.workflowId) {
+            runs.cancel(record.workflowId, record.backendRunId)
+          }
           patchRecord({
-            workflowId,
-            runId: runId || '',
-            backendRunId: '',
-            status: 'running',
-            stage: 'speakers',
-            transcriptId
+            stage: 'review',
+            status: 'done',
+            transcriptId,
+            protocolWorkflowId: record?.protocolWorkflowId || record?.workflowId
           })
         } catch (err) {
           chainKey.current = ''
-          setActionError(err instanceof Error ? err.message : 'Не удалось запустить определение говорящих')
+          setActionError(err instanceof Error ? err.message : 'Не удалось открыть расшифровку')
         }
       })()
       return
@@ -365,7 +403,7 @@ function MeetingDetailCard({
     if (chainKey.current === key) return
     chainKey.current = key
     patchRecord({ stage: 'review', status: 'done', transcriptId })
-  }, [meeting, patchRecord, record, runEntry, runs])
+  }, [meeting, patchRecord, record, runEntry, runs, workflowEntry])
 
   const [voiceDraft, setVoiceDraft] = useState<
     { speaker: string; fio: string; userId: string; source: string; said: string }[]
