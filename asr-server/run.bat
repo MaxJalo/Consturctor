@@ -12,4 +12,4 @@ if errorlevel 1 exit /b 1
 if errorlevel 1 exit /b 1
 ".venv\Scripts\python.exe" -m pip install --disable-pip-version-check --upgrade-strategy only-if-needed speechbrain hyperpyyaml
 if errorlevel 1 exit /b 1
-".venv\Scripts\python.exe" -m uvicorn server:app --host %ASR_HOST% --port %ASR_PORT%
+".venv\Scripts\python.exe" -u -m uvicorn server:app --host %ASR_HOST% --port %ASR_PORT%

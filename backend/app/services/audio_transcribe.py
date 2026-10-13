@@ -306,7 +306,9 @@ def _short_result(
             "segment_count": len(segments),
             "transcript_path": str(path),
             "preview": preview[:800],
-            "diarization": "none",
+            "diarization": (
+                "nemotron" if any(str(row.get("speaker") or "").strip() for row in segments) else "none"
+            ),
             "names_hint": prompt,
         }
     )
@@ -320,10 +322,15 @@ def _with_parts(result: dict[str, Any]) -> dict[str, Any]:
         "parts": parts,
         "note": (
             f"Полная расшифровка с таймкодами записана в transcript_path, {parts} частей. "
-            f"Прочитай её целиком инструментом audio.transcript: part=1, 2, … {parts} по порядку, "
-            "не пропуская ни одной части. Файл напрямую не читай — длинный текст обрезается посередине. "
+            "Цельный текст — audio.transcript без part. "
+            f"По фрагментам — part=1, 2, … {parts} по порядку, "
+            "не пропуская ни одной части: длинный текст в одном ответе обрезается посередине. "
             "Больше не вызывай audio.transcribe для того же вложения. "
-            "Меток говорящих нет: реплику подписывай ФИО только при обращении или самопредставлении, иначе «Участник N»."
+            + (
+                "У реплик есть метка говорящего (Голос N). ФИО ставь только если человек сам назвался."
+                if result.get("diarization") == "nemotron"
+                else "Меток говорящих нет: реплику подписывай ФИО только при обращении или самопредставлении, иначе «Участник N»."
+            )
         ),
     }
 

@@ -449,11 +449,13 @@ _SERVER_TOOL_DEFS: list[tuple[str, str, dict[str, Any]]] = [
     (
         "audio.transcribe",
         (
-            "Расшифровка аудио-вложения запуска (faster-whisper). Вызывай один раз на файл: "
-            "полный текст с таймкодами пишется во временный файл, в ответе transcript_path, "
-            "segment_count и duration_sec. Повторный вызов возвращает тот же файл и не распознаёт заново. "
+            "Расшифровка аудио-вложения запуска на видеокарте сервера: голоса (Nemotron), "
+            "одновременная речь (SepFormer), текст (Whisper large-v3). Один раз на файл: "
+            "реплики с таймкодами и меткой «Голос N» пишутся во временный файл, в ответе "
+            "transcript_path, segment_count, parts и duration_sec. Текст забирай через audio.transcript: "
+            "без part — цельный текст, с part — фрагмент. Повторный вызов тот же файл не распознаёт заново. "
             "file_id бери из блока «Вложения запуска». names — ФИО из Outlook. "
-            "Меток говорящих нет. Только чтение, подтверждение не нужно. Сервер."
+            "Только чтение, подтверждение не нужно. Сервер."
         ),
         _schema(
             {
@@ -464,6 +466,22 @@ _SERVER_TOOL_DEFS: list[tuple[str, str, dict[str, Any]]] = [
                 ),
             },
             ["file_id"],
+        ),
+    ),
+    (
+        "audio.transcript",
+        (
+            "Текст расшифровки audio.transcribe. Без part — цельный текст файла. "
+            "С part=1…parts — фрагмент по 120 реплик с таймкодами и меткой голоса. "
+            "Длинную запись читай частями по порядку: в ответе part, parts, next_part, "
+            "from/to и text. Только чтение, подтверждение не нужно. Сервер."
+        ),
+        _schema(
+            {
+                "transcript_path": _prop("string", "transcript_path из ответа audio.transcribe"),
+                "part": _prop("integer", "Номер фрагмента от 1 до parts. Пусто — вернуть цельный текст"),
+            },
+            ["transcript_path"],
         ),
     ),
     (
