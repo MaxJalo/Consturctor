@@ -84,3 +84,28 @@
 .meet-pop .spec-detail-actions {
   margin-top: 4px;
 }
+
+/* Проверка говорящих: карточка фиксированной высоты, текст крутится, кнопка остаётся внизу. */
+.meet-pop:has(.meeting-protocol-card--review) {
+  height: min(640px, calc(100vh - 24px));
+}
+
+.meet-pop:has(.meeting-protocol-card--review) .meet-pop-body {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.meeting-protocol-card--review {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.meeting-protocol-card--review .meeting-protocol-scroll {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+  padding-right: 22px;
+}
