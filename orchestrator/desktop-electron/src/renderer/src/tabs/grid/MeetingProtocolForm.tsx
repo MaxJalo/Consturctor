@@ -719,7 +719,7 @@ export function MeetingProtocolForm({
               ) : null}
 
               {tab === 'control' ? (
-                <section className="df1c-table">
+                <section className="df1c-table is-control">
                   <div className="df1c-table-head">
                     <h3>Задачи на контроле</h3>
                   </div>
@@ -731,9 +731,9 @@ export function MeetingProtocolForm({
                           <th className="df1c-col-measure">Задача</th>
                           <th className="df1c-col-ref">Исполнитель</th>
                           <th className="df1c-col-date">Срок</th>
-                          <th className="df1c-col-state">Отправлено</th>
-                          <th className="df1c-col-state">Выполнено</th>
-                          <th className="df1c-col-state">Подтверждено</th>
+                          <th className="df1c-col-state" title="Отправлено">Отп</th>
+                          <th className="df1c-col-state" title="Выполнено">Вып</th>
+                          <th className="df1c-col-state" title="Подтверждено">Под</th>
                         </tr>
                       </thead>
                       <tbody>

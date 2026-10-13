@@ -799,19 +799,37 @@
   font-size: 12px;
 }
 
+.df1c-table.is-control table {
+  table-layout: auto;
+}
+
+.df1c-table.is-control .df1c-col-measure {
+  width: 100%;
+}
+
+.df1c-table.is-control .df1c-num,
+.df1c-table.is-control .df1c-col-ref,
+.df1c-table.is-control .df1c-col-date,
+.df1c-table.is-control .df1c-col-state {
+  width: 1%;
+  white-space: nowrap;
+}
+
 .df1c-table .df1c-col-state {
-  width: 7.2rem;
+  width: auto;
   text-align: center;
   vertical-align: middle;
+  padding-left: 4px;
+  padding-right: 4px;
 }
 
 .df1c-state {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  gap: 3px;
-  min-width: 3.4rem;
-  padding: 2px 8px;
+  gap: 2px;
+  min-width: 0;
+  padding: 1px 6px;
   border-radius: 999px;
   font-size: 12px;
   font-weight: 600;
