@@ -278,7 +278,11 @@ function MeetingDetailCard({
     }
   }, [actorFio, busy, isRunning, meeting, rememberStart, runs])
 
-  const hasDocx = Boolean(record?.reportFileId) && (record?.status === 'done' || Boolean(protocol?.number))
+  const reportIsTranscript = /^расшифровка/i.test(record?.reportName || '')
+  const hasDocx =
+    Boolean(record?.reportFileId) &&
+    !reportIsTranscript &&
+    (record?.status === 'done' || Boolean(protocol?.number))
   const protocolRefKey = (resolvedProtocolRef || protocol?.refKey || '').trim()
   const hasProtocol = Boolean(protocolRefKey || protocol?.number)
   const canOpenReport = hasDocx || Boolean(protocolRefKey)
@@ -898,8 +902,8 @@ function MeetingDetailCard({
       <MeetingReportModal
         open={reportOpen}
         onClose={() => setReportOpen(false)}
-        reportUrl={protocolRefKey ? '' : hasDocx ? record?.reportUrl || '' : ''}
-        reportName={record?.reportName || 'protocol.docx'}
+        reportUrl={hasDocx ? record?.reportUrl || '' : ''}
+        reportName={hasDocx ? record?.reportName || 'protocol.docx' : 'protocol.docx'}
         protocolRefKey={protocolRefKey}
       />
     </div>

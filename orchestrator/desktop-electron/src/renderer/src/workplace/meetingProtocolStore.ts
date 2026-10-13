@@ -121,6 +121,17 @@ function isCreatedAfterStart(item: WorkflowFileItem, startedAt: string): boolean
  * Files from other runs (different runId, or untagged but older than startedAt) are skipped —
  * otherwise a stale protocol-*.docx from a previous launch would be shown for a new meeting.
  */
+function isTranscriptFile(item: { name?: string; origin?: string }): boolean {
+  const name = String(item.name || '').trim()
+  const origin = String(item.origin || '').trim().toLowerCase()
+  return origin === 'transcript' || /^расшифровка/i.test(name)
+}
+
+function isProtocolFile(item: { name?: string }): boolean {
+  const name = String(item.name || '').trim()
+  return /^protocol[-_.]/i.test(name) || /^протокол/i.test(name)
+}
+
 function pickLatestDocx(
   files: WorkflowFileItem[],
   backendRunId = '',
@@ -130,6 +141,7 @@ function pickLatestDocx(
   const docx = files
     .filter(isAgentProducedFile)
     .filter((item) => /\.docx$/i.test(item.name || ''))
+    .filter((item) => !isTranscriptFile(item))
     .filter((item) => {
       const rid = String(item.runId || '').trim()
       const untagged = !rid || rid === 'local'
@@ -137,8 +149,10 @@ function pickLatestDocx(
       if (untagged) return isCreatedAfterStart(item, startedAt)
       return rid === wanted
     })
-    .sort((left, right) => String(right.createdAt || '').localeCompare(String(left.createdAt || '')))
-  return docx[0] || null
+  const protocols = docx.filter(isProtocolFile)
+  const pool = protocols.length ? protocols : docx
+  pool.sort((left, right) => String(right.createdAt || '').localeCompare(String(left.createdAt || '')))
+  return pool[0] || null
 }
 
 function hasSuccessfulResult(entry: RunEntry): boolean {
@@ -248,7 +262,12 @@ export function useMeetingProtocol(
         // untagged files count only when created after target.startedAt.
         const files = await api.listWorkflowFiles(wid, rid)
         const docx = pickLatestDocx(files, rid, target.startedAt || '')
-        if (!docx) return
+        if (!docx) {
+          if (isTranscriptFile({ name: target.reportName })) {
+            patchRecord({ reportFileId: '', reportName: '', reportUrl: '' })
+          }
+          return
+        }
         patchRecord({
           reportFileId: docx.id,
           reportName: docx.name,
