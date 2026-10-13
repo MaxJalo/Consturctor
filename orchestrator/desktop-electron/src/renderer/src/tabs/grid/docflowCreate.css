@@ -799,6 +799,60 @@
   font-size: 12px;
 }
 
+.df1c-table .df1c-col-state {
+  width: 7.2rem;
+  text-align: center;
+  vertical-align: middle;
+}
+
+.df1c-state {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 3px;
+  min-width: 3.4rem;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 600;
+  color: #8b93a0;
+  background: #f2f4f7;
+}
+
+.df1c-state.is-sent.is-on {
+  color: #0d3b73;
+  background: rgba(21, 101, 192, 0.16);
+}
+
+.df1c-state.is-completed.is-on {
+  color: #8a4b08;
+  background: rgba(230, 126, 34, 0.18);
+}
+
+.df1c-state.is-confirmed.is-on {
+  color: #146c43;
+  background: rgba(46, 154, 111, 0.18);
+}
+
+.df1c-state-date {
+  display: block;
+  margin-top: 3px;
+  color: #5b6b80;
+  font-size: 11px;
+}
+
+.df1c-table tbody tr.is-sent td {
+  background: rgba(21, 101, 192, 0.06);
+}
+
+.df1c-table tbody tr.is-completed td {
+  background: rgba(230, 126, 34, 0.08);
+}
+
+.df1c-table tbody tr.is-confirmed td {
+  background: rgba(46, 154, 111, 0.1);
+}
+
 @media (max-width: 860px) {
   .df1c-columns {
     grid-template-columns: 1fr;

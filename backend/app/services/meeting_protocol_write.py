@@ -1194,7 +1194,8 @@ def _register_task_view(row: dict[str, Any], person_fio: Callable[[Any], str]) -
         "note": _clean(row.get("Примечание")),
         "item": _clean(row.get("НомерПунктаПротокола")),
         "sent": row.get("Отправлена") is True,
-        "done": row.get("Выполнена") is True,
+        "completed": row.get("Выполнена") is True,
+        "done": row.get("Подтверждена") is True,
         "done_date": _iso_day(row.get("ДатаИсполнения")),
         "confirmed": row.get("Подтверждена") is True,
         "process_started": _looks_like_guid(row.get("ПроцессID"))

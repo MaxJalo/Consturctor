@@ -340,7 +340,7 @@ def _register_rows(ref: str) -> list[dict[str, Any]]:
 
 
 def _register_task_view(item: dict[str, Any], today: str) -> dict[str, Any]:
-    executed = _flag(item.get("Выполнена"))
+    executed = _flag(item.get("Подтверждена"))
     due = "" if _text(item.get("СрокИсполнения")).startswith("0001") else _date(item.get("СрокИсполнения"))
     done_at = "" if _text(item.get("ДатаИсполнения")).startswith("0001") else _date(item.get("ДатаИсполнения"))
     overdue = bool(not executed and due and due[:10] < today)
@@ -358,6 +358,8 @@ def _register_task_view(item: dict[str, Any], today: str) -> dict[str, Any]:
         "status": TASK_DONE if executed else TASK_OVERDUE if overdue else TASK_OPEN,
         "priority": _text(item.get("Приоритет")),
         "sent": _flag(item.get("Отправлена")),
+        "completed": _flag(item.get("Выполнена")),
+        "confirmed": executed,
         "note": "\n".join(filter(None, (_text(item.get("Примечание")), _text(item.get("Комментарий"))))),
         "files": [],
         "source": "register",
@@ -453,50 +455,69 @@ def _same_task_text(left: str, right: str) -> bool:
     return True
 
 
-def apply_docflow_execution(tasks: list[dict[str, Any]], docflow_rows: list[dict[str, Any]]) -> None:
-    """Закрытая задача Документооборота отмечает строку на контроле.
+def _route_column(row: dict[str, Any]) -> str:
+    """Колонка маршрута ДО.
 
-    В регистре «Выполнена» часто пустая: процесс ДО сам ведёт исполнение и регистр не переписывает.
-    Берём последнюю задачу пункта (перенос срока создаёт новую), а не любую уже закрытую.
+    Первая («отправлено» / «исполнить») значит, что задача есть.
+    Последняя («утверждено») значит, что она исполнена. Середина маршрута не считается.
     """
+    text = _fold(f"{_text(row.get('step'))} {_text(row.get('name'))}")
+    if "ознаком" in text:
+        return ""
+    if "утверд" in text or "подтверд" in text:
+        return "approved"
+    if "отправ" in text or text.startswith("исполн") or " исполн" in f" {text}":
+        return "sent"
+    return ""
+
+
+def _approved_points(docflow_rows: list[dict[str, Any]]) -> tuple[set[int], list[str]]:
+    """Пункты, у которых закрыта именно последняя колонка маршрута."""
     by_point: dict[int, list[dict[str, Any]]] = {}
-    unnumbered: list[dict[str, Any]] = []
+    loose: list[dict[str, Any]] = []
     for row in docflow_rows:
+        if _route_column(row) != "approved":
+            continue
         match = _DO_TASK_NO_RE.search(_text(row.get("name")))
         if match:
             by_point.setdefault(int(match.group(1)), []).append(row)
         else:
-            unnumbered.append(row)
+            loose.append(row)
     done_points: set[int] = set()
-    done_texts: list[str] = []
-    latest = list(unnumbered)
     for point, items in by_point.items():
         items.sort(key=lambda item: _text(item.get("begin")))
-        last = items[-1]
-        latest.append(last)
-        if last.get("executed"):
+        if items[-1].get("executed"):
             done_points.add(point)
-    for row in latest:
-        if not row.get("executed"):
-            continue
-        for text in (_text(row.get("description")), _text(row.get("name"))):
-            folded = _fold(text)[:180]
-            if len(folded) >= 40:
-                done_texts.append(folded)
+    done_texts = [
+        _fold(row.get("description"))
+        for row in loose
+        if row.get("executed") and len(_fold(row.get("description"))) >= 40
+    ]
+    return done_points, done_texts
+
+
+def apply_docflow_execution(tasks: list[dict[str, Any]], docflow_rows: list[dict[str, Any]]) -> None:
+    """Закрытая последняя колонка маршрута отмечает строку на контроле.
+
+    «Отправлено» и «Исполнить» задачу не закрывают: это только наличие поручения.
+    Общее начало «За 2 рабочих дня…» чужие строки не закрывает.
+    """
+    done_points, done_texts = _approved_points(docflow_rows)
     if not done_points and not done_texts:
         return
     for task in tasks:
         if task.get("executed") or task.get("done"):
             continue
         point = _point_no(task.get("n") or task.get("item") or task.get("point"))
-        folded = _fold(task.get("text"))[:180]
+        folded = _fold(task.get("text"))
         hit = bool(point and point in done_points)
-        if not hit and len(folded) >= 40:
-            hit = any(_same_task_text(folded, item) for item in done_texts)
+        if not hit and folded:
+            hit = any(folded == item for item in done_texts)
         if not hit:
             continue
         task["executed"] = True
         task["done"] = True
+        task["confirmed"] = True
         task["overdue"] = False
         if "status" in task:
             task["status"] = TASK_DONE
@@ -505,28 +526,30 @@ def apply_docflow_execution(tasks: list[dict[str, Any]], docflow_rows: list[dict
 def _mark_task_done(task: dict[str, Any]) -> None:
     task["executed"] = True
     task["done"] = True
+    task["confirmed"] = True
     task["overdue"] = False
     if "status" in task:
         task["status"] = TASK_DONE
 
 
 def _same_listed_task(left: dict[str, Any], right: dict[str, Any]) -> bool:
-    """Одна и та же строка на контроле: текст либо пункт и исполнитель.
+    """Одна строка на контроле: тот же пункт и тот же исполнитель.
 
-    Задача Документооборота и строка регистра — один пункт. Общее начало
-    «За 2 рабочих дня…» само по себе строки не склеивает.
+    Одинаковый текст «За 2 рабочих дня…» у разных людей — разные задачи.
     """
-    if _same_task_text(_fold(left.get("text"))[:180], _fold(right.get("text"))[:180]):
-        return True
     left_n = _point_no(left.get("n"))
     right_n = _point_no(right.get("n"))
-    if not left_n or not right_n or left_n != right_n:
-        return False
     left_who = normalize_fio(_text(left.get("responsible")))
     right_who = normalize_fio(_text(right.get("responsible")))
+    if left_n and right_n:
+        if left_n != right_n:
+            return False
+        if not left_who or not right_who or left_who == right_who:
+            return True
+        return left_who.startswith(right_who) or right_who.startswith(left_who)
     if left_who and right_who and left_who != right_who:
         return False
-    return True
+    return _same_task_text(_fold(left.get("text"))[:180], _fold(right.get("text"))[:180])
 
 
 def _merge_listed_tasks(primary: list[dict[str, Any]], extra: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -549,19 +572,26 @@ def _merge_listed_tasks(primary: list[dict[str, Any]], extra: list[dict[str, Any
 
 
 def _docflow_task_views(rows: list[dict[str, Any]], today: str) -> list[dict[str, Any]]:
-    """Как список в форме 1С: строка на пункт и исполнителя; перенос срока в ДО — новая задача той же строки."""
+    """Строка на пункт и исполнителя. Исполнение — только последняя колонка «Утвердить»."""
     groups: dict[tuple[int, str], list[dict[str, Any]]] = {}
+    approvals_by_point: dict[int, list[dict[str, Any]]] = {}
     for row in rows:
-        name, step = _text(row.get("name")), _text(row.get("step"))
-        if not (step.startswith("Исполн") or name.startswith("Исполнить")):
-            continue
+        name = _text(row.get("name"))
+        column = _route_column(row)
         match = _DO_TASK_NO_RE.search(name)
-        groups.setdefault((int(match.group(1)) if match else 0, normalize_fio(_text(row.get("performer")))), []).append(row)
+        number = int(match.group(1)) if match else 0
+        if column == "approved":
+            approvals_by_point.setdefault(number, []).append(row)
+            continue
+        if column != "sent":
+            continue
+        groups.setdefault((number, normalize_fio(_text(row.get("performer")))), []).append(row)
     views: list[dict[str, Any]] = []
     for (number, _), items in groups.items():
         items.sort(key=lambda item: _text(item.get("begin")))
         first, last = items[0], items[-1]
-        executed = bool(last.get("executed"))
+        approvals = sorted(approvals_by_point.get(number, []), key=lambda item: _text(item.get("begin")))
+        executed = bool(number and approvals and approvals[-1].get("executed"))
         due = _text(last.get("due"))
         overdue = bool(not executed and due and due[:10] < today)
         text = next((_text(item.get("description")) for item in reversed(items) if _text(item.get("description"))), "")

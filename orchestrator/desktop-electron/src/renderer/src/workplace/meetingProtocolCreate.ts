@@ -19,7 +19,15 @@ export type ProtocolControlTask = {
   text: string
   executor: string
   due: string
+  /** Подтверждена: последняя колонка маршрута, задача исполнена. */
   done: boolean
+  /** Отправлена: задача есть у исполнителя. */
+  sent: boolean
+  /** Выполнена: средняя колонка регистра 1С. */
+  completed: boolean
+  /** Подтверждена. */
+  confirmed: boolean
+  doneDate: string
 }
 
 export type ProtocolTaskDraft = {
@@ -235,7 +243,11 @@ export function parseOnecProtocolForm(payload: unknown): OnecProtocolForm | null
         text: str(row.text),
         executor: str(row.executor),
         due: str(row.due),
-        done: row.done === true
+        sent: row.sent === true,
+        completed: row.completed === true,
+        confirmed: row.confirmed === true || row.done === true,
+        done: row.done === true || row.confirmed === true,
+        doneDate: str(row.done_date)
       })),
       comment: str(form.comment)
     }
