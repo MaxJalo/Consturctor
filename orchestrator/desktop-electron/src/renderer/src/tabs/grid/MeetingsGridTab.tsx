@@ -532,7 +532,6 @@ function MeetingDetailCard({
         workflowId,
         title: PROTOCOL_AGENT_TITLE,
         message,
-        fresh: true,
         forceRestart: true
       })
       patchRecord({

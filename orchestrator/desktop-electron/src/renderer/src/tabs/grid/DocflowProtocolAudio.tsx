@@ -435,7 +435,6 @@ export function ProtocolAudioSupplement({
             workflowId,
             title: 'Определение говорящих по расшифровке',
             message: buildSpeakerMessage(transcriptId, null, rosterLines(result?.known_speakers)),
-            fresh: true,
             forceRestart: true
           })
           patchProtocolAudio(row.id, last.at, {
@@ -480,7 +479,6 @@ export function ProtocolAudioSupplement({
           workflowId,
           title: PROTOCOL_AGENT_TITLE,
           message,
-          fresh: true,
           forceRestart: true
         })
         patchProtocolAudio(row.id, last.at, {
