@@ -7,12 +7,42 @@ from app.services.agent_runs import (
     effective_run_status,
     is_successful_work_answer,
     slim_run_events,
+    slim_run_metrics,
 )
 from app.services.workflows.cursor_tools import (
     clear_tool_context,
     current_history_run_id,
     set_tool_context,
 )
+
+
+def test_slim_run_events_keeps_spaces_between_stream_tokens() -> None:
+    stored = slim_run_events(
+        [
+            {"type": "assistant", "text": "Нужны"},
+            {"type": "assistant", "text": " "},
+            {"type": "assistant", "text": "Мегрелишвили"},
+            {"type": "thinking", "text": "свер"},
+            {"type": "thinking", "text": "яю"},
+            {"type": "tool_call", "tool": "calendar.show_meetings", "arguments": {"day": "завтра"}},
+            {"type": "assistant", "text": "Готово"},
+        ]
+    )
+    assert [item["type"] for item in stored] == ["assistant", "thinking", "tool_call", "assistant"]
+    assert stored[0]["text"] == "Нужны Мегрелишвили"
+    assert stored[1]["text"] == "сверяю"
+    assert stored[3]["text"] == "Готово"
+
+
+def test_slim_run_metrics_keeps_numbers_only() -> None:
+    stored = slim_run_metrics(
+        [
+            {"t": 10, "cpu": 1.5, "ram": 2, "gpu": None, "note": "x"},
+            "bad",
+            {"cpu": 1},
+        ]
+    )
+    assert stored == [{"t": 10.0, "cpu": 1.5, "ram": 2.0}]
 
 
 def test_slim_run_events_keeps_tool_and_work_result() -> None:

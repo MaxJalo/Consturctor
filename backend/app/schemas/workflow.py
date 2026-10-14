@@ -237,11 +237,16 @@ class AgentRunEventsUpdate(BaseModel):
     events: list[dict[str, Any]] = Field(default_factory=list)
 
 
+class AgentRunMetricsUpdate(BaseModel):
+    metrics: list[dict[str, Any]] = Field(default_factory=list)
+
+
 class AgentRunFinish(BaseModel):
     status: str = "ok"
     answer: str = ""
     events: list[dict[str, Any]] = Field(default_factory=list)
     message: str = ""
+    metrics: list[dict[str, Any]] | None = None
 
 
 class AgentRunCancelSlot(BaseModel):
@@ -271,6 +276,7 @@ class AgentRunOut(BaseModel):
     open_segment: str = ""
     open_segment_at: str = ""
     events: list[dict[str, Any]] = Field(default_factory=list)
+    metrics: list[dict[str, Any]] = Field(default_factory=list)
     calendar_meetings: list[dict[str, Any]] = Field(default_factory=list)
 
 

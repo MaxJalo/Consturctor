@@ -1,12 +1,14 @@
 from __future__ import annotations
 
+import json
 import logging
 import re
 import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import select, text
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
 STALE_STARTED = timedelta(minutes=25)
@@ -88,6 +90,64 @@ def start_agent_run(
         agent_title=workflow.title or "агент",
     )
     return row
+
+
+_metrics_column: bool | None = None
+
+
+def _metrics_column_ready(db: Session) -> bool:
+    """Колонка появляется миграцией. Пока её нет, замер не пишем и чтение запусков не ломаем."""
+    global _metrics_column
+    if _metrics_column is not None:
+        return _metrics_column
+    try:
+        with db.begin_nested():
+            row = db.execute(
+                text(
+                    """
+                    SELECT 1 FROM information_schema.columns
+                    WHERE table_schema = 'public'
+                      AND table_name = 'agent_runs'
+                      AND column_name = 'metrics_json'
+                    """
+                )
+            ).first()
+    except SQLAlchemyError:
+        _metrics_column = False
+        return False
+    _metrics_column = row is not None
+    return _metrics_column
+
+
+def _write_metrics(db: Session, run_id: str, metrics: list[dict[str, Any]]) -> None:
+    if not _metrics_column_ready(db):
+        return
+    db.execute(
+        text("UPDATE agent_runs SET metrics_json = CAST(:body AS json) WHERE id = :id"),
+        {"id": run_id, "body": json.dumps(slim_run_metrics(metrics), ensure_ascii=False)},
+    )
+
+
+def read_run_metrics(db: Session, run_id: str) -> list[dict[str, Any]]:
+    if not _metrics_column_ready(db):
+        return []
+    try:
+        value = db.execute(
+            text("SELECT metrics_json FROM agent_runs WHERE id = :id"),
+            {"id": run_id},
+        ).scalar()
+    except SQLAlchemyError:
+        logger.warning("run metrics read failed run=%s", run_id, exc_info=True)
+        return []
+    return slim_run_metrics(value if isinstance(value, list) else [])
+
+
+def save_run_metrics(db: Session, *, run_id: str, metrics: list[dict[str, Any]]) -> None:
+    row = db.get(AgentRun, run_id)
+    if row is None or not _row_in_flight(row):
+        return
+    _write_metrics(db, run_id, metrics)
+    db.commit()
 
 
 def save_run_events(db: Session, *, run_id: str, events: list[dict[str, Any]]) -> None:
@@ -265,6 +325,15 @@ def cancel_overlapping_slot(
         trigger_reason=reason[:2000],
         started_at=slot,
         finished_at=datetime.now(timezone.utc),
+        events_json=[
+            {
+                "type": "status",
+                "text": (
+                    "Слот расписания не запущен: агент уже выполнял другой запуск. "
+                    "Журнал этой попытки пуст — ход работы остаётся у того запуска."
+                ),
+            }
+        ],
     )
     db.add(row)
     db.commit()
@@ -297,6 +366,7 @@ def finish_agent_run(
     answer: str = "",
     events: list[dict[str, Any]] | None = None,
     message: str = "",
+    metrics: list[dict[str, Any]] | None = None,
     notify: bool = True,
 ) -> None:
     row = db.get(AgentRun, run_id)
@@ -314,6 +384,8 @@ def finish_agent_run(
     if message.strip() and not any(str(item.get("type") or "") == "user_message" for item in stored):
         stored.insert(0, {"type": "user_message", "text": message.strip()[:8000]})
     row.events_json = stored
+    if metrics is not None:
+        _write_metrics(db, row.id, metrics)
     db.commit()
     try:
         from app.models.workflow import Workflow
@@ -365,6 +437,7 @@ def get_agent_run(db: Session, *, user_id: str, workflow_id: str, run_id: str) -
     if row is None or row.workflow_id != workflow_id or row.user_id != user_id:
         raise WorkflowError("Запуск не найден", status_code=404)
     out = _to_out(row, include_events=True)
+    out.metrics = read_run_metrics(db, row.id)
     out.calendar_meetings = _calendar_meetings_for(
         db, user_id=user_id, workflow_id=workflow_id
     )
@@ -738,7 +811,14 @@ def slim_run_events(events: list[Any]) -> list[dict[str, Any]]:
         item: dict[str, Any] = {"type": kind}
         for key in ("text", "message", "tool", "title", "request_id", "requestId", "error", "status", "at", "wait"):
             value = raw.get(key)
-            if isinstance(value, str) and value.strip():
+            if not isinstance(value, str) or not value:
+                continue
+            # Куски ответа модели приходят по токену, пробел — отдельным куском.
+            # strip() выбрасывал эти пробелы, и журнал склеивался в одно слово.
+            if key == "text":
+                item["text"] = value[:8000]
+                continue
+            if value.strip():
                 item[key] = value.strip()[:8000]
         request_id = str(raw.get("requestId") or raw.get("request_id") or "").strip()
         if request_id:
@@ -762,7 +842,57 @@ def slim_run_events(events: list[Any]) -> list[dict[str, Any]]:
             if isinstance(value, list) and value:
                 item[key] = _clip_json(value)
         stored.append(item)
-    return _trim_run_events(stored)
+    return _trim_run_events(_coalesce_stream(stored))
+
+
+_STREAM_EVENT_TYPES = {"assistant", "thinking", "agent_message"}
+_STREAM_TEXT_LIMIT = 64_000
+_METRIC_KEYS = ("t", "turn", "cpu", "ram", "ram_mb", "gpu", "disk", "disk_read", "disk_write", "processes", "gen")
+_METRIC_LIMIT = 7_200
+
+
+def _coalesce_stream(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Склеить подряд идущие куски одного ответа, не трогая инструменты между ними."""
+    merged: list[dict[str, Any]] = []
+    for item in events:
+        kind = str(item.get("type") or "")
+        last = merged[-1] if merged else None
+        if (
+            last is not None
+            and kind in _STREAM_EVENT_TYPES
+            and last.get("type") == kind
+            and not item.get("tool")
+            and not last.get("tool")
+        ):
+            text = f"{last.get('text') or ''}{item.get('text') or ''}"
+            if len(text) > _STREAM_TEXT_LIMIT:
+                text = "…" + text[-_STREAM_TEXT_LIMIT:]
+            last["text"] = text
+            continue
+        merged.append(item)
+    return merged
+
+
+def slim_run_metrics(metrics: list[Any] | None) -> list[dict[str, Any]]:
+    """Оставить числовой ряд производительности. Мусор и строки отбрасываются."""
+    if not isinstance(metrics, list):
+        return []
+    stored: list[dict[str, Any]] = []
+    for raw in metrics:
+        if not isinstance(raw, dict):
+            continue
+        sample: dict[str, Any] = {}
+        for key in _METRIC_KEYS:
+            value = raw.get(key)
+            if isinstance(value, bool) or not isinstance(value, (int, float)):
+                continue
+            sample[key] = round(float(value), 3)
+        if "t" not in sample:
+            continue
+        stored.append(sample)
+    if len(stored) > _METRIC_LIMIT:
+        stored = stored[-_METRIC_LIMIT:]
+    return stored
 
 
 def _calendar_meetings_for(

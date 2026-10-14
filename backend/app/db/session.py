@@ -1,12 +1,16 @@
 from __future__ import annotations
 
+import logging
 from collections.abc import Generator
 
 from sqlalchemy import create_engine, text
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.config import settings
 from app.db.base import Base
+
+logger = logging.getLogger(__name__)
 
 engine = create_engine(
     settings.database_url,
@@ -235,6 +239,19 @@ def _ensure_columns() -> None:
             conn.execute(
                 text("ALTER TABLE agent_runs ADD COLUMN trigger_reason TEXT NOT NULL DEFAULT ''")
             )
+        if run_cols and "metrics_json" not in run_cols:
+            # Не стоим в очереди за эксклюзивной блокировкой: иначе все чтения
+            # истории запусков ждут за этим ALTER.
+            try:
+                conn.execute(text("SAVEPOINT metrics_json_col"))
+                conn.execute(text("SET LOCAL lock_timeout = '3s'"))
+                conn.execute(
+                    text("ALTER TABLE agent_runs ADD COLUMN metrics_json JSON NOT NULL DEFAULT '[]'")
+                )
+                conn.execute(text("RELEASE SAVEPOINT metrics_json_col"))
+            except SQLAlchemyError:
+                conn.execute(text("ROLLBACK TO SAVEPOINT metrics_json_col"))
+                logger.warning("agent_runs.metrics_json was not added, will retry on next start", exc_info=True)
         creation_rows = conn.execute(
             text(
                 """

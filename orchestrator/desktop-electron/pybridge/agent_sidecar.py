@@ -60,6 +60,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from run_metrics import RunMetrics, runner_pid
+
 
 def _is_orchestrator_desktop(path: Path) -> bool:
     normalized = str(path).replace("\\", "/").lower()
@@ -2996,12 +2998,14 @@ class Sidecar:
         self._active: dict[str, ActiveRun] = {}
         self._personal_agent_ids: dict[str, str] = {}
         self._lock = threading.Lock()
+        self._metrics_api = True
 
     # -- configuration -------------------------------------------------
     def configure(self, command: dict[str, Any]) -> None:
         backend_url = str(command.get("backendUrl") or "").strip()
         if backend_url:
             self._api = ApiClient(base_url=backend_url)
+            self._metrics_api = True
         token = str(command.get("token") or "").strip() or None
         self._api.set_token(token)
         # Server-side tools (users.current, 1C tasks, ...) read this process-global
@@ -3250,6 +3254,29 @@ class Sidecar:
             pass
         self._notify_fresh_waits(active)
 
+    def _start_run_metrics(self, active: ActiveRun, bridge: ElectronBridge) -> None:
+        def publish(samples: list[dict[str, Any]]) -> None:
+            if not self._metrics_api or not samples:
+                return
+            run_ref = (active.history_run_id or "").strip()
+            if not run_ref or not active.workflow_id:
+                return
+            try:
+                self._api.update_local_agent_run_metrics(active.workflow_id, run_ref, samples)
+            except ApiError as exc:
+                if exc.status_code in {404, 405, 422}:
+                    self._metrics_api = False
+                log("run metrics flush failed: " + _ascii(exc.message))
+
+        active.metrics = RunMetrics(lambda: runner_pid(bridge), publish)
+        active.metrics.start()
+
+    def _stop_run_metrics(self, active: ActiveRun) -> list[dict[str, Any]]:
+        sampler = getattr(active, "metrics", None)
+        if sampler is None:
+            return []
+        return sampler.stop()
+
     def _notify_fresh_waits(self, active: ActiveRun) -> None:
         seen = getattr(active, "notified_waits", None)
         if seen is None:
@@ -3292,6 +3319,10 @@ class Sidecar:
                     str(payload.get(key) or "")
                     for key in ("text", "answer", "message")
                 )
+                if event_type == "assistant":
+                    sampler = getattr(active, "metrics", None)
+                    if sampler is not None:
+                        sampler.note_chars(len(str(payload.get("text") or "")))
                 if blob.strip() and event_type != "thinking":
                     active.answer_buf = f"{active.answer_buf}{blob}"
                 if event_type in {"assistant", "final"} and (
@@ -4232,6 +4263,7 @@ class Sidecar:
         status = "ok"
         answer = ""
         agent_id = resume_agent_id
+        self._start_run_metrics(active, bridge)
         try:
             try:
                 result = bridge.run(
@@ -4318,10 +4350,11 @@ class Sidecar:
                 self._api.finish_local_agent_run(
                     workflow_id, run_ref, status="error", answer=answer,
                     events=events, message=message,
+                    metrics=self._stop_run_metrics(active),
                 )
                 active.history_finished = True
             except ApiError:
-                pass
+                self._stop_run_metrics(active)
             try:
                 _append_run_journal(
                     run_cwd,
@@ -4339,6 +4372,7 @@ class Sidecar:
         self._api.finish_local_agent_run(
             workflow_id, run_ref, status=status, answer=answer,
             events=events, message=message,
+            metrics=self._stop_run_metrics(active),
         )
         active.history_finished = True
         try:
