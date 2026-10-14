@@ -352,9 +352,14 @@ async function runTodayTaskAction(
     (item) => item.id === actionId
   )
   let comment = ''
+  let due = ''
   if (spec?.needsComment) {
     comment = window.prompt('Комментарий для 1С:Документооборот', '')?.trim() || ''
     if (!comment) return
+  }
+  if (spec?.needsDue) {
+    due = window.prompt('Новый срок (ДД.ММ.ГГГГ)', '')?.trim() || ''
+    if (!due) return
   }
   hooks.setBusy(true)
   hooks.setNote('')
@@ -372,7 +377,8 @@ async function runTodayTaskAction(
       user,
       taskActionContextFromTaskRow(row as SpecTaskRow),
       actionId as DocflowUiAction,
-      comment
+      comment,
+      due
     )
     hooks.setNote(result.message)
     if (result.closed) hooks.onDone('local')

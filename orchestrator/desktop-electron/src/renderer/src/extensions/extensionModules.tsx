@@ -21,6 +21,8 @@ export type ExtensionTabContext = {
   onAskOrchestrator: (message: string, appContext: string) => void
   /** Open the agent run page and send the task message to that agent. */
   onRunAgent: (workflowId: string, title: string, message: string) => void
+  /** Open one finished run (feed, answer, files) without starting the agent. */
+  onOpenRun: (workflowId: string, title: string, runId: string) => void
   onNavigate: (pageKey: PageKey) => void
   onOpenPassport: (workflowId: string, title: string, tab?: PassportTab) => void
 }
@@ -65,8 +67,8 @@ export const EXTENSION_MODULES: ExtensionModule[] = [
       'Журнал поручений АСТ00: плитки, фильтр по датам, таблица с сортировкой и проверка незакрытых поручений через ИИ-агента.',
     positionGroups: ['director_assistants'],
     canAccess: canUseAssignmentsRegistry,
-    renderTab: ({ user, onRunAgent }) => (
-      <AssignmentsRegistryGridTab user={user} onRunAgent={onRunAgent} />
+    renderTab: ({ user, onRunAgent, onOpenRun }) => (
+      <AssignmentsRegistryGridTab user={user} onRunAgent={onRunAgent} onOpenRun={onOpenRun} />
     )
   },
   {

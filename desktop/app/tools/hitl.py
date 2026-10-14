@@ -41,6 +41,8 @@ _NEVER_CONFIRM = frozenset(
 
 _READ_EXACT = frozenset(
     {
+        "get_current_date",
+        "kpi.read_methodology",
         "web_search",
         "site_browser",
         "browser.search_web",

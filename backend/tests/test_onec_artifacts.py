@@ -222,6 +222,52 @@ def test_download_prefers_cache(tmp_path: Path, monkeypatch: pytest.MonkeyPatch)
     assert called_http == []
 
 
+def test_download_retries_http_500(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    file_id = "eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee"
+    calls: list[int] = []
+
+    def fake(url: str, timeout: float | None = None) -> tuple[int, bytes, str]:
+        del url, timeout
+        calls.append(1)
+        if len(calls) == 1:
+            return 500, b"busy", ""
+        return _http_ok(b"%PDF-1.4 ok")
+
+    monkeypatch.setattr("app.services.onec_artifacts.artifact_cache_dir", lambda: tmp_path)
+    monkeypatch.setattr("app.services.onec_artifacts._dtw_base_url", lambda: "http://1c.local")
+    monkeypatch.setattr("app.services.onec_artifacts.http_bytes", fake)
+    monkeypatch.setattr("app.services.onec_artifacts.time.sleep", lambda *_a, **_k: None)
+
+    artifact = download_artifact_file(file_id)
+
+    assert len(calls) == 2
+    assert artifact.content.startswith(b"%PDF")
+
+
+def test_download_purged_file_says_deleted_without_retry(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    file_id = "dddddddd-dddd-dddd-dddd-dddddddddddd"
+    body = (
+        "\ufeff{ОбщийМодуль.РаботаСФайламиСлужебный.Модуль(4501)}: Не удалось открыть файл:\n"
+        "RaspPriemDokum.pdf\nФайл помечен на удаление и очищен как ненужный."
+    ).encode("utf-8")
+    calls: list[int] = []
+
+    def fake(url: str, timeout: float | None = None) -> tuple[int, bytes, str]:
+        del url, timeout
+        calls.append(1)
+        return 500, body, ""
+
+    monkeypatch.setattr("app.services.onec_artifacts.artifact_cache_dir", lambda: tmp_path)
+    monkeypatch.setattr("app.services.onec_artifacts._dtw_base_url", lambda: "http://1c.local")
+    monkeypatch.setattr("app.services.onec_artifacts.http_bytes", fake)
+
+    with pytest.raises(ArtifactError, match="Файл удалён в 1С"):
+        download_artifact_file(file_id)
+    assert len(calls) == 1
+
+
 def test_download_missing_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     file_id = "cccccccc-cccc-cccc-cccc-cccccccccccc"
     monkeypatch.setattr("app.services.onec_artifacts.artifact_cache_dir", lambda: tmp_path)

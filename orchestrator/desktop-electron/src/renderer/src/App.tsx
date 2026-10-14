@@ -904,6 +904,7 @@ function AppShell(): React.JSX.Element {
                 onAskOrchestrator: askOrchestratorFromTab,
                 onRunAgent: (workflowId, title, message) =>
                   setView({ kind: 'agentrun', workflowId, title, autoStart: false, initialMessage: message }),
+                onOpenRun: (workflowId, title, runId) => void openAgentRun(workflowId, runId, false, title),
                 onNavigate: (pageKey) => {
                   setLastTab(pageKey)
                   setView({ kind: 'tab', key: pageKey })

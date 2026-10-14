@@ -2,7 +2,7 @@ import { app, shell, BrowserWindow, ipcMain, dialog, type IpcMainInvokeEvent } f
 import { spawn } from 'node:child_process'
 import { join, basename, dirname, extname } from 'node:path'
 
-const DESKTOP_APP_NAME = 'Orchestrator'
+const DESKTOP_APP_NAME = (process.env.ORCH_APP_DATA_NAME || 'Orchestrator').trim() || 'Orchestrator'
 app.setName(DESKTOP_APP_NAME)
 app.setPath('userData', join(app.getPath('appData'), DESKTOP_APP_NAME))
 if (process.platform === 'win32') {

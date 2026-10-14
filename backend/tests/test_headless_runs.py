@@ -1,0 +1,101 @@
+import queue
+from types import SimpleNamespace
+
+from app.services import sessions
+from app.services.triggers import headless, runner
+
+
+def test_serve_declines_writes_answers_questions_and_returns_own_result():
+    lines: queue.Queue = queue.Queue()
+    for item in (
+        {"type": "event", "runId": "r1", "payload": {}},
+        {"type": "hitl", "runId": "r1", "requestId": "h1", "tool": "onec.odata_patch"},
+        {"type": "question", "runId": "r1", "requestId": "q1", "question": "Какой период?"},
+        {"type": "result", "runId": "other", "status": "ok"},
+        {"type": "result", "runId": "r1", "status": "ok", "runRef": "run-9", "answer": "готово"},
+    ):
+        lines.put(item)
+    sent: list[dict] = []
+
+    outcome = headless._serve(lines, sent.append, run_id="r1", deadline=headless.time.monotonic() + 5)
+
+    assert outcome["runRef"] == "run-9"
+    assert {"type": "hitl", "requestId": "h1", "approved": False} in sent
+    assert any(cmd["type"] == "answer" and cmd["requestId"] == "q1" for cmd in sent)
+
+
+def test_serve_reports_dead_sidecar():
+    lines: queue.Queue = queue.Queue()
+    lines.put(None)
+    outcome = headless._serve(lines, lambda _cmd: None, run_id="r1", deadline=headless.time.monotonic() + 5)
+    assert outcome["type"] == "error"
+
+
+def test_server_client_never_takes_the_desktop_session(monkeypatch):
+    calls: list[tuple] = []
+    fake = SimpleNamespace(set=lambda *args, **kwargs: calls.append(args))
+    monkeypatch.setattr(sessions, "_redis", lambda: fake)
+    sessions.replace_session("u1", "sid", client="server")
+    sessions.mark_online("u1", "sid", client="server")
+    assert calls == []
+    assert sessions.normalize_client("server") == "server"
+
+
+def _trigger(**extra):
+    base = dict(
+        id="t1",
+        workflow_id="wf-1",
+        owner_user_id="u1",
+        message="Плановая проверка",
+        last_evidence="",
+        condition_text="",
+    )
+    base.update(extra)
+    return SimpleNamespace(**base)
+
+
+def _workflow(run_on_server=True):
+    return SimpleNamespace(id="wf-1", title="Проверка", local_run={"run_on_server": run_on_server})
+
+
+def test_start_on_server_fires_and_spawns_background_job(monkeypatch):
+    fired: list[str] = []
+    jobs: list[dict] = []
+    monkeypatch.setattr(headless, "unavailable_reason", lambda: "")
+    monkeypatch.setattr(headless, "is_running", lambda _wid: False)
+    monkeypatch.setattr(runner, "_fresh_started_run", lambda _db, _wid: False)
+    monkeypatch.setattr(runner, "mark_fired", lambda _db, **kw: fired.append(kw["trigger_id"]))
+
+    class FakeThread:
+        def __init__(self, *, target, kwargs, name, daemon):
+            jobs.append(kwargs)
+
+        def start(self):
+            pass
+
+    monkeypatch.setattr(runner.threading, "Thread", FakeThread)
+
+    out = runner._start_on_server(None, _trigger(), _workflow())
+
+    assert out == {"ok": True, "trigger_id": "t1", "dispatched": "server"}
+    assert fired == ["t1"]
+    assert jobs[0]["message"] == "Плановая проверка" and jobs[0]["workflow_id"] == "wf-1"
+
+
+def test_start_on_server_falls_back_to_desktop_when_backend_cannot_run(monkeypatch):
+    monkeypatch.setattr(headless, "unavailable_reason", lambda: "не найден node")
+    assert runner._start_on_server(None, _trigger(), _workflow()) is None
+
+
+def test_start_on_server_skips_overlapping_slot(monkeypatch):
+    canceled: list[str] = []
+    monkeypatch.setattr(headless, "unavailable_reason", lambda: "")
+    monkeypatch.setattr(headless, "is_running", lambda _wid: True)
+    monkeypatch.setattr(runner, "cancel_overlapping_slot", lambda _db, **kw: canceled.append(kw["trigger_id"]))
+    out = runner._start_on_server(None, _trigger(), _workflow())
+    assert out["reason"] == "already_running" and canceled == ["t1"]
+
+
+def test_runs_on_server_flag():
+    assert runner.runs_on_server(_workflow(True)) is True
+    assert runner.runs_on_server(_workflow(False)) is False

@@ -57,7 +57,10 @@ class CursorSdkUnavailable(CursorSdkError):
     pass
 
 
+RUNNER_CRASH_PREFIX = "Процесс Cursor SDK аварийно завершился"
+
 _TRANSIENT_SDK_MARKERS = (
+    RUNNER_CRASH_PREFIX.casefold(),
     "network request failed",
     "cursor sdk run failed",
     "econnreset",
@@ -73,6 +76,36 @@ _TRANSIENT_SDK_MARKERS = (
 def is_transient_cursor_error(exc: BaseException | str) -> bool:
     blob = str(exc or "").casefold()
     return any(token in blob for token in _TRANSIENT_SDK_MARKERS)
+
+
+_NATIVE_FRAME = re.compile(r"^\s*\d+:\s+[0-9A-Fa-f]{8,}\b")
+
+
+def runner_stderr_reason(lines: list[str]) -> str:
+    """Readable reason from runner stderr; a native Node crash keeps its cause above the frames."""
+    rows = [line.rstrip() for line in lines if line and line.strip()]
+    if not rows:
+        return ""
+    tail = rows[-20:]
+    frames = sum(1 for line in tail if _NATIVE_FRAME.match(line))
+    if frames * 2 < len(tail):
+        return "\n".join(tail)
+    head = [line.strip() for line in rows if not _NATIVE_FRAME.match(line)]
+    cause = "\n".join(head[:6]).strip() or "сбой Node.js без описания"
+    return f"{RUNNER_CRASH_PREFIX}: {cause}"
+
+
+def save_runner_stderr(run_id: str, lines: list[str]) -> Path | None:
+    if not any(line.strip() for line in lines):
+        return None
+    local = os.environ.get("LOCALAPPDATA") or str(Path.home())
+    path = Path(local) / "Constructor" / "logs" / f"sdk-runner-{run_id}.log"
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("\n".join(lines), encoding="utf-8")
+    except OSError:
+        return None
+    return path
 
 
 def cursor_sdk_error_text(
@@ -448,6 +481,10 @@ class CursorSdkBridge:
             env=self._env(),
         )
         stderr_lines: list[str] = []
+        self._writes_action_tracker = tools is None or any(
+            isinstance(spec, dict) and spec.get("name") == "excel.write_action_tracker"
+            for spec in tools
+        )
         run_cwd = cwd or self._workspace_cwd(workflow_id)
         agent_id = resume_agent_id.strip()
         stderr_thread = threading.Thread(
@@ -457,6 +494,15 @@ class CursorSdkBridge:
         )
         stderr_thread.start()
         self._process = process
+
+        def stderr_reason() -> str:
+            stderr_thread.join(timeout=2)
+            reason = runner_stderr_reason(stderr_lines)
+            saved = save_runner_stderr(run_id, stderr_lines)
+            if saved is not None and reason.startswith(RUNNER_CRASH_PREFIX):
+                reason += f"\nПолный вывод: {saved}"
+            return reason
+
         if should_stop is not None:
             def _watch_stop() -> None:
                 # The stdout loop only notices a stop when the next line arrives.
@@ -542,9 +588,7 @@ class CursorSdkBridge:
                     process.wait(timeout=5)
                 except subprocess.TimeoutExpired:
                     pass
-                stderr_thread.join(timeout=2)
-                err = "\n".join(stderr_lines[-20:]).strip()
-                raise CursorSdkError(err or str(exc)) from exc
+                raise CursorSdkError(stderr_reason() or str(exc)) from exc
             assert process.stdout is not None
             # "assistant" events are raw stream deltas of one message: join them
             # as-is (no strip / separators) or words get split in half.
@@ -646,8 +690,9 @@ class CursorSdkBridge:
                         "run_id": run_id,
                         "agent_id": agent_id,
                     }
-                err = "\n".join(stderr_lines[-20:]).strip()
-                raise CursorSdkError(err or "Cursor SDK runner завершился без результата")
+                raise CursorSdkError(
+                    stderr_reason() or "Cursor SDK runner завершился без результата"
+                )
             status = str(final.get("status") or "")
             answer = (
                 str(final.get("answer") or "")
@@ -671,7 +716,7 @@ class CursorSdkBridge:
                         status=status,
                         answer=answer,
                         error_events=error_events,
-                        stderr="\n".join(stderr_lines[-8:]),
+                        stderr=stderr_reason(),
                     )
                 )
             if mode == "run":
@@ -1053,8 +1098,10 @@ class CursorSdkBridge:
         raw_bytes = len(raw.encode("utf-8", errors="replace"))
         if result.get("externalized") and isinstance(result.get("result_file"), str):
             return result
-        journal_extract = tool in {"onec.erp_assignments", "onec.meeting_protocols"} and not result.get(
-            "error"
+        journal_extract = (
+            tool in {"onec.erp_assignments", "onec.meeting_protocols"}
+            and not result.get("error")
+            and getattr(self, "_writes_action_tracker", True)
         )
         if not journal_extract and not self._should_externalize_result(result, raw_bytes):
             return result
@@ -1070,7 +1117,7 @@ class CursorSdkBridge:
         target.write_text(raw, encoding="utf-8")
         rel_path = target.relative_to(base).as_posix()
         next_step = EXTERNALIZED_NEXT_STEP
-        if tool in {"onec.erp_assignments", "onec.meeting_protocols"}:
+        if journal_extract:
             next_step = (
                 "Не читай result_file и не открывай tool_results. "
                 "После обеих выборок один раз вызови excel.write_action_tracker "

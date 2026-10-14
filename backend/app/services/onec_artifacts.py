@@ -10,6 +10,7 @@ import binascii
 import json
 import mimetypes
 import re
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -214,6 +215,16 @@ def _write_cached_bytes(file_id: str, filename: str, content: bytes) -> Path:
     return path
 
 
+def _onec_error_text(raw: bytes | None) -> str:
+    text = (raw or b"")[:2000].decode("utf-8", errors="replace").lstrip("\ufeff")
+    text = re.sub(r"^\{[^}]*\}:\s*", "", text.strip())
+    return " ".join(text.split())[:300]
+
+
+def _is_purged_file_error(raw: bytes | None) -> bool:
+    return "помечен на удаление" in _onec_error_text(raw).casefold()
+
+
 def download_artifact_file(file_id: str, *, entity: str = "") -> ArtifactDownload:
     _ = entity
     normalized = str(file_id or "").strip()
@@ -228,12 +239,21 @@ def download_artifact_file(file_id: str, *, entity: str = "") -> ArtifactDownloa
 
     url = f"{_dtw_base_url()}/hs/dtw/files/{normalized}"
     status, raw, disposition = http_bytes(url, timeout=_FILE_HTTP_TIMEOUT)
+    if status >= 500 and not _is_purged_file_error(raw):
+        time.sleep(1)
+        status, raw, disposition = http_bytes(url, timeout=_FILE_HTTP_TIMEOUT)
     if status in {401, 402, 403}:
         raise ArtifactError(f"1C HTTP {status}: access denied")
+    if status >= 500 and _is_purged_file_error(raw):
+        raise ArtifactError(
+            f"Файл удалён в 1С (помечен на удаление и очищен), скачать нельзя: {normalized}"
+        )
     if status == 404 or not raw:
         raise ArtifactError(f"1C file not found: {normalized}")
     if status != 200:
-        raise ArtifactError(f"1C HTTP {status}: could not download {normalized}")
+        reason = _onec_error_text(raw)
+        suffix = f" — {reason}" if reason else ""
+        raise ArtifactError(f"1C HTTP {status}: could not download {normalized}{suffix}")
 
     content, hinted = _parse_dtw_response(raw, disposition=disposition)
     if content is None:

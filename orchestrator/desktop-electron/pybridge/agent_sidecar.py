@@ -139,6 +139,7 @@ from app.sdk_agent.bridge import (  # noqa: E402
     CursorSdkBridge,
     CursorSdkError,
     CursorSdkUnavailable,
+    RUNNER_CRASH_PREFIX,
     is_transient_cursor_error,
     reap_foreign_sdk_runners,
 )
@@ -192,6 +193,8 @@ _NEVER_CONFIRM = frozenset(
 )
 _READ_EXACT = frozenset(
     {
+        "get_current_date",
+        "kpi.read_methodology",
         "web_search",
         "site_browser",
         "browser.search_web",
@@ -377,6 +380,19 @@ def _exc_text(exc: Exception, fallback: str) -> str:
     return text or fallback
 
 
+def _user_facing_run_error(exc: BaseException | str) -> str:
+    """Cursor SDK network failures are English and useless in the feed."""
+    text = str(exc).strip() or "Внутренняя ошибка запуска агента"
+    if text.startswith(RUNNER_CRASH_PREFIX):
+        return text
+    if is_transient_cursor_error(text):
+        return (
+            "Не удалось связаться с Cursor: сеть оборвалась. "
+            "Проверьте подключение и запустите агента ещё раз."
+        )
+    return text
+
+
 from app.tools.ac.workers.onec_com_session import (  # noqa: E402
     apply_onec_session_credentials,
     com_session_auth_ready,
@@ -504,6 +520,8 @@ _ARTIFACT_CLOSE_TIPS = (
     "предложение поручений к закрытию",
     "предложение к закрытию поручений",
 )
+# Seeded with its own per-line playbook; ARTIFACT_CLOSE_HINT's four verdicts contradict it.
+_OWN_PLAYBOOK_ASSIGNMENT_AGENTS = ("проверка поручений к закрытию",)
 
 RK_RUN_HINT = (
     "This is RK meeting prep (ПЛ-01-001), not calendar control. "
@@ -741,6 +759,8 @@ def _is_calendar_control_text(*parts: Any) -> bool:
 
 def _is_artifact_close_text(*parts: Any) -> bool:
     blob = _meeting_blob(*parts)
+    if any(name in blob for name in _OWN_PLAYBOOK_ASSIGNMENT_AGENTS):
+        return False
     return any(tip in blob for tip in _ARTIFACT_CLOSE_TIPS)
 
 
@@ -997,6 +1017,7 @@ KPI_ATTACHED_PROMPT = (
 KPI_REPAIR_LIMIT = 3
 KPI_CODE_TOOL_BUDGET = 12
 KPI_SDK_RETRIES = 3
+SDK_RUN_RETRIES = 3
 KPI_NETWORK_FALLBACK = (
     "Страницы положения не дошли по сети. "
     "Читай PDF кусками: office.read_file start_page=2, max_pages=1. "
@@ -3244,7 +3265,7 @@ class Sidecar:
                 {
                     "type": "error",
                     "runId": active.run_id,
-                    "message": _exc_text(exc, "Внутренняя ошибка запуска агента"),
+                    "message": _user_facing_run_error(exc),
                 }
             )
         finally:
@@ -3302,6 +3323,10 @@ class Sidecar:
             if not isinstance(payload, dict):
                 return
             event_type = str(payload.get("type") or "")
+            # The runner prints this line and then the run loop raises the same
+            # text. Streaming it paints a second red banner ("Network request failed").
+            if event_type == "error":
+                return
             if event_type in {"assistant", "thinking", "final", "status"}:
                 blob = " ".join(
                     str(payload.get(key) or "")
@@ -3552,6 +3577,54 @@ class Sidecar:
                 time.sleep(2 * attempt)
         if last_exc is not None:
             raise last_exc
+        return {"answer": "", "agent_id": str(kwargs.get("resume_agent_id") or "")}
+
+    def _bridge_run_with_retry(
+        self,
+        active: ActiveRun,
+        bridge: Any,
+        **kwargs: Any,
+    ) -> dict[str, Any]:
+        """Retry a published-agent turn when Cursor's API drops the connection."""
+        last_exc: CursorSdkError | None = None
+        for attempt in range(1, SDK_RUN_RETRIES + 1):
+            if active.stop.is_set():
+                break
+            try:
+                return bridge.run(**kwargs)
+            except CursorSdkUnavailable:
+                raise
+            except CursorSdkError as exc:
+                last_exc = exc
+                if (
+                    active.stop.is_set()
+                    or not is_transient_cursor_error(exc)
+                    or attempt >= SDK_RUN_RETRIES
+                ):
+                    if is_transient_cursor_error(exc) and not active.stop.is_set():
+                        raise CursorSdkError(_user_facing_run_error(exc)) from exc
+                    raise
+                log(f"sdk network retry {attempt}: " + _ascii(str(exc)[:300]))
+                emit(
+                    {
+                        "type": "event",
+                        "runId": active.run_id,
+                        "payload": {
+                            "type": "status",
+                            "text": (
+                                (
+                                    "Процесс Cursor аварийно завершился"
+                                    if str(exc).startswith(RUNNER_CRASH_PREFIX)
+                                    else "Сеть Cursor оборвалась"
+                                )
+                                + f", повторяю запуск ({attempt} из {SDK_RUN_RETRIES - 1})…"
+                            ),
+                        },
+                    }
+                )
+                time.sleep(min(2 * attempt, 6))
+        if last_exc is not None:
+            raise CursorSdkError(_user_facing_run_error(last_exc)) from last_exc
         return {"answer": "", "agent_id": str(kwargs.get("resume_agent_id") or "")}
 
     def _run_kpi_code_turn(
@@ -4249,7 +4322,9 @@ class Sidecar:
         agent_id = resume_agent_id
         try:
             try:
-                result = bridge.run(
+                result = self._bridge_run_with_retry(
+                    active,
+                    bridge,
                     prompt=prompt,
                     # Regular workflow runs must keep workflow context so tools,
                     # workspace isolation and run history stay scoped correctly.
@@ -4266,7 +4341,9 @@ class Sidecar:
                 if resume_agent_id and self._is_missing_resume_agent_error(exc) and not active.stop.is_set():
                     log(f"resume agent missing for {workflow_id}, retry fresh run")
                     self._clear_stored_agent_id(workflow_id)
-                    result = bridge.run(
+                    result = self._bridge_run_with_retry(
+                        active,
+                        bridge,
                         prompt=prompt,
                         workflow_id=workflow_id,
                         cwd=run_cwd,
@@ -4299,7 +4376,9 @@ class Sidecar:
                         "text": "Продолжаю запуск до WORK_RESULT — уже прочитанные файлы не открываю снова.",
                     }
                 )
-                result = bridge.run(
+                result = self._bridge_run_with_retry(
+                    active,
+                    bridge,
                     prompt=build_continue_run_prompt(),
                     workflow_id=workflow_id,
                     cwd=run_cwd,
@@ -4328,7 +4407,7 @@ class Sidecar:
                 answer = _with_sd_package_table(answer, events, run_cwd)
         except Exception as exc:  # noqa: BLE001
             status = "error"
-            answer = str(exc)
+            answer = _user_facing_run_error(exc)
             try:
                 self._api.finish_local_agent_run(
                     workflow_id, run_ref, status="error", answer=answer,
@@ -4461,14 +4540,14 @@ class Sidecar:
                         break
             else:
                 status = "error"
-                answer = str(exc)
+                answer = _user_facing_run_error(exc)
                 emit(
                     {
                         "type": "error",
                         "runId": active.run_id,
                         "kind": "eval",
                         "workflowId": active.event_workflow_id,
-                        "message": _exc_text(exc, "Фоновая оценка не завершилась"),
+                        "message": answer or "Фоновая оценка не завершилась",
                     }
                 )
                 return
@@ -4528,7 +4607,9 @@ class Sidecar:
         agent_id = resume_agent_id
         try:
             try:
-                result = bridge.run(
+                result = self._bridge_run_with_retry(
+                    active,
+                    bridge,
                     prompt=prompt,
                     workflow_id=workflow_id,
                     cwd=run_cwd,
@@ -4542,7 +4623,9 @@ class Sidecar:
                 if resume_agent_id and self._is_missing_resume_agent_error(exc) and not active.stop.is_set():
                     log(f"personal resume agent missing for {workflow_id}, retry fresh run")
                     self._personal_agent_ids.pop(workflow_id, None)
-                    result = bridge.run(
+                    result = self._bridge_run_with_retry(
+                        active,
+                        bridge,
                         prompt=prompt,
                         workflow_id=workflow_id,
                         cwd=run_cwd,
@@ -4560,7 +4643,7 @@ class Sidecar:
                 self._personal_agent_ids[workflow_id] = agent_id
         except Exception as exc:  # noqa: BLE001
             status = "error"
-            answer = str(exc)
+            answer = _user_facing_run_error(exc)
             try:
                 _append_run_journal(
                     run_cwd,

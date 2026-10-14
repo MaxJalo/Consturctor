@@ -136,6 +136,18 @@ def _with_personal_mailbox(args: dict[str, Any]) -> dict[str, Any]:
     return out
 
 
+def _with_docflow_session(args: dict[str, Any]) -> dict[str, Any]:
+    """Задачи ДО читаются только под пользователем: служебную учётку Документооборот отклоняет."""
+    import os
+
+    from app.tools.ac.workers.onec_com_session import ENV_LOGIN, ENV_PASSWORD
+
+    out = dict(args)
+    out["docflow_login"] = os.environ.get(ENV_LOGIN, "").strip()
+    out["docflow_password"] = os.environ.get(ENV_PASSWORD, "")
+    return out
+
+
 def _invoke_server_tool(name: str, args: dict[str, Any]) -> dict[str, Any]:
     """Proxy a server-executed tool to the Constructor backend.
 
@@ -147,6 +159,8 @@ def _invoke_server_tool(name: str, args: dict[str, Any]) -> dict[str, Any]:
     timeout = _server_tool_timeout(name)
     if name.startswith("imap."):
         args = _with_personal_mailbox(args)
+    if name == "onec.erp_assignments" and args.get("include_tasks"):
+        args = _with_docflow_session(args)
     try:
         data = runtime_api.request(
             "POST",
