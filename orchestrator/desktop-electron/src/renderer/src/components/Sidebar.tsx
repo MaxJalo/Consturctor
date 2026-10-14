@@ -835,30 +835,30 @@ export function Sidebar({
       {quickMode ? (
         <nav className="nav nav-quick" aria-label="Быстрый доступ">
           {quickItems.map((item) => renderNavTab(item))}
-          <button
+            <button
             ref={quickToggleRef}
             type="button"
-            className={[
-              'nav-item',
+              className={[
+                'nav-item',
               'nav-quick-toggle',
               quickPickerOpen ? 'open' : '',
               activeHidden ? 'has-active' : ''
-            ]
-              .filter(Boolean)
-              .join(' ')}
+              ]
+                .filter(Boolean)
+                .join(' ')}
             aria-expanded={quickPickerOpen}
             aria-haspopup="dialog"
             title="Быстрый доступ: добавить или убрать вкладки"
             onClick={() => setQuickPickerOpen(!quickPickerOpen)}
-          >
-            <span className="nav-icon" aria-hidden>
+            >
+              <span className="nav-icon" aria-hidden>
               <Plus size={20} strokeWidth={2.2} />
-            </span>
+              </span>
             {!collapsed && <span className="nav-label">Все вкладки</span>}
             {hiddenBadges > 0 ? <i className="nav-quick-dot" aria-label={`Новых: ${hiddenBadges}`} /> : null}
-          </button>
-        </nav>
-      ) : null}
+            </button>
+      </nav>
+        ) : null}
 
       {quickMode && quickPickerOpen ? (
         <div ref={quickPickerRef} className="nav-quick-picker" role="dialog" aria-label="Настройка быстрого доступа">
@@ -886,7 +886,7 @@ export function Sidebar({
               <button type="button" onClick={() => setQuickPickerOpen(false)} aria-label="Закрыть">
                 <X size={15} aria-hidden />
               </button>
-            </span>
+              </span>
           </div>
           <p className="nav-quick-picker-hint">
             {editMode
