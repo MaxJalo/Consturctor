@@ -177,6 +177,80 @@ def save_transcript(
     }
 
 
+_UNBOUND_SPEAKER_RE = re.compile(r"Голос\s+\d+|одновременно|[\s+()]")
+
+
+def _pristine(row: MeetingTranscript) -> bool:
+    """В репликах только «Голос N»: bind_speakers эту запись ещё не переписывал."""
+    return all(
+        not _UNBOUND_SPEAKER_RE.sub("", str(segment.get("speaker") or ""))
+        for segment in row.segments or []
+        if isinstance(segment, dict)
+    )
+
+
+def claim_transcript(transcript_id: str, user_id: str, sha256: str) -> dict[str, Any] | None:
+    """Расшифровка из кэша — запись этого пользователя с метками «Голос N».
+
+    Кэш общий для всех, а audio.speakers и bind_speakers открывают только свою запись.
+    Своей нетронутой записи нет — заводим копию с чистой чужой (или с той, что в кэше).
+    """
+    from app.db.session import SessionLocal
+
+    db = SessionLocal()
+    try:
+        if not _table_ready(db):
+            return None
+        rows = (
+            db.query(MeetingTranscript)
+            .filter(MeetingTranscript.sha256 == sha256)
+            .order_by(MeetingTranscript.created_at.desc())
+            .all()
+        )
+        pristine = [row for row in rows if _pristine(row)]
+        mine = next((row for row in pristine if row.user_id == user_id), None)
+        if mine is None:
+            source = pristine[0] if pristine else db.get(MeetingTranscript, (transcript_id or "").strip())
+            if source is None:
+                return None
+            mine = MeetingTranscript(
+                id=str(uuid4()),
+                user_id=user_id,
+                filename=source.filename,
+                sha256=source.sha256,
+                duration_sec=source.duration_sec,
+                transcript_path=source.transcript_path,
+                full_text=source.full_text,
+                segments=list(source.segments or []),
+                embeddings=dict(source.embeddings or {}),
+                speaker_map={},
+            )
+            db.add(mine)
+            db.commit()
+            db.refresh(mine)
+        segments = list(mine.segments or [])
+        vectors = _clean_embeddings(mine.embeddings if isinstance(mine.embeddings, dict) else {})
+        known, unknown = _known_and_unknown(db, voice_labels(segments), vectors)
+        return {
+            "transcript_id": mine.id,
+            "segments": segments,
+            "pristine": _pristine(mine),
+            "known_speakers": known,
+            "unknown_speakers": unknown,
+        }
+    finally:
+        db.close()
+
+
+def _bound_path(path: str, transcript_id: str) -> Path:
+    """Файл с ФИО — свой у каждой записи: исходный остаётся в кэше с метками «Голос N»."""
+    source = Path(path)
+    tag = transcript_id[:8]
+    if source.stem.endswith(f"-{tag}"):
+        return source
+    return source.with_name(f"{source.stem}-{tag}{source.suffix}")
+
+
 def _own_transcript(db: Session, transcript_id: str, user_id: str) -> MeetingTranscript:
     row = db.get(MeetingTranscript, (transcript_id or "").strip())
     if row is None or row.user_id != user_id:
@@ -470,12 +544,12 @@ def bind_speakers(
     path = row.transcript_path
     if path:
         try:
-            from pathlib import Path
-
             file_path = Path(path)
             if file_path.is_file():
                 text = file_path.read_text(encoding="utf-8")
-                file_path.write_text(relabel_speaker(text, mapping), encoding="utf-8")
+                target = _bound_path(path, row.id)
+                target.write_text(relabel_speaker(text, mapping), encoding="utf-8")
+                path = str(target)
         except OSError:
             path = ""
     row.segments = rewritten

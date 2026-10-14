@@ -248,6 +248,9 @@ export type IdentifiedTranscript = {
   roster: string
 }
 
+const TOOL_ERROR_STOP =
+  'Инструмент вернул ошибку — остановись и напиши её дословно. Обходных путей не ищи: терминал, исходный код, файлы .env и базу данных не трогай.'
+
 /** Первый запуск: только расшифровка нашим сервисом. В 1С этот запуск не пишет. */
 export function buildTranscribeOnlyMessage(
   meeting: MeetingEvent | null,
@@ -266,6 +269,7 @@ export function buildTranscribeOnlyMessage(
         : 'names не передавай, если список участников в задании не указан.',
     'В 1С не пиши, файлы протокола не создавай, уведомления не отправляй.',
     'В ответе укажи transcript_id из инструмента.',
+    TOOL_ERROR_STOP,
     '',
     ...(meeting
       ? [
@@ -289,6 +293,7 @@ export function buildSpeakerMessage(
 ): string {
   const who = meeting ? attendeesList(meeting) : people.length ? people.map((name) => `- ${name}`).join('\n') : '—'
   return [
+    TOOL_ERROR_STOP,
     'Определи, кому принадлежит каждый голос в расшифровке.',
     `transcript_id: ${transcriptId}`,
     meeting ? `Совещание: ${field(meeting.subject)}, ${formatMeetingStamp(meeting.start)}` : '',
