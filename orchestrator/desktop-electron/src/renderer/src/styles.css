@@ -11889,6 +11889,52 @@ button.feed-tool-head:hover {
   flex-direction: column;
   gap: 8px;
 }
+.chat-dock-panel.is-assistant {
+  width: 360px;
+  height: 460px;
+  max-height: min(460px, calc(100vh - 96px));
+  overflow: hidden;
+  border: 1px solid #5b9bd5;
+}
+.chat-dock-head-actions {
+  display: flex;
+  gap: 4px;
+}
+.chat-dock-log {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding-right: 2px;
+}
+.chat-dock-line {
+  margin: 0;
+  white-space: pre-wrap;
+  font-size: 13px;
+  line-height: 1.4;
+  border-radius: 12px;
+  padding: 8px 10px;
+}
+.chat-dock-line.is-user {
+  align-self: flex-end;
+  max-width: 88%;
+  background: #1565c0;
+  color: #fff;
+}
+.chat-dock-line.is-assistant {
+  align-self: flex-start;
+  max-width: 94%;
+  background: #f3f7fb;
+  color: #16324f;
+}
+.chat-dock-line.is-wait {
+  align-self: flex-start;
+  color: #64748b;
+  background: transparent;
+  padding: 0 2px;
+}
 .chat-dock-head {
   display: flex;
   justify-content: space-between;
@@ -11953,20 +11999,43 @@ button.feed-tool-head:hover {
   line-height: 1.35;
   color: var(--content-muted, #64748b);
 }
+.chat-dock-tabs {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  border: 1px solid #5b9bd5;
+  border-radius: 10px;
+  overflow: hidden;
+}
+.chat-dock-tab {
+  border: none;
+  background: #fff;
+  color: #3d6f9e;
+  padding: 8px 10px;
+  font-size: 14px;
+}
+.chat-dock-tab.is-active {
+  background: #1565c0;
+  color: #fff;
+}
 .chat-dock-form {
   display: flex;
-  gap: 8px;
+  align-items: center;
+  gap: 6px;
   margin-top: 4px;
-  padding-top: 10px;
-  border-top: 1px solid var(--border-subtle, #e3eaf2);
+  padding: 4px 4px 4px 10px;
+  border: 1px solid #5b9bd5;
+  border-radius: 10px;
 }
 .chat-dock-form input {
   flex: 1;
   min-width: 0;
-  border: 1px solid #d9e5f2;
-  border-radius: 8px;
-  padding: 8px 10px;
+  border: none;
+  padding: 6px 0;
   font-size: 13px;
+  background: transparent;
+}
+.chat-dock-form input:focus {
+  outline: none;
 }
 
 .proc-page {

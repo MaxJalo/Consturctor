@@ -6,6 +6,7 @@ import { AssignmentsRegistryGridTab } from '../tabs/grid/AssignmentsRegistryGrid
 import { AgentLibraryGridTab } from '../tabs/grid/AgentLibraryGridTab'
 import { ProjectsGridTab } from '../tabs/grid/ProjectsGridTab'
 import { SubordinateTasksGridTab } from '../tabs/grid/SubordinateTasksGridTab'
+import type { AssignmentRegistryTileId } from '../workplace/assignmentRegistryTypes'
 import type { ExtensionPositionFilter } from './extensionAudience'
 import {
   canUseAgentLibrary,
@@ -23,6 +24,7 @@ export type ExtensionTabContext = {
   onRunAgent: (workflowId: string, title: string, message: string) => void
   onNavigate: (pageKey: PageKey) => void
   onOpenPassport: (workflowId: string, title: string, tab?: PassportTab) => void
+  registryTile?: AssignmentRegistryTileId | 'all' | null
 }
 
 /**
@@ -65,8 +67,8 @@ export const EXTENSION_MODULES: ExtensionModule[] = [
       'Журнал поручений АСТ00: плитки, фильтр по датам, таблица с сортировкой и проверка незакрытых поручений через ИИ-агента.',
     positionGroups: ['director_assistants'],
     canAccess: canUseAssignmentsRegistry,
-    renderTab: ({ user, onRunAgent }) => (
-      <AssignmentsRegistryGridTab user={user} onRunAgent={onRunAgent} />
+    renderTab: ({ user, onRunAgent, registryTile }) => (
+      <AssignmentsRegistryGridTab user={user} onRunAgent={onRunAgent} navTile={registryTile} />
     )
   },
   {

@@ -185,9 +185,16 @@ def test_post_task_action_body_and_unpublished(monkeypatch) -> None:
     )
     assert outcome["summary"] == "нет цены"
     assert outcome["closed"] is False
+    from app.tools.onec.v8_internal_format import STRUCTURE_TYPE_ID, parse_structure
+
     assert captured["url"] == "http://192.168.2.229:81/doc/hs/dterp/TaskAction"
-    assert '"button": 2' in str(captured["body"]) or '"button":2' in str(captured["body"])
-    assert "Иванов Иван Иванович" in str(captured["body"])
+    sent_body = str(captured["body"])
+    assert STRUCTURE_TYPE_ID in sent_body
+    parsed_body = parse_structure(sent_body)
+    assert parsed_body["button"] == 2
+    assert parsed_body["comment"] == "замечание"
+    assert parsed_body["actual_performer"] == "Иванов Иван Иванович"
+    assert parsed_body["task_id"] == "1d3729cc-b5b3-11f1-9889-6cb31113810c"
     parsed = parse_task_action_response({"Успех": "да", "Закрыта": False, "Описание": "как есть"})
     assert parsed["ok"] is True
     assert parsed["closed"] is False

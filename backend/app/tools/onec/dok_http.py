@@ -249,7 +249,7 @@ def post_task_action(
 ) -> dict[str, Any]:
     """POST /hs/dterp/TaskAction — та же процедура, что кнопки формы 1С.
 
-    Тело: task_id, button (1..3), comment, actual_performer.
+    Тело — структура ЗначениеВСтрокуВнутр: task_id, button (1..3), comment, actual_performer.
     404 означает, что метод ещё не опубликован: вызывающий не должен
     закрывать задачу отметкой SOAP.
     """
@@ -265,14 +265,16 @@ def post_task_action(
     point = int(button)
     if point not in {1, 2, 3}:
         raise RuntimeError(f"Номер кнопки точки маршрута должен быть 1, 2 или 3, получено: {button}")
-    body: dict[str, Any] = {"task_id": uid, "button": point, "comment": comment or ""}
+    fields: dict[str, Any] = {"task_id": uid, "button": point, "comment": comment or ""}
     performer = (actual_performer or "").strip()
     if performer:
-        body["actual_performer"] = performer
+        fields["actual_performer"] = performer
+    # Модуль ТД_ПередачаДанныхВERP читает тело через ЗначениеИзСтрокиВнутр, не как JSON.
+    body = structure_to_internal(fields)
     url = f"{base}/TaskAction"
-    headers = {"Accept": "application/json", "Content-Type": "application/json"}
+    headers = {"Accept": "*/*", "Content-Type": "text/plain;charset=UTF-8"}
     with httpx.Client(timeout=_TASK_ACTION_TIMEOUT_SEC, auth=credentials) as client:
-        response = client.post(url, json=body, headers=headers)
+        response = client.post(url, content=body.encode("utf-8"), headers=headers)
     text = (response.text or "").strip()
     logger.info(
         "TaskAction UID=%s button=%s HTTP %s body=%s",
@@ -289,6 +291,11 @@ def post_task_action(
         raise RuntimeError(f"HTTP {response.status_code}: {text[:200] or response.reason_phrase}")
     if not text:
         return parse_task_action_response({})
+    stripped = text.lstrip("\ufeff").strip()
+    if stripped.startswith('{"#'):
+        parsed = from_internal_string(stripped)
+        if isinstance(parsed, dict):
+            return parse_task_action_response(parsed, raw_text=text)
     try:
         payload = response.json()
     except json.JSONDecodeError:

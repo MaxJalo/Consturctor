@@ -1441,10 +1441,6 @@ def handle_protocol_write(
     body, meta = build_protocol_create_body(
         args, actor_fio=actor_fio, actor_onec_ref=actor_onec_ref
     )
-    if not (body["ПовесткаСовещания"] or body["Решения"] or body[TASKS_PART]):
-        raise ProtocolWriteError(
-            "Протокол пуст: нужна хотя бы повестка, решения или задачи (agenda / decisions / tasks)"
-        )
     result = _odata_post({"entity": PROTOCOL_ENTITY, "body": body})
     ref_key, number = _ref_from_write(result)
     register = sync_task_register(ref_key, body.get("ТемаСовещания_Key", ""), body[TASKS_PART])
@@ -1547,6 +1543,9 @@ def next_protocol_args(previous: dict[str, Any], overrides: dict[str, Any]) -> d
     extra = _clean(overrides.get("comment"))
     if extra and basis not in extra:
         args["comment"] = f"{basis}\n{extra}"
+    # Место совещания важнее кабинета прошлого протокола: ключ основания иначе его перекрывает.
+    if _clean(overrides.get("room")) and not _clean(overrides.get("room_key")):
+        args.pop("room_key", None)
     return args
 
 
@@ -1597,10 +1596,6 @@ def _update_protocol(
     body, meta = build_protocol_update_body(
         args, card, actor_fio=actor_fio, actor_onec_ref=actor_onec_ref
     )
-    if not (body["ПовесткаСовещания"] or body["Решения"] or body[TASKS_PART]):
-        raise ProtocolWriteError(
-            "Протокол пуст: нужна хотя бы повестка, решения или задачи (agenda / decisions / tasks)"
-        )
     _odata_patch({"entity": PROTOCOL_ENTITY, "ref_key": ref_key, "body": body})
     old_theme = _clean(card.get("ТемаСовещания_Key"))
     register = sync_task_register(

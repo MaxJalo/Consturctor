@@ -777,12 +777,6 @@ function AppShell(): React.JSX.Element {
     })
   }
 
-  function askOrchestratorFromDock(message: string): void {
-    const tabKey = view.kind === 'tab' ? view.key : lastTab
-    const label = tabKey ? PAGE_LABELS[tabKey] || tabKey : ''
-    askOrchestratorFromTab(message, label ? `Вкладка «${label}»` : 'Рабочее место')
-  }
-
   function renderAdminContent(): React.JSX.Element {
     if (view.kind === 'chat') {
       return (
@@ -909,7 +903,8 @@ function AppShell(): React.JSX.Element {
                   setView({ kind: 'tab', key: pageKey })
                 },
                 onOpenPassport: (workflowId, title, tab) =>
-                  setView({ kind: 'passport', workflowId, title, tab })
+                  setView({ kind: 'passport', workflowId, title, tab }),
+                registryTile: tabIntent?.registryTile
               })}
             </>
           )
@@ -1069,7 +1064,16 @@ function AppShell(): React.JSX.Element {
               {renderWorkplaceGridTab(workplaceShellKey)}
             </OrchGridShell>
             </PageSearchProvider>
-            <ChatDock onAskOrchestrator={askOrchestratorFromDock} onOpenSupport={openSupport} />
+            <ChatDock
+              userId={activeUser.id || ''}
+              pageKey={view.kind === 'tab' ? view.key : lastTab}
+              onNavigate={(key) => {
+                setTabIntent(null)
+                setLastTab(key)
+                setView({ kind: 'tab', key })
+              }}
+              onOpenSupport={openSupport}
+            />
           </div>
               ) : (
           <div className="app-root">
@@ -1117,7 +1121,16 @@ function AppShell(): React.JSX.Element {
                 {content}
               </div>
             </main>
-            <ChatDock onAskOrchestrator={askOrchestratorFromDock} onOpenSupport={openSupport} />
+            <ChatDock
+              userId={activeUser.id || ''}
+              pageKey={view.kind === 'tab' ? view.key : lastTab}
+              onNavigate={(key) => {
+                setTabIntent(null)
+                setLastTab(key)
+                setView({ kind: 'tab', key })
+              }}
+              onOpenSupport={openSupport}
+            />
           </div>
               )
             }

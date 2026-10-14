@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react'
 import { api } from '../../api/client'
 import { createPortal } from 'react-dom'
-import { Bot, Mic, PenLine, Search } from 'lucide-react'
+import { Bot, CopyPlus, Mic, PenLine, Search } from 'lucide-react'
 import type { UserProfile } from '../../api/types'
 import { toolLabel } from '../../components/agentfeed/labels'
 import { useRuns } from '../../store/runs'
@@ -68,6 +68,7 @@ import { isIlchenkoAccount } from '../../workplace/boardReportReadiness'
 import { clearRequestedMeetingsDay, peekRequestedMeetingsDay } from '../../workplace/meetingsFocus'
 import { isSelfCalendarMeeting, ownMeetingsHidden, useShowOwnMeetings } from '../../workplace/ownMeetings'
 import {
+  createMeetingProtocolOnBasis,
   PROTOCOL_SEARCH_PAGE,
   searchOnecProtocols,
   type OnecProtocolHit
@@ -135,6 +136,7 @@ function MeetingDetailCard({
   const [formMode, setFormMode] = useState<'create' | 'edit'>('create')
   const [chooserOpen, setChooserOpen] = useState(false)
   const [attachOpen, setAttachOpen] = useState(false)
+  const [attachMode, setAttachMode] = useState<'link' | 'basis'>('link')
 
   const attendees = (meeting.attendees || '')
     .split(/[,;]/)
@@ -366,6 +368,30 @@ function MeetingDetailCard({
     openForm('edit')
   }
 
+  const createOnBasis = (hit: OnecProtocolHit): void => {
+    setAttachOpen(false)
+    setActionError('')
+    setBusy(true)
+    void createMeetingProtocolOnBasis(hit.refKey, meeting)
+      .then((result) => {
+        if (!result.ok || !result.refKey) {
+          setActionError(result.error || 'Не удалось создать протокол на основании')
+          return
+        }
+        setResolvedProtocolRef(result.refKey)
+        rememberProtocolDocument(userId, meeting, {
+          number: result.number || '',
+          refKey: result.refKey,
+          manual: true
+        })
+        openForm('edit')
+      })
+      .catch((err: unknown) => {
+        setActionError(err instanceof Error ? err.message : 'Не удалось создать протокол на основании')
+      })
+      .finally(() => setBusy(false))
+  }
+
   return (
     <div className="spec-detail-card wp-card">
       <h2>{meetingField(meeting.subject)}</h2>
@@ -521,11 +547,28 @@ function MeetingDetailCard({
             <button
               type="button"
               className="cal-btn"
-              onClick={() => setAttachOpen(true)}
+              onClick={() => {
+                setAttachMode('link')
+                setAttachOpen(true)
+              }}
               disabled={busy}
               title="Найти готовый протокол в 1С по номеру и привязать к совещанию"
             >
               Подгрузить из 1С
+            </button>
+          )}
+          {hasProtocol ? null : (
+            <button
+              type="button"
+              className="cal-btn"
+              onClick={() => {
+                setAttachMode('basis')
+                setAttachOpen(true)
+              }}
+              disabled={busy}
+              title="Создать протокол этого совещания на основании выбранного: шапка копируется, задачи основания остаются на контроле"
+            >
+              <CopyPlus size={14} aria-hidden /> На основании
             </button>
           )}
           {hasProtocol || hasDocx ? (
@@ -577,7 +620,12 @@ function MeetingDetailCard({
         onManual={() => openForm('create')}
       />
 
-      <ProtocolAttachDialog open={attachOpen} onClose={() => setAttachOpen(false)} onPick={attachFromOnec} />
+      <ProtocolAttachDialog
+        open={attachOpen}
+        mode={attachMode}
+        onClose={() => setAttachOpen(false)}
+        onPick={attachMode === 'basis' ? createOnBasis : attachFromOnec}
+      />
 
       <MeetingProtocolForm
         open={formOpen}
@@ -607,10 +655,12 @@ function MeetingDetailCard({
 
 function ProtocolAttachDialog({
   open,
+  mode,
   onClose,
   onPick
 }: {
   open: boolean
+  mode: 'link' | 'basis'
   onClose: () => void
   onPick: (hit: OnecProtocolHit) => void
 }): React.JSX.Element | null {
@@ -715,10 +765,12 @@ function ProtocolAttachDialog({
         onClick={(event) => event.stopPropagation()}
       >
         <h4 className="modal-title" id={titleId}>
-          Подгрузить протокол из 1С
+          {mode === 'basis' ? 'Протокол на основании' : 'Подгрузить протокол из 1С'}
         </h4>
         <p className="spec-v04-muted">
-          Найдите протокол по номеру — он привяжется к совещанию и откроется для изменения.
+          {mode === 'basis'
+            ? 'Найдите протокол-основание по номеру. Для этого совещания создастся новый черновик: дата и состав берутся из встречи, задачи основания остаются на контроле.'
+            : 'Найдите протокол по номеру — он привяжется к совещанию и откроется для изменения.'}
         </p>
         <form
           className="meeting-protocol-attach-search"

@@ -371,10 +371,6 @@ function buildWriteArgs(draft: ProtocolCreateDraft, meeting: MeetingEvent): Writ
     }))
     .filter((row) => row.text)
 
-  if (!agenda.length && !decisions.length && !tasks.length) {
-    return { ok: false, error: 'Добавьте повестку, решение или задачу — пустой протокол в 1С не создаётся' }
-  }
-
   const marker = meetingOutlookMarker(meeting)
   const comment = [stripOutlookMarker(draft.comment), marker].filter(Boolean).join('\n')
 
@@ -421,15 +417,39 @@ async function invokeProtocolWrite(args: Record<string, unknown>, failMessage: s
 }
 
 /** Черновик на основании протокола: шапка копируется, все задачи основания остаются на контроле. */
-export async function createProtocolOnBasis(sourceRef: string, date: string): Promise<ProtocolCreateResult> {
+export async function createProtocolOnBasis(
+  sourceRef: string,
+  date: string,
+  overrides: Record<string, unknown> = {}
+): Promise<ProtocolCreateResult> {
   const key = sourceRef.trim()
   const day = date.trim()
   if (!key) return { ok: false, error: 'Нет ссылки на протокол-основание' }
   if (!day) return { ok: false, error: 'Укажите дату нового совещания' }
   return invokeProtocolWrite(
-    { action: 'next', source_ref_key: key, date: day },
+    { action: 'next', source_ref_key: key, date: day, ...overrides },
     'Не удалось создать протокол на основании'
   )
+}
+
+/** Новый протокол выбранного совещания: основание — выбранный документ, дата и состав — из встречи. */
+export async function createMeetingProtocolOnBasis(
+  sourceRef: string,
+  meeting: MeetingEvent
+): Promise<ProtocolCreateResult> {
+  const seeded = draftFromMeeting(meeting, '')
+  const day = seeded.date.trim()
+  if (!day) return { ok: false, error: 'У совещания нет даты' }
+  const overrides: Record<string, unknown> = {}
+  if (seeded.topic.trim()) overrides.topic = seeded.topic.trim()
+  if (seeded.timeStart.trim()) overrides.time_start = seeded.timeStart.trim()
+  if (seeded.timeEnd.trim()) overrides.time_end = seeded.timeEnd.trim()
+  if (seeded.room.trim()) overrides.room = seeded.room.trim()
+  const people = lines(seeded.participants)
+  if (people.length) overrides.participants = people
+  const marker = meetingOutlookMarker(meeting)
+  if (marker) overrides.comment = marker
+  return createProtocolOnBasis(sourceRef, day, overrides)
 }
 
 export async function createProtocolInOneC(

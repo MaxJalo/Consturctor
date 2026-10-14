@@ -18,6 +18,9 @@ type PrintBlock = {
 
 export type PrintTool = 'insert' | 'delete' | null
 
+/** Лист A4: горизонтальный — как сейчас, вертикальный — рамки на всю страницу. */
+export type PrintSheet = 'landscape' | 'portrait'
+
 type Drag = { day: Date; anchor: number; current: number }
 
 const SPAN_MINUTES = (TO_HOUR - FROM_HOUR) * 60
@@ -129,12 +132,14 @@ function selectionRange(drag: Drag, column: HTMLElement | null, clientY: number)
 export function PrintSchedule({
   days,
   tool,
+  sheet,
   selectedKey,
   onSelect,
   onRange
 }: {
   days: { day: Date; items: MeetingEvent[] }[]
   tool: PrintTool
+  sheet: PrintSheet
   selectedKey: string | null
   onSelect: (key: string) => void
   onRange: (day: Date, from: number, to: number) => void
@@ -163,7 +168,7 @@ export function PrintSchedule({
   return (
     <div
       ref={boardRef}
-      className={`mcal-day-v mcp-board${tool ? ' is-tool' : ''}`}
+      className={`mcal-day-v mcp-board${tool ? ' is-tool' : ''}${sheet === 'portrait' ? ' is-portrait' : ' is-landscape'}`}
       style={{ ['--mcal-cols' as string]: String(Math.max(1, days.length)) }}
     >
       <div className="mcal-day-v-head">
@@ -208,6 +213,7 @@ export function PrintSchedule({
             day={group.day}
             items={group.items}
             columns={columnTracks(group.items, colWidth)}
+            sheet={sheet}
             tool={tool}
             drag={drag}
             selectedKey={selectedKey}
@@ -252,6 +258,7 @@ function DayColumn({
   day,
   items,
   columns,
+  sheet,
   tool,
   drag,
   selectedKey,
@@ -263,6 +270,7 @@ function DayColumn({
   day: Date
   items: MeetingEvent[]
   columns: string
+  sheet: PrintSheet
   tool: PrintTool
   drag: Drag | null
   selectedKey: string | null
@@ -274,9 +282,9 @@ function DayColumn({
   const ref = useRef<HTMLDivElement>(null)
   const [colHeight, setColHeight] = useState(0)
   const { blocks } = blocksOf(items)
-  const textEnds = textBounds(blocks)
-  const range = drag && drag.day.getTime() === day.getTime() ? ordered(drag) : null
   const pxPerMin = colHeight > 0 ? colHeight / SPAN_MINUTES : 0
+  const bands = layoutBands(blocks, pxPerMin, sheet === 'portrait')
+  const range = drag && drag.day.getTime() === day.getTime() ? ordered(drag) : null
 
   useLayoutEffect(() => {
     const node = ref.current
@@ -318,17 +326,22 @@ function DayColumn({
       {showNow ? <div className="mcal-now" style={{ top: `${percentOf(nowMinutes)}%` }} /> : null}
       {blocks.map((block, index) => {
         const colors = calendarPalette(colorIndex(block.key))
-        const textTo = textEnds.get(block.key) ?? block.to
-        const boxTo = Math.max(block.to, textTo)
-        const boxSpan = Math.max(SNAP_MINUTES, boxTo - block.from)
-        const top = percentOf(block.from)
-        const height = Math.min(100 - top, percentOf(boxTo) - top)
-        const slotPct = ((block.to - block.from) / boxSpan) * 100
-        const textPct = ((textTo - block.from) / boxSpan) * 100
-        const textPx = (textTo - block.from) * pxPerMin
-        const slotPx = (block.to - block.from) * pxPerMin
+        const band = bands.get(block.key) ?? { from: block.from, to: block.to, textTo: block.to }
+        const boxSpan = Math.max(1, band.to - band.from)
+        const textSpan = Math.max(1, Math.min(band.textTo, band.to) - band.from)
+        const realSpan = Math.max(1, block.to - block.from)
+        const top = percentOf(band.from)
+        const height = Math.min(100 - top, percentOf(band.to) - top)
+        const slotPct = Math.min(100, (realSpan / boxSpan) * 100)
+        const textPct = Math.min(100, (textSpan / boxSpan) * 100)
+        const textPx = textSpan * pxPerMin
+        const slotPx = realSpan * pxPerMin
+        const density = rowDensity(textPx, textSpan, pxPerMin)
         const themeLines = Math.max(1, Math.floor((textPx - 6) / 16))
         const people = peopleOf(block.meeting.attendees)
+        const subject = block.meeting.subject.trim() || 'Без темы'
+        const room = block.meeting.location.trim()
+        const peopleText = people.join('; ')
         const tone = {
           ['--mcp-fill' as string]: colors.fill,
           ['--mcp-border' as string]: colors.border,
@@ -338,7 +351,8 @@ function DayColumn({
         return (
           <article
             key={block.key}
-            className={`mcal-event mcp-row${selectedKey === block.key ? ' is-selected' : ''}`}
+            className={`mcal-event mcp-row${density === 'full' ? '' : ` is-${density}`}${realSpan <= SNAP_MINUTES ? ' is-q15' : ''}${selectedKey === block.key ? ' is-selected' : ''}`}
+            title={[subject, room, peopleText].filter(Boolean).join('\n')}
             style={{
               ...tone,
               top: `${top}%`,
@@ -364,22 +378,24 @@ function DayColumn({
                     <span>{timeLabel(block.to)}</span>
                   </>
                 ) : (
-                  <span>{timeLabel(block.from)}</span>
+                  <span className="mcp-time-range">
+                    {timeLabel(block.from)}–{timeLabel(block.to)}
+                  </span>
                 )}
               </div>
             </div>
             <div className="mcp-track mcp-fill" style={{ height: `${textPct}%` }}>
               <div className="mcp-theme">
-                <span className="mcp-theme-text" style={{ WebkitLineClamp: themeLines }}>
-                  {block.meeting.subject.trim() || 'Без темы'}
+                <span className="mcp-theme-text" style={density === 'full' ? { WebkitLineClamp: themeLines } : undefined}>
+                  {subject}
                 </span>
               </div>
             </div>
             <div className="mcp-track mcp-fill" style={{ height: `${textPct}%` }}>
-              <div className="mcp-room">{block.meeting.location.trim()}</div>
+              <div className="mcp-room">{room}</div>
             </div>
             <div className="mcp-track mcp-fill" style={{ height: `${textPct}%` }}>
-              <div className="mcp-people">{people.join('; ')}</div>
+              <div className="mcp-people">{peopleText}</div>
             </div>
             </div>
           </article>
@@ -400,24 +416,95 @@ function DayColumn({
   )
 }
 
-/** Короткий слот растягивает тему и участников в свободный час, но не залезает на следующее совещание. */
-function textBounds(blocks: PrintBlock[]): Map<string, number> {
-  const sorted = [...blocks].sort((left, right) => left.from - right.from || right.to - left.to)
-  const ends = new Map<string, number>()
-  for (let index = 0; index < sorted.length; index += 1) {
-    const block = sorted[index]
-    let next = TO_HOUR * 60
-    for (let later = index + 1; later < sorted.length; later += 1) {
-      if (sorted[later].from > block.from) {
-        next = sorted[later].from
-        break
-      }
-    }
-    const minutes = block.to - block.from
-    const readable = minutes < 90 ? 90 : minutes
-    ends.set(block.key, Math.min(block.from + readable, next, TO_HOUR * 60))
+type Band = { from: number; to: number; textTo: number }
+
+function clamp(value: number, lo: number, hi: number): number {
+  return Math.min(hi, Math.max(lo, value))
+}
+
+function nextStart(sorted: PrintBlock[], index: number): number {
+  const from = sorted[index].from
+  for (let later = index + 1; later < sorted.length; later += 1) {
+    if (sorted[later].from > from) return sorted[later].from
   }
-  return ends
+  return TO_HOUR * 60
+}
+
+/**
+ * Одиночный короткий слот по-прежнему растягивает текст в свободное место.
+ * Несколько коротких подряд делят место до следующего совещания поровну,
+ * чтобы у каждого хватило высоты хотя бы на строку. На следующее не заходят.
+ */
+function layoutBands(blocks: PrintBlock[], pxPerMin: number, fillSheet: boolean): Map<string, Band> {
+  const sorted = [...blocks].sort((left, right) => left.from - right.from || right.to - left.to)
+  const readableMin = pxPerMin > 0 ? clamp(44 / pxPerMin, 20, 75) : 44
+  const maxBandMin = pxPerMin > 0 ? clamp(72 / pxPerMin, readableMin, 100) : 72
+  const bands = new Map<string, Band>()
+  if (fillSheet) {
+    sorted.forEach((block, itemIndex) => {
+      const limit = itemIndex + 1 < sorted.length ? nextStart(sorted, itemIndex) : TO_HOUR * 60
+      bands.set(block.key, soloBand(block, limit, true))
+    })
+    return bands
+  }
+  let index = 0
+  while (index < sorted.length) {
+    const block = sorted[index]
+    const duration = block.to - block.from
+    if (duration >= readableMin) {
+      bands.set(block.key, soloBand(block, nextStart(sorted, index), false))
+      index += 1
+      continue
+    }
+    const cluster: PrintBlock[] = [block]
+    index += 1
+    while (index < sorted.length) {
+      const next = sorted[index]
+      if (next.to - next.from >= readableMin) break
+      const prev = cluster[cluster.length - 1]
+      if (next.from >= prev.from + readableMin && next.from >= prev.to) break
+      cluster.push(next)
+      index += 1
+    }
+    if (cluster.length === 1) {
+      bands.set(block.key, soloBand(block, nextStart(sorted, index - 1), false))
+      continue
+    }
+    const first = cluster[0]
+    const last = cluster[cluster.length - 1]
+    const following = sorted[index]
+    const limit = Math.min(following ? following.from : TO_HOUR * 60, TO_HOUR * 60)
+    let windowEnd = Math.min(limit, first.from + maxBandMin * cluster.length)
+    windowEnd = Math.max(windowEnd, Math.min(limit, last.to))
+    if (windowEnd - first.from < cluster.length) windowEnd = Math.min(TO_HOUR * 60, first.from + cluster.length)
+    const share = (windowEnd - first.from) / cluster.length
+    cluster.forEach((item, itemIndex) => {
+      const from = first.from + share * itemIndex
+      const to = itemIndex === cluster.length - 1 ? windowEnd : first.from + share * (itemIndex + 1)
+      const end = Math.max(to, from + 0.5)
+      bands.set(item.key, { from, to: end, textTo: end })
+    })
+  }
+  return bands
+}
+
+function soloBand(block: PrintBlock, limit: number, fillSheet: boolean): Band {
+  const duration = block.to - block.from
+  const grow = fillSheet ? Math.max(duration, limit - block.from) : duration < 90 ? 90 : duration
+  const textTo = Math.min(Math.max(block.to, block.from + grow), limit, TO_HOUR * 60)
+  return { from: block.from, to: Math.max(block.to, textTo), textTo }
+}
+
+/** Узкая полоса показывает одну строку с многоточием, а не обрезки нескольких. */
+function rowDensity(textPx: number, textMin: number, pxPerMin: number): 'tight' | 'brief' | 'full' {
+  if (pxPerMin > 0) {
+    if (textPx < 22) return 'tight'
+    if (textPx < 40) return 'brief'
+    return 'full'
+  }
+  if (textMin < 16) return 'tight'
+  if (textMin < 32) return 'brief'
+  return 'full'
 }
 
 function peopleOf(raw: string): string[] {
