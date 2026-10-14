@@ -274,6 +274,16 @@ export function Sidebar({
   }, [currentUserId, quickMode])
 
   useEffect(() => {
+    const reload = (): void => {
+      setQuickStored(loadQuickAccess(currentUserId))
+      if (quickMode) setCollapsedState(loadSidebarCollapsed(currentUserId, true))
+      setNavLayout(loadSidebarLayout(currentUserId, effectiveNavScope, availableNavKeys))
+    }
+    window.addEventListener('orchestrator:ui-prefs', reload)
+    return () => window.removeEventListener('orchestrator:ui-prefs', reload)
+  }, [availableNavKeys, currentUserId, effectiveNavScope, quickMode])
+
+  useEffect(() => {
     if (!quickMode || quickPickerOpen) return
     setEditMode(false)
     setFolderEditor(null)
@@ -312,7 +322,7 @@ export function Sidebar({
   useEffect(() => {
     const next = loadSidebarLayout(currentUserId, effectiveNavScope, availableNavKeys)
     setNavLayout(next)
-    saveSidebarLayout(currentUserId, effectiveNavScope, next)
+    saveSidebarLayout(currentUserId, effectiveNavScope, next, false)
     setFolderEditor(null)
     setDraggedNode(null)
     setDropHint(null)

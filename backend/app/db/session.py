@@ -38,6 +38,7 @@ def init_db() -> None:
     from app.models import regulation as _regulation  # noqa: F401
     from app.models import trigger as _trigger  # noqa: F401
     from app.models import user as _user  # noqa: F401
+    from app.models import user_ui_prefs as _user_ui_prefs  # noqa: F401
     from app.models import kpi_daily_metric as _kpi_daily_metric  # noqa: F401
     from app.models import position_kpi as _position_kpi  # noqa: F401
     from app.models import meeting_audio as _meeting_audio  # noqa: F401

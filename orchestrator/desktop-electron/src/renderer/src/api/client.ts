@@ -1307,6 +1307,14 @@ export class ApiClient {
     return { accessToken: token, user: parseUser((data.user as Record<string, unknown>) ?? {}) }
   }
 
+  async getUiPrefs(): Promise<Record<string, unknown>> {
+    return this.request<Record<string, unknown>>('GET', '/api/v1/me/ui', { timeoutMs: 15_000 })
+  }
+
+  async patchUiPrefs(body: Record<string, unknown>): Promise<void> {
+    await this.request('PATCH', '/api/v1/me/ui', { body, timeoutMs: 15_000 })
+  }
+
   async me(timeoutMs = 15_000): Promise<UserProfile> {
     const data = await this.request<Record<string, unknown>>('GET', '/api/v1/auth/me', {
       timeoutMs
