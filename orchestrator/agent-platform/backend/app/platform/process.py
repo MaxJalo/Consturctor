@@ -180,8 +180,21 @@ def start_turn(
     with _turns_lock:
         _turns[session_id] = turn
     assert process.stdin is not None
-    process.stdin.write((json.dumps(request, ensure_ascii=False) + "\n").encode("utf-8"))
-    process.stdin.flush()
+    try:
+        process.stdin.write((json.dumps(request, ensure_ascii=False) + "\n").encode("utf-8"))
+        process.stdin.flush()
+    except OSError:
+        with _turns_lock:
+            _turns.pop(session_id, None)
+        try:
+            _, stderr = process.communicate(timeout=5)
+        except (OSError, ValueError, subprocess.TimeoutExpired):
+            stderr = b""
+        lines = [line.strip() for line in stderr.decode("utf-8", errors="replace").splitlines() if line.strip()]
+        reason = " · ".join(lines[-3:]) or f"код выхода {process.poll()}"
+        store.release(session_id)
+        store.finish(session_id, "error", f"Раннер {config.entry[0]} завершился до начала работы: {reason}")
+        return
     store.trace(session_id, "platform→runner", "stdin: запрос запуска", text=prompt, data=request)
     sampler.ensure_started()
     threading.Thread(target=_read_stderr, args=(session_id, turn), daemon=True).start()

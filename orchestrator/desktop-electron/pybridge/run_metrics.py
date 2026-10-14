@@ -2,6 +2,8 @@
 
 Тот же смысл, что у Sampler конфигурации 2: раз в секунду дерево процесса раннера.
 Пишется в журнал запуска, чтобы история в TurboTester показала график после хода.
+Скачки — по правилам SpikeWatch конфигурации 2: у замера со скачком поле spike
+с отметками и снимком процессов в этот момент.
 """
 
 from __future__ import annotations
@@ -22,6 +24,40 @@ FLUSH_EVERY_SECONDS = 15.0
 CHARS_PER_TOKEN = 4
 SAMPLE_LIMIT = 7_200
 _GPU_INSTANCE = re.compile(r"pid_(\d+)_.*engtype_(.+)$")
+SPIKE_PROCESSES = 20
+# Пороги и окно — как у SpikeWatch в TurboTester (app/platform/metrics.py), иначе скачки не сравнить.
+_SPIKE_FLOOR = {"cpu": 3.0, "ram": 0.5, "gpu": 3.0, "disk": 1.0}
+_SPIKE_RELATIVE = {"cpu": 1.0, "ram": 0.25, "gpu": 1.0, "disk": 1.0}
+_SPIKE_READY = 3
+_SPIKE_WINDOW = 8
+
+
+class SpikeWatch:
+    """Новый скачок — шаг вверх от последнего отмеченного уровня, а не от максимума ряда."""
+
+    def __init__(self) -> None:
+        self._values: dict[str, list[float]] = {}
+        self._marked: dict[str, float] = {}
+
+    def observe(self, metric: str, value: float | None) -> tuple[float, float] | None:
+        if value is None:
+            return None
+        previous = self._values.setdefault(metric, [])
+        found: tuple[float, float] | None = None
+        if len(previous) >= _SPIKE_READY:
+            window = previous[-_SPIKE_WINDOW:]
+            baseline = sorted(window)[len(window) // 2]
+            floor = max(_SPIKE_FLOOR[metric], _SPIKE_RELATIVE[metric] * baseline)
+            last = self._marked.get(metric, baseline)
+            if value >= last + floor and value >= baseline + floor:
+                found = (round(value, 3), round(baseline, 3))
+                self._marked[metric] = value
+            elif value <= last - floor:
+                self._marked[metric] = value
+        previous.append(value)
+        if len(previous) > 30:
+            del previous[:-30]
+        return found
 
 
 def runner_pid(bridge: Any) -> int | None:
@@ -106,6 +142,8 @@ class RunMetrics:
         gen_at = time.monotonic()
         chars_at = 0
         flushed_at = time.monotonic()
+        spikes = SpikeWatch()
+        names: dict[tuple[int, float], str] = {}
         while not self._stop.wait(INTERVAL_SECONDS):
             pid = self._pid_of()
             if not pid:
@@ -125,6 +163,7 @@ class RunMetrics:
             write_bps = 0.0
             engines: dict[str, float] = defaultdict(float)
             gpu_usage = gpu.by_pid() if gpu is not None else None
+            rows: list[dict[str, Any]] = []
             for raw in tree:
                 try:
                     key = (raw.pid, raw.create_time())
@@ -138,14 +177,28 @@ class RunMetrics:
                         _disk_rate(proc, io)
                         continue
                     alive.add(key)
-                    cpu += proc.cpu_percent(None) / cores
-                    rss += proc.memory_info().rss
+                    proc_cpu = proc.cpu_percent(None) / cores
+                    proc_rss = proc.memory_info().rss
+                    cpu += proc_cpu
+                    rss += proc_rss
                     proc_read, proc_write = _disk_rate(proc, io)
                     read_bps += proc_read
                     write_bps += proc_write
-                    if gpu_usage is not None:
-                        for engine, value in gpu_usage.get(proc.pid, {}).items():
-                            engines[engine] += value
+                    proc_engines = gpu_usage.get(proc.pid, {}) if gpu_usage is not None else {}
+                    for engine, value in proc_engines.items():
+                        engines[engine] += value
+                    if key not in names:
+                        names[key] = proc.name()
+                    rows.append(
+                        {
+                            "pid": proc.pid,
+                            "name": names[key],
+                            "cpu": round(proc_cpu, 2),
+                            "ram_mb": round(proc_rss / 1_048_576, 1),
+                            "gpu": round(max(proc_engines.values(), default=0.0), 2) if gpu_usage is not None else None,
+                            "disk": round((proc_read + proc_write) / 1_048_576, 3),
+                        }
+                    )
                 except psutil.Error:
                     continue
             seen: set[tuple[int, float]] = set()
@@ -159,6 +212,7 @@ class RunMetrics:
                     processes.pop(key, None)
                     io.pop(key, None)
                     primed.discard(key)
+                    names.pop(key, None)
             now = time.monotonic()
             if not alive:
                 gen_at = now
@@ -183,6 +237,14 @@ class RunMetrics:
             }
             if gpu_usage is not None:
                 sample["gpu"] = round(min(max(engines.values(), default=0.0), 100.0), 2)
+            marks = [
+                {"metric": metric, "value": found[0], "baseline": found[1]}
+                for metric in ("cpu", "ram", "gpu", "disk")
+                if (found := spikes.observe(metric, sample.get(metric))) is not None
+            ]
+            if marks:
+                rows.sort(key=lambda row: (row["cpu"], row["ram_mb"]), reverse=True)
+                sample["spike"] = {"marks": marks, "processes": rows[:SPIKE_PROCESSES]}
             with self._lock:
                 self._samples.append(sample)
                 if len(self._samples) > SAMPLE_LIMIT:

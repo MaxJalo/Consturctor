@@ -50,6 +50,7 @@ import { ExtensionsHubTab } from './tabs/grid/ExtensionsHubTab'
 import { ExtensionsProvider, useExtensions } from './extensions/ExtensionsProvider'
 import { EXTENSION_MODULES, extensionModuleForPage } from './extensions/extensionModules'
 import { RunProvider, useRuns } from './store/runs'
+import { ActiveAgentsStrip } from './components/ActiveAgentsStrip'
 import { isInFlightRunStatus, liveEntryMatchesRun } from './store/liveRun'
 import { ChatDock } from './workplace/ChatDock'
 import { isPersonalAgentWorkflowId, personalAgentWorkflowId } from './workplace/personalAgent'
@@ -1006,6 +1007,13 @@ function AppShell(): React.JSX.Element {
   const workplaceShellKey: WorkplaceTabKey | null =
     workplaceGrid && view.kind === 'tab' && isWorkplaceTabKey(view.key) ? view.key : null
   const content = isAdminMode ? renderAdminContent() : renderUserContent()
+  const agentsStrip = isAdminMode ? null : (
+    <ActiveAgentsStrip
+      onOpenRun={(workflowId, title) =>
+        setView({ kind: 'agentrun', workflowId, title: title || 'ИИ-агент', autoStart: false })
+      }
+    />
+  )
 
   return (
     <ExtensionsProvider user={activeUser}>
@@ -1075,6 +1083,7 @@ function AppShell(): React.JSX.Element {
               canSwitchAdminView={Boolean(activeAdminPanel)}
               onSwitchAdminView={switchAdminView}
               toast={toast ? <div className="wp-toast">{toast}</div> : null}
+              topStrip={agentsStrip}
             >
               {renderWorkplaceGridTab(workplaceShellKey)}
             </OrchGridShell>
@@ -1104,6 +1113,7 @@ function AppShell(): React.JSX.Element {
               refreshAt={chatRefreshAt}
             />
             <main className={isAdminMode ? 'content' : 'content orch-legacy-fullpage'}>
+              {agentsStrip}
               <div className={view.kind === 'chat' ? 'content-inner messenger-mode' : 'content-inner'}>
                 <div className="app-page-header">
                   {isAdminMode && activeAdminPanel?.key === 'finance' ? <FinanceSalarySourceSwitch /> : null}
