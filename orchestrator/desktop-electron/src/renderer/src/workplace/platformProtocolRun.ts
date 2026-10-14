@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import { apiGet, apiPost } from '../agentPlatform/api/client'
+import { api } from '../api/client'
 import type {
   AgentApproval,
   AgentQuestion,
@@ -22,6 +23,9 @@ export type PlatformToolStep = {
   tool: string
   done: boolean
   error: boolean
+  args: Record<string, unknown>
+  /** JSON-ответ инструмента каталога; null — встроенный инструмент, ошибка или ответ не разобран. */
+  result: Record<string, unknown> | null
 }
 
 export type PlatformRunView = {
@@ -33,6 +37,34 @@ export type PlatformRunView = {
   question: AgentQuestion | null
   /** Ответ onec.meeting_protocol_write: созданный или обновлённый документ. */
   protocol: { number: string; refKey: string } | null
+  /** Текст агента в последнем ходе — его итоговое пояснение. */
+  answer: string
+}
+
+export type RunAudio = { fileId: string; name: string }
+
+/** Аудио кладётся вложением запуска на сервер Constructor: audio.transcribe на платформе находит его по file_id. */
+export async function uploadRunAudio(workflowId: string, audioPaths: string[]): Promise<RunAudio[]> {
+  const runId = `platform-${crypto.randomUUID()}`
+  const stored = await api.uploadRunAttachments(workflowId, runId, audioPaths)
+  const files = audioPaths.map((path, index) => {
+    const name = path.replace(/\\/g, '/').split('/').pop() || path
+    const match =
+      [...stored].reverse().find((item) => item.name === name) ||
+      (stored.length === audioPaths.length ? stored[index] : undefined)
+    return { fileId: match?.id || '', name }
+  })
+  const lost = files.filter((item) => !item.fileId).map((item) => item.name)
+  if (lost.length) throw new Error(`Сервер не принял аудио: ${lost.join(', ')}`)
+  return files
+}
+
+export function lastPlatformResult(steps: PlatformToolStep[], tool: string): Record<string, unknown> | null {
+  for (let index = steps.length - 1; index >= 0; index -= 1) {
+    const step = steps[index]
+    if (step.tool === tool && step.done && !step.error && step.result) return step.result
+  }
+  return null
 }
 
 export async function startPlatformProtocolRun(workflowId: string, prompt: string): Promise<string> {
@@ -155,12 +187,19 @@ export function usePlatformRun(sessionId: string): PlatformRunView {
   return useMemo(() => {
     const steps: PlatformToolStep[] = []
     let protocol: PlatformRunView['protocol'] = null
+    const lastTurn = events.reduce((turn, event) => (event.parent ? turn : Math.max(turn, event.turn)), 0)
+    let answer = ''
     for (const event of events) {
-      if (event.type !== 'tool' || event.parent) continue
+      if (event.parent) continue
+      if (event.type === 'assistant' && event.turn === lastTurn) answer += event.text
+      if (event.type !== 'tool') continue
       const tool = toolName(event)
       const error = failed(event)
       const done = event.status !== '' && event.status !== 'running'
-      steps.push({ id: `${event.seq}`, tool, done, error })
+      const args = event.name === 'mcp' ? asObject(asObject(parseJson(event.args)).args) : asObject(parseJson(event.args))
+      const parsed = done && !error && event.name === 'mcp' ? parseJson(resultText(event)) : null
+      const result = parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? (parsed as Record<string, unknown>) : null
+      steps.push({ id: `${event.seq}`, tool, done, error, args, result })
       if (tool === 'onec.meeting_protocol_write' && done && !error) protocol = protocolFrom(event) ?? protocol
     }
     const status = session?.status ?? ''
@@ -171,7 +210,8 @@ export function usePlatformRun(sessionId: string): PlatformRunView {
       steps,
       approval,
       question,
-      protocol
+      protocol,
+      answer: answer.trim()
     }
   }, [approval, events, loadError, question, session, sessionId])
 }

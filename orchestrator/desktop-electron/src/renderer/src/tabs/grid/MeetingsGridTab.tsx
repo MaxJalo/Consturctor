@@ -13,14 +13,15 @@ import {
   buildProtocolMessage,
   buildTranscribeOnlyMessage,
   buildSupplementMessage,
-  PROTOCOL_AGENT_TITLE,
   PROTOCOL_AUDIO_EXTENSIONS as AUDIO_EXTENSIONS,
   resolveProtocolAgentWorkflowId
 } from '../../workplace/meetingProtocolAgent'
 import { onPlatformRun, useMeetingProtocol } from '../../workplace/meetingProtocolStore'
 import {
   decidePlatformApproval,
+  lastPlatformResult,
   startPlatformProtocolRun,
+  uploadRunAudio,
   usePlatformRun
 } from '../../workplace/platformProtocolRun'
 import { PlatformRunDialog } from './PlatformRunDialog'
@@ -274,10 +275,25 @@ function MeetingDetailCard({
   }, [onPlatform, platformRun.protocol, state?.items])
 
   const platformStatus = platformRun.status
+  const platformTranscriptId = transcriptIdOf(lastPlatformResult(platformRun.steps, 'audio.transcribe'))
   useEffect(() => {
     if (!onPlatform || !platformStatus || platformStatus === 'running' || record?.status !== 'running') return
-    patchRecord({ status: platformStatus === 'finished' ? 'done' : 'error' })
-  }, [onPlatform, patchRecord, platformStatus, record?.status])
+    if (record.stage !== 'transcribe') {
+      patchRecord({ status: platformStatus === 'finished' ? 'done' : 'error' })
+      return
+    }
+    if (platformStatus === 'finished' && platformTranscriptId) {
+      patchRecord({
+        stage: 'review',
+        status: 'done',
+        transcriptId: platformTranscriptId,
+        protocolWorkflowId: record.protocolWorkflowId || record.workflowId
+      })
+      return
+    }
+    if (platformStatus === 'finished') setActionError('Агент закончил без расшифровки — подробности в «Ход работы»')
+    patchRecord({ status: 'error' })
+  }, [onPlatform, patchRecord, platformStatus, platformTranscriptId, record])
 
   const decideApproval = async (allow: boolean): Promise<void> => {
     const sessionId = record?.platformSessionId || ''
@@ -313,16 +329,14 @@ function MeetingDetailCard({
           new Promise<string>((resolve) => window.setTimeout(() => resolve(''), 20_000))
         ])
       ])
-      const message = buildTranscribeOnlyMessage(meeting, audioPath)
-      const runId = runs.startRun({
+      const files = await uploadRunAudio(workflowId, [audioPath])
+      const platformSessionId = await startPlatformProtocolRun(
         workflowId,
-        title: PROTOCOL_AGENT_TITLE,
-        message,
-        filePaths: [audioPath]
-      })
+        buildTranscribeOnlyMessage(meeting, audioPath, files)
+      )
       rememberStart({
         workflowId,
-        runId: runId || '',
+        runId: '',
         backendRunId: '',
         status: 'running',
         audioPath,
@@ -334,14 +348,15 @@ function MeetingDetailCard({
         stage: 'transcribe',
         mode: 'create',
         protocolWorkflowId: workflowId,
-        nextMeetingStart
+        nextMeetingStart,
+        platformSessionId
       })
     } catch (err) {
       setActionError(err instanceof Error ? err.message : 'Не удалось запустить формирование протокола')
     } finally {
       setBusy(false)
     }
-  }, [actorFio, busy, isRunning, meeting, rememberStart, runs])
+  }, [actorFio, busy, isRunning, meeting, rememberStart])
 
   const reportIsTranscript = /^расшифровка/i.test(record?.reportName || '')
   const hasDocx =
@@ -376,16 +391,14 @@ function MeetingDetailCard({
       }
 
       const workflowId = await resolveProtocolAgentWorkflowId()
-      const message = buildTranscribeOnlyMessage(meeting, audioPath)
-      const runId = runs.startRun({
+      const files = await uploadRunAudio(workflowId, [audioPath])
+      const platformSessionId = await startPlatformProtocolRun(
         workflowId,
-        title: PROTOCOL_AGENT_TITLE,
-        message,
-        filePaths: [audioPath]
-      })
+        buildTranscribeOnlyMessage(meeting, audioPath, files)
+      )
       rememberStart({
         workflowId,
-        runId: runId || '',
+        runId: '',
         backendRunId: '',
         status: 'running',
         audioPath,
@@ -397,20 +410,21 @@ function MeetingDetailCard({
         stage: 'transcribe',
         mode: 'supplement',
         protocolWorkflowId: workflowId,
-        refKey: protocolRefKey
+        refKey: protocolRefKey,
+        platformSessionId
       })
     } catch (err) {
       setActionError(err instanceof Error ? err.message : 'Не удалось запустить дополнение протокола')
     } finally {
       setBusy(false)
     }
-  }, [busy, isRunning, meeting, protocol?.number, protocolRefKey, rememberStart, runs])
+  }, [busy, isRunning, meeting, protocolRefKey, rememberStart])
 
   const chainKey = useRef('')
   const workflowEntry = record?.workflowId ? runs.entries[record.workflowId] : undefined
   useEffect(() => {
     const stage = record?.stage
-    if (!stage || stage === 'protocol') return
+    if (!stage || stage === 'protocol' || onPlatformRun(record)) return
     const live = runEntry?.state
     if (live?.running && stage === 'transcribe') {
       const seen = transcriptIdOf(lastToolResult(live.items, 'audio.transcribe'))
