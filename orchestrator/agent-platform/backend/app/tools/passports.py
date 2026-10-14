@@ -262,6 +262,33 @@ GROUPS: list[PassportGroup] = [
                     "Вложения запуска Constructor",
                 ],
             ),
+            Passport(
+                "audio.transcript",
+                summary=(
+                    "Текст готовой расшифровки audio.transcribe по transcript_path: целиком или по "
+                    "фрагментам part=1…parts с таймкодами и меткой голоса. Только чтение."
+                ),
+                title="Текст расшифровки",
+                requires=["Расшифровка audio.transcribe на сервере Constructor"],
+            ),
+            Passport(
+                "audio.speakers",
+                summary=(
+                    "Голоса сохранённой расшифровки по transcript_id: кто уже узнан по отпечатку "
+                    "голоса и ключевые реплики остальных. Только чтение."
+                ),
+                title="Голоса расшифровки",
+                requires=["Расшифровка audio.transcribe на сервере Constructor"],
+            ),
+            Passport(
+                "audio.bind_speakers",
+                summary=(
+                    "Записывает подтверждённое сопоставление «Голос N» → сотрудник для расшифровки; "
+                    "неизвестный голос попадает в базу отпечатков."
+                ),
+                title="Привязка голосов к сотрудникам",
+                requires=["Расшифровка audio.transcribe на сервере Constructor"],
+            ),
         ],
     ),
     PassportGroup(
