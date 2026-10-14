@@ -25,6 +25,8 @@ AgentSource = Literal["custom", "constructor"]
 
 _STREAMED = {"assistant", "thinking"}
 _SAVE_EVERY_SECONDS = 1.5
+# Замеры идущего прогона в общей базе: сжатый снимок весит сотни килобайт, чаще слать незачем.
+_HISTORY_INSIGHTS_SECONDS = 30.0
 # Полезная нагрузка одной записи журнала взаимодействия (ответы инструментов бывают огромными).
 TRACE_DATA_CHARS = 30_000
 # Текст элемента контекста храним с обрезкой, полный размер — в chars.
@@ -1060,11 +1062,17 @@ class SessionStore:
         self._touch(session)
 
     def _remember(self, session: PlatformSession, *, snapshot_files: bool = False) -> None:
-        """Отдать снимок в историю. В конце прогона — с файлами каталога и статистикой."""
+        """Отдать снимок в историю. Статистика — по ходу прогона и в конце, файлы каталога — в конце."""
         from app.platform.history import history
 
         workspace = self.root / "workspaces" / session.id if snapshot_files else None
-        insights = self._insights_for(session.id).model_copy(deep=True) if snapshot_files else None
+        key = f"history-insights:{session.id}"
+        now = time.monotonic()
+        share = snapshot_files or now - self._saved_at.get(key, 0.0) >= _HISTORY_INSIGHTS_SECONDS
+        insights = None
+        if share:
+            self._saved_at[key] = now
+            insights = self._insights_for(session.id).model_copy(deep=True)
         history.submit(session.model_copy(deep=True), workspace, insights=insights)
 
     @staticmethod

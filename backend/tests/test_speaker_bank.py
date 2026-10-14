@@ -1,4 +1,10 @@
-from app.services.speaker_bank import best_voice_match, relabel_speaker, voice_labels
+from app.services.speaker_bank import best_voice_match, fio_initials, relabel_speaker, voice_labels
+
+
+def test_fio_initials() -> None:
+    assert fio_initials("Амураль Игорь Борисович") == "Амураль И.Б."
+    assert fio_initials("Донцова  анна") == "Донцова А."
+    assert fio_initials("Ксения") == "Ксения"
 
 
 def test_known_voice_needs_a_clear_winner() -> None:
