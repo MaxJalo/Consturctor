@@ -1,4 +1,5 @@
 import type { TaskTileFilter } from './tileFilters'
+import type { AssignmentRegistryTileId } from './assignmentRegistryTypes'
 import type { GlobalSearchTarget } from '../layout/globalSearch'
 
 export const ORCH_OPEN_TAB = 'orchestrator:open-tab'
@@ -32,6 +33,8 @@ export type WorkplaceTabIntent = {
   taskFilter?: TaskTileFilter
   processTab?: string
   searchTarget?: GlobalSearchTarget
+  /** Плитка реестра поручений: все, просроченные или подходящие ко сроку. */
+  registryTile?: AssignmentRegistryTileId | 'all'
 }
 
 export type OpenWorkplaceTabDetail = {

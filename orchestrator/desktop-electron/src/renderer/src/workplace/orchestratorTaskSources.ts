@@ -232,6 +232,9 @@ export type OrchestratorErpLoad = {
 /** Полная выгрузка ДО идёт минутами, а на backend список ждёт до 420 с. */
 export const ONEC_LIVE_DUMP_TIMEOUT_MS = 600_000
 
+/** Потолок списка ДО: личные срезы Ильченко, Соломичевой и остальных умещаются целиком. */
+export const ONEC_DOCFLOW_TASK_LIMIT = 2000
+
 export async function loadOrchestratorErpTasks(
   user: UserProfile,
   erpFio: string,
@@ -239,7 +242,7 @@ export async function loadOrchestratorErpTasks(
 ): Promise<OrchestratorErpLoad> {
   const forceRefresh = Boolean(opts?.forceRefresh)
   const onecArgs = onecGatewayInvokeArgs(user, {
-    limit: 80,
+    limit: ONEC_DOCFLOW_TASK_LIMIT,
     only_open: true,
     today_and_overdue: false,
     force_refresh: forceRefresh

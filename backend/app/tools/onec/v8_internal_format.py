@@ -127,10 +127,34 @@ def parse_value_table(body: str) -> list[dict[str, Any]]:
     return rows
 
 
+def parse_structure(body: str) -> dict[str, Any]:
+    """Структура ЗначениеВСтрокуВнутр → словарь. Вложенные значения остаются строкой."""
+    parts = _split_top_level_params(body.strip())
+    if len(parts) < 3:
+        return {}
+    content = parts[2]
+    if not content.startswith("{") or not content.endswith("}"):
+        return {}
+    inner = _split_top_level_params(content)
+    fields: dict[str, Any] = {}
+    for pair in inner[1:]:
+        pair_parts = _split_top_level_params(pair)
+        if len(pair_parts) < 2:
+            continue
+        key = parse_primitive(pair_parts[0])
+        if isinstance(key, str) and key:
+            fields[key] = parse_primitive(pair_parts[1])
+    return fields
+
+
 def from_internal_string(value: str) -> Any:
     text = value.strip().lstrip("\ufeff")
     if VALUE_TABLE_TYPE_ID in text and text.startswith('{"#",'):
         return parse_value_table(text)
+    if text.startswith('{"#",') and STRUCTURE_TYPE_ID in text:
+        parsed = parse_structure(text)
+        if parsed:
+            return parsed
     if text.startswith('{"#",') and ARRAY_TYPE_ID in text:
         parts = _split_top_level_params(text)
         if len(parts) >= 3:

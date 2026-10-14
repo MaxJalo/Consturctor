@@ -22,6 +22,7 @@ import {
   PRINT_SNAP,
   PrintSchedule,
   printStamp,
+  type PrintSheet,
   type PrintTool
 } from './MeetingPrintSchedule'
 import {
@@ -982,6 +983,7 @@ function MeetingPrintDialog({
 }): React.JSX.Element {
   const [draft, setDraft] = useState<PrintDay[]>(days)
   const [tool, setTool] = useState<PrintTool>(null)
+  const [sheet, setSheet] = useState<PrintSheet>('landscape')
   const [selectedKey, setSelectedKey] = useState<string | null>(null)
   const subjectRef = useRef<HTMLInputElement>(null)
   const focusSubject = useRef(false)
@@ -1053,7 +1055,7 @@ function MeetingPrintDialog({
   }
 
   return createPortal(
-    <div className="mcal-print-backdrop" role="dialog" aria-label="Печать совещаний">
+    <div className={`mcal-print-backdrop is-${sheet}`} role="dialog" aria-label="Печать совещаний">
       <div className="mcal-print-toolbar">
         <div className="mcal-print-tools" role="toolbar" aria-label="Инструменты">
           <button
@@ -1103,6 +1105,22 @@ function MeetingPrintDialog({
                 : 'Выберите совещание, чтобы указать тему, место и участников'}
           </p>
         )}
+        <div className="mcal-print-orient" role="group" aria-label="Расположение листа A4">
+          <button
+            type="button"
+            className={sheet === 'landscape' ? 'is-on' : ''}
+            onClick={() => setSheet('landscape')}
+          >
+            Горизонтальный
+          </button>
+          <button
+            type="button"
+            className={sheet === 'portrait' ? 'is-on' : ''}
+            onClick={() => setSheet('portrait')}
+          >
+            Вертикальный
+          </button>
+        </div>
         <div className="mcal-print-actions">
           <button type="button" className="is-primary" onClick={() => window.print()}>
             <Printer size={14} aria-hidden /> Печать
@@ -1118,6 +1136,7 @@ function MeetingPrintDialog({
             <PrintSchedule
               days={draft}
               tool={tool}
+              sheet={sheet}
               selectedKey={selectedKey}
               onSelect={setSelectedKey}
               onRange={applyRange}

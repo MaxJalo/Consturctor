@@ -25,7 +25,6 @@ import {
 import { FioCombobox } from './FioCombobox'
 import './docflowCreate.css'
 
-const MISSING_ROOM = '__missing_room__'
 const ALL_EMPLOYEES_LIMIT = 20000
 const MEETING_TYPES = ['Отчетное', 'Внеплановое', 'Селекторное']
 
@@ -290,7 +289,12 @@ export function MeetingProtocolForm({
   const posted = Boolean(card?.posted)
   const status = card?.status || (persistKey || number ? 'Подготовлен' : '')
   const lock = busy || loading || readOnly || sealed
-  const roomMissing = !draft.roomKey && Boolean(draft.room.trim()) && rooms.length > 0
+  const roomQuery = draft.room.trim().toLowerCase().replace(/ё/g, 'е')
+  const roomMissing =
+    !draft.roomKey &&
+    Boolean(roomQuery) &&
+    rooms.length > 0 &&
+    !rooms.some((room) => room.name.toLowerCase().replace(/ё/g, 'е').includes(roomQuery))
   const agendaCount = filled(draft.agenda, 'question')
   const taskCount = filled(draft.tasks, 'text')
   const decisionCount = filled(draft.decisions, 'text')
@@ -457,31 +461,18 @@ export function MeetingProtocolForm({
                         </div>
                       </Row>
                       <Row label="Кабинет">
-                        <select
-                          className="df1c-input"
-                          value={draft.roomKey || (roomMissing ? MISSING_ROOM : '')}
-                          disabled={readOnly || (!rooms.length && !draft.roomKey)}
-                          onChange={(event) => {
-                            const hit = rooms.find((room) => room.key === event.target.value)
-                            patch(hit ? { roomKey: hit.key, room: hit.name } : { roomKey: '', room: '' })
+                        <FioCombobox
+                          value={draft.room}
+                          hints={rooms.map((room) => room.name)}
+                          readOnly={readOnly}
+                          placeholder={rooms.length ? 'Часть названия кабинета' : 'Загрузка помещений из 1С…'}
+                          onChange={(name) => {
+                            const folded = name.trim().toLowerCase().replace(/ё/g, 'е')
+                            const hit = rooms.find((room) => room.name.toLowerCase().replace(/ё/g, 'е') === folded)
+                            patch(hit ? { roomKey: hit.key, room: hit.name } : { roomKey: '', room: name })
                           }}
-                        >
-                          <option value="">{rooms.length ? '— не указан —' : 'Загрузка помещений из 1С…'}</option>
-                          {roomMissing ? (
-                            <option value={MISSING_ROOM} disabled>
-                              «{draft.room}» — нет в 1С
-                            </option>
-                          ) : null}
-                          {draft.roomKey && !rooms.some((room) => room.key === draft.roomKey) ? (
-                            <option value={draft.roomKey}>{draft.room || 'Помещение из 1С'}</option>
-                          ) : null}
-                          {rooms.map((room) => (
-                            <option key={room.key} value={room.key}>
-                              {room.name}
-                            </option>
-                          ))}
-                        </select>
-                        {roomMissing ? <span className="df1c-hint">Помещения «{draft.room}» нет в 1С — выберите кабинет из списка</span> : null}
+                        />
+                        {roomMissing ? <span className="df1c-hint">Помещения «{draft.room}» нет в 1С — выберите кабинет из подсказки</span> : null}
                       </Row>
                       <Row label="Следующее совещание">
                         <input

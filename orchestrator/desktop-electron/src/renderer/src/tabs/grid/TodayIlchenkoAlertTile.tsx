@@ -1,6 +1,8 @@
 import type { UserProfile } from '../../api/types'
 import { isDueWithinDays } from '../../workplace/assignmentRegistryMappers'
+import type { AssignmentRegistryTileId } from '../../workplace/assignmentRegistryTypes'
 import { useAssignmentRegistry } from '../../workplace/useAssignmentRegistry'
+import { openWorkplaceTab } from '../../workplace/workplaceNav'
 
 function isoDay(day: Date): string {
   const month = String(day.getMonth() + 1).padStart(2, '0')
@@ -37,18 +39,35 @@ export function TodayIlchenkoAlertTile({ user }: { user: UserProfile }): React.J
   const overdueText = pending ? '…' : String(overdue)
   const dueSoonText = pending ? '…' : String(dueSoon)
 
+  const openRegistry = (tile: AssignmentRegistryTileId | 'all'): void => {
+    try {
+      const key = `orch-registry:${user.id || 'default'}:filters`
+      const raw = sessionStorage.getItem(key)
+      const parsed = raw ? (JSON.parse(raw) as { columns?: unknown }) : {}
+      sessionStorage.setItem(
+        key,
+        JSON.stringify({ from: range.from, to: range.to, tile, columns: parsed.columns ?? {} })
+      )
+    } catch {
+      /* ignore */
+    }
+    openWorkplaceTab('assignments_registry', { registryTile: tile })
+  }
+
   return (
     <article className="spec-v04-tile today-assignments-tile" aria-label="Поручения: просроченные и подходящие ко сроку">
-      <span className="today-assignments-title">Поручения</span>
+      <button type="button" className="today-assignments-open" onClick={() => openRegistry('all')}>
+        <span className="today-assignments-title">Поручения</span>
+      </button>
       <div className="today-assignments-split">
-        <div className="today-assignments-half is-overdue">
+        <button type="button" className="today-assignments-half is-overdue" onClick={() => openRegistry('overdue')}>
           <span>Просроченные</span>
           <strong>{overdueText}</strong>
-        </div>
-        <div className="today-assignments-half is-soon">
+        </button>
+        <button type="button" className="today-assignments-half is-soon" onClick={() => openRegistry('due_soon')}>
           <span>Подходит срок</span>
           <strong>{dueSoonText}</strong>
-        </div>
+        </button>
       </div>
       {error && !rows.length ? <p className="today-assignments-error">{error}</p> : null}
     </article>

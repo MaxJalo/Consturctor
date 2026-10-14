@@ -187,10 +187,12 @@ function buildRegistryTiles(
 
 export function AssignmentsRegistryGridTab({
   user,
-  onRunAgent
+  onRunAgent,
+  navTile = null
 }: {
   user: UserProfile
   onRunAgent: (workflowId: string, title: string, message: string) => void
+  navTile?: AssignmentRegistryTileId | 'all' | null
 }): React.JSX.Element {
   const allowed = canUseExtension(user, 'assignments_registry')
   const storagePrefix = `orch-registry:${user.id || 'default'}`
@@ -267,6 +269,13 @@ export function AssignmentsRegistryGridTab({
     setTileFilter(next)
     persistFilters(dateFrom, dateTo, next)
   }
+  useEffect(() => {
+    if (navTile == null) return
+    setTileFilter(navTile)
+    persistFilters(dateFrom, dateTo, navTile)
+    // dateFrom/dateTo на момент перехода; смена дат не должна затирать выбранную плитку.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [navTile])
   const changeColumnFilter = (key: RegistryColumnFilterKey, value: string): void => {
     setColumnFilters((current) => {
       const next = { ...current, [key]: value }

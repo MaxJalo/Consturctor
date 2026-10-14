@@ -11,11 +11,7 @@ import { taskActionContextFromTaskRow } from '../../workplace/taskSourceKind'
 import { runDocflowAction } from '../../workplace/taskSourceActions'
 import { formatSurnameInitials, isDocflowToMe } from '../../workplace/tileFilters'
 import { useGridDataRefreshContext } from '../../workplace/GridDataRefreshContext'
-import {
-  comPasswordSessionHint,
-  sessionOneCEmptyText,
-  userFacingOneCError
-} from '../../workplace/onecSessionHints'
+import { sessionOneCEmptyText, userFacingOneCError } from '../../workplace/onecSessionHints'
 import { isTechnicalTurboMessage } from '../../workplace/turboSession'
 import { buildTaskTiles, useSpecV04Sources } from '../../workplace/useSpecV04Data'
 import {
@@ -467,11 +463,6 @@ export function TasksGridTab({
           ) : null}
           {!soapBanner && !turboBanner && data.erpSecondaryHint ? (
             <p className="today-table-status today-table-banner">{data.erpSecondaryHint}</p>
-          ) : null}
-          {!soapBanner && !turboBanner && !data.erpSecondaryHint && !data.erpLoading && !data.turboLoading && !taskRows.length ? (
-            <p className="today-table-status today-table-banner spec-v04-muted">
-              {comPasswordSessionHint()}
-            </p>
           ) : null}
           {closeNote ? <p className="spec-v04-muted orch-process-close-note">{closeNote}</p> : null}
           <div className="tasks-table-toolbar">
