@@ -13670,6 +13670,10 @@ button.spec-v04-tile {
   flex: 1 1 auto;
   min-width: 0;
 }
+.meeting-protocol-progress-open {
+  align-self: flex-start;
+  margin-top: 6px;
+}
 .meeting-report-overlay .meeting-report-dialog {
   width: min(920px, 94vw);
   max-height: 90vh;

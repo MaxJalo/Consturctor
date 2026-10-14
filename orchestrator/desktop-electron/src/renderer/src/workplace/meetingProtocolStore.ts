@@ -27,6 +27,13 @@ export type MeetingProtocolRecord = {
   mode?: 'create' | 'supplement'
   refKey?: string
   nextMeetingStart?: string
+  /** Сессия платформы агентов (конфигурация 2), которая пишет протокол в 1С на этапе protocol. */
+  platformSessionId?: string
+}
+
+/** Этап protocol идёт платформой агентов: ход и статус берутся из её сессии, а не из runs. */
+export function onPlatformRun(record: MeetingProtocolRecord | null | undefined): boolean {
+  return record?.stage === 'protocol' && Boolean(record.platformSessionId)
 }
 
 type ProtocolBucket = Record<string, MeetingProtocolRecord>
@@ -292,7 +299,7 @@ export function useMeetingProtocol(
 
   // После перезапуска приложения startedRunIds пуст — снимаем залипший «running».
   useEffect(() => {
-    if (!record || record.status !== 'running') return
+    if (!record || record.status !== 'running' || onPlatformRun(record)) return
     const sharedLive =
       Boolean(sharedEntry?.state.running) ||
       Boolean(sharedEntry?.state.pendingHitl) ||

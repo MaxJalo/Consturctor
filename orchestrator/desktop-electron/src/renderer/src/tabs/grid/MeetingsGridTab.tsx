@@ -17,7 +17,13 @@ import {
   PROTOCOL_AUDIO_EXTENSIONS as AUDIO_EXTENSIONS,
   resolveProtocolAgentWorkflowId
 } from '../../workplace/meetingProtocolAgent'
-import { useMeetingProtocol } from '../../workplace/meetingProtocolStore'
+import { onPlatformRun, useMeetingProtocol } from '../../workplace/meetingProtocolStore'
+import {
+  decidePlatformApproval,
+  startPlatformProtocolRun,
+  usePlatformRun
+} from '../../workplace/platformProtocolRun'
+import { PlatformRunDialog } from './PlatformRunDialog'
 import {
   ensureOutlookMeetings,
   useOutlookSyncTick,
@@ -101,7 +107,9 @@ const NOISY_TOOLS = new Set([
   'Shell',
   'shell',
   'SemanticSearch',
-  'semSearch'
+  'semSearch',
+  'ask_user',
+  'ask_choice'
 ])
 
 function meetingField(value: string | undefined): string {
@@ -215,16 +223,24 @@ function MeetingDetailCard({
     .map((part) => part.trim())
     .filter(Boolean)
 
+  const [progressOpen, setProgressOpen] = useState(false)
+  const [deciding, setDeciding] = useState(false)
+  const onPlatform = onPlatformRun(record)
+  const platformRun = usePlatformRun(onPlatform ? record?.platformSessionId || '' : '')
   const state = runEntry?.state
-  const agentLiveOnThisMeeting =
-    Boolean(runEntry) &&
-    (Boolean(state?.running) || Boolean(state?.pendingHitl) || Boolean(state?.pendingQuestion))
+  const agentLiveOnThisMeeting = onPlatform
+    ? platformRun.running
+    : Boolean(runEntry) &&
+      (Boolean(state?.running) || Boolean(state?.pendingHitl) || Boolean(state?.pendingQuestion))
   const isRunning = agentLiveOnThisMeeting
+  const runError = onPlatform ? platformRun.error : state?.error || ''
 
   const toolSteps = useMemo(() => {
-    const items = (state?.items || []).filter(
-      (item): item is Extract<typeof item, { kind: 'tool' }> => item.kind === 'tool'
-    )
+    const items = onPlatform
+      ? platformRun.steps.map((step) => ({ ...step, title: '' }))
+      : (state?.items || []).filter(
+          (item): item is Extract<typeof item, { kind: 'tool' }> => item.kind === 'tool'
+        )
     const kept = items.filter((item) => !NOISY_TOOLS.has(item.tool) || item.error)
     const folded: { id: string; label: string; done: boolean; error: boolean; count: number }[] = []
     for (const item of kept) {
@@ -239,9 +255,10 @@ function MeetingDetailCard({
       folded.push({ id: item.id, label, done: item.done, error: item.error, count: 1 })
     }
     return folded.slice(-8)
-  }, [state?.items])
+  }, [onPlatform, platformRun.steps, state?.items])
 
   const createdProtocol = useMemo(() => {
+    if (onPlatform) return platformRun.protocol
     const items = state?.items || []
     for (let index = items.length - 1; index >= 0; index -= 1) {
       const item = items[index]
@@ -254,7 +271,27 @@ function MeetingDetailCard({
       if (number || refKey) return { number, refKey }
     }
     return null
-  }, [state?.items])
+  }, [onPlatform, platformRun.protocol, state?.items])
+
+  const platformStatus = platformRun.status
+  useEffect(() => {
+    if (!onPlatform || !platformStatus || platformStatus === 'running' || record?.status !== 'running') return
+    patchRecord({ status: platformStatus === 'finished' ? 'done' : 'error' })
+  }, [onPlatform, patchRecord, platformStatus, record?.status])
+
+  const decideApproval = async (allow: boolean): Promise<void> => {
+    const sessionId = record?.platformSessionId || ''
+    const approval = platformRun.approval
+    if (!sessionId || !approval || deciding) return
+    setDeciding(true)
+    try {
+      await decidePlatformApproval(sessionId, approval.id, allow)
+    } catch (err) {
+      setActionError(err instanceof Error ? err.message : 'Не удалось передать решение агенту')
+    } finally {
+      setDeciding(false)
+    }
+  }
 
   const attachAudio = useCallback(async () => {
     if (busy || isRunning) return
@@ -528,26 +565,22 @@ function MeetingDetailCard({
           identified
         })
       }
-      const runId = runs.startRun({
-        workflowId,
-        title: PROTOCOL_AGENT_TITLE,
-        message,
-        forceRestart: true
-      })
+      const platformSessionId = await startPlatformProtocolRun(workflowId, message)
       patchRecord({
         workflowId,
-        runId: runId || '',
+        runId: '',
         backendRunId: '',
         status: 'running',
         stage: 'protocol',
-        transcriptId
+        transcriptId,
+        platformSessionId
       })
     } catch (err) {
       setActionError(err instanceof Error ? err.message : 'Не удалось создать протокол')
     } finally {
       setBusy(false)
     }
-  }, [busy, meeting, patchRecord, record, runs, voiceDraft])
+  }, [busy, meeting, patchRecord, record, voiceDraft])
 
   const detachProtocol = (): void => {
     if (isRunning) return
@@ -682,7 +715,11 @@ function MeetingDetailCard({
           <div className="meeting-protocol-progress-row">
             <span className="meeting-protocol-label">Статус</span>
             <span>
-              {isRunning
+              {isRunning && onPlatform && platformRun.approval
+                ? 'Ждёт вашего разрешения'
+                : isRunning && onPlatform && platformRun.question
+                  ? 'Агент задал вопрос'
+                : isRunning
                 ? record.stage === 'transcribe'
                   ? 'Расшифровка…'
                   : record.stage === 'speakers'
@@ -717,8 +754,52 @@ function MeetingDetailCard({
               ))}
             </ul>
           ) : null}
-          {record.stage !== 'review' && (state?.error || (record.status === 'error' && !state?.error)) ? (
-            <p className="meeting-protocol-error">{state?.error || 'Запуск завершился с ошибкой'}</p>
+          {record.stage !== 'review' && (runError || record.status === 'error') ? (
+            <p className="meeting-protocol-error">{runError || 'Запуск завершился с ошибкой'}</p>
+          ) : null}
+          {onPlatform && platformRun.approval ? (
+            <div className="meeting-protocol-hitl">
+              <p>{platformRun.approval.title || 'Нужно ваше разрешение'}</p>
+              {platformRun.approval.subject ? (
+                <p className="meeting-protocol-hitl-intent">{platformRun.approval.subject}</p>
+              ) : null}
+              <div className="meeting-protocol-hitl-actions">
+                <button
+                  type="button"
+                  className="btn-primary"
+                  disabled={deciding}
+                  onClick={() => void decideApproval(true)}
+                >
+                  Разрешить
+                </button>
+                <button
+                  type="button"
+                  className="btn-ghost"
+                  disabled={deciding}
+                  onClick={() => void decideApproval(false)}
+                >
+                  Отклонить
+                </button>
+                <button type="button" className="btn-ghost" onClick={() => setProgressOpen(true)}>
+                  Подробнее
+                </button>
+              </div>
+            </div>
+          ) : null}
+          {onPlatform && platformRun.question ? (
+            <div className="meeting-protocol-hitl">
+              <p>{platformRun.question.title || 'Агент задал вопрос'}</p>
+              <div className="meeting-protocol-hitl-actions">
+                <button type="button" className="btn-primary" onClick={() => setProgressOpen(true)}>
+                  Ответить
+                </button>
+              </div>
+            </div>
+          ) : null}
+          {onPlatform ? (
+            <button type="button" className="cal-btn meeting-protocol-progress-open" onClick={() => setProgressOpen(true)}>
+              Ход работы
+            </button>
           ) : null}
           {state?.pendingHitl ? (
             <div className="meeting-protocol-hitl">
@@ -935,6 +1016,10 @@ function MeetingDetailCard({
           })
         }}
       />
+
+      {progressOpen && record?.platformSessionId ? (
+        <PlatformRunDialog sessionId={record.platformSessionId} onClose={() => setProgressOpen(false)} />
+      ) : null}
 
       <MeetingReportModal
         open={reportOpen}
