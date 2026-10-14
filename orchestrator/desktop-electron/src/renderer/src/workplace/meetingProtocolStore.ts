@@ -27,13 +27,13 @@ export type MeetingProtocolRecord = {
   mode?: 'create' | 'supplement'
   refKey?: string
   nextMeetingStart?: string
-  /** Сессия платформы агентов (конфигурация 2), которая пишет протокол в 1С на этапе protocol. */
+  /** Сессия платформы агентов (конфигурация 2) текущего этапа: расшифровки или записи протокола в 1С. */
   platformSessionId?: string
 }
 
-/** Этап protocol идёт платформой агентов: ход и статус берутся из её сессии, а не из runs. */
+/** Расшифровка и запись протокола идут платформой агентов: ход и статус берутся из её сессии, а не из runs. */
 export function onPlatformRun(record: MeetingProtocolRecord | null | undefined): boolean {
-  return record?.stage === 'protocol' && Boolean(record.platformSessionId)
+  return (record?.stage === 'protocol' || record?.stage === 'transcribe') && Boolean(record.platformSessionId)
 }
 
 type ProtocolBucket = Record<string, MeetingProtocolRecord>

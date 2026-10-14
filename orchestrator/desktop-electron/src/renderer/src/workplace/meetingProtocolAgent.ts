@@ -1,6 +1,7 @@
 import { api } from '../api/client'
 import { formatMeetingStamp, meetingOutlookMarker, type MeetingEvent } from '../utils/outlookMeetings'
 import { adoptAgentFromLibrary, fetchAgentLibrary } from './agentLibraryApi'
+import type { RunAudio } from './platformProtocolRun'
 
 export const PROTOCOL_SOURCE_WORKFLOW_ID = '599eaf4e-3b0c-4a6f-a370-c719e11a44ce'
 export const PROTOCOL_AGENT_TITLE = 'Формирование протокола по аудиозаписи совещания'
@@ -67,6 +68,16 @@ export async function resolveSpeakerAgentWorkflowId(): Promise<string> {
 function field(value: string | undefined): string {
   const text = (value || '').trim()
   return text || '—'
+}
+
+/** Аудио, загруженное на сервер до запуска: file_id для audio.transcribe. */
+function runAudioBlock(files: RunAudio[]): string[] {
+  if (!files.length) return []
+  return [
+    'Вложения запуска на сервере:',
+    ...files.map((file) => `- file_id=${file.fileId} · ${file.name}`),
+    'Аудио расшифровывай только audio.transcribe с file_id из этого списка, файл с диска не открывай.'
+  ]
 }
 
 function attendeesList(meeting: MeetingEvent): string {
@@ -142,7 +153,7 @@ export function buildSupplementMessage(
   meeting: MeetingEvent | null,
   audioPath: string | string[],
   protocol: ExistingProtocol,
-  opts: { extra?: boolean; previousAudio?: string[]; identified?: IdentifiedTranscript } = {}
+  opts: { extra?: boolean; previousAudio?: string[]; identified?: IdentifiedTranscript; files?: RunAudio[] } = {}
 ): string {
   const participants = Array.isArray(protocol.form.participants)
     ? protocol.form.participants.map((name) => String(name || '').trim()).filter(Boolean)
@@ -197,9 +208,11 @@ export function buildSupplementMessage(
     '',
     ...meetingLines,
     '',
-    ...(paths.length > 1
-      ? ['Абсолютные пути к аудиофайлам:', ...paths.map((item) => `- ${item}`)]
-      : [`Абсолютный путь к аудиофайлу: ${paths[0] || ''}`]),
+    ...(opts.files?.length && !ready
+      ? runAudioBlock(opts.files)
+      : paths.length > 1
+        ? ['Абсолютные пути к аудиофайлам:', ...paths.map((item) => `- ${item}`)]
+        : [`Абсолютный путь к аудиофайлу: ${paths[0] || ''}`]),
     ...(previous.length
       ? [
           `Протокол уже дополняли по записям: ${previous.join(', ')} — их изменения уже в текущем содержимом ниже. Повторно эти задачи не добавляй и не отмечай.`
@@ -236,10 +249,11 @@ export type IdentifiedTranscript = {
 }
 
 /** Первый запуск: только расшифровка нашим сервисом. В 1С этот запуск не пишет. */
-export function buildTranscribeOnlyMessage(meeting: MeetingEvent | null, audioPath: string): string {
+export function buildTranscribeOnlyMessage(meeting: MeetingEvent | null, audioPath: string, files: RunAudio[] = []): string {
   return [
     'ТОЛЬКО РАСШИФРОВКА.',
     'Вызови audio.transcribe ровно один раз для приложенного аудио и остановись.',
+    'Инструкцию агента дальше этого шага не выполняй: протокол строится следующим запуском, после проверки голосов человеком.',
     meeting
       ? 'names — участники совещания из списка ниже, без строк «Совещания» и почтовых ящиков.'
       : 'names не передавай, если список участников в задании не указан.',
@@ -255,7 +269,7 @@ export function buildTranscribeOnlyMessage(meeting: MeetingEvent | null, audioPa
         ]
       : []),
     '',
-    `Абсолютный путь к аудиофайлу: ${audioPath}`
+    ...(files.length ? runAudioBlock(files) : [`Абсолютный путь к аудиофайлу: ${audioPath}`])
   ].join('\n')
 }
 

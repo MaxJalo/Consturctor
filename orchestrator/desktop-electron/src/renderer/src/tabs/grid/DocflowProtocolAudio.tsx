@@ -4,26 +4,25 @@ import { CassetteTape, Trash2 } from 'lucide-react'
 import { api } from '../../api/client'
 import { buildFeedItems, settleOpenFeedTools } from '../../components/agentfeed/build'
 import { MarkdownBody } from '../../components/agentfeed/MarkdownBody'
-import type { RunState } from '../../components/agentfeed/runReducer'
 import type { FeedItem, ToolItem } from '../../components/agentfeed/types'
 import { isInFlightRunStatus } from '../../store/liveRun'
-import { useRuns } from '../../store/runs'
 import {
-  buildSpeakerMessage,
   buildSupplementMessage,
-  buildTranscribeOnlyMessage,
-  PROTOCOL_AGENT_TITLE,
   PROTOCOL_AUDIO_EXTENSIONS,
-  resolveProtocolAgentWorkflowId,
-  resolveSpeakerAgentWorkflowId,
-  type IdentifiedTranscript
+  resolveProtocolAgentWorkflowId
 } from '../../workplace/meetingProtocolAgent'
 import type { ProtocolRow } from '../../workplace/fetchDocflowProtocols'
+import {
+  decidePlatformApproval,
+  startPlatformProtocolRun,
+  uploadRunAudio,
+  usePlatformRun,
+  type PlatformRunView
+} from '../../workplace/platformProtocolRun'
 import {
   audioMarkTitle,
   forgetProtocolAudio,
   markAudioNames,
-  patchProtocolAudio,
   rememberProtocolAudio,
   saveProtocolAudioBackendRun,
   saveProtocolAudioResult,
@@ -31,6 +30,7 @@ import {
   type ProtocolAudioMark,
   type ProtocolAudioResult
 } from '../../workplace/protocolAudioMarks'
+import { PlatformRunDialog } from './PlatformRunDialog'
 import './meetingActions.css'
 
 function basename(filePath: string): string {
@@ -59,48 +59,22 @@ const ACTION_LABELS: Record<string, string> = {
   create: 'Протокол создан'
 }
 
-function lastToolResult(items: FeedItem[], name: string): Record<string, unknown> | null {
-  for (let index = items.length - 1; index >= 0; index -= 1) {
-    const item = items[index]
-    if (item.kind !== 'tool') continue
-    if (!item.done || item.error || !item.result) continue
-    if (toolIs(item, name)) return item.result
-  }
-  return null
-}
-
-function rosterLines(value: unknown): string {
-  if (!Array.isArray(value)) return ''
-  return value
-    .map((item) => {
-      if (!item || typeof item !== 'object') return ''
-      const row = item as { speaker?: string; fio?: string }
-      const speaker = String(row.speaker || '').trim()
-      const fio = String(row.fio || '').trim()
-      return speaker && fio ? `${speaker} — ${fio}` : ''
-    })
-    .filter(Boolean)
-    .join('\n')
-}
-
-function identifiedFrom(result: Record<string, unknown> | null): IdentifiedTranscript | null {
-  if (!result) return null
-  const transcriptId = String(result.transcript_id || '').trim()
-  const transcriptPath = String(result.transcript_path || '').trim()
-  const roster = rosterLines(result.people)
-  if (!transcriptId || !transcriptPath || !roster) return null
-  return { transcriptId, transcriptPath, roster }
-}
-
 function toolIs(item: ToolItem, name: string): boolean {
   return item.tool === name || item.tool.endsWith(`__${name}`) || item.tool.endsWith(`.${name}`)
 }
 
-/** Что из ленты запуска показать человеку: расшифровки, записи в 1С, итоговое пояснение агента. */
-function runResult(state: RunState, live: boolean): ProtocolAudioResult {
-  return feedResult(state.items, state.error, !live)
+function changeDetails(result: Record<string, unknown>): string[] {
+  return [
+    ...rows(result.added).map((row) => `добавлена задача ${row.item}: ${row.text}`),
+    ...rows(result.changed).map((row) => `исправлена задача ${row.item}`),
+    ...rows(result.marked).map((row) => `задача ${row.item} отмечена выполненной ${row.done_date || ''}`.trim()),
+    ...texts(result.skipped).map((text) => `пропущено: ${text}`),
+    ...texts(result.unresolved).map((text) => `не сопоставлено: ${text}`),
+    ...texts(result.errors).map((text) => `ошибка: ${text}`)
+  ]
 }
 
+/** Что из ленты старого раннера показать человеку: расшифровки, записи в 1С, итоговое пояснение агента. */
 function feedResult(items: FeedItem[], error: string, finished: boolean): ProtocolAudioResult {
   const tools = items.filter((item): item is ToolItem => item.kind === 'tool' && item.done)
   const transcripts = tools
@@ -114,19 +88,10 @@ function feedResult(items: FeedItem[], error: string, finished: boolean): Protoc
     .filter((item) => item.tool.endsWith('meeting_protocol_write'))
     .map((item) => {
       const result = item.result || {}
-      const action = String(item.arguments.action || 'create')
-      const details = [
-        ...rows(result.added).map((row) => `добавлена задача ${row.item}: ${row.text}`),
-        ...rows(result.changed).map((row) => `исправлена задача ${row.item}`),
-        ...rows(result.marked).map((row) => `задача ${row.item} отмечена выполненной ${row.done_date || ''}`.trim()),
-        ...texts(result.skipped).map((text) => `пропущено: ${text}`),
-        ...texts(result.unresolved).map((text) => `не сопоставлено: ${text}`),
-        ...texts(result.errors).map((text) => `ошибка: ${text}`)
-      ]
       return {
-        action,
+        action: String(item.arguments.action || 'create'),
         summary: String(result.summary || item.summary || item.statusText || ''),
-        details,
+        details: changeDetails(result),
         error: item.error
       }
     })
@@ -138,6 +103,31 @@ function feedResult(items: FeedItem[], error: string, finished: boolean): Protoc
     explanation: last && 'text' in last ? last.text.trim() : '',
     error,
     finished
+  }
+}
+
+/** То же по сессии платформы агентов (конфигурация 2). */
+function platformResult(run: PlatformRunView): ProtocolAudioResult {
+  const done = run.steps.filter((step) => step.done)
+  return {
+    transcripts: done
+      .filter((step) => step.tool === 'audio.transcribe' && step.result?.transcript_path)
+      .map((step) => ({
+        name: String(step.result?.filename || ''),
+        path: String(step.result?.transcript_path || ''),
+        durationSec: Number(step.result?.duration_sec) || 0
+      })),
+    changes: done
+      .filter((step) => step.tool === 'onec.meeting_protocol_write')
+      .map((step) => ({
+        action: String(step.args.action || 'create'),
+        summary: String(step.result?.summary || ''),
+        details: step.result ? changeDetails(step.result) : [],
+        error: step.error
+      })),
+    explanation: run.answer,
+    error: run.error,
+    finished: !run.running
   }
 }
 
@@ -166,7 +156,7 @@ async function findBackendRun(mark: ProtocolAudioMark, number: string): Promise<
   return best
 }
 
-/** Лента запуска с сервера: переживает перезапуск программы и не путается с соседними запусками агента. */
+/** Лента запуска старого раннера с сервера: переживает перезапуск программы и не путается с соседними запусками. */
 async function loadServerResult(
   mark: ProtocolAudioMark,
   number: string
@@ -210,25 +200,48 @@ function TranscriptView({ path }: { path: string }): React.JSX.Element {
   return <pre className="docflow-audio-transcript">{text}</pre>
 }
 
-function AudioRunSection({
-  protocolId,
-  number,
-  mark,
-  live,
-  open,
-  onToggle
-}: {
+type SectionProps = {
   protocolId: string
   number: string
   mark: ProtocolAudioMark
-  live: boolean
   open: string
   onToggle: (path: string) => void
-}): React.JSX.Element {
-  const [loading, setLoading] = useState(!live)
+}
 
+function AudioRunSection(props: SectionProps): React.JSX.Element {
+  return props.mark.platformSessionId ? <PlatformAudioRun {...props} /> : <LegacyAudioRun {...props} />
+}
+
+function PlatformAudioRun({ protocolId, mark, open, onToggle }: SectionProps): React.JSX.Element {
+  const run = usePlatformRun(mark.platformSessionId || '')
+  const [progressOpen, setProgressOpen] = useState(false)
+  const loaded = Boolean(run.status)
+  const result = loaded ? platformResult(run) : mark.result
   useEffect(() => {
-    if (live) return
+    if (loaded) saveProtocolAudioResult(protocolId, mark.runId, platformResult(run))
+  }, [loaded, mark.runId, protocolId, run])
+  return (
+    <>
+      <AudioRunBody
+        protocolId={protocolId}
+        mark={mark}
+        live={run.running}
+        loading={!loaded && !run.error && !mark.result}
+        result={result}
+        open={open}
+        onToggle={onToggle}
+        onProgress={() => setProgressOpen(true)}
+      />
+      {progressOpen && mark.platformSessionId ? (
+        <PlatformRunDialog sessionId={mark.platformSessionId} onClose={() => setProgressOpen(false)} />
+      ) : null}
+    </>
+  )
+}
+
+function LegacyAudioRun({ protocolId, number, mark, open, onToggle }: SectionProps): React.JSX.Element {
+  const [loading, setLoading] = useState(true)
+  useEffect(() => {
     let alive = true
     setLoading(true)
     void loadServerResult(mark, number)
@@ -245,20 +258,55 @@ function AudioRunSection({
       alive = false
     }
     // Перечитываем ленту, только когда меняется сам запуск, а не его сохранённый результат.
-  }, [protocolId, mark.runId, mark.at, number, live])
+  }, [protocolId, mark.runId, mark.at, number])
+  return (
+    <AudioRunBody
+      protocolId={protocolId}
+      mark={mark}
+      live={false}
+      loading={loading}
+      result={mark.result}
+      open={open}
+      onToggle={onToggle}
+    />
+  )
+}
 
+function AudioRunBody({
+  protocolId,
+  mark,
+  live,
+  loading,
+  result,
+  open,
+  onToggle,
+  onProgress
+}: {
+  protocolId: string
+  mark: ProtocolAudioMark
+  live: boolean
+  loading: boolean
+  result: ProtocolAudioResult | undefined
+  open: string
+  onToggle: (path: string) => void
+  onProgress?: () => void
+}): React.JSX.Element {
   const remove = (): void => {
     const names = markAudioNames(mark).join(', ') || 'запись'
     if (!window.confirm(`Убрать «${names}» из списка записей протокола? То, что агент уже записал в 1С, останется.`)) return
     forgetProtocolAudio(protocolId, mark)
   }
 
-  const result = mark.result
   return (
     <section>
       <h4>
         <CassetteTape size={14} aria-hidden /> {mark.extra ? 'Догрузка ГС' : 'Аудиозапись'}: {markAudioNames(mark).join(', ')}
         <span>{new Date(mark.at).toLocaleString('ru-RU')}</span>
+        {onProgress ? (
+          <button type="button" className="cal-btn" onClick={onProgress}>
+            Ход работы
+          </button>
+        ) : null}
         <button
           type="button"
           className="docflow-edit-btn docflow-audio-remove"
@@ -324,13 +372,11 @@ function ProtocolAudioReport({
   protocolId,
   number,
   marks,
-  liveRunId,
   onClose
 }: {
   protocolId: string
   number: string
   marks: ProtocolAudioMark[]
-  liveRunId: string
   onClose: () => void
 }): React.JSX.Element {
   const titleId = useId()
@@ -366,7 +412,6 @@ function ProtocolAudioReport({
               protocolId={protocolId}
               number={number}
               mark={mark}
-              live={Boolean(liveRunId) && mark.runId === liveRunId}
               open={open}
               onToggle={(path) => setOpen((value) => (value === path ? '' : path))}
             />
@@ -390,7 +435,10 @@ export function ProtocolAudioBadge({ row }: { row: Pick<ProtocolRow, 'id' | 'com
   )
 }
 
-/** «Дополнить из аудио» / «Догрузить ГС»: агент протоколов дописывает задачи и проверяет по записи их выполнение. */
+/**
+ * «Дополнить из аудио» / «Догрузить ГС»: агент протоколов на платформе (конфигурация 2) расшифровывает
+ * запись инструментом audio.transcribe, дописывает задачи и проверяет по записи их выполнение.
+ */
 export function ProtocolAudioSupplement({
   row,
   onFinished
@@ -398,116 +446,44 @@ export function ProtocolAudioSupplement({
   row: ProtocolRow
   onFinished: () => void
 }): React.JSX.Element {
-  const runs = useRuns()
   const marks = useProtocolAudioMarks()
-  const [busy, setBusy] = useState(false)
+  const [busy, setBusy] = useState('')
   const [error, setError] = useState('')
   const [reportOpen, setReportOpen] = useState(false)
+  const [progressOpen, setProgressOpen] = useState(false)
+  const [deciding, setDeciding] = useState(false)
   const own = marks[row.id] || []
   const last = own.at(-1)
-  const entry = last ? runs.getRun(last.workflowId) : undefined
-  const state = entry && last?.runId && entry.state.activeRunId === last.runId ? entry.state : undefined
-  const live = Boolean(state?.running || state?.pendingHitl || state?.pendingQuestion)
+  const sessionId = last?.platformSessionId || ''
+  const run = usePlatformRun(sessionId)
+  const live = Boolean(sessionId) && run.running
   const wasLive = useRef(false)
 
   useEffect(() => {
-    const stage = last?.stage
-    const closesProtocol = !stage || stage === 'protocol'
-    if (wasLive.current && !live && closesProtocol) onFinished()
+    if (wasLive.current && !live) onFinished()
     wasLive.current = live
-  }, [live, onFinished, last?.stage])
+  }, [live, onFinished])
 
-  const chainKey = useRef('')
   useEffect(() => {
-    const stage = last?.stage
-    if (!stage || stage === 'protocol' || !state || live) return
-    if (stage === 'transcribe') {
-      const result = lastToolResult(state.items, 'audio.transcribe')
-      const transcriptId = String(result?.transcript_id || '').trim()
-      if (!transcriptId) return
-      const key = `speakers:${transcriptId}`
-      if (chainKey.current === key) return
-      chainKey.current = key
-      void (async () => {
-        try {
-          const workflowId = await resolveSpeakerAgentWorkflowId()
-          const runId = runs.startRun({
-            workflowId,
-            title: 'Определение говорящих по расшифровке',
-            message: buildSpeakerMessage(transcriptId, null, rosterLines(result?.known_speakers)),
-            forceRestart: true
-          })
-          patchProtocolAudio(row.id, last.at, {
-            workflowId,
-            runId: runId || '',
-            backendRunId: '',
-            stage: 'speakers',
-            transcriptId
-          })
-        } catch (err) {
-          chainKey.current = ''
-          setError(err instanceof Error ? err.message : 'Не удалось запустить определение говорящих')
-        }
-      })()
-      return
+    if (sessionId && last?.runId && run.status) saveProtocolAudioResult(row.id, last.runId, platformResult(run))
+  }, [last?.runId, row.id, run, sessionId])
+
+  const decide = async (allow: boolean): Promise<void> => {
+    if (!sessionId || !run.approval || deciding) return
+    setDeciding(true)
+    try {
+      await decidePlatformApproval(sessionId, run.approval.id, allow)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Не удалось передать решение агенту')
+    } finally {
+      setDeciding(false)
     }
-    const bound = identifiedFrom(lastToolResult(state.items, 'audio.bind_speakers'))
-    if (!bound || !last) return
-    const key = `protocol:${bound.transcriptId}`
-    if (chainKey.current === key) return
-    chainKey.current = key
-    void (async () => {
-      try {
-        const res = await api.invokeServerTool('onec.meeting_protocols', { ref_key: row.id }, 90_000)
-        const card = (res.ok && res.result && typeof res.result === 'object'
-          ? (res.result as { protocol?: { number?: string; editable?: boolean; form?: Record<string, unknown> } }).protocol
-          : undefined)
-        if (!card?.form) throw new Error(res.error || 'Не удалось прочитать протокол из 1С')
-        const workflowId = await resolveProtocolAgentWorkflowId()
-        const message = buildSupplementMessage(
-          null,
-          last.audioPath || '',
-          {
-            number: String(card.number || row.number),
-            refKey: row.id,
-            editable: card.editable !== false,
-            form: card.form
-          },
-          { extra: last.extra, identified: bound }
-        )
-        const runId = runs.startRun({
-          workflowId,
-          title: PROTOCOL_AGENT_TITLE,
-          message,
-          forceRestart: true
-        })
-        patchProtocolAudio(row.id, last.at, {
-          workflowId,
-          runId: runId || '',
-          backendRunId: '',
-          stage: 'protocol',
-          transcriptId: bound.transcriptId
-        })
-      } catch (err) {
-        chainKey.current = ''
-        setError(err instanceof Error ? err.message : 'Не удалось передать расшифровку в протокол')
-      }
-    })()
-  }, [last, live, row.id, row.number, runs, state])
-
-  useEffect(() => {
-    if (state && last?.runId) saveProtocolAudioResult(row.id, last.runId, runResult(state, live))
-  }, [state, live, last?.runId, row.id])
-
-  const backendRunId = state && entry ? entry.backendRunId : ''
-  useEffect(() => {
-    if (backendRunId && last?.runId) saveProtocolAudioBackendRun(row.id, last.runId, backendRunId)
-  }, [backendRunId, last?.runId, row.id])
+  }
 
   const start = async (extra: boolean): Promise<void> => {
     if (busy || live) return
     setError('')
-    setBusy(true)
+    setBusy('Запуск…')
     try {
       const paths = await window.api.openFile({
         title: extra ? 'Голосовые сообщения для догрузки в протокол' : 'Аудиозапись совещания для дополнения протокола',
@@ -522,26 +498,22 @@ export function ProtocolAudioSupplement({
         : undefined) as { number?: string; editable?: boolean; form?: Record<string, unknown> } | undefined
       if (!card?.form) throw new Error(res.error || 'Не удалось прочитать протокол из 1С')
       const workflowId = await resolveProtocolAgentWorkflowId()
-      const busyRun = runs.getRun(workflowId)?.state
-      if (busyRun?.running || busyRun?.pendingHitl || busyRun?.pendingQuestion) {
-        throw new Error('Агент протоколов сейчас занят другим запуском — дождитесь его окончания')
-      }
+      setBusy('Загрузка аудио…')
+      const files = await uploadRunAudio(workflowId, audioPaths)
+      setBusy('Запуск…')
+      const message = buildSupplementMessage(
+        null,
+        audioPaths,
+        {
+          number: String(card.number || row.number),
+          refKey: row.id,
+          editable: card.editable !== false,
+          form: card.form
+        },
+        { extra, previousAudio: own.flatMap(markAudioNames), files }
+      )
+      const platformSessionId = await startPlatformProtocolRun(workflowId, message)
       const names = audioPaths.map(basename)
-      const single = audioPaths.length === 1
-      const message = single
-        ? buildTranscribeOnlyMessage(null, audioPaths[0])
-        : buildSupplementMessage(
-            null,
-            audioPaths,
-            {
-              number: String(card.number || row.number),
-              refKey: row.id,
-              editable: card.editable !== false,
-              form: card.form
-            },
-            { extra, previousAudio: own.flatMap(markAudioNames) }
-          )
-      const runId = runs.startRun({ workflowId, title: PROTOCOL_AGENT_TITLE, message, filePaths: audioPaths })
       rememberProtocolAudio({
         protocolId: row.id,
         audioName: names.join(', '),
@@ -549,18 +521,25 @@ export function ProtocolAudioSupplement({
         audioPath: audioPaths[0],
         extra,
         workflowId,
-        runId: runId || '',
+        runId: platformSessionId,
         at: new Date().toISOString(),
-        stage: single ? 'transcribe' : undefined
+        stage: 'protocol',
+        platformSessionId
       })
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Не удалось запустить агента по аудиозаписи')
     } finally {
-      setBusy(false)
+      setBusy('')
     }
   }
 
-  const hasReport = own.length > 0
+  const status = run.approval
+    ? 'Ждёт вашего разрешения'
+    : run.question
+      ? 'Агент задал вопрос'
+      : run.steps.some((step) => step.tool === 'audio.transcribe' && !step.done)
+        ? 'Расшифровка записи…'
+        : 'Агент работает…'
   return (
     <div className="docflow-audio-row">
       <div className="docflow-audio-actions">
@@ -568,24 +547,24 @@ export function ProtocolAudioSupplement({
           <button
             type="button"
             className="docflow-edit-btn"
-            disabled={busy || live}
+            disabled={Boolean(busy) || live}
             title="Догрузить голосовые сообщения к протоколу: агент дополнит задачи и проверит выполнение"
             onClick={() => void start(true)}
           >
-            {busy ? 'Запуск…' : live ? 'Агент работает…' : 'Догрузить ГС'}
+            {busy || (live ? 'Агент работает…' : 'Догрузить ГС')}
           </button>
         ) : (
           <button
             type="button"
             className="docflow-edit-btn"
-            disabled={busy || live}
+            disabled={Boolean(busy) || live}
             title="Прикрепить аудиозапись совещания: агент дополнит задачи и проверит их выполнение"
             onClick={() => void start(false)}
           >
-            {busy ? 'Запуск…' : live ? 'Агент работает…' : 'Дополнить из аудио'}
+            {busy || (live ? 'Агент работает…' : 'Дополнить из аудио')}
           </button>
         )}
-        {hasReport ? (
+        {own.length ? (
           <button
             type="button"
             className="docflow-edit-btn"
@@ -596,7 +575,7 @@ export function ProtocolAudioSupplement({
           </button>
         ) : null}
       </div>
-      {error || (state && live) ? (
+      {error || live ? (
         <div className="meeting-protocol-progress docflow-audio-progress">
           {last ? (
             <div className="meeting-protocol-progress-row">
@@ -604,49 +583,51 @@ export function ProtocolAudioSupplement({
               <span>{markAudioNames(last).join(', ')}</span>
             </div>
           ) : null}
-          {state ? (
+          {live ? (
             <div className="meeting-protocol-progress-row">
               <span className="meeting-protocol-label">Статус</span>
-              <span>{state.status || 'В работе…'}</span>
+              <span>{status}</span>
             </div>
           ) : null}
           {error ? <p className="meeting-protocol-error">{error}</p> : null}
-          {state?.pendingHitl && last ? (
+          {live && run.approval ? (
             <div className="meeting-protocol-hitl">
-              <p>{state.pendingHitl.title || 'Нужно ваше решение'}</p>
-              {state.pendingHitl.intent ? <p className="meeting-protocol-hitl-intent">{state.pendingHitl.intent}</p> : null}
+              <p>{run.approval.title || 'Нужно ваше разрешение'}</p>
+              {run.approval.subject ? <p className="meeting-protocol-hitl-intent">{run.approval.subject}</p> : null}
               <div className="meeting-protocol-hitl-actions">
-                <button
-                  type="button"
-                  className="btn-primary"
-                  onClick={() => runs.respondHitl(last.workflowId, state.pendingHitl!.requestId, true)}
-                >
-                  Подтвердить
+                <button type="button" className="btn-primary" disabled={deciding} onClick={() => void decide(true)}>
+                  Разрешить
                 </button>
-                <button
-                  type="button"
-                  className="btn-ghost"
-                  onClick={() => runs.respondHitl(last.workflowId, state.pendingHitl!.requestId, false)}
-                >
+                <button type="button" className="btn-ghost" disabled={deciding} onClick={() => void decide(false)}>
                   Отклонить
+                </button>
+                <button type="button" className="btn-ghost" onClick={() => setProgressOpen(true)}>
+                  Подробнее
                 </button>
               </div>
             </div>
           ) : null}
-          {state?.pendingQuestion ? (
-            <p className="meeting-protocol-hint">Агент задал вопрос — ответьте во вкладке «Решения».</p>
+          {live && run.question ? (
+            <div className="meeting-protocol-hitl">
+              <p>{run.question.title || 'Агент задал вопрос'}</p>
+              <div className="meeting-protocol-hitl-actions">
+                <button type="button" className="btn-primary" onClick={() => setProgressOpen(true)}>
+                  Ответить
+                </button>
+              </div>
+            </div>
+          ) : null}
+          {live ? (
+            <button type="button" className="cal-btn meeting-protocol-progress-open" onClick={() => setProgressOpen(true)}>
+              Ход работы
+            </button>
           ) : null}
         </div>
       ) : null}
       {last?.result?.error && !live ? <p className="meeting-protocol-error">{last.result.error}</p> : null}
+      {progressOpen && sessionId ? <PlatformRunDialog sessionId={sessionId} onClose={() => setProgressOpen(false)} /> : null}
       {reportOpen ? (
-        <ProtocolAudioReport
-          protocolId={row.id}
-          number={row.number}
-          marks={own}
-          liveRunId={live && last ? last.runId : ''}
-          onClose={() => setReportOpen(false)}
-        />
+        <ProtocolAudioReport protocolId={row.id} number={row.number} marks={own} onClose={() => setReportOpen(false)} />
       ) : null}
     </div>
   )

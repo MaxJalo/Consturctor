@@ -2065,6 +2065,24 @@ export class ApiClient {
     return latest
   }
 
+  /** Временные вложения запуска на сервере: по их id серверные инструменты (audio.transcribe) находят файл. */
+  async uploadRunAttachments(workflowId: string, runId: string, filePaths: string[]): Promise<WorkflowFileItem[]> {
+    let latest: WorkflowFileItem[] = []
+    for (const filePath of filePaths) {
+      const res = await window.api.upload<Record<string, unknown>>({
+        endpoint: `/api/v1/workflows/${encodeURIComponent(workflowId)}/runs/${encodeURIComponent(runId)}/attachments`,
+        filePath,
+        fieldName: 'files',
+        token: this.resolveToken(),
+        timeoutMs: 600_000
+      })
+      if (!res.ok) throw new ApiError(res.error || 'Не удалось загрузить файл на сервер', res.status)
+      const stored = (res.data?.run_attachments as Record<string, unknown>[]) ?? []
+      latest = stored.map((item) => parsePlatformFile({ ...item, workflow_id: workflowId }))
+    }
+    return latest
+  }
+
   // ---------- Notifications ----------
   async listChatThreads(search = ''): Promise<ChatThread[]> {
     try {

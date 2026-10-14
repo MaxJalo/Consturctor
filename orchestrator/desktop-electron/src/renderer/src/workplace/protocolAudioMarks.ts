@@ -25,6 +25,8 @@ export type ProtocolAudioMark = {
   stage?: 'transcribe' | 'speakers' | 'protocol'
   transcriptId?: string
   audioPath?: string
+  /** Сессия платформы агентов (конфигурация 2): ход, расшифровки и записи в 1С берутся из неё. */
+  platformSessionId?: string
 }
 
 const STORAGE_KEY = 'docflow.protocolAudio.v1'
