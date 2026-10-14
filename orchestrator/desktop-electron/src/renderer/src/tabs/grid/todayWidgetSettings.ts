@@ -1,3 +1,4 @@
+import { scheduleUiSync } from '../../components/uiPrefsSync'
 import {
   TODAY_WIDGET_IDS,
   TODAY_WIDGET_LABELS,
@@ -89,6 +90,7 @@ export function writeTodayTileVisibility(userId: string, visibility: Record<Toda
   const hidden = Object.fromEntries(TODAY_TILE_IDS.filter((id) => visibility[id] === false).map((id) => [id, false]))
   try {
     localStorage.setItem(tileStorageKey(userId), JSON.stringify(hidden))
+    scheduleUiSync(userId, 'today')
   } catch {
     /* ignore quota */
   }
@@ -115,6 +117,7 @@ export function writeTodayTileOrder(userId: string, order: TodayTileId[]): void 
   const missing = TODAY_TILE_IDS.filter((id) => !kept.includes(id))
   try {
     localStorage.setItem(tileOrderKey(userId), JSON.stringify([...kept, ...missing]))
+    scheduleUiSync(userId, 'today')
   } catch {
     /* ignore quota */
   }

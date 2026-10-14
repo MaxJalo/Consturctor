@@ -17,6 +17,7 @@ from app.api.v1 import (
     regulations,
     tools,
     triggers,
+    user_ui,
     workflows,
     workplace,
 )
@@ -40,5 +41,6 @@ api_router.include_router(orchestrator.router, prefix="/api/v1")
 api_router.include_router(position_kpi.router, prefix="/api/v1")
 api_router.include_router(position_kpi_builds.router, prefix="/api/v1")
 api_router.include_router(workplace.router, prefix="/api/v1")
+api_router.include_router(user_ui.router, prefix="/api/v1")
 api_router.include_router(platform_tasks.router, prefix="/api/v1")
 api_router.include_router(chat_router, prefix="/api/v1")

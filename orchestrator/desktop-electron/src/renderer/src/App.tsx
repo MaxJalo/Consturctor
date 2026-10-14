@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react'
 import { APP_TITLE, PAGE_LABELS, Sidebar, type PageKey, type SidebarNavItem } from './components/Sidebar'
+import { resetUiPrefsSync, startUiPrefsSync } from './components/uiPrefsSync'
 import { UserMenu } from './components/UserMenu'
 import { LoginPage } from './pages/LoginPage'
 import { MessengerPage } from './pages/MessengerPage'
@@ -228,6 +229,14 @@ function WithExtensionNav({
 function AppShell(): React.JSX.Element {
   const [booting, setBooting] = useState(true)
   const [user, setUser] = useState<UserProfile | null>(null)
+  useEffect(() => {
+    const id = user?.id?.trim() || ''
+    if (!id) {
+      resetUiPrefsSync()
+      return
+    }
+    void startUiPrefsSync(id)
+  }, [user?.id])
   const [showLogout, setShowLogout] = useState(true)
   const [view, setView] = useState<View>({ kind: 'tab', key: 'overview' })
   const [lastTab, setLastTab] = useState<PageKey>('overview')
@@ -594,6 +603,7 @@ function AppShell(): React.JSX.Element {
     setView({ kind: 'tab', key: 'overview' })
     setLastTab('overview')
     setAdminViewMode('user')
+    resetUiPrefsSync()
     setUser(null)
     setRequireComLogin(false)
   }
