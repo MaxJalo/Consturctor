@@ -276,7 +276,11 @@ async function downloadInstaller(asset: GithubAsset, dest: string): Promise<void
 }
 
 function launchInstaller(installerPath: string): void {
-  const child = spawn(installerPath, ['/S', '--updated', '--force-run'], {
+  // CreateProcess cannot raise UAC. ShellExecute with runas asks for administrator,
+  // which the route script needs in order to write a persistent LAN route.
+  const escaped = installerPath.replace(/'/g, "''")
+  const command = `Start-Process -FilePath '${escaped}' -ArgumentList '/S','--updated','--force-run' -Verb RunAs`
+  const child = spawn('powershell.exe', ['-NoProfile', '-Command', command], {
     detached: true,
     stdio: 'ignore',
     windowsHide: true
