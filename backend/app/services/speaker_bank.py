@@ -83,6 +83,14 @@ def best_voice_match(
     }
 
 
+def fio_initials(fio: str) -> str:
+    """«Амураль Игорь Борисович» → «Амураль И.Б.»; одно слово остаётся как есть."""
+    parts = (fio or "").split()
+    if len(parts) < 2:
+        return " ".join(parts)
+    return parts[0] + " " + "".join(f"{part[0].upper()}." for part in parts[1:3])
+
+
 def relabel_speaker(speaker: str, mapping: dict[str, str]) -> str:
     def replace(match: re.Match[str]) -> str:
         label = f"Голос {match.group(1)}"
@@ -299,13 +307,25 @@ def speakers_for_user(transcript_id: str, user_id: str) -> dict[str, Any]:
         db.close()
 
 
-def confirm_speakers(transcript_id: str, user_id: str, voices: list[dict[str, Any]]) -> dict[str, Any]:
+def confirm_speakers(
+    transcript_id: str,
+    user_id: str,
+    voices: list[dict[str, Any]],
+    *,
+    save_voices: bool = True,
+    initials: bool = False,
+) -> dict[str, Any]:
     from app.db.session import SessionLocal
 
     db = SessionLocal()
     try:
         return bind_speakers(
-            db, transcript_id=transcript_id, user_id=user_id, voices=voices
+            db,
+            transcript_id=transcript_id,
+            user_id=user_id,
+            voices=voices,
+            save_voices=save_voices,
+            initials=initials,
         )
     finally:
         db.close()
@@ -377,7 +397,11 @@ def bind_speakers(
     transcript_id: str,
     user_id: str,
     voices: list[dict[str, Any]],
+    save_voices: bool = True,
+    initials: bool = False,
 ) -> dict[str, Any]:
+    """Подставить ФИО вместо «Голос N». save_voices=False — догадка агента без проверки человеком:
+    отпечатки голосов в банк не пишутся. initials=True — в репликах «Фамилия И.О.»."""
     row = _own_transcript(db, transcript_id, user_id)
     segments = list(row.segments or [])
     labels = voice_labels(segments)
@@ -404,7 +428,7 @@ def bind_speakers(
         mapping[label] = fio
         vector = embeddings.get(label) or []
         voice_saved = False
-        if vector:
+        if vector and save_voices:
             key = fio_key(fio)
             profile = db.query(VoiceProfile).filter(VoiceProfile.fio_key == key).first()
             if profile is None:
@@ -431,6 +455,12 @@ def bind_speakers(
                 "said_preview": preview[:500],
             }
         )
+    if initials:
+        short = {label: fio_initials(fio) for label, fio in mapping.items()}
+        taken = list(short.values())
+        mapping = {label: name if taken.count(name) == 1 else mapping[label] for label, name in short.items()}
+    for person in people:
+        person["label"] = mapping.get(person["speaker"], person["fio"])
     rewritten = []
     for segment in segments:
         item = dict(segment)

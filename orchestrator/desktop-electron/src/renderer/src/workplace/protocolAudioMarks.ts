@@ -25,8 +25,14 @@ export type ProtocolAudioMark = {
   stage?: 'transcribe' | 'speakers' | 'protocol'
   transcriptId?: string
   audioPath?: string
-  /** Сессия платформы агентов (конфигурация 2): ход, расшифровки и записи в 1С берутся из неё. */
+  /** Сессия платформы агентов (конфигурация 2) текущего этапа: расшифровка → говорящие → протокол. */
   platformSessionId?: string
+  /** Расшифровка из первого этапа: сессия протокола её уже не содержит. */
+  transcript?: { name: string; path: string; durationSec: number }
+  /** Присутствующие по протоколу 1С — подсказка расшифровке и агенту говорящих. */
+  participants?: string[]
+  /** Этап не смог передать работу следующему агенту. */
+  chainError?: string
 }
 
 const STORAGE_KEY = 'docflow.protocolAudio.v1'
