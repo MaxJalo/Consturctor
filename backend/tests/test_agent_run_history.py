@@ -7,6 +7,7 @@ from app.services.agent_runs import (
     effective_run_status,
     is_successful_work_answer,
     slim_run_events,
+    slim_run_context,
     slim_run_metrics,
 )
 from app.services.workflows.cursor_tools import (
@@ -43,6 +44,55 @@ def test_slim_run_metrics_keeps_numbers_only() -> None:
         ]
     )
     assert stored == [{"t": 10.0, "cpu": 1.5, "ram": 2.0}]
+
+
+def test_slim_run_metrics_keeps_spike_with_processes() -> None:
+    stored = slim_run_metrics(
+        [
+            {
+                "t": 20,
+                "cpu": 40,
+                "spike": {
+                    "marks": [
+                        {"metric": "cpu", "value": 40, "baseline": 2},
+                        {"metric": "gen", "value": 9, "baseline": 1},
+                        {"metric": "ram", "value": "x", "baseline": 1},
+                    ],
+                    "processes": [{"pid": 7, "name": "node.exe", "cpu": 39.5, "ram_mb": 300, "gpu": None, "disk": 0.1}, "bad"],
+                },
+            },
+            {"t": 21, "cpu": 3, "spike": {"marks": [{"metric": "gen", "value": 1, "baseline": 0}]}},
+        ]
+    )
+    assert stored[0]["spike"] == {
+        "marks": [{"metric": "cpu", "value": 40.0, "baseline": 2.0}],
+        "processes": [{"pid": 7, "name": "node.exe", "cpu": 39.5, "ram_mb": 300.0, "gpu": None, "disk": 0.1}],
+    }
+    assert "spike" not in stored[1]
+
+
+def test_slim_run_context_keeps_valid_ranges_and_clips_text() -> None:
+    stored = slim_run_context(
+        {
+            "items": {
+                "tools": {"type": "tools", "label": "Инструменты", "chars": 40, "text": "a, b"},
+                "1:user": {"turn": 1, "type": "user", "label": "Промпт", "chars": 5000, "text": "x" * 5000},
+                "1:s1": {"turn": 1, "type": "weird", "label": "?", "chars": 3, "text": "abc"},
+                "bad": {"type": "user", "chars": "many"},
+            },
+            "order": ["tools", "1:user", "1:s1", "bad", "missing"],
+            "snapshots": [
+                {"seq": 1, "turn": 1, "kind": "user", "reason": "промпт", "from": 0, "to": 1, "usage": {"inputTokens": 9, "x": "y"}},
+                {"seq": 2, "turn": 1, "kind": "thinking", "reason": "шаг", "from": 0, "to": 5},
+            ],
+        }
+    )
+    assert stored["order"] == ["1:user", "1:s1"]
+    assert len(stored["items"]["1:user"]["text"]) == 1500
+    assert stored["items"]["1:s1"]["type"] == "other"
+    assert [snap["seq"] for snap in stored["snapshots"]] == [1]
+    assert stored["snapshots"][0]["usage"] == {"inputTokens": 9}
+    assert slim_run_context("junk") == {"items": {}, "order": [], "snapshots": []}
 
 
 def test_slim_run_events_keeps_tool_and_work_result() -> None:

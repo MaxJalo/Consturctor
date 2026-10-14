@@ -60,6 +60,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from run_context import RunContext
 from run_metrics import RunMetrics, runner_pid
 
 
@@ -1659,6 +1660,20 @@ class ElectronBridge(CursorSdkBridge):
         self._knowledge_workflow_id = ""
         self._knowledge_cwd = ""
         self._knowledge_run_id = ""
+        self.context_sink: RunContext | None = None
+
+    def _send(self, process: Any, payload: dict[str, Any]) -> None:
+        sink = self.context_sink
+        if sink is not None and payload.get("type") == "run":
+            try:
+                sink.begin_turn(
+                    str(payload.get("prompt") or ""),
+                    list(payload.get("tools") or []),
+                    resumed=bool(payload.get("resumeAgentId")),
+                )
+            except Exception as exc:  # noqa: BLE001
+                log("run context turn failed: " + repr(exc))
+        super()._send(process, payload)
 
     def bind_knowledge(
         self,
@@ -2999,6 +3014,7 @@ class Sidecar:
         self._personal_agent_ids: dict[str, str] = {}
         self._lock = threading.Lock()
         self._metrics_api = True
+        self._context_api = True
 
     # -- configuration -------------------------------------------------
     def configure(self, command: dict[str, Any]) -> None:
@@ -3006,6 +3022,7 @@ class Sidecar:
         if backend_url:
             self._api = ApiClient(base_url=backend_url)
             self._metrics_api = True
+            self._context_api = True
         token = str(command.get("token") or "").strip() or None
         self._api.set_token(token)
         # Server-side tools (users.current, 1C tasks, ...) read this process-global
@@ -3277,6 +3294,33 @@ class Sidecar:
             return []
         return sampler.stop()
 
+    def _start_run_context(self, active: ActiveRun, bridge: ElectronBridge) -> None:
+        def publish(context: dict[str, Any]) -> None:
+            if not self._context_api:
+                return
+            run_ref = (active.history_run_id or "").strip()
+            if not run_ref or not active.workflow_id:
+                return
+            try:
+                self._api.update_local_agent_run_context(active.workflow_id, run_ref, context)
+            except ApiError as exc:
+                if exc.status_code in {404, 405, 422}:
+                    self._context_api = False
+                log("run context flush failed: " + _ascii(exc.message))
+
+        active.context = RunContext(publish)
+        bridge.context_sink = active.context
+        active.context.start()
+
+    def _stop_run_context(self, active: ActiveRun) -> dict[str, Any] | None:
+        collector = getattr(active, "context", None)
+        if collector is None:
+            return None
+        bridge = getattr(active, "bridge", None)
+        if bridge is not None and getattr(bridge, "context_sink", None) is collector:
+            bridge.context_sink = None
+        return collector.stop()
+
     def _notify_fresh_waits(self, active: ActiveRun) -> None:
         seen = getattr(active, "notified_waits", None)
         if seen is None:
@@ -3314,6 +3358,11 @@ class Sidecar:
             if not isinstance(payload, dict):
                 return
             event_type = str(payload.get("type") or "")
+            collector = getattr(active, "context", None)
+            if collector is not None:
+                collector.observe(payload)
+            if event_type == "usage":
+                return
             if event_type in {"assistant", "thinking", "final", "status"}:
                 blob = " ".join(
                     str(payload.get(key) or "")
@@ -4264,6 +4313,7 @@ class Sidecar:
         answer = ""
         agent_id = resume_agent_id
         self._start_run_metrics(active, bridge)
+        self._start_run_context(active, bridge)
         try:
             try:
                 result = bridge.run(
@@ -4351,10 +4401,12 @@ class Sidecar:
                     workflow_id, run_ref, status="error", answer=answer,
                     events=events, message=message,
                     metrics=self._stop_run_metrics(active),
+                    context=self._stop_run_context(active),
                 )
                 active.history_finished = True
             except ApiError:
                 self._stop_run_metrics(active)
+                self._stop_run_context(active)
             try:
                 _append_run_journal(
                     run_cwd,
@@ -4373,6 +4425,7 @@ class Sidecar:
             workflow_id, run_ref, status=status, answer=answer,
             events=events, message=message,
             metrics=self._stop_run_metrics(active),
+            context=self._stop_run_context(active),
         )
         active.history_finished = True
         try:
@@ -4795,6 +4848,8 @@ class Sidecar:
                 active.history_run_id,
                 status="error",
                 answer=answer,
+                metrics=self._stop_run_metrics(active) or None,
+                context=self._stop_run_context(active),
             )
             active.history_finished = True
         except ApiError:

@@ -253,6 +253,17 @@ def _ensure_columns() -> None:
             except SQLAlchemyError:
                 conn.execute(text("ROLLBACK TO SAVEPOINT metrics_json_col"))
                 logger.warning("agent_runs.metrics_json was not added, will retry on next start", exc_info=True)
+        if run_cols and "context_json" not in run_cols:
+            try:
+                conn.execute(text("SAVEPOINT context_json_col"))
+                conn.execute(text("SET LOCAL lock_timeout = '3s'"))
+                conn.execute(
+                    text("ALTER TABLE agent_runs ADD COLUMN context_json JSON NOT NULL DEFAULT '{}'")
+                )
+                conn.execute(text("RELEASE SAVEPOINT context_json_col"))
+            except SQLAlchemyError:
+                conn.execute(text("ROLLBACK TO SAVEPOINT context_json_col"))
+                logger.warning("agent_runs.context_json was not added, will retry on next start", exc_info=True)
         creation_rows = conn.execute(
             text(
                 """
