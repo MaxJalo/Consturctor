@@ -351,11 +351,13 @@ def start_build(
     catalog = _catalog_for_profile(db, profile)
     if not catalog["metrics"]:
         raise PositionKpiBuildError("В методике Finance нет показателей KPI.", status_code=409)
-    ready_codes = builtin_metric_codes(db, profile.id) | set(
-        db.scalars(
-            select(PositionKpiModule.metric_code).where(PositionKpiModule.profile_id == profile.id)
+    ready_codes = builtin_metric_codes(db, profile.id) | {
+        row.metric_code
+        for row in db.scalars(
+            select(PositionKpiModule).where(PositionKpiModule.profile_id == profile.id)
         ).all()
-    )
+        if (row.source or "").strip()
+    }
     pending = [item for item in catalog["metrics"] if item["code"] not in ready_codes]
     if not pending:
         raise PositionKpiBuildError("Все KPI должности уже считаются автоматически.", status_code=409)

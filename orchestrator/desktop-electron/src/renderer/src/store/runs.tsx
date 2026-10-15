@@ -558,6 +558,7 @@ export function RunProvider({ children }: { children: React.ReactNode }): React.
             ? liveItems
             : historyItems
         const answer = (detail.item.answer || detail.item.summary || '').trim()
+        const failed = String(detail.item.status || '').toLowerCase() === 'error'
         let nextItems = items
         if (
           !inFlight &&
@@ -565,7 +566,14 @@ export function RunProvider({ children }: { children: React.ReactNode }): React.
           !isTriggerCheckNoise(answer) &&
           !nextItems.some((item) => item.kind === 'result')
         ) {
-          nextItems = [...nextItems, { kind: 'result', id: `hist-res-${runId}`, text: answer }]
+          if (failed) {
+            const shown = nextItems.some(
+              (item) => item.kind === 'system' && (item.text || '').trim() === answer
+            )
+            if (!shown) nextItems = pushSystem(nextItems, answer, 'error')
+          } else {
+            nextItems = [...nextItems, { kind: 'result', id: `hist-res-${runId}`, text: answer }]
+          }
         }
         if (hung) {
           nextItems = pushSystem(nextItems, SDK_DEAD_ANSWER, 'error')

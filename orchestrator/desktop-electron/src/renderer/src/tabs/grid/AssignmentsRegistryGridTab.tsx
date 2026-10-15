@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { FileDown, Plus, Printer } from 'lucide-react'
+import { FileDown, Plus, Printer, Sparkles } from 'lucide-react'
 import { buildRegistryReportHtml } from '../../workplace/registryPrint'
 import type { UserProfile } from '../../api/types'
 import { StandardTabChrome, summaryTilesAsChrome } from './TabChromeGrid'
@@ -37,6 +37,8 @@ import {
   findClosureAgentWorkflowId,
   resolveClosureAgentWorkflowId
 } from '../../workplace/assignmentClosureAgent'
+import { useClosureAutoClose, useClosureCheckResult } from '../../workplace/closureCheckResult'
+import { ClosureCheckDialog, ClosureCheckRowPanel } from '../../workplace/ClosureCheckPanels'
 import type { SpecSummaryTile } from '../../workplace/specV04Shell'
 import { useRegisterGlobalSearch, type GlobalSearchEntry } from '../../layout/globalSearch'
 import './extensionsGrid.css'
@@ -126,9 +128,14 @@ function percentOf(part: number, total: number): string {
   return `${Math.round((part / total) * 100)}%`
 }
 
+function formatClosureAt(iso: string): string {
+  const date = new Date(iso)
+  if (Number.isNaN(date.getTime())) return 'Готово'
+  return date.toLocaleString('ru-RU', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })
+}
+
 function buildRegistryTiles(
-  rows: ReturnType<typeof useAssignmentRegistry>['rows'],
-  aiHint: string
+  rows: ReturnType<typeof useAssignmentRegistry>['rows']
 ): SpecSummaryTile[] {
   const open = rows.filter((row) => row.open)
   const done = rows.filter((row) => isCompletedAssignment(row))
@@ -174,13 +181,6 @@ function buildRegistryTiles(
       note: `(${percentOf(doneOfDue.length, dueReached.length)})`,
       tooltip: 'Выполненные и отменённые. В скобках — доля среди поручений, у которых срок уже наступил',
       tone: 'green'
-    },
-    {
-      id: 'ai',
-      label: 'Анализ ИИ',
-      value: aiHint,
-      hint: 'Проверка артефактов и оснований для закрытия',
-      tone: 'purple'
     }
   ]
 }
@@ -188,10 +188,12 @@ function buildRegistryTiles(
 export function AssignmentsRegistryGridTab({
   user,
   onRunAgent,
+  onOpenRun,
   navTile = null
 }: {
   user: UserProfile
   onRunAgent: (workflowId: string, title: string, message: string) => void
+  onOpenRun?: (workflowId: string, title: string, runId: string) => void
   navTile?: AssignmentRegistryTileId | 'all' | null
 }): React.JSX.Element {
   const allowed = canUseExtension(user, 'assignments_registry')
@@ -337,19 +339,35 @@ export function AssignmentsRegistryGridTab({
   }, [])
   const aiRun = closureAgentId ? runs.entries[closureAgentId] : undefined
   const aiBusy = aiStarting || Boolean(aiRun?.state?.running)
+  const closureResult = useClosureCheckResult(closureAgentId, aiRun)
   const aiWasRunning = useRef(false)
   useEffect(() => {
     const running = Boolean(aiRun?.state?.running)
-    if (aiWasRunning.current && !running) {
-      setClosureNotice(
-        'Проверка артефактов завершена. В результате агента отмечено, какие поручения можно закрыть по файлам и задачам документооборота.'
-      )
+    if (aiWasRunning.current && !running && !closureResult) {
+      setClosureNotice('Проверка завершена, но агент не вернул разбор по поручениям — откройте «Ход работы».')
     }
     aiWasRunning.current = running
-  }, [aiRun?.state?.running])
-  const aiHint = aiBusy ? 'Идёт проверка…' : 'Запустить'
-
-  const tiles = useMemo(() => buildRegistryTiles(rowsHydrated, aiHint), [rowsHydrated, aiHint])
+  }, [aiRun?.state?.running, closureResult])
+  const autoClose = useClosureAutoClose(
+    closureResult,
+    Boolean(aiRun?.state?.running),
+    user,
+    (number) => rowsHydrated.find((row) => row.number === number)?.open,
+    () => refresh()
+  )
+  const closureByNumber = useMemo(
+    () => new Map((closureResult?.assignments ?? []).map((item) => [item.number, item])),
+    [closureResult]
+  )
+  const openClosureFeed = (): void => {
+    if (!closureAgentId) return
+    const running = Boolean(aiRun?.state?.running)
+    if (!running && closureResult?.runId && onOpenRun) onOpenRun(closureAgentId, CLOSURE_AGENT_TITLE, closureResult.runId)
+    else onRunAgent(closureAgentId, CLOSURE_AGENT_TITLE, '')
+  }
+  const [closureDialogOpen, setClosureDialogOpen] = useState(false)
+  const topicByNumber = useMemo(() => new Map(rowsHydrated.map((row) => [row.number, row.topic || ''])), [rowsHydrated])
+  const tiles = useMemo(() => buildRegistryTiles(rowsHydrated), [rowsHydrated])
 
   const columnFilterOptions = useMemo(
     () => ({
@@ -443,17 +461,17 @@ export function AssignmentsRegistryGridTab({
     try {
       const workflowId = closureAgentId || (await resolveClosureAgentWorkflowId())
       setClosureAgentId(workflowId)
-      // A live run opens its feed; the run page does not start a second one.
+      if (runs.entries[workflowId]?.state?.running) return
       const numbers = rowsHydrated.filter((row) => checkedIds.has(row.id)).map((row) => row.number)
-      const message = runs.entries[workflowId]?.state?.running
-        ? ''
-        : buildClosureCheckMessage(dateFrom, dateTo, numbers)
-      setClosureNotice(
-        numbers.length
-          ? `Проверка запущена по ${numbers.length} поручениям. Когда агент закончит, здесь появится уведомление.`
-          : 'Проверка запущена по открытым поручениям периода. Когда агент закончит, здесь появится уведомление.'
-      )
-      onRunAgent(workflowId, CLOSURE_AGENT_TITLE, message)
+      const message = buildClosureCheckMessage(dateFrom, dateTo, numbers)
+      setClosureNotice('')
+      runs.startRun({
+        workflowId,
+        title: CLOSURE_AGENT_TITLE,
+        message,
+        shownMessage: message,
+        forceRestart: true
+      })
     } catch (err) {
       setAiError(err instanceof Error ? err.message : 'Не удалось запустить проверку поручений')
     } finally {
@@ -462,10 +480,6 @@ export function AssignmentsRegistryGridTab({
   }
 
   const onTileSelect = (id: string): void => {
-    if (id === 'ai') {
-      void startClosureCheck()
-      return
-    }
     if (id === 'all') {
       changeTileFilter('all')
       return
@@ -739,21 +753,43 @@ export function AssignmentsRegistryGridTab({
               </button>
               <button
                 type="button"
-                className="today-filter-layout-btn"
-                disabled={aiBusy || checkedIds.size === 0}
-                title="Проверить артефакты и задачи документооборота по отмеченным поручениям"
-                onClick={() => void startClosureCheck()}
-              >
-                {aiBusy ? 'Проверка…' : `Проверить выбранные${checkedIds.size ? ` (${checkedIds.size})` : ''}`}
-              </button>
-              <button
-                type="button"
                 className="today-filter-layout-btn registry-create-open-btn"
                 title="Создать поручение"
                 onClick={() => openForm({ mode: 'create', kind: 'assignment' })}
               >
                 <Plus size={14} aria-hidden /> Создать
               </button>
+              <button
+                type="button"
+                className="today-filter-layout-btn"
+                title="Результат последней проверки поручений к закрытию"
+                onClick={() => setClosureDialogOpen(true)}
+              >
+                <Sparkles size={14} aria-hidden />{' '}
+                {aiBusy ? 'Идёт проверка…' : 'Проверка к закрытию'}
+                {!aiBusy && closureResult ? ` · ${formatClosureAt(closureResult.at)}` : ''}
+              </button>
+              {closureDialogOpen ? (
+                <ClosureCheckDialog
+                  result={closureResult}
+                  running={aiBusy}
+                  status={aiRun?.state?.status ?? ''}
+                  checkedCount={checkedIds.size}
+                  autoClose={autoClose}
+                  topicOf={(number) => topicByNumber.get(number) ?? ''}
+                  onPick={(number) => {
+                    const row = rowsHydrated.find((item) => item.number === number)
+                    if (row) pickRow(row)
+                    setClosureDialogOpen(false)
+                  }}
+                  onStart={() => void startClosureCheck()}
+                  onOpenFeed={() => {
+                    setClosureDialogOpen(false)
+                    openClosureFeed()
+                  }}
+                  onClose={() => setClosureDialogOpen(false)}
+                />
+              ) : null}
             </div>
             <span className="registry-filter-strip-spacer" aria-hidden />
             <button type="button" className="spec-filter-reset" onClick={resetRegistryFilters}>
@@ -767,7 +803,14 @@ export function AssignmentsRegistryGridTab({
             {error ? <p className="registry-table-error">{error}</p> : null}
             {printError ? <p className="registry-table-error">{printError}</p> : null}
             {aiError ? <p className="registry-table-error">{aiError}</p> : null}
-            {closureNotice ? <p className="registry-table-hint registry-table-success">{closureNotice}</p> : null}
+            {closureNotice ? (
+              <p className="registry-table-hint">
+                {closureNotice}{' '}
+                <button type="button" className="closure-link" onClick={openClosureFeed}>
+                  Ход работы
+                </button>
+              </p>
+            ) : null}
             {formError ? <p className="registry-table-error">{formError}</p> : null}
             {createNotice ? <p className="registry-table-hint registry-table-success">{createNotice}</p> : null}
             {refreshing && rows.length && !loadingMore ? (
@@ -822,6 +865,10 @@ export function AssignmentsRegistryGridTab({
               linesLoading={detailLinesLoading}
               onClose={() => pickRow(null)}
               onOpenForm={selectedRow ? () => openAssignmentForm(selectedRow) : undefined}
+            />
+            <ClosureCheckRowPanel
+              item={selectedRow ? closureByNumber.get(selectedRow.number) : undefined}
+              autoClose={selectedRow ? autoClose[selectedRow.number] : undefined}
             />
           </div>
         )

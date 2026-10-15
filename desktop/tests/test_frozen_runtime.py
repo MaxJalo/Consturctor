@@ -14,10 +14,12 @@ from app.frozen_runtime import (
     entry_mode,
     run_agent_python,
 )
+from app.tools.ac import code_execution_tools
 from app.tools.ac.code_execution_tools import (
     _agent_python_env,
     _python_command_prefix,
     _python_run_command,
+    script_command_prefix,
 )
 from app.tools.ac.workers.subprocess_com_worker import _build_worker_command
 
@@ -141,6 +143,20 @@ def test_agent_python_env_drops_sidecar_pythonpath(monkeypatch) -> None:
     assert "PYTHONPATH" not in env
     assert env["PYTHONUNBUFFERED"] == "1"
     assert env["PYTHONUTF8"] == "1"
+
+
+def test_script_prefix_skips_python_without_psycopg(monkeypatch) -> None:
+    code_execution_tools._SCRIPT_PREFIX = None
+    sidecar = [r"C:\Python312-32\python.exe"]
+    project = [r"C:\Python313\python.exe"]
+    monkeypatch.setattr(code_execution_tools, "_interpreter_candidates", lambda: [sidecar, project])
+
+    def has_driver(command: list[str], module: str) -> bool:
+        return module == "psycopg" and command == project
+
+    monkeypatch.setattr(code_execution_tools, "_imports_module", has_driver)
+    assert script_command_prefix() == project
+    code_execution_tools._SCRIPT_PREFIX = None
 
 
 def test_run_agent_python_executes_script(tmp_path: Path, capsys) -> None:

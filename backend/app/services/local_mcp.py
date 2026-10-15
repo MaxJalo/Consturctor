@@ -565,6 +565,13 @@ def _raw_tools() -> list[dict[str, Any]]:
                         "Для action=protocols: только номера, которые начинаются с ПСД",
                     ),
                     "include_files": _prop("boolean", "Для list сразу вернуть файлы", default=False),
+                    "include_tasks": _prop(
+                        "boolean",
+                        "Для list/get: к каждому мероприятию (строке lines) задачи исполнителей "
+                        "из 1С:Документооборот — «Исполнить задачу №N», проверка/утверждение, "
+                        "статус, срок, отчёт исполнителя и task_id",
+                        default=False,
+                    ),
                     "file_id": _prop("string", "GUID вложения для action=download"),
                     "limit": _prop("integer", "Максимум записей", default=40),
                     "performer": _prop("string", "ФИО исполнителя задачи, для action=tasks"),
@@ -577,13 +584,16 @@ def _raw_tools() -> list[dict[str, Any]]:
                 "Запись в журнал поручений 1С. Требует подтверждения человека. "
                 "action=create: новая карточка АСТ00. "
                 "action=update: статус, срок, строки, исполнитель. "
+                "action=close_if_accepted: «Принято», только если все мероприятия приняты в ДО. "
                 "action=comment_task: комментарий в задачу исполнителя (возврат)."
             ),
             "execution": "server",
             "input_schema": {
                 "type": "object",
                 "properties": {
-                    "action": _prop("string", "create | update | comment_task", default="update"),
+                    "action": _prop(
+                        "string", "create | update | close_if_accepted | comment_task", default="update"
+                    ),
                     "number": _prop("string", "Номер АСТ00-... для update"),
                     "ref_key": _prop("string", "GUID документа для update"),
                     "topic": _prop("string", "ОЧем / текст поручения"),
@@ -637,6 +647,29 @@ def _raw_tools() -> list[dict[str, Any]]:
                     "workflow_id": _prop("string", "id черновика, чтобы пометить тест"),
                     "intents": _prop("array", "Какие сущности и поля проверить"),
                 },
+            },
+        },
+        {
+            "name": "onec.docflow_rework",
+            "description": (
+                "Вернуть задачу 1С:Документооборот на доработку в том же бизнес-процессе. "
+                "Проверка исполнения закрывается с признаком «возвращено», срок того же "
+                "исполнителя сдвигается, комментарий попадает в историю выполнения "
+                "(«Задача возвращена на доработку» и новый срок). Текст задачи не заменяется "
+                "комментарием. task_id — открытая «Проверить исполнение» или уже закрытая "
+                "«Исполнить». due — новый срок ДД.ММ.ГГГГ. Сервер, запись."
+            ),
+            "execution": "server",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "task_id": _prop("string", "UID задачи документооборота"),
+                    "due": _prop("string", "Новый срок, ДД.ММ.ГГГГ"),
+                    "comment": _prop("string", "Почему задача возвращена на доработку"),
+                    "step": _prop("string", "Шаг процесса, если известен"),
+                    "title": _prop("string", "Наименование задачи"),
+                },
+                "required": ["task_id", "due", "comment"],
             },
         },
         {
@@ -1331,6 +1364,14 @@ _CONTRACTS: dict[str, tuple[str, str, str | tuple[str, ...], list[str], list[str
         "none",
     ),
     "onec.docflow_tasks": ("onec", "task", "list", [], ["tasks"], "count"),
+    "onec.docflow_rework": (
+        "onec",
+        "task",
+        "update",
+        ["task_id", "due", "comment"],
+        ["new_task_id", "business_process_id"],
+        "none",
+    ),
     "onec.search_documents": ("onec", "document", "search", [], ["documents"], "count"),
     "onec.get_document_card": (
         "onec",

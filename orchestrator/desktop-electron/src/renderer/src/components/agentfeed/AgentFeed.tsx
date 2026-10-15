@@ -1,5 +1,7 @@
 import { useEffect, useMemo, useRef } from 'react'
 import { ClarifyCard } from './ClarifyCard'
+import { DocflowActionsBlock } from './DocflowActionsBlock'
+import { splitAgentResult } from './docflowActions'
 import { HitlCard } from './HitlCard'
 import { MarkdownBody } from './MarkdownBody'
 import { MiniCalendar, meetingsFromFeed } from './MiniCalendar'
@@ -26,6 +28,9 @@ interface AgentFeedProps {
 function readableFeedText(text: string): string {
   const value = (text || '').trim()
   if (!value) return 'Ошибка запуска агента'
+  if (/^network request failed$/i.test(value)) {
+    return 'Не удалось связаться с Cursor: сеть оборвалась. Проверьте подключение и запустите агента ещё раз.'
+  }
   // Иногда backend присылает строку только из вопросительных знаков.
   // Показываем полезный fallback с действием для пользователя.
   if (!value.replace(/[?？\s.,;:!…()[\]{}'"`+-]/g, '')) {
@@ -41,7 +46,7 @@ function ResultBlock({
   text?: string
   meetings: ReturnType<typeof meetingsFromFeed>
 }): React.JSX.Element {
-  const body = (text || '').trim()
+  const { text: body, actions } = useMemo(() => splitAgentResult((text || '').trim()), [text])
   return (
     <div className="feed-result">
       {meetings.length > 0 && (
@@ -50,22 +55,36 @@ function ResultBlock({
         </div>
       )}
       {body ? <MarkdownBody text={presentAgentText(body)} /> : null}
+      <DocflowActionsBlock actions={actions} />
     </div>
+  )
+}
+
+function ThinkingBlock({ text, live }: { text: string; live: boolean }): React.JSX.Element | null {
+  const body = text.trim()
+  if (!body) return null
+  return (
+    <details className={live ? 'feed-thinking live' : 'feed-thinking'} {...(live ? { open: true } : {})}>
+      <summary>{live ? 'Размышляет…' : 'Размышления'}</summary>
+      <p>{body}</p>
+    </details>
   )
 }
 
 function FeedRow({
   item,
   resultMeetings,
-  liftCalendar
+  liftCalendar,
+  liveThinking
 }: {
   item: FeedItem
   resultMeetings: ReturnType<typeof meetingsFromFeed>
   liftCalendar: boolean
+  liveThinking: boolean
 }): React.JSX.Element | null {
   switch (item.kind) {
     case 'thinking':
-      return null
+      return <ThinkingBlock text={item.text} live={liveThinking} />
     case 'message':
       if (item.role === 'user') {
         return (
@@ -131,12 +150,13 @@ export function AgentFeed({
   return (
     <div className="agent-feed" ref={scrollRef} onScroll={handleScroll}>
       {isEmpty && emptyHint && <div className="agent-feed-empty">{emptyHint}</div>}
-      {visibleItems.map((item) => (
+      {visibleItems.map((item, index) => (
         <FeedRow
           key={item.id}
           item={item}
           resultMeetings={resultMeetings}
           liftCalendar={liftCalendar}
+          liveThinking={running && item.kind === 'thinking' && index === visibleItems.length - 1}
         />
       ))}
       {!hasResultItem && liftCalendar ? <ResultBlock meetings={resultMeetings} /> : null}

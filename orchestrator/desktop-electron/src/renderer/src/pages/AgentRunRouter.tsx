@@ -52,7 +52,10 @@ export function AgentRunRouter(props: AgentRunRouterProps): React.JSX.Element {
   const [route, setRoute] = useState<PlatformAgentSource | null | undefined>(() =>
     isPersonalAgentWorkflowId(workflowId) ? null : (directRoute(workflowId) ?? routes.get(workflowId))
   )
-  const [legacyRunning] = useState(() => Boolean(runs.entries[workflowId]?.state?.running))
+  const [legacyRunning] = useState(() => {
+    const state = runs.entries[workflowId]?.state
+    return Boolean(state?.running || (!props.autoStart && state?.items?.length))
+  })
 
   useEffect(() => {
     if (route !== undefined) return

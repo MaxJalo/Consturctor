@@ -409,8 +409,83 @@ def list_module_descriptors(db: Session, profile_id: str) -> list[dict[str, Any]
     return described
 
 
+def bind_unwired_modules(db: Session, profile_id: str) -> list[str]:
+    """Калькулятор уже сохранён в каталоге — ставим ссылку на факт, если её ещё нет.
+
+    Готовый kpi.sources.* не перезаписываем: у показателя остаётся его калькулятор.
+    """
+    if not profile_id:
+        return []
+    from sqlalchemy.orm.attributes import flag_modified
+
+    from app.services.position_kpi.registry import scorer_for
+
+    rows = (
+        db.execute(select(PositionKpiModule).where(PositionKpiModule.profile_id == profile_id))
+        .scalars()
+        .all()
+    )
+    bound: list[str] = []
+    for row in rows:
+        module = str(row.module_name or "").strip()
+        code = str(row.metric_code or "").strip()
+        if not module.startswith(GENERATED_PREFIX) or not code or not (row.source or "").strip():
+            continue
+        metric = db.execute(
+            select(PositionKpiMetric).where(
+                PositionKpiMetric.profile_id == profile_id,
+                PositionKpiMetric.code == code,
+            )
+        ).scalar_one_or_none()
+        if metric is None:
+            continue
+        facts = list(
+            db.scalars(
+                select(PositionKpiSource).where(
+                    PositionKpiSource.metric_id == metric.id,
+                    PositionKpiSource.role == "fact",
+                )
+            ).all()
+        )
+        if any(
+            scorer_for(str((source.extra_json or {}).get("module") or "").strip()) is not None
+            for source in facts
+        ):
+            continue
+        if not facts:
+            fact = PositionKpiSource(
+                id=source_row_id(metric.id, "fact", "unknown", 1),
+                metric_id=metric.id,
+                role="fact",
+                kind="unknown",
+                title="Факт",
+                detail="",
+                update_rule="",
+                extra_json={},
+            )
+            db.add(fact)
+            facts = [fact]
+        target = facts[0]
+        extra = dict(target.extra_json or {})
+        if str(extra.get("module") or "").strip() == module:
+            continue
+        declared = declared_source(module)
+        for key, value in declared.items():
+            if key == "module" or extra.get(key):
+                continue
+            extra[key] = value
+        extra["module"] = module
+        target.extra_json = extra
+        flag_modified(target, "extra_json")
+        bound.append(code)
+    if bound:
+        invalidate_profile_cache(db, profile_id)
+        db.flush()
+    return bound
+
+
 def ensure_generated_modules(db: Session, profile_id: str) -> list[str]:
-    """Восстанавливает файлы калькуляторов из базы, если на этом процессе их нет или они устарели."""
+    """Файлы калькуляторов из базы и ссылка на показатель, если агент записал модуль без неё."""
     if not profile_id:
         return []
     rows = (
@@ -438,12 +513,11 @@ def ensure_generated_modules(db: Session, profile_id: str) -> list[str]:
             existing_tests = test_path.read_text(encoding="utf-8") if test_path.exists() else ""
             if existing_tests != tests:
                 test_path.write_text(tests, encoding="utf-8")
-    if not refreshed:
-        return []
-    importlib.invalidate_caches()
-    for name in refreshed:
-        _drop_loaded_module(name)
-    return refreshed
+    if refreshed:
+        importlib.invalidate_caches()
+        for name in refreshed:
+            _drop_loaded_module(name)
+    return bind_unwired_modules(db, profile_id)
 
 
 def invalidate_profile_cache(db: Session, profile_id: str) -> None:

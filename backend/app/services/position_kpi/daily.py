@@ -676,6 +676,13 @@ def get_or_compute_position_kpi(
         raise PositionKpiNotFound(str(position or "").strip())
     if date_from is None or date_to is None:
         date_from, date_to = month_bounds(as_of.year, as_of.month)
+    from app.services.position_kpi.connect import ensure_generated_modules
+
+    if ensure_generated_modules(db, profile.id):
+        db.commit()
+        profile = resolve_profile(db, position, as_of=as_of, department=department)
+        if profile is None:
+            raise PositionKpiNotFound(str(position or "").strip())
     key = subject_key(subject)
     if not refresh:
         cached = _cached_snapshot(

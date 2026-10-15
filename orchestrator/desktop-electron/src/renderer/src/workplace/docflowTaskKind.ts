@@ -35,6 +35,8 @@ export type DocflowActionSpec = {
   tone: 'primary' | 'outline' | 'danger'
   /** 1С не примет отрицательный результат без комментария. */
   needsComment?: boolean
+  /** Возврат на доработку создаёт копию задачи с новым сроком. */
+  needsDue?: boolean
 }
 
 const KINDS = new Set<string>([
@@ -80,7 +82,14 @@ const KIND_ACTIONS: Record<DocflowTaskKind, DocflowActionSpec[]> = {
   execute: [{ id: 'execute', label: 'Исполнено', shortLabel: 'Исполнено', tone: 'primary' }],
   check: [
     { id: 'accept', label: 'Принять исполнение', shortLabel: 'Принять', tone: 'primary' },
-    { id: 'return', label: 'Вернуть на доработку', shortLabel: 'Вернуть', tone: 'danger', needsComment: true }
+    {
+      id: 'return',
+      label: 'Вернуть на доработку',
+      shortLabel: 'Вернуть',
+      tone: 'danger',
+      needsComment: true,
+      needsDue: true
+    }
   ],
   acquaint: [{ id: 'acquaint', label: 'Ознакомлен', shortLabel: 'Ознакомлен', tone: 'primary' }],
   acquaint_result: [{ id: 'acquaint', label: 'Ознакомлен', shortLabel: 'Ознакомлен', tone: 'primary' }],

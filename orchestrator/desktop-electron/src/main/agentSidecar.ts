@@ -1,4 +1,4 @@
-import { type ChildProcessWithoutNullStreams } from 'node:child_process'
+import { execFile, type ChildProcessWithoutNullStreams } from 'node:child_process'
 import { resolveWindowsPythonExe, spawnHidden } from './spawnHidden'
 import { delimiter, dirname, join, resolve } from 'node:path'
 import { existsSync, readFileSync } from 'node:fs'
@@ -514,12 +514,21 @@ export class AgentSidecar {
     const child = this.child
     this.child = null
     if (!child) return
+    const pid = child.pid
     try {
       if (child.stdin.writable) {
         child.stdin.write(JSON.stringify({ type: 'shutdown' }) + '\n')
       }
     } catch {
       /* ignore */
+    }
+    if (process.platform === 'win32' && pid) {
+      try {
+        execFile('taskkill', ['/F', '/T', '/PID', String(pid)], () => undefined)
+      } catch {
+        /* ignore */
+      }
+      return
     }
     try {
       child.kill('SIGTERM')

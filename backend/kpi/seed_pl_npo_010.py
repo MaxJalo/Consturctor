@@ -146,7 +146,6 @@ CATALOG: list[dict[str, Any]] = [
                             "var": "z_total",
                             "legend": "Zвсего",
                             "filters": ["совет директоров", "СД", "ревизион", "РК"],
-                            "module": "kpi.sources.sd_rk_packages",
                             "folder": "Совещания",
                         },
                     },
@@ -166,7 +165,6 @@ CATALOG: list[dict[str, Any]] = [
                             "var": "z_on_time",
                             "legend": "Zвовремя",
                             "deadline": "T-2d",
-                            "module": "kpi.sources.sd_rk_packages",
                             "entity": "Document_ТД_Протокол",
                             "ready_field": "Date",
                             "ready_status": ["Закрыт", "НаИсполнении"],
@@ -202,7 +200,6 @@ CATALOG: list[dict[str, Any]] = [
                         "extra_json": {
                             "var": "p_total",
                             "legend": "Pвсего",
-                            "module": "kpi.sources.sd_rk_protocols",
                             "folder": "Совещания",
                         },
                     },
@@ -219,7 +216,6 @@ CATALOG: list[dict[str, Any]] = [
                             "var": "p_on_time",
                             "legend": "Pвовремя",
                             "deadline": "T+2d",
-                            "module": "kpi.sources.sd_rk_protocols",
                             "entity": "Document_ТД_Протокол",
                         },
                     },
@@ -232,7 +228,6 @@ CATALOG: list[dict[str, Any]] = [
                         "extra_json": {
                             "var": "p_on_time",
                             "legend": "Pвовремя",
-                            "module": "kpi.sources.sd_rk_protocols",
                             "entity": "Document_ТД_Протокол",
                         },
                     },
@@ -290,7 +285,6 @@ CATALOG: list[dict[str, Any]] = [
                         "extra_json": {
                             "vars": ["r_total", "r_active"],
                             "legend": ["Rвсего", "Rактив"],
-                            "module": "kpi.sources.sd_rk_instructions",
                             "file": "ActionTracker.xlsx",
                             "sheet": "Action Tracker",
                             "filters": ["ПСД", "РК", "совет директоров", "ревизион"],
@@ -322,7 +316,6 @@ CATALOG: list[dict[str, Any]] = [
                         "extra_json": {
                             "vars": ["r24", "r_control"],
                             "legend": ["R24", "Rконтроль"],
-                            "module": "kpi.sources.sd_rk_instructions",
                             "entity": "Document_ТД_Поручения",
                             "deadline": "24h",
                             "control_window": "7d",
@@ -365,7 +358,6 @@ CATALOG: list[dict[str, Any]] = [
                         "extra_json": {
                             "vars": ["v_errors", "v_total"],
                             "legend": ["Vоши", "Vвсего"],
-                            "module": "kpi.sources.sd_rk_quality",
                             "entity": "Document_ТД_Протокол",
                             "returns_assumed_zero": True,
                             "author": "ilchenko",

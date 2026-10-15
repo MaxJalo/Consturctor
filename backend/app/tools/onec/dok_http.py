@@ -283,7 +283,11 @@ def post_task_action(
         response.status_code,
         text[:500].replace("\n", " ") or "<empty>",
     )
-    if response.status_code == 404:
+    # Без шаблона TaskAction запрос попадает в общий обработчик dterp,
+    # который разбирает тело через ЗначениеИзСтрокиВнутр и падает с 500.
+    if response.status_code == 404 or (
+        response.status_code == 500 and "ЗначениеИзСтрокиВнутр" in text
+    ):
         raise TaskActionNotPublished("Метод TaskAction не опубликован в базе документооборота")
     if response.status_code in {401, 403}:
         raise RuntimeError(f"HTTP {response.status_code}: документооборот отклонил учётку")

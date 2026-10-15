@@ -545,7 +545,7 @@ def _fetch_files(ref_key: str) -> list[dict[str, Any]]:
             "entity": ASSIGNMENT_FILES_ENTITY,
             "path": f"{ASSIGNMENT_FILES_ENTITY}?$select={_FILE_LIST_SELECT}",
             "top": 50,
-            "filter": f"ВладелецФайла_Key eq guid'{ref_key}'",
+            "filter": f"ВладелецФайла_Key eq guid'{ref_key}' and DeletionMark eq false",
         }
     )
     return [_normalize_file(row) for row in (result.get("value") or []) if isinstance(row, dict)]
@@ -584,7 +584,9 @@ def _fetch_files_map(ref_keys: list[str]) -> dict[str, list[dict[str, Any]]]:
     out: dict[str, list[dict[str, Any]]] = {}
     for index in range(0, len(keys), 15):
         chunk = keys[index : index + 15]
-        filt = " or ".join(f"ВладелецФайла_Key eq guid'{key}'" for key in chunk)
+        owners = " or ".join(f"ВладелецФайла_Key eq guid'{key}'" for key in chunk)
+        # Files marked for deletion are purged from 1C storage; download answers HTTP 500.
+        filt = f"({owners}) and DeletionMark eq false"
         try:
             result = _odata_get(
                 {
@@ -738,6 +740,12 @@ def _list_assignments(args: dict[str, Any]) -> dict[str, Any]:
     )
     if profile:
         marks["names_ms"] = round((time.perf_counter() - t_names) * 1000, 1)
+    tasks_note = ""
+    if _flag_on(args.get("include_tasks")) and items:
+        from app.services.assignment_docflow_tasks import attach_docflow_tasks
+
+        tasks_note = attach_docflow_tasks(items, args)
+    if profile:
         marks["total_ms"] = round((time.perf_counter() - t0) * 1000, 1)
     summary = f"Porucheniya 1C: {len(items)}"
     if customer:
@@ -757,6 +765,8 @@ def _list_assignments(args: dict[str, Any]) -> dict[str, Any]:
     }
     if profile:
         payload["timing_ms"] = marks
+    if tasks_note:
+        payload["docflow_note"] = tasks_note
     if not items:
         payload["hint"] = (
             "Zhurnal AST00 pust. Esli filtrovali po zakazchiku — povtori action=list "
@@ -785,13 +795,21 @@ def _get_assignment(args: dict[str, Any]) -> dict[str, Any]:
     files = _fetch_files(str(row.get("Ref_Key") or ""))
     item = _normalize_assignment(row, files=files)
     _enrich_assignment_names([item])
-    return {
+    tasks_note = ""
+    if _flag_on(args.get("include_tasks")):
+        from app.services.assignment_docflow_tasks import attach_docflow_tasks
+
+        tasks_note = attach_docflow_tasks([item], args)
+    payload: dict[str, Any] = {
         "summary": f"Kartochka {item['number']}: {item['status']}, strok {len(item['lines'])}, faylov {len(files)}",
         "entity": ASSIGNMENT_ENTITY,
         "assignment": item,
         "count": 1,
         "source": result.get("source") or "odata",
     }
+    if tasks_note:
+        payload["docflow_note"] = tasks_note
+    return payload
 
 
 def _list_files(args: dict[str, Any]) -> dict[str, Any]:
@@ -1195,6 +1213,8 @@ def handle_assignments_write(
             "body": body,
             **result,
         }
+    if action == "close_if_accepted":
+        return close_if_accepted(args)
     if action in {"comment_task", "return_task"}:
         ref_key = str(args.get("task_ref_key") or args.get("ref_key") or "").strip()
         comment = str(args.get("comment") or args.get("РезультатВыполнения") or "").strip()
@@ -1211,7 +1231,59 @@ def handle_assignments_write(
             "body": body,
             **result,
         }
-    raise AssignmentError("action: create | update | comment_task")
+    raise AssignmentError("action: create | update | close_if_accepted | comment_task")
+
+
+ACCEPTED_STATUS = "Принято"
+_LINE_ACCEPTED = "принято проверяющим"
+
+
+def close_if_accepted(args: dict[str, Any]) -> dict[str, Any]:
+    """Ставит поручению «Принято», только если каждое мероприятие принято проверяющим в ДО.
+
+    Решение агента не используется: карточка и задачи ДО перечитываются из 1С.
+    """
+    number = str(args.get("number") or "").strip()
+    ref_key = str(args.get("ref_key") or args.get("target_id") or "").strip()
+    login = str(args.get("docflow_login") or args.get("session_login") or args.get("fio") or "").strip()
+    password = str(args.get("docflow_password") or args.get("password") or "")
+    card = _get_assignment(
+        {
+            "number": number,
+            "ref_key": ref_key if _looks_like_guid(ref_key) else "",
+            "include_tasks": True,
+            "docflow_login": login,
+            "docflow_password": password,
+        }
+    )
+    item = card.get("assignment") or {}
+    number = str(item.get("number") or number)
+    status = str(item.get("status") or "")
+    base = {"number": number, "ref_key": str(item.get("ref_key") or ""), "status": status}
+    if not item.get("open"):
+        return {**base, "closed": True, "already": True, "summary": f"{number} уже закрыто: {status}"}
+    if card.get("docflow_note"):
+        return {**base, "closed": False, "summary": "Документооборот недоступен: приёмку мероприятий не проверить"}
+    lines = [line for line in item.get("lines") or [] if isinstance(line, dict)]
+    if not lines:
+        return {**base, "closed": False, "summary": "В поручении нет мероприятий"}
+    pending = [
+        f"п.{line.get('line')}: {(line.get('docflow_state') or {}).get('label') or 'нет данных'}"
+        for line in lines
+        if (line.get("docflow_state") or {}).get("label") != _LINE_ACCEPTED
+    ]
+    if pending:
+        return {**base, "closed": False, "pending": pending, "summary": "Не все мероприятия приняты: " + "; ".join(pending)}
+    _odata_patch({"entity": ASSIGNMENT_ENTITY, "ref_key": base["ref_key"], "body": {"Статус": ACCEPTED_STATUS}})
+    after = str((_get_assignment({"ref_key": base["ref_key"]}).get("assignment") or {}).get("status") or "")
+    if after != ACCEPTED_STATUS:
+        return {**base, "closed": False, "summary": f"1С не сменила статус: {after or 'пусто'}"}
+    return {
+        **base,
+        "status": after,
+        "closed": True,
+        "summary": f"{number}: все мероприятия ({len(lines)}) приняты в ДО, статус «{ACCEPTED_STATUS}»",
+    }
 
 
 def stub_assignments(args: dict[str, Any], **_: Any) -> dict[str, Any]:
@@ -1436,6 +1508,7 @@ def probe_assignment_write(
     need_due = bool(changes & {"due"})
     if "create" in changes and not (changes & {"status", "update", "due"}):
         need_status = False
+    to_status = str(args.get("to_status") or PROBE_TO_STATUS).strip()
     topic = build_probe_topic(workflow_id)
     created_key = ""
     try:
@@ -1472,12 +1545,12 @@ def probe_assignment_write(
                 {
                     "action": "update",
                     "ref_key": created_key,
-                    "status": PROBE_TO_STATUS,
+                    "status": to_status,
                 }
             )
             again = _get_assignment({"ref_key": created_key})
             after = str((again.get("assignment") or {}).get("status") or "")
-            if after != PROBE_TO_STATUS:
+            if after != to_status:
                 raise AssignmentError(
                     f"Status ne smenilsya: zhili {before}, stalo {after or 'pust'}"
                 )

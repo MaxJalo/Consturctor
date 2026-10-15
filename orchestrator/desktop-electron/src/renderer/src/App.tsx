@@ -882,7 +882,7 @@ function AppShell(): React.JSX.Element {
       case 'decisions':
         return <DecisionsGridTab user={activeUser} onOpenRun={(workflowId, title, runId) => void openAgentRun(workflowId, runId || '', Boolean(!runId), title)} />
       case 'kpi':
-        return <KpiGridTab user={activeUser} onOpenProcesses={() => setView({ kind: 'tab', key: 'processes' })} onOpenDecisions={() => setView({ kind: 'tab', key: 'decisions' })} />
+        return <KpiGridTab user={activeUser} onOpenProcesses={() => setView({ kind: 'tab', key: 'processes' })} onOpenDecisions={() => setView({ kind: 'tab', key: 'decisions' })} onRunAgent={(workflowId, title, message) => { setLastTab('kpi'); setView({ kind: 'agentrun', workflowId, title, autoStart: true, initialMessage: message }) }} />
       case 'knowledge':
         return <KnowledgeGridTab user={activeUser} />
       case 'history':
@@ -909,6 +909,7 @@ function AppShell(): React.JSX.Element {
                 onAskOrchestrator: askOrchestratorFromTab,
                 onRunAgent: (workflowId, title, message) =>
                   setView({ kind: 'agentrun', workflowId, title, autoStart: false, initialMessage: message }),
+                onOpenRun: (workflowId, title, runId) => void openAgentRun(workflowId, runId, false, title),
                 onNavigate: (pageKey) => {
                   setLastTab(pageKey)
                   setView({ kind: 'tab', key: pageKey })
