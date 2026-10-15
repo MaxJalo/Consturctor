@@ -15,8 +15,11 @@ Read-only for 1C: the agent never changes assignment status.
 Published to the Agent Library: phase=done, local_run.published=True,
 status=published, purpose=functional.
 
+The agent belongs to Ильченко Е.А. and runs on her computer (Orchestrator).
+Agents never run on the server.
+
 Usage (from backend/):
-  py -3.12 scripts/seed_assignment_closure_agent.py --user "Жалыбин Максим Дмитриевич"
+  py -3.12 scripts/seed_assignment_closure_agent.py
   py -3.12 scripts/seed_assignment_closure_agent.py --user <user-id>
 """
 
@@ -36,10 +39,11 @@ from sqlalchemy.orm.attributes import flag_modified
 from app.db.session import SessionLocal, init_db
 from app.models.user import AppUser
 from app.models.workflow import Workflow
-from app.services.admin_access import resolve_admin_access
 from app.services.triggers.service import workflow_is_deleted
 
 TITLE = "Проверка поручений к закрытию"
+OWNER_FIO = "Ильченко Екатерина Александровна"
+OWNER_USER_ID = "A2DCC949FEDEC70D40318ABA83C618F4"
 
 GOAL = (
     "Проверить незакрытые поручения АСТ00 в 1С ERP: по файлам во вкладке «Файлы» "
@@ -148,17 +152,13 @@ def _find_user(db, query: str) -> AppUser | None:
     user = db.get(AppUser, query)
     if user is not None:
         return user
-    user = db.query(AppUser).filter(AppUser.fio == query).first()
-    if user is not None:
-        return user
+    exact = db.query(AppUser).filter(AppUser.fio == query).all()
+    if len(exact) == 1:
+        return exact[0]
+    if len(exact) > 1:
+        preferred = next((item for item in exact if item.id == OWNER_USER_ID), None)
+        return preferred or exact[0]
     return db.query(AppUser).filter(AppUser.fio.ilike(f"%{query.split()[0]}%")).first()
-
-
-def _first_admin(db) -> AppUser | None:
-    for user in db.query(AppUser).order_by(AppUser.created_at.asc()).all():
-        if resolve_admin_access(db, user.id) is not None:
-            return user
-    return None
 
 
 def _find_existing(db, user_id: str) -> Workflow | None:
@@ -182,8 +182,8 @@ def _apply_playbook(row: Workflow) -> None:
     local["status"] = "published"
     local["purpose"] = "functional"
     local["tools"] = TOOLS
-    # Daily 7:00 check runs on the backend: the owner's Orchestrator may be closed.
-    local["run_on_server"] = True
+    # Schedule fires on the owner's Orchestrator. Agents do not run on the server.
+    local.pop("run_on_server", None)
     local.pop("kind", None)
     local.pop("unformed", None)
     # An old artifact-close draft and a resumed Cursor chat both carry the previous verdicts.
@@ -232,9 +232,9 @@ def seed(*, user_query: str) -> None:
             if user is None:
                 raise SystemExit(f"User not found: {user_query}")
         else:
-            user = _first_admin(db)
+            user = _find_user(db, OWNER_FIO)
             if user is None:
-                raise SystemExit("No admin user found; pass --user explicitly")
+                raise SystemExit(f"User not found: {OWNER_FIO}")
         print(f"Owner: {user.fio} ({user.id})")
 
         row = _find_existing(db, user.id)
@@ -272,7 +272,7 @@ def main() -> None:
     parser.add_argument(
         "--user",
         default="",
-        help="Owner: user id or FIO (default: first admin from ADMIN_FIO_KEYS)",
+        help=f"Owner: user id or FIO (default: {OWNER_FIO})",
     )
     args = parser.parse_args()
     seed(user_query=args.user)

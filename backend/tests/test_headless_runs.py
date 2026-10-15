@@ -97,5 +97,5 @@ def test_start_on_server_skips_overlapping_slot(monkeypatch):
 
 
 def test_runs_on_server_flag():
-    assert runner.runs_on_server(_workflow(True)) is True
+    assert runner.runs_on_server(_workflow(True)) is False
     assert runner.runs_on_server(_workflow(False)) is False

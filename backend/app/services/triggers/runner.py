@@ -244,8 +244,9 @@ _STALE_STARTED_RUN = timedelta(hours=4)
 
 
 def runs_on_server(workflow: Workflow) -> bool:
-    local = workflow.local_run if isinstance(workflow.local_run, dict) else {}
-    return bool(local.get("run_on_server"))
+    """Agents run on the owner's computer. A stored run_on_server flag is ignored."""
+    del workflow
+    return False
 
 
 def _fresh_started_run(db: Session, workflow_id: str) -> bool:
