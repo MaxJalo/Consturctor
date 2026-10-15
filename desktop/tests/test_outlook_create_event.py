@@ -691,6 +691,79 @@ def test_mapi_not_found_is_detected_from_nested_hresult() -> None:
     assert "программный доступ" not in text
 
 
+def test_visible_calendars_use_hidden_explorer_when_outlook_has_no_window() -> None:
+    from app.tools.ac.workers import outlook_com_actions as actions
+
+    shared = object()
+
+    class _Nav:
+        Folder = shared
+
+    class _Group:
+        Name = "Общие календари"
+        NavigationFolders = (_Nav(),)
+
+    class _Groups:
+        Count = 1
+
+        def __iter__(self):
+            yield _Group()
+
+    class _Module:
+        NavigationGroups = _Groups()
+
+    class _Modules:
+        def GetNavigationModule(self, module_id: int):
+            assert module_id == 1
+            return _Module()
+
+    class _Pane:
+        Modules = _Modules()
+
+    class _Explorer:
+        NavigationPane = _Pane()
+
+    class _Folder:
+        def GetExplorer(self):
+            return _Explorer()
+
+    class _Namespace:
+        def GetDefaultFolder(self, folder_id: int):
+            assert folder_id == 9
+            return _Folder()
+
+    class _Outlook:
+        def ActiveExplorer(self):
+            return None
+
+        class Explorers:
+            Count = 0
+
+            def Item(self, index: int):
+                raise AssertionError(index)
+
+    folders = actions._iter_visible_calendar_folders(_Outlook(), _Namespace(), "Ильченко")
+    assert any(folder is shared for _label, folder, _own in folders)
+
+
+def test_iter_outlook_items_reads_by_index_when_getfirst_fails() -> None:
+    from app.tools.ac.workers.outlook_com_actions import _iter_outlook_items
+
+    class _Items:
+        def GetFirst(self):
+            raise _mapi_not_found()
+
+        def GetNext(self):
+            raise AssertionError("GetNext should not run")
+
+        def Item(self, index: int):
+            if index == 1:
+                return {"subject": "Планёрка"}
+            raise _mapi_not_found()
+
+    assert list(_iter_outlook_items(_Items())) == [{"subject": "Планёрка"}]
+
+
 def test_iter_outlook_items_stops_on_mapi_not_found() -> None:
     from app.tools.ac.workers.outlook_com_actions import _iter_outlook_items
 

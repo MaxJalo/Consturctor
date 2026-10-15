@@ -592,6 +592,11 @@ def _calendar_access_hint(status: str) -> str:
         return ""
     if status.startswith("unresolved"):
         return "Сотрудник не найден в адресной книге Outlook. Проверьте ФИО."
+    if status == "unreadable" or status == "freebusy":
+        return (
+            "Календарь открыт, но Outlook не отдал список встреч. "
+            "Откройте этот календарь в Outlook и повторите."
+        )
     return (
         "Нет доступа к этому календарю. Нужен общий доступ в Outlook "
         "или запуск с профиля владельца."
@@ -706,6 +711,47 @@ def _iter_outlook_explorers(outlook: Any):
         yield explorer
 
 
+def _explorer_calendar_groups(explorer: Any) -> Any | None:
+    try:
+        module = explorer.NavigationPane.Modules.GetNavigationModule(OL_NAVIGATION_MODULE_CALENDAR)
+        return module.NavigationGroups
+    except Exception:
+        return None
+
+
+def _hidden_calendar_explorer(outlook: Any, namespace: Any) -> Any | None:
+    """Окно календаря того же профиля, где уже открыт чужой календарь.
+
+    Скрытый Dispatch не имеет Explorer, поэтому панель Outlook пуста и
+    GetSharedDefaultFolder отдаёт папку, чьи элементы не читаются.
+    """
+    try:
+        folder = namespace.GetDefaultFolder(CALENDAR_FOLDER_ID)
+        explorer = folder.GetExplorer()
+    except Exception as exc:
+        _log_progress(f"step=explorer_create skipped: {exc}")
+        return None
+    groups = _explorer_calendar_groups(explorer)
+    try:
+        ready = groups is not None and int(getattr(groups, "Count", 0) or 0) > 0
+    except Exception:
+        ready = False
+    if ready:
+        _log_progress("step=explorer_hidden ok")
+        return explorer
+    try:
+        explorer.Display()
+        try:
+            explorer.WindowState = 1  # olMinimized
+        except Exception:
+            pass
+        _log_progress("step=explorer_display ok")
+        return explorer
+    except Exception as exc:
+        _log_progress(f"step=explorer_display skipped: {exc}")
+        return explorer if groups is not None else None
+
+
 def _folder_entry_id(folder: Any) -> str:
     return _safe_str(getattr(folder, "EntryID", "")).strip()
 
@@ -759,7 +805,12 @@ def _iter_visible_calendar_folders(
 
     try:
         seen_explorers = 0
-        for explorer in _iter_outlook_explorers(outlook):
+        explorers = list(_iter_outlook_explorers(outlook))
+        if not explorers:
+            created = _hidden_calendar_explorer(outlook, namespace)
+            if created is not None:
+                explorers = [created]
+        for explorer in explorers:
             seen_explorers += 1
             try:
                 module = explorer.NavigationPane.Modules.GetNavigationModule(
@@ -2318,6 +2369,38 @@ def update_event(input_data: dict) -> dict:
     return _run_com_read(_write, "Ошибка изменения встречи в Outlook Calendar")
 
 
+def _attach_running_outlook(win32com_client: Any) -> Any | None:
+    """Уже открытый Outlook, в котором виден чужой календарь. Не поднимать второй."""
+    try:
+        return win32com_client.GetActiveObject("Outlook.Application")
+    except Exception as exc:
+        _log_progress(f"step=dispatch_active_object skipped: {exc}")
+    get_object = getattr(win32com_client, "GetObject", None)
+    if callable(get_object):
+        try:
+            return get_object(Class="Outlook.Application")
+        except Exception as exc:
+            _log_progress(f"step=dispatch_getobject skipped: {exc}")
+    try:
+        import pythoncom
+        import win32com.client
+    except Exception:
+        return None
+    try:
+        rot = pythoncom.GetRunningObjectTable()
+        for moniker in rot.EnumRunning():
+            try:
+                dispatch = win32com.client.Dispatch(rot.GetObject(moniker))
+            except Exception:
+                continue
+            name = _safe_str(getattr(dispatch, "Name", "")).casefold()
+            if "outlook" in name:
+                return dispatch
+    except Exception as exc:
+        _log_progress(f"step=dispatch_rot skipped: {exc}")
+    return None
+
+
 def _dispatch_outlook(win32com_client: Any) -> Any:
     """Держать один Outlook.Application на сессию, не поднимать новый процесс на запрос."""
     global _cached_outlook
@@ -2332,16 +2415,19 @@ def _dispatch_outlook(win32com_client: Any) -> Any:
     _log_progress("step=dispatch_outlook start")
     last_exc: Exception | None = None
     for attempt in range(1, 4):
-        try:
-            outlook = win32com_client.GetActiveObject("Outlook.Application")
-            _ensure_mapi_logon(outlook.GetNamespace("MAPI"))
-            _log_progress(f"step=dispatch_active ok attempt={attempt}")
-            _cached_outlook = outlook
-            return outlook
-        except Exception as exc:
-            last_exc = exc
-            _log_progress(f"step=dispatch_active failed attempt={attempt}: {exc}")
-            time.sleep(0.35 * attempt)
+        outlook = _attach_running_outlook(win32com_client)
+        if outlook is not None:
+            try:
+                _ensure_mapi_logon(outlook.GetNamespace("MAPI"))
+                _log_progress(f"step=dispatch_active ok attempt={attempt}")
+                _cached_outlook = outlook
+                return outlook
+            except Exception as exc:
+                last_exc = exc
+                _log_progress(f"step=dispatch_active failed attempt={attempt}: {exc}")
+        else:
+            _log_progress(f"step=dispatch_active missing attempt={attempt}")
+        time.sleep(0.35 * attempt)
     outlook = win32com_client.Dispatch("Outlook.Application")
     try:
         _ensure_mapi_logon(outlook.GetNamespace("MAPI"))
@@ -2741,6 +2827,25 @@ def _parse_natural_date(value: str) -> datetime | None:
     return None
 
 
+def _iter_outlook_items_by_index(items: Any, limit: int = 250):
+    """GetFirst на чужом календаре Outlook 2013 часто падает, Item(i) — нет."""
+    item_at = getattr(items, "Item", None)
+    if not callable(item_at):
+        return
+    emitted = 0
+    for index in range(1, limit + 1):
+        try:
+            item = item_at(index)
+        except Exception as exc:
+            if _is_mapi_not_found(exc) or emitted:
+                return
+            continue
+        if item is None:
+            return
+        emitted += 1
+        yield item
+
+
 def _iter_outlook_items(items: Any):
     """Обойти Outlook Items через GetFirst/GetNext, не трогая Count.
 
@@ -2755,6 +2860,7 @@ def _iter_outlook_items(items: Any):
         except Exception as exc:
             if _is_mapi_not_found(exc):
                 _log_progress(f"step=getfirst_not_found: {exc}")
+                yield from _iter_outlook_items_by_index(items)
                 return
             raise
         while item is not None:
