@@ -7,6 +7,7 @@ import { AgentLibraryGridTab } from '../tabs/grid/AgentLibraryGridTab'
 import { ProjectsGridTab } from '../tabs/grid/ProjectsGridTab'
 import { SubordinateTasksGridTab } from '../tabs/grid/SubordinateTasksGridTab'
 import type { AssignmentRegistryTileId } from '../workplace/assignmentRegistryTypes'
+import type { SubordinateKpiNav } from '../workplace/workplaceNav'
 import type { ExtensionPositionFilter } from './extensionAudience'
 import {
   canUseAgentLibrary,
@@ -25,6 +26,7 @@ export type ExtensionTabContext = {
   onNavigate: (pageKey: PageKey) => void
   onOpenPassport: (workflowId: string, title: string, tab?: PassportTab) => void
   registryTile?: AssignmentRegistryTileId | 'all' | null
+  subordinateKpi?: SubordinateKpiNav | null
 }
 
 /**
@@ -81,7 +83,7 @@ export const EXTENSION_MODULES: ExtensionModule[] = [
       'Ежедневный контроль загрузки и сроков подчинённых по общей базе 1С. Каскадную задачу видно по исполнителю, без дубля на рабочем столе руководителя. За период можно выгрузить сводку для KPI.',
     positionGroups: ['department_heads'],
     canAccess: canUseSubordinateTasks,
-    renderTab: ({ user }) => <SubordinateTasksGridTab user={user} />
+    renderTab: ({ user, subordinateKpi }) => <SubordinateTasksGridTab user={user} navKpi={subordinateKpi} />
   },
   {
     id: 'agent_library',

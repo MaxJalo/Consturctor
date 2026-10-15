@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import {
   Award,
   ClipboardList,
@@ -15,6 +15,7 @@ import {
   type LucideIcon
 } from 'lucide-react'
 import type { UserProfile } from '../../api/types'
+import { DOCFLOW_REFRESH_EVENT, publishDocflowBusy } from '../../layout/DocflowRefreshButton'
 import { OrchSlotMain } from '../../layout/GridSlots'
 import { KpiRangePicker, type KpiRangeShortcut } from '../../pages/KpiRangePicker'
 import { rollingKpiRange } from '../../workplace/kpiPeriod'
@@ -29,7 +30,9 @@ import {
   type CorrespondenceKind,
   type CorrespondenceRow
 } from '../../workplace/fetchDocflowCorrespondence'
+import { clearDocflowPages } from '../../workplace/docflowPageCache'
 import { ATTACHED_FILES } from '../../workplace/docflowAttachments'
+import { forgetDocflowMemos } from '../../workplace/fetchDocflowMemos'
 import { DocflowAttachments } from './DocflowAttachments'
 import { DocflowAssignmentsPanel } from './DocflowAssignmentsPanel'
 import { DocflowIncentiveOrdersPanel } from './DocflowIncentiveOrdersPanel'
@@ -279,6 +282,7 @@ export function DocflowGridTab({ user }: { user: UserProfile }): React.JSX.Eleme
   const [createSchemas, setCreateSchemas] = useState<DocflowKindSchema[]>([])
   const [createNotice, setCreateNotice] = useState<{ text: string; error: boolean } | null>(null)
   const [reloadKey, setReloadKey] = useState(0)
+  const [refreshing, setRefreshing] = useState(false)
   const [savedWhileOpen, setSavedWhileOpen] = useState(false)
   const [protocolMeeting, setProtocolMeeting] = useState<MeetingEvent>(blankMeeting)
 
@@ -318,11 +322,15 @@ export function DocflowGridTab({ user }: { user: UserProfile }): React.JSX.Eleme
     if (refKey) openForm({ mode: 'edit', kind: docKind, refKey })
   }
 
-  const refreshJournal = (): void => {
-    if (journal === 'correspondence') forgetDocflowCorrespondenceSession(user, kind)
-    if (journal === 'orders') forgetDocflowOrdersSession(user)
+  const refreshJournal = useCallback((): void => {
+    forgetDocflowCorrespondenceSession(user, 'incoming')
+    forgetDocflowCorrespondenceSession(user, 'outgoing')
+    forgetDocflowOrdersSession(user)
+    forgetDocflowMemos()
+    clearDocflowPages()
+    setRefreshing(true)
     setReloadKey((value) => value + 1)
-  }
+  }, [user])
 
   const onCreated = (text: string): void => {
     setCreateNotice({ text, error: false })
@@ -346,7 +354,10 @@ export function DocflowGridTab({ user }: { user: UserProfile }): React.JSX.Eleme
 
   useEffect(() => {
     setSelectedId('')
-    if (journal !== 'correspondence') return
+    if (journal !== 'correspondence') {
+      setLoading(false)
+      return
+    }
     let alive = true
     setLoading(true)
     setError('')
@@ -363,12 +374,28 @@ export function DocflowGridTab({ user }: { user: UserProfile }): React.JSX.Eleme
         setError(err instanceof Error ? err.message : 'Не удалось загрузить корреспонденцию')
       })
       .finally(() => {
-        if (alive) setLoading(false)
+        if (!alive) return
+        setLoading(false)
+        setRefreshing(false)
       })
     return () => {
       alive = false
     }
   }, [user, journal, kind, reloadKey])
+
+  useEffect(() => {
+    if (journal !== 'correspondence') setRefreshing(false)
+  }, [journal, reloadKey])
+
+  useEffect(() => {
+    publishDocflowBusy(loading || refreshing)
+  }, [loading, refreshing])
+
+  useEffect(() => {
+    const onRefresh = (): void => refreshJournal()
+    window.addEventListener(DOCFLOW_REFRESH_EVENT, onRefresh)
+    return () => window.removeEventListener(DOCFLOW_REFRESH_EVENT, onRefresh)
+  }, [refreshJournal])
 
   useEffect(() => setCreateNotice(null), [journal])
 

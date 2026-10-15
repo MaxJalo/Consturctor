@@ -51,6 +51,7 @@ export type DocflowKindSchema = {
   max_files?: number
   copy?: boolean
   basis_targets?: { id: DocflowKindId; title: string }[]
+  recipient_emails?: string[]
 }
 
 export type DocflowUploadFile = { name: string; size: number; base64: string }
@@ -161,7 +162,8 @@ export async function createDocflowDocument(
   tables: Record<string, Record<string, string>[]>,
   files: DocflowUploadFile[] = [],
   basis: DocflowPrefill['basis'] = null,
-  post = false
+  post = false,
+  letterhead = false
 ): Promise<DocflowCreateResult> {
   const response = await api.invokeServerTool(
     TOOL,
@@ -172,9 +174,10 @@ export async function createDocflowDocument(
       tables,
       ...(basis ? { basis } : {}),
       ...(post ? { post: true } : {}),
+      ...(letterhead ? { letterhead: true } : {}),
       ...(files.length ? { files: uploadPayload(files) } : {})
     }),
-    files.length ? 300_000 : 180_000
+    files.length || letterhead ? 300_000 : 180_000
   )
   if (!response.ok) return { ok: false, error: errorText(response, 'Не удалось создать документ в 1С') }
   const payload = (response.result || {}) as Record<string, unknown>

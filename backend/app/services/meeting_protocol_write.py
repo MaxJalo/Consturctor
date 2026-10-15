@@ -551,6 +551,25 @@ def build_protocol_create_body(
         due = _day_value(_field_of(item, "due", "deadline", "ДатаОкончания"), end=True)
         if due:
             row["ДатаОкончания"] = due
+        origin = _field_of(item, "source_ref", "source_protocol", "ПротоколИсточник")
+        if _looks_like_guid(origin):
+            row["ПротоколИсточник_Key"] = origin
+        result = _field_of(item, "result", "РезультатРешения")
+        if result:
+            row["РезультатРешения"] = result
+        done = _day_value(_field_of(item, "done_date", "ДатаИсполнения"))
+        if done:
+            row["ДатаИсполнения"] = done
+        reason = _field_of(item, "cancel_reason", "ПричинаОтмены")
+        if reason:
+            row["ПричинаОтмены"] = reason
+        if isinstance(item, dict):
+            if item.get("sent") is True:
+                row["Отправлено"] = True
+            if item.get("canceled") is True:
+                row["Отменено"] = True
+            if item.get("has_artifact") is True:
+                row["НаличиеАртефакта"] = True
         decision_rows.append(row)
 
     # ----- tasks («Поставленные задачи»)
@@ -944,6 +963,9 @@ def read_protocol_form(
             "since": _iso_day(row.get("ДатаНачала")),
             "result": _clean(row.get("РезультатРешения")),
             "done_date": _iso_day(row.get("ДатаИсполнения")),
+            "source_ref": row.get("ПротоколИсточник_Key")
+            if _looks_like_guid(row.get("ПротоколИсточник_Key"))
+            else "",
             "sent": row.get("Отправлено") is True,
             "has_artifact": row.get("НаличиеАртефакта") is True,
             "canceled": row.get("Отменено") is True,
@@ -1489,12 +1511,41 @@ def _basis_link(ref: Any) -> dict[str, str]:
     return {"ДокументОснование": "", "ДокументОснование_Type": _UNDEFINED_TYPE}
 
 
+def _carried_decisions(form: dict[str, Any], source_ref: str) -> list[dict[str, Any]]:
+    """Решения нового протокола, как заполнение на основании в форме 1С.
+
+    Текст и даты копируются. ПротоколИсточник остаётся тем протоколом, где решение
+    появилось; если ссылки ещё нет — это протокол-основание. Задачи в документ не копируются.
+    """
+    carried: list[dict[str, Any]] = []
+    for row in form.get("decisions") or []:
+        if not isinstance(row, dict):
+            continue
+        text = _clean(row.get("text"))
+        if not text:
+            continue
+        origin = _clean(row.get("source_ref"))
+        item: dict[str, Any] = {
+            "text": text,
+            "source_ref": origin if _looks_like_guid(origin) else source_ref,
+        }
+        for key in ("since", "due", "result", "done_date", "cancel_reason"):
+            value = _clean(row.get(key))
+            if value:
+                item[key] = value
+        for flag in ("sent", "canceled", "has_artifact"):
+            if row.get(flag) is True:
+                item[flag] = True
+        carried.append(item)
+    return carried
+
+
 def next_protocol_args(previous: dict[str, Any], overrides: dict[str, Any]) -> dict[str, Any]:
     """Create-args for the next meeting built from read_protocol_form() of the previous one.
 
-    Header, attendees and agenda are copied; decisions stay with the old protocol.
-    basis_ref_key links ДокументОснование, so every task of the source shows on
-    «Задачи для контроля» — the same way the 1C form fills a protocol created on basis.
+    Header, attendees, agenda and decisions are copied the way the 1C form fills
+    a protocol created on basis. basis_ref_key links ДокументОснование, so every
+    task of the source shows on «Задачи для контроля» without a second copy.
     """
     form = previous.get("form") if isinstance(previous.get("form"), dict) else {}
     number = _clean(previous.get("number"))
@@ -1531,6 +1582,7 @@ def next_protocol_args(previous: dict[str, Any], overrides: dict[str, Any]) -> d
         "meeting_type": form.get("meeting_type"),
         "participants": list(form.get("participants") or []),
         "agenda": agenda,
+        "decisions": _carried_decisions(form, _clean(previous.get("ref_key"))),
         "report_period_from": prev_day or day,
         "report_period_to": day,
         "comment": basis,
@@ -1570,8 +1622,10 @@ def _next_protocol(
     result["control_tasks"] = sum(
         1 for task in previous.get("form", {}).get("tasks") or [] if isinstance(task, dict) and _clean(task.get("text"))
     )
+    result["carried_decisions"] = len(create_args.get("decisions") or [])
     result["summary"] = (
         f"{result.get('summary') or 'Создан протокол'}; на основании {result['source_number'] or source}, "
+        f"решения перенесены: {result['carried_decisions']}, "
         f"все задачи прошлого протокола на контроле: {result['control_tasks']}"
     )
     return result

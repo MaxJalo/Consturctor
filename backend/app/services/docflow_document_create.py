@@ -174,7 +174,7 @@ KINDS: dict[str, dict[str, Any]] = {
             {"key": "Содержание", "label": "Содержание", "type": "textarea"},
             {"key": "Контрагент_Key", "label": "Контрагент (кому)", "type": "ref", "catalog": CONTRACTORS, "required": True},
             {"key": "Партнер_Key", "label": "Партнёр", "type": "ref", "catalog": PARTNERS, "required": True, "fill_from": ("Контрагент_Key", CONTRACTORS, "Партнер_Key"), "hint": "Если пусто — партнёр контрагента"},
-            {"key": "EmailПолучателяПисьма", "label": "Email получателя", "type": "text"},
+            {"key": "EmailПолучателяПисьма", "label": "Email получателя", "type": "text", "hint": "Адрес письма, например zhalibin.max@gmail.com"},
             {"key": "Направление", "label": "Направление", "type": "enum", "required": True, "options": _enum(
                 ("КоммерческийДиректор", "Коммерческий директор"),
                 ("ПрочиеВнутренние", "Прочие внутренние"),
@@ -1197,6 +1197,31 @@ def _wants_post(args: dict[str, Any]) -> bool:
     return str(raw or "").strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _wants_letterhead(args: dict[str, Any]) -> bool:
+    raw = args.get("letterhead")
+    if isinstance(raw, bool):
+        return raw
+    return str(raw or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _with_letterhead(values: dict[str, Any], files: list[tuple[str, bytes]]) -> list[tuple[str, bytes]]:
+    from app.services.outgoing_letterhead import LETTERHEAD_NAME, build_outgoing_letterhead
+
+    if any(name.casefold() == LETTERHEAD_NAME.casefold() for name, _content in files):
+        return files
+    if len(files) >= MAX_FILES:
+        raise DocumentCreateError("Для фирменного бланка оставьте место: не больше 9 своих файлов")
+    organization = str(values.get("Организация_Key") or "").strip()
+    blob = build_outgoing_letterhead(
+        organization=organization,
+        theme=str(values.get("ТемаСлужебнойЗаписки") or ""),
+        body=str(values.get("Содержание") or ""),
+        email=str(values.get("EmailПолучателяПисьма") or ""),
+        direction=str(values.get("Направление") or ""),
+    )
+    return [(LETTERHEAD_NAME, blob), *files]
+
+
 def _create_incoming(values: dict[str, Any], *, post: bool = False) -> dict[str, Any]:
     from app.services.erp_incoming import handle_incoming_correspondence_write
 
@@ -1248,7 +1273,13 @@ def create_document(kind_id: str, args: dict[str, Any], *, actor_fio: str) -> di
     if post and kind["base"] != "erp":
         raise DocumentCreateError("Этот документ не проводится из формы: запишите его и отправьте на согласование в 1С")
     values = args.get("values") if isinstance(args.get("values"), dict) else {}
+    if kind_id == "outgoing":
+        from app.services.outgoing_letterhead import remember_recipient
+
+        remember_recipient(str(values.get("EmailПолучателяПисьма") or ""))
     files = _decode_files(args.get("files"))
+    if kind_id == "outgoing" and _wants_letterhead(args):
+        files = _with_letterhead(values, files)
     if files and kind_id not in FILE_CATALOGS:
         raise DocumentCreateError("К этому виду документа файлы прикрепляются в самой 1С")
     ensure_probe(kind_id, args, actor_fio=actor_fio, files=bool(files))
@@ -1350,6 +1381,8 @@ def _public_fields(
 
 
 def schema(kind_id: str = "") -> dict[str, Any]:
+    from app.services.outgoing_letterhead import recipient_emails
+
     kinds = []
     options_cache: dict[str, Any] = {}
     for key, kind in KINDS.items():
@@ -1373,6 +1406,7 @@ def schema(kind_id: str = "") -> dict[str, Any]:
                 "basis_targets": [
                     {"id": target, "title": KINDS[target]["title"]} for target in targets if target != key
                 ],
+                **({"recipient_emails": recipient_emails()} if key == "outgoing" else {}),
             }
         )
     return {"summary": f"Формы документов: {len(kinds)}", "kinds": kinds, "existing_forms": EXISTING_FORMS}

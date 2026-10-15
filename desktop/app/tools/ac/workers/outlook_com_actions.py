@@ -1197,6 +1197,26 @@ def meeting_planner_line(fio: str, position: str) -> str:
     return f"запланировал(а) {tail}"
 
 
+# Общий календарь совещаний: участник приглашения, но не строка в тексте встречи.
+MEETINGS_CALENDAR_EMAIL = "calendar@turbo-don.ru"
+MEETINGS_CALENDAR_ATTENDEE = f"Совещания <{MEETINGS_CALENDAR_EMAIL}>"
+
+
+def _is_meetings_calendar(value: str) -> bool:
+    return MEETINGS_CALENDAR_EMAIL.casefold() in (value or "").casefold()
+
+
+def _with_meetings_calendar(names: list[str]) -> list[str]:
+    """Добавить ящик «Совещания», если его ещё нет среди участников."""
+    if any(_is_meetings_calendar(name) for name in names):
+        return list(names)
+    return [*names, MEETINGS_CALENDAR_ATTENDEE]
+
+
+def _lines_without_meetings_calendar(lines: list[str]) -> list[str]:
+    return [line for line in lines if line and not _is_meetings_calendar(line)]
+
+
 def compose_participants_body(lines: list[str], planner: str, notes: str) -> str:
     """Текст совещания: список участников с почтой и кто запланировал."""
     cleaned = [line.strip() for line in lines if line and line.strip()]
@@ -2153,9 +2173,10 @@ def create_event(input_data: dict) -> dict:
                         pattern, start, end, kind, int(spec.get("day_of_month") or start.day)
                     )
             added = _attach_attendees(appt, attendees)
-            if attendees:
+            visible = _lines_without_meetings_calendar(_participant_lines(appt, attendees))
+            if visible:
                 spec["body"] = compose_participants_body(
-                    _participant_lines(appt, attendees),
+                    visible,
                     meeting_planner_line(spec.get("planner_fio") or "", spec.get("planner_position") or ""),
                     spec["body"],
                 )
@@ -2492,7 +2513,7 @@ def _meeting_specs(input_data: dict) -> list[dict]:
             end = start + timedelta(minutes=minutes)
         if end <= start:
             end = start + timedelta(minutes=DEFAULT_MEETING_MINUTES)
-        attendees = _people_from_input(row) or _people_from_input(input_data)
+        attendees = _with_meetings_calendar(_people_from_input(row) or _people_from_input(input_data))
         organizer = _organizer_from_input(row) or _organizer_from_input(input_data)
         send_raw = row.get("send_invites", input_data.get("send_invites"))
         if send_raw is None:
