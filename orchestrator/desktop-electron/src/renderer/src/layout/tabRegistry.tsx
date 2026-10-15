@@ -6,6 +6,7 @@ import {
   SpecTodayQuickLaunchButton
 } from '../workplace/specV04Components'
 import { CreateTaskHeaderButton } from './CreateTaskHeaderButton'
+import { DocflowRefreshButton } from './DocflowRefreshButton'
 import { KpiExportReportButton } from './KpiExportReportButton'
 
 export type WorkplaceTabKey =
@@ -68,7 +69,8 @@ export const TAB_REGISTRY: Record<WorkplaceTabKey, TabRegistryEntry> = {
   },
   docflow: {
     title: PAGE_LABELS.docflow,
-    subtitle: 'Корреспонденция, служебные записки, приказы, поручения и протоколы'
+    subtitle: 'Корреспонденция, служебные записки, приказы, поручения и протоколы',
+    headerActions: <DocflowRefreshButton />
   },
   meetings: {
     title: PAGE_LABELS.meetings,

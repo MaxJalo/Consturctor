@@ -916,7 +916,8 @@ function AppShell(): React.JSX.Element {
                 },
                 onOpenPassport: (workflowId, title, tab) =>
                   setView({ kind: 'passport', workflowId, title, tab }),
-                registryTile: tabIntent?.registryTile
+                registryTile: tabIntent?.registryTile,
+                subordinateKpi: tabIntent?.subordinateKpi
               })}
             </>
           )

@@ -104,7 +104,16 @@ def test_meeting_specs_keep_attendees_and_organizer() -> None:
     assert specs[0]["attendees"] == [
         "Мангасарян Давид Каренович",
         "Уставицкий А. А.",
+        "Совещания <calendar@turbo-don.ru>",
     ]
+    again = _meeting_specs(
+        {
+            "subject": "Планерка",
+            "start": "2026-09-07T10:00:00",
+            "attendees": ["Совещания <calendar@turbo-don.ru>"],
+        }
+    )
+    assert again[0]["attendees"] == ["Совещания <calendar@turbo-don.ru>"]
     assert specs[0]["organizer"] == "Ильченко Екатерина Александровна"
     assert specs[0]["send_invites"] is True
     assert specs[0]["recurrence_kind"] == ""

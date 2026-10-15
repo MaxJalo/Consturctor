@@ -176,6 +176,7 @@ function FieldInput({
   field,
   value,
   userHints,
+  emailHints,
   readOnly,
   onChange
 }: {
@@ -184,6 +185,7 @@ function FieldInput({
   field: DocflowField
   value: string
   userHints: string[]
+  emailHints: string[]
   readOnly: boolean
   onChange: (value: string) => void
 }): React.JSX.Element {
@@ -219,11 +221,13 @@ function FieldInput({
   if (wraps) {
     return <GrowText value={value} placeholder={field.hint} onChange={onChange} />
   }
+  const emailList = field.key === 'EmailПолучателяПисьма' && emailHints.length ? 'df1c-outgoing-emails' : undefined
   return (
     <input
       className={`df1c-input${field.type === 'number' ? ' df1c-number' : ''}${field.type === 'date' ? ' df1c-date' : ''}`}
       type={field.type === 'date' ? 'date' : 'text'}
       inputMode={field.type === 'number' ? 'decimal' : undefined}
+      list={emailList}
       value={value}
       placeholder={field.hint}
       onChange={(event) => onChange(event.target.value)}
@@ -276,6 +280,8 @@ export function DocflowCreateDialog({
   const [error, setError] = useState('')
   const [notice, setNotice] = useState('')
   const [userHints, setUserHints] = useState<string[]>([])
+  const [emailHints, setEmailHints] = useState<string[]>([])
+  const [letterhead, setLetterhead] = useState(true)
   const [openedAt, setOpenedAt] = useState(nowLabel)
 
   const resetState = (): void => {
@@ -297,6 +303,14 @@ export function DocflowCreateDialog({
     setCard(null)
     if (request.mode === 'create') {
       setCardLoading(false)
+      setLetterhead(schema.id === 'outgoing')
+      if (schema.id === 'outgoing') {
+        const fromSchema = schema.recipient_emails || []
+        const seeded = 'zhalibin.max@gmail.com'
+        setEmailHints(
+          fromSchema.some((item) => item.toLowerCase() === seeded) ? fromSchema : [seeded, ...fromSchema]
+        )
+      }
       const base = initialValues(schema, erpActorFio(user))
       const last = request.prefill ? {} : recallLastValues(user.id, schema)
       const given = request.prefill?.values || {}
@@ -492,8 +506,15 @@ export function DocflowCreateDialog({
           payloadTables(),
           files,
           request.prefill?.basis || null,
-          post
+          post,
+          schema.id === 'outgoing' && letterhead
         )
+        if (result.ok && schema.id === 'outgoing') {
+          const email = (payloadValues().EmailПолучателяПисьма || '').trim()
+          if (email.includes('@')) {
+            setEmailHints((current) => (current.some((item) => item.toLowerCase() === email.toLowerCase()) ? current : [...current, email]))
+          }
+        }
         if (!result.ok) {
           setError(result.error)
           setPending(null)
@@ -607,6 +628,7 @@ export function DocflowCreateDialog({
             field={field}
             value={values[field.key] || ''}
             userHints={userHints}
+            emailHints={emailHints}
             readOnly={readOnly}
             onChange={(value) => setValue(field.key, value)}
           />
@@ -642,8 +664,8 @@ export function DocflowCreateDialog({
           : editing
             ? `Записать изменения (${changedLabels.slice(0, 4).join(', ')}${changedLabels.length > 4 ? '…' : ''})?`
             : `Записать черновик${topic ? ` «${topic.trim().slice(0, 60)}»` : ''}${
-                files.length ? `, файлов: ${files.length}` : ''
-              }?`
+                schema.id === 'outgoing' && letterhead ? ', с фирменным бланком' : ''
+              }${files.length ? `, файлов: ${files.length}` : ''}?`
 
   return createPortal(
     <div className="modal-overlay df1c-overlay" onClick={tryClose} role="presentation">
@@ -990,6 +1012,7 @@ export function DocflowCreateDialog({
                                   }
                                   value={row.cells[column.key] || ''}
                                   userHints={userHints}
+                                  emailHints={emailHints}
                                   readOnly={readOnly}
                                   onChange={(value) => patchRow(table.key, row.id, column.key, value)}
                                 />
@@ -1033,6 +1056,24 @@ export function DocflowCreateDialog({
                     ? '«Записать» сохраняет черновик. «Провести» проводит документ и оставляет форму. «Провести и закрыть» проводит и закрывает форму.'
                     : 'Проведённый документ здесь только для просмотра. Новый документ можно создать на основании или копированием.'}
                 </p>
+              ) : schema.id === 'outgoing' ? (
+                <>
+                  <label className="df1c-letterhead">
+                    <input type="checkbox" checked={letterhead} onChange={(event) => setLetterhead(event.target.checked)} />
+                    Приложить фирменный бланк с текстом письма и email получателя
+                  </label>
+                  {emailHints.length ? (
+                    <datalist id="df1c-outgoing-emails">
+                      {emailHints.map((email) => (
+                        <option key={email} value={email} />
+                      ))}
+                    </datalist>
+                  ) : null}
+                  <p className="df1c-muted">
+                    «Записать» сохраняет черновик и бланк. «Провести» проводит документ в 1С. Маршрут согласования
+                    запускается правилами 1С, само письмо на email оркестратор не отправляет.
+                  </p>
+                </>
               ) : (
                 <p className="df1c-muted">
                   «Записать» сохраняет черновик. «Провести» проводит документ и оставляет форму. «Провести и закрыть»
