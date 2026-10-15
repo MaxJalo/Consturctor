@@ -55,6 +55,54 @@ def test_outlook_create_runs_in_gui_process() -> None:
     assert isinstance(read._worker, OutlookComWorker)
 
 
+def test_send_outgoing_letter_requires_email() -> None:
+    import pytest
+
+    from app.tools.ac.workers.outlook_com_actions import send_outgoing_letter
+    from app.tools.ac.workers.outlook_com_errors import OutlookAccessError
+
+    with pytest.raises(OutlookAccessError, match="email"):
+        send_outgoing_letter({"to": "не адрес", "subject": "Тема", "body": "Текст"})
+
+
+def test_outgoing_letter_signature_keeps_company_and_phones() -> None:
+    from app.tools.ac.workers.outlook_com_actions import _signature_lines
+
+    lines = _signature_lines(
+        {
+            "fio": "Жалыбин Максим Дмитриевич",
+            "position": "Инженер",
+            "work_phone": "200",
+            "mobile_phone": "900",
+        },
+        "testii@turbo-don.ru",
+    )
+    assert lines[0] == "С уважением,"
+    assert "ГК «Турбулентность-ДОН»" in lines
+    assert "1-ый километр Новошахтинского шоссе, база «Спектр», стр. 6/8" in lines
+    assert "testii@turbo-don.ru" in lines
+    assert "раб. тел: 200" in lines
+    assert "тел. моб.: 900" in lines
+
+
+def test_send_outgoing_letter_is_routed() -> None:
+    from app.tools.ac.dispatch import build_registry
+    from app.tools.ac.workers.models import WorkerTask
+    from app.tools.ac.workers.outlook_com_worker import OutlookComWorker
+
+    registry = build_registry()
+    assert registry.has_tool("outlook.send_outgoing_letter")
+    result = OutlookComWorker(allow_direct_com_calls=False).execute(
+        WorkerTask(
+            task_id="outgoing-letter",
+            tool_name="outlook.send_outgoing_letter",
+            input_data={"to": "a@b.c", "subject": "Тема", "body": "Текст"},
+        )
+    )
+    assert result.ok is False
+    assert result.error_type == "DIRECT_COM_CALL_DISABLED"
+
+
 def test_outlook_mail_panel_tools_registered() -> None:
     from app.tools.ac.dispatch import build_registry
 

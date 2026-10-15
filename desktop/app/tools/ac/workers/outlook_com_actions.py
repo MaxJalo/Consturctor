@@ -2648,6 +2648,168 @@ def _compute_free_slots(
     return slots
 
 
+def _outgoing_letter_fields(input_data: dict) -> tuple[str, str, str]:
+    """Адрес, тема и текст исходящего. Пустой адрес и перенос строки в адресе — ошибка."""
+    to_addr = _safe_str(input_data.get("to") or "").strip()
+    subject = _safe_str(input_data.get("subject") or "").strip().replace("\r", " ").replace("\n", " ")
+    body = _safe_str(input_data.get("body") or "").strip()
+    if any(char in to_addr for char in "\r\n,;"):
+        raise OutlookAccessError("Укажите один email получателя")
+    domain = to_addr.split("@", 1)[-1] if "@" in to_addr else ""
+    if "@" not in to_addr or "." not in domain or " " in to_addr:
+        raise OutlookAccessError("Укажите email получателя")
+    if not subject:
+        raise OutlookAccessError("Укажите тему письма")
+    return to_addr, subject, body or subject
+
+
+def _find_sent_mail(namespace: Any, subject: str, to_addr: str) -> Any:
+    """Найти только что отправленное письмо в папке «Отправленные»."""
+    folder = namespace.GetDefaultFolder(SENT_FOLDER_ID)
+    subject_low = subject.casefold()
+    to_low = to_addr.casefold()
+    deadline = time.time() + 4
+    while time.time() < deadline:
+        items = folder.Items
+        items.Sort("[SentOn]", True)
+        item = items.GetFirst()
+        for _ in range(12):
+            if item is None:
+                break
+            try:
+                found_subject = _safe_str(getattr(item, "Subject", ""))
+                found_to = _safe_str(getattr(item, "To", ""))
+                if found_subject.casefold() == subject_low and to_low in found_to.casefold():
+                    return item
+            except Exception:  # noqa: BLE001
+                pass
+            item = items.GetNext()
+        time.sleep(0.4)
+    return None
+
+
+_LOGO_PATH = Path(__file__).resolve().parents[3] / "assets" / "turbulence_don_logo.png"
+_CID_PROPID = "http://schemas.microsoft.com/mapi/proptag/0x3712001F"
+_COMPANY_LINES = (
+    "ГК «Турбулентность-ДОН»",
+    "Ростовская область, Мясниковский район",
+    "1-ый километр Новошахтинского шоссе, база «Спектр», стр. 6/8",
+)
+
+
+def _signature_lines(input_data: dict, from_email: str) -> list[str]:
+    """Тот же блок, что на бланке: сотрудник, адрес ГК, почта отправителя, телефоны."""
+    lines = ["С уважением,"]
+    for key in ("fio", "position"):
+        text = " ".join(_safe_str(input_data.get(key) or "").split())
+        if text:
+            lines.append(text)
+    lines.extend(_COMPANY_LINES)
+    email = " ".join(from_email.split())
+    if "@" in email:
+        lines.append(email)
+    work = " ".join(_safe_str(input_data.get("work_phone") or "").split())
+    mobile = " ".join(_safe_str(input_data.get("mobile_phone") or "").split())
+    if work:
+        lines.append(f"раб. тел: {work}")
+    if mobile:
+        lines.append(f"тел. моб.: {mobile}")
+    return lines
+
+
+def _mailbox_address(mail: Any) -> str:
+    try:
+        account = getattr(mail, "SendUsingAccount", None)
+        smtp = _safe_str(getattr(account, "SmtpAddress", "")) if account is not None else ""
+        if "@" in smtp:
+            return smtp
+    except Exception:  # noqa: BLE001
+        pass
+    return ""
+
+
+def _html_letter(text: str, *, logo_cid: str = "") -> str:
+    import html
+
+    parts = [
+        "<html><body style=\"font-family:'Times New Roman',serif;font-size:12pt\">"
+    ]
+    for line in text.splitlines():
+        parts.append(f"<p style=\"margin:0\">{html.escape(line) or '&nbsp;'}</p>")
+    if logo_cid:
+        parts.append(f"<p><img src=\"cid:{html.escape(logo_cid)}\" width=\"640\" alt=\"Турбулентность-ДОН\"></p>")
+    parts.append("</body></html>")
+    return "".join(parts)
+
+
+def send_outgoing_letter(input_data: dict) -> dict:
+    """Отправить исходящее письмо из Outlook и вернуть его файл .msg.
+
+    Вызывается формой исходящей корреспонденции: адрес, тема и текст уже
+    подтверждены записью документа. Общая отправка email.send по-прежнему закрыта.
+    """
+    to_addr, subject, body = _outgoing_letter_fields(input_data)
+
+    def _write(win32com_client: Any) -> dict:
+        outlook = _dispatch_outlook(win32com_client)
+        namespace = _mapi_namespace(outlook)
+        mail = outlook.CreateItem(0)
+        mail.To = to_addr
+        mail.Subject = subject
+        try:
+            mail.DeleteAfterSubmit = False
+        except Exception:  # noqa: BLE001
+            pass
+        from_email = _mailbox_address(mail) or _safe_str(input_data.get("from_email") or "").strip()
+        sign = _signature_lines(input_data, from_email)
+        plain = body.rstrip() + "\n\n" + "\n".join(sign)
+        mail.Body = plain
+        if _LOGO_PATH.is_file():
+            try:
+                attachment = mail.Attachments.Add(str(_LOGO_PATH.resolve()))
+                attachment.PropertyAccessor.SetProperty(_CID_PROPID, "turbulence-logo")
+                mail.HTMLBody = _html_letter(plain, logo_cid="turbulence-logo")
+            except Exception:  # noqa: BLE001
+                mail.Body = plain
+        try:
+            mail.Save()
+            mail.Send()
+        except Exception as exc:
+            raise OutlookAccessError(f"Outlook не отправил письмо: {exc}") from exc
+        sent = _find_sent_mail(namespace, subject, to_addr)
+        if sent is None:
+            raise OutlookAccessError(
+                "Письмо отправлено, но не найдено в «Отправленных», поэтому файл к документу не прикреплён"
+            )
+        base_dir = Path(tempfile.gettempdir()) / "Constructor" / "outlook" / "outgoing"
+        base_dir.mkdir(parents=True, exist_ok=True)
+        target = base_dir / f"{_safe_mail_file_stem(subject, _safe_str(getattr(sent, 'EntryID', '')))}.msg"
+        try:
+            sent.SaveAs(str(target.resolve()), OL_SAVEAS_MSG)
+            raw = target.read_bytes()
+        except Exception as exc:
+            raise OutlookAccessError(f"Письмо отправлено, но не сохранилось файлом: {exc}") from exc
+        if not raw:
+            raise OutlookAccessError("Письмо отправлено, но файл .msg пустой")
+        if len(raw) > 12 * 1024 * 1024:
+            raise OutlookAccessError("Письмо отправлено, но файл .msg больше 12 МБ и не прикрепится")
+        import base64
+
+        return {
+            "ok": True,
+            "sent": True,
+            "to": to_addr,
+            "from_email": from_email,
+            "subject": subject,
+            "file_name": target.name,
+            "msg_filename": target.name,
+            "msg_base64": base64.b64encode(raw).decode("ascii"),
+            "source": "outlook_com",
+        }
+
+    return _run_com_read(_write, "Ошибка отправки исходящего письма")
+
+
 def send_mail_disabled(input_data: dict) -> dict:
     """Всегда заблокировать отправку писем в безопасном режиме."""
     raise DangerousOutlookActionBlockedError(

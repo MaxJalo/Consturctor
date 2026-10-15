@@ -30,6 +30,7 @@ from urllib.parse import quote
 import httpx
 
 from app.config import BACKEND_ROOT, settings
+from app.services.moscow_time import moscow_day, odata_moscow
 
 logger = logging.getLogger(__name__)
 
@@ -819,7 +820,7 @@ def build_body(
     body: dict[str, Any] = {"DeletionMark": False}
     if kind["base"] == "erp":
         body["Posted"] = bool(post)
-        body["Date"] = datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
+        body["Date"] = odata_moscow()
     body.update(kind.get("defaults") or {})
     body.update(kind.get("fixed") or {})
     properties: list[tuple[str, Any, dict[str, Any]]] = []
@@ -998,7 +999,7 @@ def _probe_values(kind_id: str, client: _ODataClient, actor_fio: str, topic: str
         elif field["type"] == "number":
             values[key] = 1
         elif field["type"] == "date":
-            values[key] = datetime.now().strftime("%Y-%m-%d")
+            values[key] = moscow_day()
         else:
             values[key] = topic
     values[kind["mark_field"]] = topic
@@ -1038,7 +1039,7 @@ def run_probe(kind_id: str, args: dict[str, Any], *, actor_fio: str) -> dict[str
     entity = kind["entity"]
     mark = kind.get("read_mark") or kind["mark_field"]
     client = _client(kind, args)
-    topic = f"{PROBE_MARK} {datetime.now().strftime('%Y%m%d-%H%M%S')}"
+    topic = f"{PROBE_MARK} {odata_moscow().replace('-', '').replace(':', '').replace('T', '-')}"
     created_key = ""
     file_entity = FILE_CATALOGS.get(kind_id, "")
     file_key = ""
@@ -1204,7 +1205,31 @@ def _wants_letterhead(args: dict[str, Any]) -> bool:
     return str(raw or "").strip().lower() in {"1", "true", "yes", "on"}
 
 
-def _with_letterhead(values: dict[str, Any], files: list[tuple[str, bytes]]) -> list[tuple[str, bytes]]:
+def _outgoing_signature(args: dict[str, Any], actor_fio: str, client: _ODataClient) -> list[str]:
+    from app.services.outgoing_letterhead import sender_phones, signature_lines
+
+    sender = args.get("sender") if isinstance(args.get("sender"), dict) else {}
+    work = str(sender.get("work_phone") or "").strip()
+    mobile = str(sender.get("mobile_phone") or "").strip()
+    if not work or not mobile:
+        phones = sender_phones(client, str(sender.get("fio") or actor_fio))
+        work = work or phones.get("work_phone") or ""
+        mobile = mobile or phones.get("mobile_phone") or ""
+    return signature_lines(
+        fio=str(sender.get("fio") or actor_fio),
+        position=str(sender.get("position") or ""),
+        from_email=str(sender.get("from_email") or ""),
+        work_phone=work,
+        mobile_phone=mobile,
+    )
+
+
+def _with_letterhead(
+    values: dict[str, Any],
+    files: list[tuple[str, bytes]],
+    *,
+    signature: list[str] | None = None,
+) -> list[tuple[str, bytes]]:
     from app.services.outgoing_letterhead import LETTERHEAD_NAME, build_outgoing_letterhead
 
     if any(name.casefold() == LETTERHEAD_NAME.casefold() for name, _content in files):
@@ -1218,6 +1243,7 @@ def _with_letterhead(values: dict[str, Any], files: list[tuple[str, bytes]]) -> 
         body=str(values.get("Содержание") or ""),
         email=str(values.get("EmailПолучателяПисьма") or ""),
         direction=str(values.get("Направление") or ""),
+        signature=signature,
     )
     return [(LETTERHEAD_NAME, blob), *files]
 
@@ -1279,7 +1305,11 @@ def create_document(kind_id: str, args: dict[str, Any], *, actor_fio: str) -> di
         remember_recipient(str(values.get("EmailПолучателяПисьма") or ""))
     files = _decode_files(args.get("files"))
     if kind_id == "outgoing" and _wants_letterhead(args):
-        files = _with_letterhead(values, files)
+        files = _with_letterhead(
+            values,
+            files,
+            signature=_outgoing_signature(args, actor_fio, _client(kind, args)),
+        )
     if files and kind_id not in FILE_CATALOGS:
         raise DocumentCreateError("К этому виду документа файлы прикрепляются в самой 1С")
     ensure_probe(kind_id, args, actor_fio=actor_fio, files=bool(files))
@@ -1427,6 +1457,11 @@ def handle_docflow_document_create(
     action = str(args.get("action") or "schema").strip().lower()
     kind_id = str(args.get("kind") or "").strip()
     actor = str(args.get("fio") or actor_fio or "").strip()
+    if action == "signature":
+        from app.services.outgoing_letterhead import sender_phones
+
+        phones = sender_phones(_client(_kind("outgoing"), args), actor)
+        return {"summary": "Телефоны отправителя из 1С", **phones}
     if action == "schema":
         return schema(kind_id)
     if action == "lookup":
