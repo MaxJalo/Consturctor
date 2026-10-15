@@ -802,7 +802,6 @@ def _iter_visible_calendar_folders(
         add(_own_calendar_folder(namespace), own_label, True)
     except OutlookAccessError:
         pass
-
     try:
         seen_explorers = 0
         explorers = list(_iter_outlook_explorers(outlook))
