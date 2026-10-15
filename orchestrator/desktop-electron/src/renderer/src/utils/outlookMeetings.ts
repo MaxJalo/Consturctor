@@ -303,7 +303,6 @@ function requestOutlookMeetings(range: {
   forUser?: string
   allVisible?: boolean
   calendarOwners?: string[]
-  includeOwn?: boolean
 }): Promise<CalendarRequestResult> {
   return new Promise((resolve) => {
     const requestId = `cal-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
@@ -353,8 +352,7 @@ function requestOutlookMeetings(range: {
       people: range.people,
       forUser: range.forUser,
       allVisible: range.allVisible,
-      calendarOwners: range.calendarOwners,
-      includeOwn: range.includeOwn !== false
+      calendarOwners: range.calendarOwners
     })
   })
 }
@@ -375,21 +373,6 @@ export function countMeetingsOnDay(meetings: MeetingEvent[], anchor = new Date()
     if (!start) return false
     return start.getFullYear() === y && start.getMonth() === m && start.getDate() === d
   }).length
-}
-
-/** Ключ тумблера «Показывать мои совещания» — тот же, что в ownMeetings.ts. */
-function showOwnStored(fio: string): boolean {
-  try {
-    return window.localStorage.getItem(`orch.meetings.show-own.v2:${fio.trim().toLowerCase()}`) === '1'
-  } catch {
-    return false
-  }
-}
-
-/** У Ильченко личный календарь читается только при включённом тумблере. Остальным — всегда. */
-function includeOwnCalendar(owner: string): boolean {
-  if (!sharedMeetingCalendarFor(owner)) return true
-  return showOwnStored(owner)
 }
 
 function calendarScope(owner: string): { baseCalendar: string; calendarOwners: string[]; askOwners: boolean } {
@@ -443,9 +426,8 @@ export async function ensureOutlookMeetings(
   const toKey = dayKey(addDays(win.to, -1))
   const today = dayKey(new Date())
   const owner = (options.owner || '').trim()
-  const includeOwn = options.includeOwn ?? includeOwnCalendar(owner)
   const { baseCalendar, calendarOwners, askOwners } = calendarScope(owner)
-  const cacheOwner = `${askOwners ? `${owner}@${calendarOwners.join('|')}` : owner}|own=${includeOwn ? 1 : 0}`
+  const cacheOwner = askOwners ? `${owner}@${calendarOwners.join('|')}` : owner
 
   if (!options.force) {
     const cache = readCache()
@@ -473,13 +455,12 @@ export async function ensureOutlookMeetings(
 
   const result = await requestOutlookMeetings(
     askOwners
-      ? { dateFrom: fromKey, dateTo: toKey, calendarOwners, includeOwn }
+      ? { dateFrom: fromKey, dateTo: toKey, calendarOwners }
       : {
           dateFrom: fromKey,
           dateTo: toKey,
           forUser: options.allVisible ? owner : undefined,
-          allVisible: Boolean(options.allVisible),
-          includeOwn
+          allVisible: Boolean(options.allVisible)
         }
   )
   if (!result.ok) return { ...result, cached: false }

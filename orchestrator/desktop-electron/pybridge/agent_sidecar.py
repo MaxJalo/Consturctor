@@ -5251,8 +5251,6 @@ class Sidecar:
         calendar_owner = isinstance(calendar_owners, list) and bool(calendar_owners)
         if calendar_owner:
             input_data["calendar_owners"] = [str(item or "").strip() for item in calendar_owners]
-        if "includeOwn" in command:
-            input_data["include_own"] = bool(command.get("includeOwn"))
         days_forward = command.get("daysForward")
         if isinstance(days_forward, int) and days_forward > 0:
             input_data["days_forward"] = days_forward
