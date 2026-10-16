@@ -870,7 +870,13 @@ function AppShell(): React.JSX.Element {
       case 'tasks':
         return <TasksGridTab user={activeUser} navTaskFilter={tabIntent?.taskFilter} />
       case 'mail':
-        return <MailGridTab user={activeUser} onAskOrchestrator={askOrchestratorFromTab} />
+        return (
+          <MailGridTab
+            user={activeUser}
+            onAskOrchestrator={askOrchestratorFromTab}
+            navCompose={tabIntent?.composeOutgoing}
+          />
+        )
       case 'docflow':
         return <DocflowGridTab user={activeUser} />
       case 'task_create':

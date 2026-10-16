@@ -91,9 +91,14 @@ export type DocflowPrefill = {
   copy: boolean
 }
 
+/** Уже отправленное письмо Outlook: зарегистрировать исходящую, не отправляя его ещё раз. */
+export type OutgoingMailSource = {
+  entryId: string
+}
+
 /** Что открыть в форме: новый документ (возможно, на основании другого) или уже записанный. */
 export type DocflowFormRequest =
-  | { mode: 'create'; kind: DocflowKindId; prefill?: DocflowPrefill }
+  | { mode: 'create'; kind: DocflowKindId; prefill?: DocflowPrefill; outgoingMail?: OutgoingMailSource }
   | { mode: 'edit'; kind: DocflowKindId; refKey: string }
 
 export type DocflowWriteResult =
@@ -172,6 +177,30 @@ export async function loadOutgoingPhones(user: UserProfile | null): Promise<{ wo
   return {
     work_phone: String(payload.work_phone || '').trim(),
     mobile_phone: String(payload.mobile_phone || '').trim()
+  }
+}
+
+/** Сохранить уже существующее письмо Outlook файлом .msg, без повторной отправки. */
+export async function saveOutlookMessageFile(
+  user: UserProfile | null,
+  entryId: string
+): Promise<{ ok: true; file: DocflowUploadFile } | { ok: false; error: string }> {
+  const response = await invokeLocalAcTool(
+    'outlook.save_message',
+    { entry_id: entryId, include_base64: true },
+    120_000,
+    user
+  )
+  if (!response.ok || !response.result) {
+    return { ok: false, error: response.error || 'Outlook не сохранил письмо' }
+  }
+  const base64 = String(response.result.msg_base64 || '').trim()
+  const name = String(response.result.file_name || response.result.msg_filename || 'Письмо.msg').trim() || 'Письмо.msg'
+  if (!base64) return { ok: false, error: 'Письмо не сохранилось файлом .msg' }
+  const size = Math.floor((base64.length * 3) / 4)
+  return {
+    ok: true,
+    file: { name: name.toLowerCase().endsWith('.msg') ? name : `${name}.msg`, size, base64 }
   }
 }
 

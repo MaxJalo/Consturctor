@@ -60,8 +60,13 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from run_context import RunContext
-from run_metrics import RunMetrics, runner_pid
+# Встроенный Python установщика (python312._pth) не кладёт папку скрипта в sys.path.
+_PYBRIDGE_DIR = str(Path(__file__).resolve().parent)
+if _PYBRIDGE_DIR not in sys.path:
+    sys.path.insert(0, _PYBRIDGE_DIR)
+
+from run_context import RunContext  # noqa: E402
+from run_metrics import RunMetrics, runner_pid  # noqa: E402
 
 
 def _is_orchestrator_desktop(path: Path) -> bool:

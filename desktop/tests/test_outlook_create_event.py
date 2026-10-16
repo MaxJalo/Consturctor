@@ -55,6 +55,73 @@ def test_outlook_create_runs_in_gui_process() -> None:
     assert isinstance(read._worker, OutlookComWorker)
 
 
+class _FakeWinreg:
+    HKEY_CURRENT_USER = "HKCU"
+    KEY_READ = 1
+    KEY_SET_VALUE = 2
+
+    def __init__(self, values: dict[str, int] | None) -> None:
+        self.values = values
+
+    def OpenKey(self, _root, _path, _reserved, _access):  # noqa: N802
+        if self.values is None:
+            raise OSError("no key")
+        return self
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_exc) -> None:
+        return None
+
+    def QueryValueEx(self, _key, name):  # noqa: N802
+        if name not in self.values:
+            raise OSError(name)
+        return self.values[name], 4
+
+    def DeleteValue(self, _key, name):  # noqa: N802
+        del self.values[name]
+
+
+def test_deny_policy_written_by_app_is_removed() -> None:
+    from app.tools.ac.workers.outlook_com_actions import _remove_deny_policy
+
+    prompts = ("PromptOOMSend", "PromptOOMAddressBookAccess")
+    fake = _FakeWinreg({"AdminSecurityMode": 3, "PromptOOMSend": 2, "PromptOOMAddressBookAccess": 2})
+    _remove_deny_policy(fake, "16.0", prompts)
+    assert fake.values == {}
+
+
+def test_admin_outlook_policy_is_kept() -> None:
+    from app.tools.ac.workers.outlook_com_actions import _remove_deny_policy
+
+    prompts = ("PromptOOMSend", "PromptOOMAddressBookAccess")
+    admin = {"AdminSecurityMode": 3, "PromptOOMSend": 1, "PromptOOMAddressBookAccess": 2}
+    fake = _FakeWinreg(dict(admin))
+    _remove_deny_policy(fake, "16.0", prompts)
+    assert fake.values == admin
+    _remove_deny_policy(_FakeWinreg(None), "16.0", prompts)
+
+
+def test_outgoing_letter_body_is_content_not_subject() -> None:
+    import pytest
+
+    from app.tools.ac.workers.outlook_com_actions import _outgoing_letter_fields
+    from app.tools.ac.workers.outlook_com_errors import OutlookAccessError
+
+    _to, subject, body = _outgoing_letter_fields(
+        {
+            "to": "a@b.ru",
+            "subject": "ПРОВЕРКА ОТПРАВКИ ИСХОДЯШКИ",
+            "body": "Текст из содержания исходящей",
+        }
+    )
+    assert subject == "ПРОВЕРКА ОТПРАВКИ ИСХОДЯШКИ"
+    assert body == "Текст из содержания исходящей"
+    with pytest.raises(OutlookAccessError, match="содержание"):
+        _outgoing_letter_fields({"to": "a@b.ru", "subject": "Тема", "body": "  "})
+
+
 def test_send_outgoing_letter_requires_email() -> None:
     import pytest
 

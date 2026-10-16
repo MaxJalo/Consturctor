@@ -29,6 +29,7 @@ import {
   readDocflowDocument,
   loadOutgoingPhones,
   readUploadFile,
+  saveOutlookMessageFile,
   sendOutgoingLetter,
   recallLastValues,
   rememberLastValues,
@@ -503,12 +504,21 @@ export function DocflowCreateDialog({
       if (request.mode === 'create') {
         let uploadFiles = files
         if (schema.id === 'outgoing') {
-          const draft = payloadValues()
+          const subject = (values.ТемаСлужебнойЗаписки || '').trim()
+          const letterBody = (values.Содержание || '').trim()
+          const draft: Record<string, string> = {
+            ...payloadValues(),
+            ТемаСлужебнойЗаписки: subject,
+            Содержание: letterBody
+          }
           const email = (draft.EmailПолучателяПисьма || '').trim()
-          const subject = (draft.ТемаСлужебнойЗаписки || '').trim()
-          const letterBody = (draft.Содержание || '').trim() || subject
           if (!email.includes('@')) {
             setError('Укажите email получателя — на него уйдёт письмо, и оно прикрепится к документу')
+            setPending(null)
+            return
+          }
+          if (!letterBody) {
+            setError('Укажите содержание — этот текст будет в письме')
             setPending(null)
             return
           }
@@ -521,18 +531,34 @@ export function DocflowCreateDialog({
             work_phone: phones.work_phone,
             mobile_phone: phones.mobile_phone
           }
-          const sent = await sendOutgoingLetter(user, { to: email, subject, body: letterBody, sender })
-          if (!sent.ok) {
-            setError(sent.error)
-            setPending(null)
-            return
+          const existing = request.outgoingMail
+          if (existing) {
+            if (!existing.entryId) {
+              setError('У этого письма нет карточки Outlook, файл .msg прикрепить нельзя')
+              setPending(null)
+              return
+            }
+            const saved = await saveOutlookMessageFile(user, existing.entryId)
+            if (!saved.ok) {
+              setError(saved.error)
+              setPending(null)
+              return
+            }
+            uploadFiles = [...files.filter((file) => file.name !== saved.file.name), saved.file]
+          } else {
+            const sent = await sendOutgoingLetter(user, { to: email, subject, body: letterBody, sender })
+            if (!sent.ok) {
+              setError(sent.error)
+              setPending(null)
+              return
+            }
+            if (sent.fromEmail.includes('@')) sender.from_email = sent.fromEmail
+            uploadFiles = [...files.filter((file) => file.name !== sent.file.name), sent.file]
           }
-          if (sent.fromEmail.includes('@')) sender.from_email = sent.fromEmail
-          uploadFiles = [...files.filter((file) => file.name !== sent.file.name), sent.file]
           const result = await createDocflowDocument(
             user,
             schema.id,
-            payloadValues(),
+            draft,
             payloadTables(),
             uploadFiles,
             request.prefill?.basis || null,
@@ -1127,8 +1153,9 @@ export function DocflowCreateDialog({
                     </datalist>
                   ) : null}
                   <p className="df1c-muted">
-                    «Записать» отправляет письмо с подписью и логотипом, прикрепляет его файлом .msg и сохраняет черновик.
-                    «Провести» проводит документ в 1С. Маршрут согласования запускается правилами 1С.
+                    {request.mode === 'create' && request.outgoingMail
+                      ? '«Записать» регистрирует это письмо исходящей в 1С и прикрепляет его файл .msg. Повторно оно не отправляется. На бланк попадает текст из «Содержание».'
+                      : '«Записать» отправляет письмо: в текст попадает «Содержание», затем подпись и логотип. Тема остаётся темой. Письмо прикрепляется файлом .msg, документ сохраняется черновиком. «Провести» проводит его в 1С.'}
                   </p>
                 </>
               ) : (

@@ -248,17 +248,44 @@ def _allow_programmatic_access() -> None:
                 winreg.SetValueEx(key, "ObjectModelGuard", 0, winreg.REG_DWORD, 2)
         except OSError as exc:
             _log_progress(f"step=outlook_guard_skip version={version}: {exc}")
-        try:
-            with winreg.CreateKey(
-                winreg.HKEY_CURRENT_USER,
-                rf"Software\Policies\Microsoft\Office\{version}\outlook\security",
-            ) as key:
-                winreg.SetValueEx(key, "AdminSecurityMode", 0, winreg.REG_DWORD, 3)
-                for name in prompts:
-                    winreg.SetValueEx(key, name, 0, winreg.REG_DWORD, 2)
-        except OSError as exc:
-            _log_progress(f"step=outlook_policy_skip version={version}: {exc}")
+        _remove_deny_policy(winreg, version, prompts)
     _log_progress("step=outlook_programmatic_access ok")
+
+
+def _remove_deny_policy(winreg: Any, version: str, prompts: tuple[str, ...]) -> None:
+    """Снять политику, которую писали версии 0.1.26–0.1.39.
+
+    В политике Outlook PromptOOM*=2 означает «автоматически запрещать», а не
+    «не спрашивать»: Outlook молча отказывал в адресах, отправке и адресной книге.
+    Удаляются только значения ровно в том виде, как их записывала программа.
+    """
+    path = rf"Software\Policies\Microsoft\Office\{version}\outlook\security"
+    try:
+        key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, path, 0, winreg.KEY_READ | winreg.KEY_SET_VALUE)
+    except OSError:
+        return
+    with key:
+        try:
+            mode, _kind = winreg.QueryValueEx(key, "AdminSecurityMode")
+        except OSError:
+            return
+        if mode != 3:
+            return
+        ours = []
+        for name in prompts:
+            try:
+                value, _kind = winreg.QueryValueEx(key, name)
+            except OSError:
+                continue
+            if value != 2:
+                return
+            ours.append(name)
+        try:
+            for name in (*ours, "AdminSecurityMode"):
+                winreg.DeleteValue(key, name)
+            _log_progress(f"step=outlook_deny_policy_removed version={version}")
+        except OSError as exc:
+            _log_progress(f"step=outlook_deny_policy_keep version={version}: {exc}")
 
 
 def _drop_cached_outlook() -> None:
@@ -2660,7 +2687,9 @@ def _outgoing_letter_fields(input_data: dict) -> tuple[str, str, str]:
         raise OutlookAccessError("Укажите email получателя")
     if not subject:
         raise OutlookAccessError("Укажите тему письма")
-    return to_addr, subject, body or subject
+    if not body:
+        raise OutlookAccessError("Укажите содержание письма")
+    return to_addr, subject, body
 
 
 def _find_sent_mail(namespace: Any, subject: str, to_addr: str) -> Any:
@@ -2763,14 +2792,27 @@ def send_outgoing_letter(input_data: dict) -> dict:
         from_email = _mailbox_address(mail) or _safe_str(input_data.get("from_email") or "").strip()
         sign = _signature_lines(input_data, from_email)
         plain = body.rstrip() + "\n\n" + "\n".join(sign)
+        try:
+            mail.BodyFormat = 2
+        except Exception:  # noqa: BLE001
+            pass
         mail.Body = plain
+        html = _html_letter(plain, logo_cid="turbulence-logo" if _LOGO_PATH.is_file() else "")
         if _LOGO_PATH.is_file():
             try:
                 attachment = mail.Attachments.Add(str(_LOGO_PATH.resolve()))
                 attachment.PropertyAccessor.SetProperty(_CID_PROPID, "turbulence-logo")
-                mail.HTMLBody = _html_letter(plain, logo_cid="turbulence-logo")
+                mail.HTMLBody = html
             except Exception:  # noqa: BLE001
                 mail.Body = plain
+        else:
+            mail.HTMLBody = html
+        # Учётная подпись Outlook иногда подменяет HTMLBody. Текст содержания должен остаться.
+        current = _safe_str(getattr(mail, "HTMLBody", ""))
+        marker = body.strip().splitlines()[0][:80]
+        if marker and marker not in current:
+            mail.Body = plain
+            mail.HTMLBody = html
         try:
             mail.Save()
             mail.Send()
@@ -3491,6 +3533,7 @@ def save_mail_message(input_data: dict) -> dict:
             "subject": subject,
             "source": "outlook_com",
         }
+        byte_path = target
         if _truthy(input_data.get("stage_for_incoming")):
             from app.tools.ac.workers.mail_incoming_onec import stage_incoming_msg_file
 
@@ -3500,13 +3543,15 @@ def save_mail_message(input_data: dict) -> dict:
                 file_name=target.name,
             )
             out["staged_path"] = str(staged)
+            byte_path = staged
+        if _truthy(input_data.get("include_base64")) or _truthy(input_data.get("stage_for_incoming")):
             try:
-                raw = staged.read_bytes()
+                raw = Path(byte_path).read_bytes()
                 if len(raw) <= 12 * 1024 * 1024:
                     import base64
 
                     out["msg_base64"] = base64.b64encode(raw).decode("ascii")
-                    out["msg_filename"] = staged.name
+                    out["msg_filename"] = Path(byte_path).name
             except OSError:
                 pass
         return out

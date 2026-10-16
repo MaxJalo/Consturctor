@@ -179,6 +179,10 @@ class OutlookSaveMessageComTool(ComBackedTool):
                             "type": "boolean",
                             "description": "Staging .msg для OData-входящей (как agent-pochta)",
                         },
+                        "include_base64": {
+                            "type": "boolean",
+                            "description": "Вернуть .msg в base64, чтобы прикрепить к исходящей",
+                        },
                     },
                     "required": ["entry_id"],
                 },
