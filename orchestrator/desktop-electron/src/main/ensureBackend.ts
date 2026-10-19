@@ -26,7 +26,9 @@ export async function pingHealth(
     try {
       const response = await fetch(`${base}${path}`, { signal: AbortSignal.timeout(timeoutMs) })
       if (response.ok) return true
-    } catch {
+    } catch (err) {
+      // Таймаут на первом пути не отменяет второй: gateway может не знать /health/live.
+      if (err instanceof Error && err.name === 'TimeoutError') continue
       return false
     }
   }

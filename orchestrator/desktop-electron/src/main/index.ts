@@ -1504,7 +1504,9 @@ function createWindow(): void {
 
 app.whenReady().then(async () => {
   registerMainIpcHandlers()
+  // Окно входа не ждёт ни Python-помощника, ни проверки сервера.
   agentSidecar.warmup()
+  createWindow()
   const ready = await ensureDesktopBackend(CONFIG.backendUrl)
   const remoteUp =
     CONFIG.backendUrl.replace(/\/+$/, '') === LOCAL_BACKEND
@@ -1523,8 +1525,6 @@ app.whenReady().then(async () => {
     repo: CONFIG.updateRepo,
     token: CONFIG.updateToken
   })
-
-  createWindow()
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow()
