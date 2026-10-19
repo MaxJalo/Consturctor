@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { ArrowDown, ArrowUp, Filter, Plus } from 'lucide-react'
+import { ArrowDown, ArrowUp, ChevronDown, ChevronRight, Filter, Plus } from 'lucide-react'
 import { api } from '../../api/client'
 import type { UserProfile } from '../../api/types'
 import { canUseSubordinateTasks } from '../../extensions/extensionAccess'
@@ -426,6 +426,325 @@ function normName(value: string): string {
   return value.toLowerCase().replace(/ё/g, 'е').replace(/\s+/g, ' ').trim()
 }
 
+type SchemeLayout = {
+  order: string[]
+  parent: Record<string, string>
+}
+
+type SchemeDrop = 'before' | 'after' | 'inside'
+
+function orgRoots(nodes: PersonNode[]): PersonNode[] {
+  const nested = new Set<string>()
+  const mark = (list: PersonNode[]) => {
+    for (const node of list) {
+      for (const child of node.subordinates) nested.add(child.fio)
+      mark(node.subordinates)
+    }
+  }
+  mark(nodes)
+  const seen = new Set<string>()
+  return nodes.filter((node) => {
+    if (!node.fio || nested.has(node.fio) || seen.has(node.fio)) return false
+    seen.add(node.fio)
+    return true
+  })
+}
+
+function cardGlow(load: PersonLoad | undefined): 'overdue' | 'critical' | 'open' | 'done' | 'idle' {
+  if (!load) return 'idle'
+  if (load.overdue > 0) return 'overdue'
+  if (load.critical > 0) return 'critical'
+  if (load.open > 0) return 'open'
+  if (load.done > 0) return 'done'
+  return 'idle'
+}
+
+function suggestionRank(row: PersonLoad, needle: string): number {
+  const fio = normName(row.fio)
+  const position = normName(row.position)
+  const department = normName(row.department)
+  const parts = fio.split(' ').filter(Boolean)
+  if (parts.some((part) => part.startsWith(needle)) || fio.startsWith(needle)) return 0
+  if (fio.includes(needle)) return 1
+  if (position.includes(needle)) return 2
+  if (department.includes(needle)) return 3
+  return 9
+}
+
+function buildSchemeFromOrg(roots: PersonNode[]): SchemeLayout {
+  const parent: Record<string, string> = {}
+  const order: string[] = []
+  const seen = new Set<string>()
+  const walk = (nodes: PersonNode[], parentFio: string) => {
+    for (const node of nodes) {
+      if (!node.fio || seen.has(node.fio)) continue
+      seen.add(node.fio)
+      parent[node.fio] = parentFio
+      order.push(node.fio)
+      walk(node.subordinates, node.fio)
+    }
+  }
+  walk(roots, '')
+  return { order, parent }
+}
+
+function schemeStorageKey(userId: string): string {
+  return `orch.subordinate-tasks.scheme:${userId || 'local'}`
+}
+
+function readScheme(userId: string): SchemeLayout | null {
+  try {
+    const raw = localStorage.getItem(schemeStorageKey(userId))
+    if (!raw) return null
+    const parsed = JSON.parse(raw) as { order?: unknown; parent?: unknown }
+    if (!Array.isArray(parsed.order) || !parsed.parent || typeof parsed.parent !== 'object') return null
+    const order: string[] = []
+    for (const item of parsed.order) {
+      const fio = String(item || '').trim()
+      if (fio && !order.includes(fio)) order.push(fio)
+    }
+    const parent: Record<string, string> = {}
+    const stored = parsed.parent as Record<string, unknown>
+    for (const fio of order) {
+      const value = stored[fio]
+      parent[fio] = typeof value === 'string' ? value.trim() : ''
+    }
+    return { order, parent }
+  } catch {
+    return null
+  }
+}
+
+function writeScheme(userId: string, layout: SchemeLayout | null): void {
+  try {
+    const key = schemeStorageKey(userId)
+    if (!layout) localStorage.removeItem(key)
+    else localStorage.setItem(key, JSON.stringify(layout))
+  } catch {
+    /* переполненное хранилище — схема останется до закрытия вкладки */
+  }
+}
+
+function personIsUnder(layout: SchemeLayout, fio: string, ancestor: string): boolean {
+  let current = layout.parent[fio] || ''
+  const seen = new Set<string>()
+  while (current) {
+    if (current === ancestor) return true
+    if (seen.has(current)) return false
+    seen.add(current)
+    current = layout.parent[current] || ''
+  }
+  return false
+}
+
+function lastInSubtree(order: string[], parent: Record<string, string>, root: string): number {
+  const inside = (fio: string) => personIsUnder({ order, parent }, fio, root)
+  let last = order.indexOf(root)
+  for (let index = last + 1; index < order.length; index += 1) {
+    if (inside(order[index])) last = index
+  }
+  return last
+}
+
+function relocatePerson(layout: SchemeLayout, fio: string, target: string, place: SchemeDrop): SchemeLayout | null {
+  if (!fio || !target || fio === target || !layout.order.includes(fio) || !layout.order.includes(target)) return null
+  const nextParentFio = place === 'inside' ? target : layout.parent[target] || ''
+  if (nextParentFio === fio || (nextParentFio && personIsUnder(layout, nextParentFio, fio))) return null
+  const order = layout.order.filter((item) => item !== fio)
+  const parent = { ...layout.parent, [fio]: nextParentFio }
+  let index = order.indexOf(target)
+  if (index < 0) return null
+  if (place === 'after') index += 1
+  if (place === 'inside') index = lastInSubtree(order, parent, target) + 1
+  order.splice(index, 0, fio)
+  return { order, parent }
+}
+
+function schemeToTree(layout: SchemeLayout, directory: Map<string, PersonNode>): PersonNode[] {
+  const children = new Map<string, string[]>()
+  const present = new Set(layout.order)
+  for (const fio of layout.order) {
+    const declared = layout.parent[fio] || ''
+    const key = declared && present.has(declared) ? declared : ''
+    const list = children.get(key) || []
+    list.push(fio)
+    children.set(key, list)
+  }
+  const build = (fio: string, stack: Set<string>): PersonNode => {
+    const source = directory.get(fio)
+    const next = new Set(stack)
+    next.add(fio)
+    const kids = (children.get(fio) || [])
+      .filter((child) => !next.has(child))
+      .map((child) => build(child, next))
+    return {
+      fio,
+      position: source?.position || '',
+      department: source?.department || '',
+      level: stack.size + 1,
+      tasks: source?.tasks || [],
+      subordinates: kids
+    }
+  }
+  return (children.get('') || []).map((fio) => build(fio, new Set()))
+}
+
+function personInitials(fio: string): string {
+  const parts = fio.split(/\s+/).filter(Boolean)
+  return ((parts[0]?.[0] || '') + (parts[1]?.[0] || '')).toUpperCase()
+}
+
+function OrgTree({
+  roots,
+  loads,
+  focusFio,
+  onSelect,
+  onRemove,
+  onMove
+}: {
+  roots: PersonNode[]
+  loads: Map<string, PersonLoad>
+  focusFio: string
+  onSelect: (fio: string) => void
+  onRemove: (fio: string) => void
+  onMove: (fio: string, target: string, place: SchemeDrop) => void
+}): React.JSX.Element {
+  const [collapsed, setCollapsed] = useState<ReadonlySet<string>>(() => new Set())
+  const [dragFio, setDragFio] = useState('')
+  const dragRef = useRef('')
+  const [dropHint, setDropHint] = useState<{ fio: string; place: SchemeDrop } | null>(null)
+  const suppressClick = useRef(false)
+
+  function dropPlace(event: React.DragEvent<HTMLElement>): SchemeDrop {
+    const rect = event.currentTarget.getBoundingClientRect()
+    const offset = event.clientY - rect.top
+    if (offset < rect.height * 0.28) return 'before'
+    if (offset > rect.height * 0.72) return 'after'
+    return 'inside'
+  }
+
+  function toggle(fio: string) {
+    setCollapsed((current) => {
+      const next = new Set(current)
+      if (next.has(fio)) next.delete(fio)
+      else next.add(fio)
+      return next
+    })
+  }
+
+  function branch(node: PersonNode): React.JSX.Element {
+    const load = loads.get(node.fio)
+    const glow = cardGlow(load)
+    const role = node.position || node.department
+    const kids = node.subordinates
+    const open = !collapsed.has(node.fio)
+    const hint = dropHint?.fio === node.fio ? dropHint.place : ''
+    return (
+      <li key={node.fio || role}>
+        <div
+          className={`sub-org-card is-${glow}${focusFio === node.fio ? ' is-selected' : ''}${dragFio === node.fio ? ' is-dragging' : ''}${hint ? ` is-drop-${hint}` : ''}`}
+          draggable
+          onClick={() => {
+            if (suppressClick.current) {
+              suppressClick.current = false
+              return
+            }
+            onSelect(node.fio)
+          }}
+          onDragStart={(event) => {
+            suppressClick.current = true
+            event.dataTransfer.setData('text/plain', node.fio)
+            event.dataTransfer.effectAllowed = 'move'
+            dragRef.current = node.fio
+            setDragFio(node.fio)
+          }}
+          onDragEnd={() => {
+            dragRef.current = ''
+            setDragFio('')
+            setDropHint(null)
+          }}
+          onDragOver={(event) => {
+            const moving = dragRef.current
+            if (!moving || moving === node.fio) return
+            event.preventDefault()
+            event.stopPropagation()
+            event.dataTransfer.dropEffect = 'move'
+            const place = dropPlace(event)
+            setDropHint((current) => (current?.fio === node.fio && current.place === place ? current : { fio: node.fio, place }))
+          }}
+          onDrop={(event) => {
+            event.preventDefault()
+            event.stopPropagation()
+            const fio = event.dataTransfer.getData('text/plain') || dragRef.current
+            const place = dropPlace(event)
+            if (fio && fio !== node.fio) {
+              if (place === 'inside') {
+                setCollapsed((current) => {
+                  if (!current.has(node.fio)) return current
+                  const next = new Set(current)
+                  next.delete(node.fio)
+                  return next
+                })
+              }
+              onMove(fio, node.fio, place)
+            }
+            dragRef.current = ''
+            setDragFio('')
+            setDropHint(null)
+          }}
+        >
+          <span className={`sub-org-avatar is-${glow}`}>{personInitials(node.fio)}</span>
+          <strong>{node.fio}</strong>
+          {role ? <em>{role}</em> : null}
+          <span className="sub-org-pills">
+            {load && load.overdue > 0 ? <i className="is-late">{load.overdue} проср.</i> : null}
+            {load && load.critical > 0 ? <i className="is-soon">{load.critical} срок</i> : null}
+            {load && load.open > 0 ? <i>{load.open} откр.</i> : null}
+            {load && load.open === 0 && load.done > 0 ? <i className="is-done">{load.done} выполн.</i> : null}
+          </span>
+          <button
+            type="button"
+            className="sub-org-remove"
+            aria-label={`Убрать ${node.fio}`}
+            draggable={false}
+            onMouseDown={(event) => event.stopPropagation()}
+            onClick={(event) => {
+              event.stopPropagation()
+              onRemove(node.fio)
+            }}
+          >
+            ×
+          </button>
+          {kids.length > 0 ? (
+            <button
+              type="button"
+              className="sub-org-fold"
+              aria-label={open ? 'Свернуть ветку' : 'Развернуть ветку'}
+              aria-expanded={open}
+              draggable={false}
+              onMouseDown={(event) => event.stopPropagation()}
+              onClick={(event) => {
+                event.stopPropagation()
+                toggle(node.fio)
+              }}
+            >
+              {open ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
+              <span>{kids.length}</span>
+            </button>
+          ) : null}
+        </div>
+        {open && kids.length > 0 ? <ul>{kids.map((child) => branch(child))}</ul> : null}
+      </li>
+    )
+  }
+
+  return (
+    <div className="sub-org-board" aria-label="Иерархия подчинённых">
+      <ul className="sub-org-tree">{roots.map((node) => branch(node))}</ul>
+    </div>
+  )
+}
+
 function pickedStorageKey(userId: string): string {
   return `orch.subordinate-tasks.picked:${userId || 'local'}`
 }
@@ -496,7 +815,7 @@ export function SubordinateTasksGridTab({
   const [sort, setSort] = useState<SortState>(null)
   const [columnFilters, setColumnFilters] = useState<Partial<Record<TaskColumn, string>>>({})
   const [filterMenu, setFilterMenu] = useState<TaskColumn | null>(null)
-  const [staffView, setStaffView] = useState<'people' | 'groups'>('people')
+  const [staffView, setStaffView] = useState<'scheme' | 'people' | 'groups'>('scheme')
   const [draggingFio, setDraggingFio] = useState('')
   const [groups, setGroups] = useState<StaffGroup[]>(() => readGroups(user.id))
   const [renameId, setRenameId] = useState('')
@@ -505,12 +824,14 @@ export function SubordinateTasksGridTab({
   const [turboTasks, setTurboTasks] = useState<FlatTask[]>([])
   const [turboNote, setTurboNote] = useState('')
   const [people, setPeople] = useState<PersonNode[]>([])
+  const [scheme, setScheme] = useState<SchemeLayout | null>(() => readScheme(user.id))
   const [source, setSource] = useState('')
   const [warning, setWarning] = useState('')
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
   const requestId = useRef(0)
   const pickedOwner = useRef(user.id)
+  const schemeOwner = useRef(user.id)
   const pageSearch = usePageSearchOptional()
   const pageQuery = pageSearch?.query ?? ''
 
@@ -572,6 +893,15 @@ export function SubordinateTasksGridTab({
     }
     writePicked(user.id, picked)
   }, [user.id, picked])
+
+  useEffect(() => {
+    if (schemeOwner.current !== user.id) {
+      schemeOwner.current = user.id
+      setScheme(readScheme(user.id))
+      return
+    }
+    writeScheme(user.id, scheme)
+  }, [user.id, scheme])
 
   useEffect(() => {
     localStorage.setItem(groupsKey(user.id), JSON.stringify(groups))
@@ -644,26 +974,55 @@ export function SubordinateTasksGridTab({
     [tasks, pickedSet]
   )
   const focusedFio = focusFio && pickedSet.has(focusFio) ? focusFio : ''
-  const scopedLoads = useMemo(
-    () => loads.filter((row) => pickedSet.has(row.fio)),
-    [loads, pickedSet]
-  )
 
   const suggestions = useMemo(() => {
     const needle = normName(nameQuery)
     if (needle.length < 2) return []
     return loads
-      .filter((row) => row.fio && !pickedSet.has(row.fio) && normName(row.fio).includes(needle))
-      .slice(0, 8)
+      .filter((row) => row.fio && !pickedSet.has(row.fio) && suggestionRank(row, needle) < 9)
+      .sort((left, right) => suggestionRank(left, needle) - suggestionRank(right, needle) || left.level - right.level || left.fio.localeCompare(right.fio, 'ru'))
+      .slice(0, 10)
   }, [loads, nameQuery, pickedSet])
-
-  const visibleLoads = useMemo(
-    () =>
-      scopedLoads.filter((row) =>
-        textMatchesPageSearch(row.fio, pageQuery)
-      ),
-    [scopedLoads, pageQuery]
+  const loadByFio = useMemo(() => new Map(loads.map((row) => [row.fio, row])), [loads])
+  const peopleByFio = useMemo(() => new Map(people.map((person) => [person.fio, person])), [people])
+  const orgLayout = useMemo(() => buildSchemeFromOrg(orgRoots(people)), [people])
+  const activeScheme = scheme ?? orgLayout
+  const schemeFios = useMemo(() => new Set(activeScheme.order), [activeScheme])
+  const schemeRoots = useMemo(() => schemeToTree(activeScheme, peopleByFio), [activeScheme, peopleByFio])
+  const focusedTasks = useMemo(
+    () => (focusFio ? periodTasks.filter((row) => row.fio === focusFio && matchesFilter(row, filter)) : []),
+    [periodTasks, focusFio, filter]
   )
+  const focusedPerson = focusFio ? peopleByFio.get(focusFio) : undefined
+  const schemeSuggestions = useMemo(() => {
+    const needle = normName(nameQuery)
+    if (needle.length < 2) return []
+    return loads
+      .filter((row) => row.fio && !schemeFios.has(row.fio) && suggestionRank(row, needle) < 9)
+      .sort((left, right) => suggestionRank(left, needle) - suggestionRank(right, needle) || left.level - right.level || left.fio.localeCompare(right.fio, 'ru'))
+      .slice(0, 10)
+  }, [loads, nameQuery, schemeFios])
+
+  const visibleLoads = useMemo(() => {
+    const rows = activeScheme.order.map((fio) => {
+      const known = loadByFio.get(fio)
+      if (known) return known
+      const person = peopleByFio.get(fio)
+      return {
+        fio,
+        position: person?.position || '',
+        department: person?.department || '',
+        level: person?.level || 1,
+        open: 0,
+        overdue: 0,
+        critical: 0,
+        done: 0,
+        doneOfDue: 0,
+        dueReached: 0
+      }
+    })
+    return rows.filter((row) => textMatchesPageSearch(row.fio, pageQuery))
+  }, [activeScheme, loadByFio, peopleByFio, pageQuery])
 
   const visibleTasks = useMemo(() => {
     const filtered = scopedTasks.filter((row) => {
@@ -802,6 +1161,46 @@ export function SubordinateTasksGridTab({
     setGroups((current) => current.map((group) => (group.id === id ? { ...group, name: next } : group)))
   }
 
+  function selectPerson(fio: string) {
+    if (!fio) return
+    setFocusFio((current) => (current === fio ? '' : fio))
+    setPicked((current) => (current.includes(fio) ? current : [...current, fio]))
+  }
+
+  function addPerson(fio: string) {
+    if (!fio) return
+    setPicked((current) => (current.includes(fio) ? current : [...current, fio]))
+    setScheme((current) => {
+      const base = current ?? buildSchemeFromOrg(orgRoots(people))
+      if (base.order.includes(fio)) return current
+      return { order: [...base.order, fio], parent: { ...base.parent, [fio]: '' } }
+    })
+  }
+
+  function removePerson(fio: string) {
+    if (!fio) return
+    setPicked((current) => current.filter((item) => item !== fio))
+    setFocusFio((current) => (current === fio ? '' : current))
+    setScheme((current) => {
+      const base = current ?? buildSchemeFromOrg(orgRoots(people))
+      if (!base.order.includes(fio)) return current
+      const parentFio = base.parent[fio] || ''
+      const parent = { ...base.parent }
+      delete parent[fio]
+      for (const [child, owner] of Object.entries(parent)) {
+        if (owner === fio) parent[child] = parentFio
+      }
+      return { order: base.order.filter((item) => item !== fio), parent }
+    })
+  }
+
+  function movePerson(fio: string, target: string, place: SchemeDrop) {
+    setScheme((current) => {
+      const base = current ?? buildSchemeFromOrg(orgRoots(people))
+      return relocatePerson(base, fio, target, place) ?? current
+    })
+  }
+
   function loadRow(row: PersonLoad) {
     return (
       <tr
@@ -829,8 +1228,7 @@ export function SubordinateTasksGridTab({
             aria-label={`Убрать ${row.fio}`}
             onClick={(event) => {
               event.stopPropagation()
-              setPicked((current) => current.filter((fio) => fio !== row.fio))
-              setFocusFio((current) => (current === row.fio ? '' : current))
+              removePerson(row.fio)
             }}
           >
             Убрать
@@ -997,32 +1395,49 @@ export function SubordinateTasksGridTab({
           <p className="sub-tasks-warn">Связь с 1С сейчас недоступна, поэтому список пустой.</p>
         ) : null}
 
-        <div className="sub-tasks-body">
+        <div className={`sub-tasks-body${staffView === 'scheme' ? ' is-scheme' : ''}`}>
           <section className="sub-tasks-pane" aria-label="Загрузка подчинённых">
-            <header className="sub-tasks-pane-head">Подчинённые</header>
+            <header className="sub-tasks-pane-head">
+              Подчинённые
+              {staffView === 'scheme' ? (
+                <span className="sub-tasks-legend">
+                  <i className="is-overdue" /> просрочка
+                  <i className="is-critical" /> срок
+                  <i className="is-open" /> открытые
+                </span>
+              ) : null}
+            </header>
             <div className="sub-tasks-add">
               <input
                 type="search"
                 value={nameQuery}
-                placeholder="Добавить по фамилии"
+                placeholder="Фамилия, должность или отдел"
                 aria-label="Добавить подчинённого"
                 onChange={(event) => setNameQuery(event.target.value)}
               />
               {nameQuery.trim().length >= 2 ? (
                 <ul className="sub-tasks-suggest">
-                  {suggestions.length === 0 ? (
-                    <li className="sub-tasks-suggest-empty">Нет такого подчинённого</li>
+                  {(staffView === 'groups' ? suggestions : schemeSuggestions).length === 0 ? (
+                    <li className="sub-tasks-suggest-empty">
+                      {staffView !== 'groups' &&
+                      loads.some((row) => schemeFios.has(row.fio) && suggestionRank(row, normName(nameQuery)) < 9)
+                        ? 'Уже в списке'
+                        : 'Нет такого подчинённого'}
+                    </li>
                   ) : (
-                    suggestions.map((row) => (
+                    (staffView === 'groups' ? suggestions : schemeSuggestions).map((row) => (
                       <li key={row.fio}>
                         <button
                           type="button"
                           onClick={() => {
-                            setPicked((current) => (current.includes(row.fio) ? current : [...current, row.fio]))
+                            addPerson(row.fio)
                             setNameQuery('')
                           }}
                         >
-                          {row.fio}
+                          <span>{row.fio}</span>
+                          {[row.position, row.department].filter(Boolean).length > 0 ? (
+                            <small>{[row.position, row.department].filter(Boolean).join(' · ')}</small>
+                          ) : null}
                         </button>
                       </li>
                     ))
@@ -1034,6 +1449,7 @@ export function SubordinateTasksGridTab({
               <div className="sub-tasks-presets" role="group" aria-label="Вид списка">
                 {(
                   [
+                    ['scheme', 'Схема'],
                     ['people', 'Сотрудники'],
                     ['groups', 'Группы']
                   ] as const
@@ -1059,13 +1475,46 @@ export function SubordinateTasksGridTab({
                   <Plus size={18} strokeWidth={2.25} />
                 </button>
               ) : null}
+              {staffView === 'scheme' && scheme ? (
+                <button
+                  type="button"
+                  className="sub-tasks-remove"
+                  title="Вернуть иерархию из оргструктуры"
+                  onClick={() => setScheme(null)}
+                >
+                  Сбросить
+                </button>
+              ) : null}
             </div>
+            {staffView === 'scheme' ? (
+              <>
+                <p className="sub-tree-hint">
+                  Перетащите карточку на сотрудника, чтобы подчинить, или к краю карточки, чтобы поставить рядом.
+                </p>
+                <div className="sub-org-field">
+                  {schemeRoots.length === 0 ? (
+                    <p className="sub-tasks-empty">
+                      {loading ? 'Читаем оргструктуру и задачи…' : 'На схеме никого нет. Добавьте сотрудника по фамилии.'}
+                    </p>
+                  ) : (
+                    <OrgTree
+                      roots={schemeRoots}
+                      loads={loadByFio}
+                      focusFio={focusFio}
+                      onSelect={selectPerson}
+                      onRemove={removePerson}
+                      onMove={movePerson}
+                    />
+                  )}
+                </div>
+              </>
+            ) : null}
             {staffView === 'people' || draggingFio ? (
               visibleLoads.length === 0 ? (
                 <p className="sub-tasks-empty">
                   {loading
                     ? 'Читаем оргструктуру и задачи…'
-                    : 'Страница пустая. Найдите подчинённого по фамилии и добавьте его.'}
+                    : 'Список пуст. Добавьте сотрудника по фамилии — он появится и на схеме.'}
                 </p>
               ) : (
                 <table className={`sub-tasks-table sub-tasks-load${staffView === 'people' ? '' : ' is-drag-source'}`}>
@@ -1148,6 +1597,7 @@ export function SubordinateTasksGridTab({
                         ) : (
                           loads
                             .filter((row) => row.fio && !group.members.includes(row.fio))
+                            .sort((left, right) => left.level - right.level || left.fio.localeCompare(right.fio, 'ru'))
                             .map((row) => (
                               <li key={row.fio}>
                                 <button
@@ -1158,7 +1608,10 @@ export function SubordinateTasksGridTab({
                                     setPickGroupId('')
                                   }}
                                 >
-                                  {row.fio}
+                                  <span>{row.fio}</span>
+                                  {[row.position, row.department].filter(Boolean).length > 0 ? (
+                                    <small>{[row.position, row.department].filter(Boolean).join(' · ')}</small>
+                                  ) : null}
                                 </button>
                               </li>
                             ))
@@ -1192,6 +1645,7 @@ export function SubordinateTasksGridTab({
             ) : null}
           </section>
 
+          {staffView === 'scheme' ? null : (
           <section className="sub-tasks-pane" aria-label="Задачи подчинённых">
             <header className="sub-tasks-pane-head">
               Задачи
@@ -1294,8 +1748,62 @@ export function SubordinateTasksGridTab({
               </table>
             )}
           </section>
+          )}
         </div>
       </div>
+      {staffView === 'scheme' && focusFio ? (
+        <div className="sub-org-dialog" role="dialog" aria-modal="true" aria-label={`Задачи: ${focusFio}`}>
+          <button type="button" className="sub-org-dialog-backdrop" aria-label="Закрыть" onClick={() => setFocusFio('')} />
+          <section className="sub-org-dialog-card">
+            <header className="sub-org-dialog-head">
+              <div>
+                <strong>{focusFio}</strong>
+                {focusedPerson?.position || focusedPerson?.department ? (
+                  <em>{focusedPerson.position || focusedPerson.department}</em>
+                ) : null}
+              </div>
+              <button type="button" className="sub-tasks-btn" onClick={() => setFocusFio('')}>
+                Закрыть
+              </button>
+            </header>
+            {focusedTasks.length === 0 ? (
+              <p className="sub-tasks-empty">
+                {loading ? 'Читаем задачи…' : 'В этом периоде и фильтре задач нет.'}
+              </p>
+            ) : (
+              <div className="sub-org-dialog-table">
+                <table className="sub-tasks-table">
+                  <thead>
+                    <tr>
+                      <th>Задача</th>
+                      <th>Вид</th>
+                      <th>Срок</th>
+                      <th>Статус</th>
+                      <th>Откуда</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {focusedTasks.map((row, index) => (
+                      <tr key={`${row.number}:${row.title}:${index}`} className={`is-${row.kind}`}>
+                        <td>
+                          <span className="sub-tasks-title" title={row.comment || row.title}>
+                            {row.title}
+                          </span>
+                          {row.approval ? <span className="sub-tasks-role">{row.approval}</span> : null}
+                        </td>
+                        <td>{kindLabel(row)}</td>
+                        <td>{formatDue(row.dueAt)}</td>
+                        <td>{statusLabel(row)}</td>
+                        <td>{originLabel(row)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </section>
+        </div>
+      ) : null}
       {kpiOpen ? (
         <SubordinateKpiDialog
           tasks={kpiTasks}
