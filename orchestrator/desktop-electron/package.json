@@ -74,7 +74,7 @@
     "vite": "^7.3.6"
   },
   "dependencies": {
-    "lucide-react": "^1.47.0",
+    "lucide-react": "0.544.0",
     "mammoth": "^1.12.3",
     "react": "^19.2.8",
     "react-dom": "^19.2.8",
