@@ -20,14 +20,20 @@ export async function pingHealth(
   timeoutMs = 4000,
   opts?: { erp?: boolean }
 ): Promise<boolean> {
-  const suffix = opts?.erp ? '/health' : '/health/live'
-  const url = `${baseUrl.replace(/\/+$/, '')}${suffix}`
-  try {
-    const response = await fetch(url, { signal: AbortSignal.timeout(timeoutMs) })
-    return response.ok
-  } catch {
-    return false
+  const base = baseUrl.replace(/\/+$/, '')
+  // Gateway старых выкладок не знает /health/live и отвечает 404: это живой сервер.
+  const paths = opts?.erp ? ['/health'] : ['/health/live', '/health']
+  for (const path of paths) {
+    try {
+      const response = await fetch(`${base}${path}`, { signal: AbortSignal.timeout(timeoutMs) })
+      if (response.ok) return true
+    } catch (err) {
+      // Таймаут на первом пути не отменяет второй: gateway может не знать /health/live.
+      if (err instanceof Error && err.name === 'TimeoutError') continue
+      return false
+    }
   }
+  return false
 }
 
 function sleep(ms: number): Promise<void> {

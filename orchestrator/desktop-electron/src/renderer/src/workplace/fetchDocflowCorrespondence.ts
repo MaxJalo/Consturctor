@@ -565,14 +565,27 @@ export async function loadOrderBody(user: UserProfile | null, row: OrderRow): Pr
   return { ...row, content, fields }
 }
 
+/** Дата документа 1С: без пояса это уже московские часы, с Z — перевод в Москву. */
 export function formatCorrespondenceDate(raw: string): string {
   const text = (raw || '').trim()
   if (!text || text.startsWith('0001-01-01')) return '—'
+  const wall = text.match(/^(\d{4})-(\d{2})-(\d{2})(?:[T ](\d{2}):(\d{2}))?/)
+  const hasZone = /(?:Z|[+-]\d{2}:\d{2})$/.test(text)
+  if (wall && !hasZone) {
+    const [, year, month, day, hours, minutes] = wall
+    return `${day}.${month}.${year} ${hours && minutes ? `${hours}:${minutes}` : '00:00'}`
+  }
   const stamp = new Date(text)
   if (Number.isNaN(stamp.getTime())) return text.slice(0, 16).replace('T', ' ')
-  const day = String(stamp.getDate()).padStart(2, '0')
-  const month = String(stamp.getMonth() + 1).padStart(2, '0')
-  const hours = String(stamp.getHours()).padStart(2, '0')
-  const minutes = String(stamp.getMinutes()).padStart(2, '0')
-  return `${day}.${month}.${stamp.getFullYear()} ${hours}:${minutes}`
+  const parts = new Intl.DateTimeFormat('en-GB', {
+    timeZone: 'Europe/Moscow',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    hourCycle: 'h23'
+  }).formatToParts(stamp)
+  const pick = (type: string): string => parts.find((part) => part.type === type)?.value || '00'
+  return `${pick('day')}.${pick('month')}.${pick('year')} ${pick('hour')}:${pick('minute')}`
 }

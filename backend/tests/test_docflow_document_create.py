@@ -254,10 +254,14 @@ def test_outgoing_letterhead_carries_email_and_text(fake: FakeClient, monkeypatc
     assert stored["Description"] == "Фирменный бланк"
     assert stored["Расширение"] == "docx"
     raw = base64.b64decode(stored["ФайлХранилище_Base64Data"])
-    text = "\n".join(paragraph.text for paragraph in Document(io.BytesIO(raw)).paragraphs)
+    document = Document(io.BytesIO(raw))
+    text = "\n".join(paragraph.text for paragraph in document.paragraphs)
     assert "zhalibin.max@gmail.com" in text
     assert message in text
-    assert "Турбулентность" in text
+    assert "С уважением," in text
+    assert "Жалыбин Максим Дмитриевич" in text
+    assert "1-ый километр Новошахтинского шоссе, база «Спектр», стр. 6/8" in text
+    assert document.inline_shapes
     assert "zhalibin.max@gmail.com" in letterhead.recipient_emails()
 
 

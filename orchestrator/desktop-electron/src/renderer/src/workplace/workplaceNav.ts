@@ -42,6 +42,8 @@ export type WorkplaceTabIntent = {
   /** Плитка реестра поручений: все, просроченные или подходящие ко сроку. */
   registryTile?: AssignmentRegistryTileId | 'all'
   subordinateKpi?: SubordinateKpiNav
+  /** Открыть форму исходящей на вкладке писем. token отличает повторный клик. */
+  composeOutgoing?: { token: number }
 }
 
 export type OpenWorkplaceTabDetail = {
