@@ -1,4 +1,5 @@
 import { existsSync } from 'node:fs'
+import { networkInterfaces } from 'node:os'
 import { dirname, join } from 'node:path'
 import { app } from 'electron'
 import { resolveWindowsPythonExe, spawnHidden } from './spawnHidden'
@@ -59,8 +60,20 @@ function bundledPython(): string {
   return resolveWindowsPythonExe()
 }
 
+/** This PC is the LAN gateway: other computers must reach :7812, not only loopback. */
+function apiHostForSpawn(): string {
+  const gateway = '192.168.1.157'
+  for (const addrs of Object.values(networkInterfaces())) {
+    for (const addr of addrs || []) {
+      if (addr.family === 'IPv4' && addr.address === gateway) return '0.0.0.0'
+    }
+  }
+  return '127.0.0.1'
+}
+
 function spawnLocalBackend(backendRoot: string): void {
   const python = bundledPython()
+  const apiHost = apiHostForSpawn()
   const launch = `import runpy, sys; sys.path.insert(0, ${JSON.stringify(backendRoot)}); runpy.run_module('app.main', run_name='__main__')`
   const child = spawnHidden(python, ['-c', launch], {
     cwd: backendRoot,
@@ -68,13 +81,13 @@ function spawnLocalBackend(backendRoot: string): void {
     stdio: 'ignore',
     env: {
       ...process.env,
-      API_HOST: '127.0.0.1',
+      API_HOST: apiHost,
       AUTH_SKIP_SESSION_LOCK: process.env.AUTH_SKIP_SESSION_LOCK || '1',
       PYTHONNOUSERSITE: '1'
     }
   })
   child.unref()
-  console.log(`Starting local backend (background, no window) from ${backendRoot} via ${python}`)
+  console.log(`Starting local backend on ${apiHost}:7812 (background, no window) from ${backendRoot} via ${python}`)
 }
 
 /**
