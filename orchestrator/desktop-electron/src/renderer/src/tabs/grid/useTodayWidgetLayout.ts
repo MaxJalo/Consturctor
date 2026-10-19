@@ -300,6 +300,18 @@ export function writeTodayWidgetLayoutSettings(userId: string, layout: LayoutIte
   writePersist(userId, { ...state, layout: sanitizeLayout(layout) })
 }
 
+export function readTodayWidgetLockSettings(userId: string): Partial<Record<TodayWidgetId, boolean>> {
+  return { ...readPersist(userId).locked }
+}
+
+export function writeTodayWidgetLockSettings(
+  userId: string,
+  locked: Partial<Record<TodayWidgetId, boolean>>
+): void {
+  const state = readPersist(userId)
+  writePersist(userId, { ...state, locked })
+}
+
 export const TODAY_WIDGET_VISIBILITY_EVENT = 'orchestrator:today-widgets-changed'
 
 function layoutGeomEqual(left: LayoutItem[], right: LayoutItem[]): boolean {

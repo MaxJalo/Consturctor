@@ -15086,7 +15086,14 @@ button.spec-v04-tile {
   background-color: transparent;
 }
 .set-visual-tiles {
-  background: #eef4fb;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 148px), 1fr));
+  gap: 6px;
+  min-height: 48px;
+  padding: 6px;
+  border-radius: 12px;
+  background-color: #e7eef8;
+  border: 1px solid rgba(13, 59, 115, 0.4);
 }
 .set-visual-inactive {
   flex-shrink: 0;
@@ -15112,22 +15119,57 @@ button.spec-v04-tile {
   background: #f8f5ec;
 }
 .set-visual-tiles span {
+  position: relative;
   cursor: grab;
+  min-height: 52px;
+  padding: 16px 6px 6px;
+  border: 1px solid rgba(13, 59, 115, 0.28);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.45);
+  text-align: center;
+  line-height: 1.15;
+  white-space: normal;
+}
+.set-visual-tiles span.is-empty {
+  background: transparent;
+  cursor: default;
 }
 .set-visual-tiles span,
 .set-visual-filters span {
   flex: 1;
-  min-height: 26px;
   display: flex;
   align-items: center;
   justify-content: center;
-  border-radius: 7px;
-  background: rgba(255, 255, 255, 0.8);
   color: #5b6573;
   font-size: 11px;
   font-weight: 700;
   letter-spacing: 0.04em;
   text-transform: uppercase;
+}
+.set-visual-filters span {
+  min-height: 26px;
+  border-radius: 7px;
+  background: rgba(255, 255, 255, 0.8);
+}
+.set-visual-tile-trash {
+  position: absolute;
+  top: 3px;
+  right: 3px;
+  z-index: 2;
+  width: 18px;
+  height: 18px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  border-radius: 5px;
+  background: #fff;
+  color: #c62828;
+  box-shadow: 0 1px 3px rgba(13, 59, 115, 0.2);
+  cursor: pointer;
+}
+.set-visual-tile-trash:hover {
+  background: #fdecea;
 }
 .set-visual-preview {
   display: grid;
@@ -15203,6 +15245,30 @@ button.spec-v04-tile {
 }
 .set-visual-trash:hover {
   background: #fdecea;
+}
+.set-visual-pin {
+  position: absolute;
+  top: 4px;
+  left: 4px;
+  z-index: 3;
+  width: 26px;
+  height: 26px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  border-radius: 8px;
+  background: #fff;
+  color: #8aa0b8;
+  box-shadow: 0 1px 4px rgba(13, 59, 115, 0.18);
+  cursor: pointer;
+}
+.set-visual-pin.is-locked {
+  color: #1565c0;
+  background: rgba(21, 101, 192, 0.12);
+}
+.set-visual-pin:hover {
+  background: #e8f1fb;
 }
 .set-visual-block strong {
   font-weight: 700;

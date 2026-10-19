@@ -1,3 +1,4 @@
+import { Pin } from 'lucide-react'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import GridLayout, { type Layout, type LayoutItem } from 'react-grid-layout/legacy'
 import 'react-grid-layout/css/styles.css'
@@ -238,7 +239,7 @@ function WidgetChrome({
               onToggleLocked()
             }}
           >
-            {meta.locked ? '📌' : '📍'}
+            <Pin size={14} strokeWidth={2} fill={meta.locked ? 'currentColor' : 'none'} aria-hidden />
           </button>
         </div>
       ) : null}
