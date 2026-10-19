@@ -880,7 +880,7 @@ export function Sidebar({
               </span>
             {!collapsed && <span className="nav-label">Все вкладки</span>}
             {hiddenBadges > 0 ? <i className="nav-quick-dot" aria-label={`Новых: ${hiddenBadges}`} /> : null}
-          </button>
+            </button>
           <button
             type="button"
             className="nav-item nav-open-constructor"
