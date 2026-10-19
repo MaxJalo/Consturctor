@@ -1063,7 +1063,7 @@ function AppShell(): React.JSX.Element {
               onUnreadChange={setUnread}
               onLogout={onLogout}
               showLogout={showLogout}
-              lightSidebar={workplaceShellKey === 'today'}
+              lightSidebar={false}
               activeThreadId=""
               chatRefreshAt={chatRefreshAt}
               onNavigate={(key) => {
