@@ -6,6 +6,7 @@ import { canUseSubordinateTasks } from '../../extensions/extensionAccess'
 import { OrchSlotMain } from '../../layout/GridSlots'
 import { useRegisterGlobalSearch, type GlobalSearchEntry } from '../../layout/globalSearch'
 import { textMatchesPageSearch, usePageSearchOptional } from '../../layout/pageSearchContext'
+import { onecGatewayInvokeArgs } from '../../workplace/userContext'
 import { SpecSummaryTiles } from '../../workplace/specV04Components'
 import { SubordinateKpiDialog } from './SubordinateKpiDialog'
 import type { SubordinateKpiNav } from '../../workplace/workplaceNav'
@@ -537,13 +538,13 @@ export function SubordinateTasksGridTab({
     void api
       .invokeServerTool(
         'onec.erp_subordinate_tasks',
-        {
+        onecGatewayInvokeArgs(user, {
           include_done: true,
           include_self: false,
           limit_per_person: 150,
           date_from: fetchFrom(dateFrom),
           date_to: dateTo
-        },
+        }),
         180_000
       )
       .then((response) => {
@@ -561,7 +562,7 @@ export function SubordinateTasksGridTab({
       .finally(() => {
         if (id === requestId.current) setLoading(false)
       })
-  }, [allowed, dateFrom, dateTo])
+  }, [allowed, dateFrom, dateTo, user])
 
   useEffect(() => {
     if (pickedOwner.current !== user.id) {
