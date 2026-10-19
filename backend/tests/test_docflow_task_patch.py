@@ -214,6 +214,23 @@ def test_post_task_action_body_and_unpublished(monkeypatch) -> None:
     else:
         raise AssertionError("404 должен означать, что TaskAction не опубликован")
 
+    def generic_handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            500,
+            text="{HTTPСервис.ТД_ПередачаДанныхВERP.Модуль(70)}: Ошибка при вызове метода контекста (ЗначениеИзСтрокиВнутр)",
+        )
+
+    monkeypatch.setattr(
+        "app.tools.onec.dok_http.httpx.Client",
+        lambda **kwargs: real_client(transport=httpx.MockTransport(generic_handler), **kwargs),
+    )
+    try:
+        post_task_action("task", 1, auth=("user", "secret"))
+    except TaskActionNotPublished:
+        pass
+    else:
+        raise AssertionError("500 общего обработчика dterp — метод TaskAction не опубликован")
+
 
 def test_drop_task_from_inbox_cache_keeps_other_rows(tmp_path, monkeypatch) -> None:
     from app.tools.onec import dok_soap

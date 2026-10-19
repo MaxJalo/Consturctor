@@ -34,7 +34,11 @@ class DocflowAction:
 ACTIONS: dict[str, DocflowAction] = {
     "execute": DocflowAction(EXECUTED_POSITIVE, "Задача исполнена"),
     "accept": DocflowAction(EXECUTED_POSITIVE, "Исполнение принято"),
-    "return": DocflowAction(EXECUTED_NEGATIVE, "Задача возвращена на доработку", needs_comment=True),
+    "return": DocflowAction(
+        EXECUTED_POSITIVE,
+        "Задача возвращена на доработку: новый срок и комментарий в истории выполнения",
+        needs_comment=True,
+    ),
     "acquaint": DocflowAction(EXECUTED_POSITIVE, "Отмечено: ознакомлен"),
     "approve": DocflowAction(EXECUTED_POSITIVE, "Согласовано"),
     "approve_remarks": DocflowAction(

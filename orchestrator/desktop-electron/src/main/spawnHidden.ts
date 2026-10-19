@@ -42,8 +42,9 @@ function lookupWindowsPythonExe(preferred?: string): string {
   if (process.platform !== 'win32') return 'python3'
 
   const attempts: Array<{ cmd: string; args: string[] }> = [
-    { cmd: 'py', args: ['-3.12', '-c', 'import sys; print(sys.executable)'] },
+    { cmd: 'py', args: ['-3.13', '-c', 'import sys; print(sys.executable)'] },
     { cmd: 'py', args: ['-3', '-c', 'import sys; print(sys.executable)'] },
+    { cmd: 'py', args: ['-3.12', '-c', 'import sys; print(sys.executable)'] },
     { cmd: 'python', args: ['-c', 'import sys; print(sys.executable)'] }
   ]
   for (const attempt of attempts) {

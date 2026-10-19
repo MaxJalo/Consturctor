@@ -105,34 +105,8 @@ def _script_failure_message(exit_code: int | None, stdout: str, stderr: str) -> 
     )
 
 
-def _imports_pytest(command: list[str]) -> bool:
-    # Same env as the real run; stdin closed — under the sidecar it is the protocol pipe.
-    try:
-        completed = subprocess.run(
-            [*command, "-c", "import pytest"],
-            capture_output=True,
-            stdin=subprocess.DEVNULL,
-            env=_agent_python_env(),
-            timeout=60,
-            check=False,
-        )
-    except (OSError, subprocess.TimeoutExpired) as exc:
-        print(f"pytest probe failed {command}: {exc!r}", file=sys.stderr, flush=True)
-        return False
-    if completed.returncode != 0:
-        tail = (completed.stderr or b"").decode("utf-8", "replace").strip()[-300:]
-        print(f"pytest probe rejected {command}: {tail}", file=sys.stderr, flush=True)
-    return completed.returncode == 0
-
-
-_PYTEST_PREFIX: list[str] | None = None
-
-
-def pytest_command_prefix() -> list[str]:
-    """Python that can run pytest. The sidecar interpreter often cannot."""
-    global _PYTEST_PREFIX
-    if _PYTEST_PREFIX:
-        return list(_PYTEST_PREFIX)
+def _interpreter_candidates() -> list[list[str]]:
+    """Sidecar Python first, then the project interpreter that has the libraries."""
     candidates: list[list[str]] = []
     own = _python_command_prefix()
     if own:
@@ -146,13 +120,59 @@ def pytest_command_prefix() -> list[str]:
     if launcher and "windowsapps" not in launcher.casefold():
         candidates.append([launcher, "-3.13"])
         candidates.append([launcher, "-3"])
-    for command in candidates:
-        if _imports_pytest(command):
-            _PYTEST_PREFIX = list(command)
-            print(f"pytest interpreter: {command}", file=sys.stderr, flush=True)
+    return candidates
+
+
+def _imports_module(command: list[str], module: str) -> bool:
+    # Same env as the real run; stdin closed — under the sidecar it is the protocol pipe.
+    try:
+        completed = subprocess.run(
+            [*command, "-c", f"import {module}"],
+            capture_output=True,
+            stdin=subprocess.DEVNULL,
+            env=_agent_python_env(),
+            timeout=60,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        print(f"{module} probe failed {command}: {exc!r}", file=sys.stderr, flush=True)
+        return False
+    if completed.returncode != 0:
+        tail = (completed.stderr or b"").decode("utf-8", "replace").strip()[-300:]
+        print(f"{module} probe rejected {command}: {tail}", file=sys.stderr, flush=True)
+    return completed.returncode == 0
+
+
+_PYTEST_PREFIX: list[str] | None = None
+_SCRIPT_PREFIX: list[str] | None = None
+
+
+def _prefix_with_module(module: str, cache_name: str) -> list[str]:
+    global _PYTEST_PREFIX, _SCRIPT_PREFIX
+    cached = _PYTEST_PREFIX if cache_name == "pytest" else _SCRIPT_PREFIX
+    if cached:
+        return list(cached)
+    own = _python_command_prefix()
+    for command in _interpreter_candidates():
+        if _imports_module(command, module):
+            if cache_name == "pytest":
+                _PYTEST_PREFIX = list(command)
+            else:
+                _SCRIPT_PREFIX = list(command)
+            print(f"{module} interpreter: {command}", file=sys.stderr, flush=True)
             return list(command)
-    # Not cached: a probe may fail transiently, the next KPI test run should look again.
+    # Not cached: a probe may fail transiently, the next run should look again.
     return list(own or [sys.executable])
+
+
+def pytest_command_prefix() -> list[str]:
+    """Python that can run pytest. The sidecar interpreter often cannot."""
+    return _prefix_with_module("pytest", "pytest")
+
+
+def script_command_prefix() -> list[str]:
+    """Python that can import psycopg. The 32-bit sidecar interpreter cannot."""
+    return _prefix_with_module("psycopg", "psycopg")
 
 
 def _pytest_command(prefix: list[str], target: Path) -> list[str]:
@@ -452,7 +472,7 @@ class CodeRunPythonTool(BaseTool):
         if _is_kpi_test_file(workspace, target):
             command = _pytest_command(command_prefix, target)
         else:
-            command = _python_run_command(command_prefix, target, args)
+            command = _python_run_command(script_command_prefix(), target, args)
         try:
             completed = run_captured(
                 command,
@@ -466,6 +486,7 @@ class CodeRunPythonTool(BaseTool):
         return self._result(
             workspace=workspace,
             target=target,
+            command=command,
             exit_code=completed.exit_code,
             stdout=completed.stdout,
             stderr=completed.stderr,
@@ -477,6 +498,7 @@ class CodeRunPythonTool(BaseTool):
         *,
         workspace: AgentWorkspace,
         target: Path,
+        command: list[str],
         exit_code: int | None,
         stdout: str,
         stderr: str,
@@ -504,6 +526,7 @@ class CodeRunPythonTool(BaseTool):
                 "stdout_summary": _summarize(stdout),
                 "stderr_summary": _summarize(stderr),
                 "script": target.relative_to(workspace.directory).as_posix(),
+                "python": command[0] if command else "",
                 "cwd": str(workspace.directory),
                 "timed_out": timed_out,
             },

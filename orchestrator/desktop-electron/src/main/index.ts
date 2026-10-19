@@ -2,7 +2,7 @@ import { app, shell, BrowserWindow, ipcMain, dialog, type IpcMainInvokeEvent } f
 import { spawn } from 'node:child_process'
 import { join, basename, dirname, extname } from 'node:path'
 
-const DESKTOP_APP_NAME = 'Orchestrator'
+const DESKTOP_APP_NAME = (process.env.ORCH_APP_DATA_NAME || 'Orchestrator').trim() || 'Orchestrator'
 app.setName(DESKTOP_APP_NAME)
 app.setPath('userData', join(app.getPath('appData'), DESKTOP_APP_NAME))
 if (process.platform === 'win32') {
@@ -28,6 +28,7 @@ import {
   setComSessionSecret
 } from './comSessionSecret'
 import { launchTurboProject } from './turboProjectLauncher'
+import { launchConstructorApp } from './constructorLauncher'
 
 interface RequestOptions {
   method?: string
@@ -1370,6 +1371,18 @@ function registerMainIpcHandlers(): void {
     })
     child.unref()
     return { ok: true }
+  })
+  ipcHandle('shell:launchConstructor', (_evt, url: string) => {
+    const secret = getComSessionSecret()
+    return launchConstructorApp(
+      String(url || ''),
+      {
+        execPath: process.execPath,
+        appPath: app.getAppPath(),
+        packaged: app.isPackaged
+      },
+      secret?.password ? { login: secret.login, password: secret.password } : null
+    )
   })
   ipcHandle('shell:launchTurboProject', async () => {
     if (process.platform !== 'win32') {

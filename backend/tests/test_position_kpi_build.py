@@ -206,7 +206,7 @@ def test_dated_generated_catalog_replaces_seed_with_same_key() -> None:
     assert rows[0].effective_from == date(2026, 3, 1)
 
 
-def test_finance_profile_keeps_builtin_calculators_of_seed() -> None:
+def test_imported_psd_profile_has_no_builtin_calculators() -> None:
     from app.services.position_kpi.connect import builtin_metric_codes
 
     db = _session()
@@ -240,7 +240,7 @@ def test_finance_profile_keeps_builtin_calculators_of_seed() -> None:
     )
     db.commit()
     assert db.get(PositionKpiProfile, "plnpo010-psd") is None
-    assert builtin_metric_codes(db, profile_id) == {f"doc_{index}" for index in range(1, 5)}
+    assert builtin_metric_codes(db, profile_id) == set()
 
 
 LOAD_MODULE_CODE = '''
@@ -301,6 +301,167 @@ def test_run_generated_pair_is_load_then_score() -> None:
     report = run_generated_pair(mod, ctx, None)
     assert calls == ["load:2026-09-22", "score:1"]
     assert report["fact_pct"] == 100.0
+
+
+def test_run_generated_pair_reads_calculate_contract() -> None:
+    from types import SimpleNamespace
+
+    from app.services.position_kpi.registry import run_generated_pair
+
+    seen: dict[str, str | None] = {}
+
+    def load_rows(fio: str, month: str | None) -> dict:
+        seen["fio"] = fio
+        seen["month"] = month
+        return {"fio": fio, "month": month}
+
+    def calculate(report: dict) -> dict:
+        return {
+            "no_base": report["month"] is None,
+            "fact": 80,
+            "score": 90,
+            "contribution": 22.5,
+            "rows": [{"month": report["month"]}],
+        }
+
+    ctx = SimpleNamespace(
+        as_of=date(2026, 10, 13),
+        date_from=date(2026, 10, 1),
+        date_to=date(2026, 10, 31),
+        subject_fio="Карташова Анастасия Эдуардовна",
+        extra_for=lambda *_a, **_k: {},
+    )
+    report = run_generated_pair(
+        SimpleNamespace(load_rows=load_rows, calculate=calculate),
+        ctx,
+        None,
+    )
+    assert seen == {"fio": "Карташова Анастасия Эдуардовна", "month": "2026-10"}
+    assert report["fact_pct"] == 80.0
+    assert report["score_pct"] == 90.0
+    assert report["contrib_pct"] == 22.5
+
+    empty = run_generated_pair(
+        SimpleNamespace(
+            load_rows=lambda fio, month: {},
+            calculate=lambda _report: {"no_base": True, "fact": 0, "score": None, "contribution": None, "rows": []},
+        ),
+        ctx,
+        None,
+    )
+    assert empty["fact_pct"] is None
+    assert empty["score_pct"] is None
+
+
+CALCULATE_MODULE = """
+def load_rows(fio: str, month: str | None) -> dict:
+    return {"fio": fio, "month": month}
+
+
+def calculate(report: dict) -> dict:
+    return {
+        "no_base": False,
+        "fact": 80,
+        "score": 90,
+        "contribution": 20,
+        "rows": [{"fio": report["fio"], "month": report["month"]}],
+    }
+"""
+
+
+def test_saved_module_attaches_and_scores_without_manual_link() -> None:
+    from datetime import datetime, timezone
+
+    from app.models.position_kpi import PositionKpiModule
+    from app.services.position_kpi.connect import GENERATED_DIR, bind_unwired_modules
+
+    db = _session()
+    profile = db.query(PositionKpiProfile).filter(PositionKpiProfile.position_name == POSITION).one()
+    metric = db.query(PositionKpiMetric).filter(PositionKpiMetric.profile_id == profile.id).first()
+    assert metric is not None
+    source = (
+        db.query(PositionKpiSource)
+        .filter(PositionKpiSource.metric_id == metric.id, PositionKpiSource.role == "fact")
+        .first()
+    )
+    assert source is not None
+    source.extra_json = {}
+    kept = PositionKpiMetric(
+        id="met-kept-builtin",
+        profile_id=profile.id,
+        code="kept_builtin",
+        name="Уже посчитан",
+        sort_order=9,
+        weight=0,
+        formula_kind="needs_clarify",
+        formula_json={"kind": "needs_clarify"},
+    )
+    db.add(kept)
+    db.flush()
+    kept_source = PositionKpiSource(
+        id="src-kept-builtin",
+        metric_id=kept.id,
+        role="fact",
+        kind="unknown",
+        title="Факт",
+        extra_json={"module": "kpi.sources.assistant_tasks"},
+    )
+    module_name = "kpi.generated.probe_auto_connect"
+    now = datetime.now(timezone.utc)
+    db.add(kept_source)
+    db.add(
+        PositionKpiModule(
+            id="mod-probe-auto",
+            profile_id=profile.id,
+            metric_code=metric.code,
+            module_name=module_name,
+            source=CALCULATE_MODULE,
+            tests="",
+            content_hash="probe",
+            updated_at=now,
+        )
+    )
+    db.add(
+        PositionKpiModule(
+            id="mod-probe-kept",
+            profile_id=profile.id,
+            metric_code="kept_builtin",
+            module_name="kpi.generated.probe_should_not_replace",
+            source="def calculate(rows):\n    return {'fact': 1}\n",
+            tests="",
+            content_hash="kept",
+            updated_at=now,
+        )
+    )
+    db.commit()
+    attached = bind_unwired_modules(db, profile.id)
+    db.refresh(source)
+    db.refresh(kept_source)
+    assert attached == [metric.code]
+    assert source.extra_json["module"] == module_name
+    assert kept_source.extra_json["module"] == "kpi.sources.assistant_tasks"
+    db.delete(kept_source)
+    db.delete(kept)
+    db.commit()
+    path = GENERATED_DIR / "probe_auto_connect.py"
+    kept_path = GENERATED_DIR / "probe_should_not_replace.py"
+    try:
+        payload = get_or_compute_position_kpi(
+            db,
+            POSITION,
+            as_of=date(2026, 10, 13),
+            date_from=date(2026, 10, 1),
+            date_to=date(2026, 10, 31),
+            subject="Карташова Анастасия Эдуардовна",
+            refresh=True,
+        )
+        tile = next(item for item in payload["tiles"] if item["code"] == metric.code)
+        assert tile["fact"] == 80.0
+        assert tile["score"] == 90.0
+        assert any(row["month"] == "2026-10" for row in tile["detail"]["rows"])
+    finally:
+        path.unlink(missing_ok=True)
+        kept_path.unlink(missing_ok=True)
 
 
 def test_dynamic_scorer_uses_module_loader(monkeypatch) -> None:

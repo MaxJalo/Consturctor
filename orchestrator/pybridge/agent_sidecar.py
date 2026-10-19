@@ -57,6 +57,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+os.environ["CONSTRUCTOR_SDK_OWNER"] = str(Path(__file__).resolve())
+
 
 def _bootstrap_desktop_path() -> Path:
     """Add the desktop/ folder to sys.path so app.* is importable."""
@@ -98,6 +100,7 @@ from app.sdk_agent.bridge import (  # noqa: E402
     CursorSdkBridge,
     CursorSdkError,
     CursorSdkUnavailable,
+    reap_foreign_sdk_runners,
 )
 from app.sdk_agent.files import (  # noqa: E402
     _safe_filename,
@@ -2310,6 +2313,10 @@ class Sidecar:
                         )
                         existing.stop.set()
                         try:
+                            existing.bridge.close()
+                        except Exception:
+                            pass
+                        try:
                             existing.bridge.skip_tool("")
                         except Exception:
                             pass
@@ -3544,6 +3551,10 @@ class Sidecar:
                     continue
             active.stop.set()
             try:
+                active.bridge.close()
+            except Exception:
+                pass
+            try:
                 active.bridge.skip_tool("")
             except Exception:
                 pass
@@ -3560,6 +3571,10 @@ class Sidecar:
         workflows = {active.workflow_id for active in actives if active.workflow_id}
         for active in actives:
             active.stop.set()
+            try:
+                active.bridge.close()
+            except Exception:
+                pass
             self._finish_active_history(active, "Cursor SDK не отвечает")
         for workflow_id in workflows:
             self._fail_unbacked_started(workflow_id)
@@ -3703,6 +3718,10 @@ def _attachments_note(relative_paths: list[str]) -> str:
 
 
 def main() -> None:
+    try:
+        reap_foreign_sdk_runners()
+    except Exception:
+        log("reap sdk runners failed")
     sidecar = Sidecar()
     emit({"type": "ready"})
     for raw in _stdin_lines():

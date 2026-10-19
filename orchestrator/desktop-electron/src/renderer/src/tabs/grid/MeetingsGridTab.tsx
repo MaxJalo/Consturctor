@@ -280,6 +280,7 @@ function MeetingDetailCard({
   const platformTranscriptId = transcriptIdOf(lastPlatformResult(platformRun.steps, 'audio.transcribe'))
   useEffect(() => {
     if (!onPlatform || !platformStatus || platformStatus === 'running' || record?.status !== 'running') return
+    if (platformRun.sessionId !== record.platformSessionId) return
     if (record.stage !== 'transcribe') {
       patchRecord({ status: platformStatus === 'finished' ? 'done' : 'error' })
       return
@@ -295,7 +296,7 @@ function MeetingDetailCard({
     }
     if (platformStatus === 'finished') setActionError('Агент закончил без расшифровки — подробности в «Ход работы»')
     patchRecord({ status: 'error' })
-  }, [onPlatform, patchRecord, platformStatus, platformTranscriptId, record])
+  }, [onPlatform, patchRecord, platformRun.sessionId, platformStatus, platformTranscriptId, record])
 
   const decideApproval = async (allow: boolean): Promise<void> => {
     const sessionId = record?.platformSessionId || ''

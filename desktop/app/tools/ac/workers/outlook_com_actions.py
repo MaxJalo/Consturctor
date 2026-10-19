@@ -683,19 +683,6 @@ def _resolve_person_calendar_folder(
     folder, status = _open_shared_calendar(namespace, person)
     if folder is not None:
         return folder, status
-    # Личный ящик в адресной книге часто не резолвится, а совещания руководителя
-    # уже лежат в открытом общем календаре «Совещания».
-    if str(status).startswith("unresolved"):
-        shared = _find_public_meeting_folders(outlook, namespace, own_name)
-        if shared:
-            _log_progress(
-                f"step=calendar_fallback_meetings person={person} folders={len(shared)}"
-            )
-            return shared[0][1], "meetings"
-        labels = [label for label, _folder, is_own in visible if not is_own]
-        _log_progress(
-            f"step=calendar_unresolved person={person} shared_labels={labels[:8]}"
-        )
     return None, status
 
 
@@ -783,7 +770,6 @@ def _iter_visible_calendar_folders(
         add(_own_calendar_folder(namespace), own_label, True)
     except OutlookAccessError:
         pass
-
     try:
         seen_explorers = 0
         for explorer in _iter_outlook_explorers(outlook):
@@ -802,7 +788,7 @@ def _iter_visible_calendar_folders(
                         folder = nav.Folder
                     except Exception:
                         continue
-                    add(folder, _display_calendar_label(folder, group_name))
+                    add(folder, _folder_label(folder, group_name))
         if seen_explorers == 0:
             _log_progress("step=nav_calendars skipped: no explorer")
     except Exception as exc:
@@ -822,7 +808,7 @@ def _iter_visible_calendar_folders(
         try:
             for sub in folder.Folders:
                 if _is_appointment_folder(sub):
-                    extra.append((_display_calendar_label(sub, label), sub))
+                    extra.append((_folder_label(sub, label), sub))
         except Exception:
             continue
     for label, folder in extra:
@@ -1811,7 +1797,6 @@ def read_calendar(input_data: dict) -> dict:
         seen_owners.add(name.casefold())
         calendar_owners.append(name)
     calendar_owner = bool(calendar_owners)
-    include_own = _truthy(input_data.get("include_own", True))
 
     def _read(win32com_client: Any) -> dict:
         _log_progress("step=dispatch_outlook start")
@@ -1938,8 +1923,6 @@ def read_calendar(input_data: dict) -> dict:
             folders = _iter_visible_calendar_folders(outlook, namespace, own_name)
             if not folders:
                 folders = [(own_name or "Календарь", _own_calendar_folder(namespace), True)]
-            if not include_own:
-                folders = [row for row in folders if not row[2]]
             _log_progress(f"step=visible_calendars count={len(folders)}")
             for label, folder, is_own in folders:
                 remaining_results = max_results - len(events)
@@ -2001,12 +1984,8 @@ def read_calendar(input_data: dict) -> dict:
                 "range_end": end_at.isoformat(),
             }
         targets = list(calendar_owners or people or [own_name or ""])
-        if (
-            include_own
-            and calendar_owner
-            and not any(
-                not person or _same_calendar_person(person, own_name) for person in targets
-            )
+        if calendar_owner and not any(
+            not person or _same_calendar_person(person, own_name) for person in targets
         ):
             targets.insert(0, own_name or "")
         for person in targets:

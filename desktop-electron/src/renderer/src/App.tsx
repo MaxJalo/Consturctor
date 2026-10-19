@@ -52,6 +52,7 @@ import {
 } from './store/session'
 
 const CONSTRUCTOR_ORCHESTRATOR_TABS = false
+let constructorHandoffApplied = ''
 
 type View =
   | { kind: 'tab'; key: PageKey }
@@ -410,7 +411,7 @@ export function App(): React.JSX.Element {
     })
   }, [regChat, regChatBusy, view.kind, windowFocused])
 
-  function onLoggedIn(result: LoginResult, remember: boolean, password = ''): void {
+  function onLoggedIn(result: LoginResult, remember: boolean, password = '', keepPassword = false): void {
     if (user && user.id !== result.user.id) {
       formation.cancel()
       formation.clear()
@@ -419,7 +420,11 @@ export function App(): React.JSX.Element {
       setRegChatBusy(false)
     }
     api.setToken(result.accessToken || null)
-    setComCredentials(result.user.fio, password)
+    if (keepPassword) {
+      if (user && user.id !== result.user.id) clearComCredentials()
+    } else {
+      setComCredentials(result.user.fio, password)
+    }
     if (remember && result.accessToken) {
       saveSession({ accessToken: result.accessToken, fio: result.user.fio })
     } else {
@@ -428,6 +433,10 @@ export function App(): React.JSX.Element {
     setUser(result.user)
     setView({ kind: 'tab', key: 'create' })
     if (result.accessToken) {
+      const creds = comCredentials()
+      void agentClient
+        .ready(result.accessToken, { login: creds.login || result.user.fio, password: creds.password })
+        .catch(() => undefined)
       void api.me().then(setUser).catch(() => undefined)
     }
   }
@@ -454,6 +463,32 @@ export function App(): React.JSX.Element {
     setView({ kind: 'tab', key: 'create' })
     setUser(null)
   }
+
+  const onLoggedInRef = useRef(onLoggedIn)
+  onLoggedInRef.current = onLoggedIn
+
+  useEffect(() => {
+    const apply = (code: string): void => {
+      const value = (code || '').trim()
+      if (!value || constructorHandoffApplied === value) return
+      constructorHandoffApplied = value
+      void api
+        .redeemDesktopHandoff(value)
+        .then(async (result) => {
+          const secret = await window.api.takeHandoffPassword?.()
+          const password = secret?.password || ''
+          void window.api.ackHandoff?.(value)
+          onLoggedInRef.current(result, true, password, !password)
+        })
+        .catch((error: unknown) => {
+          if (constructorHandoffApplied === value) constructorHandoffApplied = ''
+          const message = error instanceof Error ? error.message : 'Не удалось открыть сессию'
+          window.alert(message)
+        })
+    }
+    void window.api.consumeHandoff?.().then((code) => apply(code || ''))
+    return window.api.onSessionHandoff?.(apply)
+  }, [])
 
   function onLogout(): void {
     void resetToLogin()

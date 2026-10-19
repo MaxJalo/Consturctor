@@ -322,13 +322,13 @@ def read_methodology_status(
     )
     from app.services.position_kpi.connect import builtin_metric_codes
 
-    module_codes = set(
-        db.scalars(
-            select(PositionKpiModule.metric_code).where(
-                PositionKpiModule.profile_id == profile.id
-            )
+    module_codes = {
+        row.metric_code
+        for row in db.scalars(
+            select(PositionKpiModule).where(PositionKpiModule.profile_id == profile.id)
         ).all()
-    ) | builtin_metric_codes(db, profile.id)
+        if (row.source or "").strip()
+    } | builtin_metric_codes(db, profile.id)
     ready = bool(metrics) and all(metric.code in module_codes for metric in metrics)
     return {
         "status": "ready" if ready else "needs_modules",

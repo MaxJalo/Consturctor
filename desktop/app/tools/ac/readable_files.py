@@ -14,7 +14,8 @@ WORD_SUFFIXES = {".docx"}
 PDF_SUFFIXES = {".pdf"}
 IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".tif", ".tiff"}
 EXCEL_SUFFIXES = {".xlsx", ".xlsm"}
-READABLE_SUFFIXES = WORD_SUFFIXES | PDF_SUFFIXES | IMAGE_SUFFIXES | {".doc"}
+SLIDE_SUFFIXES = {".pptx"}
+READABLE_SUFFIXES = WORD_SUFFIXES | PDF_SUFFIXES | IMAGE_SUFFIXES | SLIDE_SUFFIXES | {".doc"}
 
 
 def artifact_cache_dir() -> Path:
@@ -31,6 +32,8 @@ def kind_for_suffix(suffix: str) -> str:
         return "image"
     if folded in EXCEL_SUFFIXES:
         return "excel"
+    if folded in SLIDE_SUFFIXES:
+        return "slides"
     return ""
 
 
@@ -82,7 +85,7 @@ def read_tool_for_suffix(suffix: str) -> str:
     kind = kind_for_suffix(suffix)
     if kind == "excel":
         return "excel.read_workbook"
-    if kind in {"word", "pdf", "image"}:
+    if kind in {"word", "pdf", "image", "slides"}:
         return "office.read_file"
     return ""
 

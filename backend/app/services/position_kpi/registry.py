@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import inspect
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
@@ -225,6 +226,63 @@ def _as_rows(value: Any) -> list[dict[str, Any]]:
     return [row for row in (value or []) if isinstance(row, dict)]
 
 
+def _call_load(load_fn: Any, ctx: "SourceBundle") -> Any:
+    """load_*(ctx) — контракт страницы. load_rows(fio, month) — контракт сгенерированного файла."""
+    try:
+        signature = inspect.signature(load_fn)
+    except (TypeError, ValueError):
+        return load_fn(ctx)
+    names = [
+        name
+        for name, param in signature.parameters.items()
+        if param.kind
+        in (
+            inspect.Parameter.POSITIONAL_ONLY,
+            inspect.Parameter.POSITIONAL_OR_KEYWORD,
+            inspect.Parameter.KEYWORD_ONLY,
+        )
+    ]
+    if "fio" in names or "month" in names:
+        start = getattr(ctx, "date_from", None)
+        month = start.strftime("%Y-%m") if hasattr(start, "strftime") else None
+        kwargs: dict[str, Any] = {}
+        if "fio" in names:
+            kwargs["fio"] = str(getattr(ctx, "subject_fio", "") or "")
+        if "month" in names:
+            kwargs["month"] = month
+        return load_fn(**kwargs)
+    if not names:
+        return load_fn()
+    return load_fn(ctx)
+
+
+def _report_from_calculate(result: Any) -> dict[str, Any]:
+    if not isinstance(result, dict):
+        raise TypeError(f"calculate returned {type(result)}")
+    if "fact_pct" in result or "score_pct" in result:
+        return result
+    no_base = bool(result.get("no_base"))
+
+    def number(key: str) -> float | None:
+        if no_base:
+            return None
+        value = result.get(key)
+        if value is None or value == "":
+            return None
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return None
+
+    rows = result.get("rows")
+    return {
+        "fact_pct": number("fact"),
+        "score_pct": number("score"),
+        "contrib_pct": number("contribution"),
+        "rows": rows if isinstance(rows, list) else [],
+    }
+
+
 def run_generated_pair(mod: Any, ctx: "SourceBundle", metric: "PositionKpiMetric") -> dict[str, Any]:
     """Извлекатель отдаёт rows, калькулятор — готовый KPI. В обход связки не считаем."""
     extra = _merged_extra(mod, ctx, metric)
@@ -237,19 +295,26 @@ def run_generated_pair(mod: Any, ctx: "SourceBundle", metric: "PositionKpiMetric
             return report
         raise TypeError(f"{getattr(mod, '__name__', 'module')} compute returned {type(report)}")
     score_fn = _find_score_fn(mod)
-    if score_fn is None:
-        raise RuntimeError(f"{getattr(mod, '__name__', 'module')} has no score_*_kpi")
-    load_fn = _find_load_fn(mod)
-    if load_fn is not None:
-        rows = _as_rows(load_fn(ctx))
-    elif hasattr(ctx, "load_for"):
-        rows = _as_rows(ctx.load_for(extra))
-    else:
-        rows = []
-    report = score_fn(rows, as_of=ctx.as_of, date_from=ctx.date_from, date_to=ctx.date_to)
-    if isinstance(report, dict):
-        return report
-    raise TypeError(f"{getattr(mod, '__name__', 'module')} score returned {type(report)}")
+    if score_fn is not None:
+        load_fn = _find_load_fn(mod)
+        if load_fn is not None:
+            rows = _as_rows(load_fn(ctx))
+        elif hasattr(ctx, "load_for"):
+            rows = _as_rows(ctx.load_for(extra))
+        else:
+            rows = []
+        report = score_fn(rows, as_of=ctx.as_of, date_from=ctx.date_from, date_to=ctx.date_to)
+        if isinstance(report, dict):
+            return report
+        raise TypeError(f"{getattr(mod, '__name__', 'module')} score returned {type(report)}")
+    calculate = getattr(mod, "calculate", None)
+    if callable(calculate):
+        load_fn = getattr(mod, "load_rows", None)
+        if not callable(load_fn):
+            load_fn = _find_load_fn(mod)
+        loaded = _call_load(load_fn, ctx) if callable(load_fn) else []
+        return _report_from_calculate(calculate(loaded))
+    raise RuntimeError(f"{getattr(mod, '__name__', 'module')} has no score_*_kpi")
 
 
 def _dynamic_scorer(module_name: str) -> Scorer:

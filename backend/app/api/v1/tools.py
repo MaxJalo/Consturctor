@@ -461,7 +461,13 @@ def _invoke_audio_tool(
 
         raw = arguments.get("voices") or []
         voices = [item for item in raw if isinstance(item, dict)] if isinstance(raw, list) else []
-        return confirm_speakers(str(arguments.get("transcript_id") or ""), auth.user_id, voices)
+        return confirm_speakers(
+            str(arguments.get("transcript_id") or ""),
+            auth.user_id,
+            voices,
+            save_voices=arguments.get("save_voices") is not False,
+            initials=arguments.get("initials") is True,
+        )
     if tool_name == "audio.propose_speakers":
         from app.db.session import SessionLocal
         from app.services.speaker_bank import propose_speakers

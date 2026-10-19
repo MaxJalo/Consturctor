@@ -27,13 +27,44 @@ PSD = "Помощник Председателя совета директоро
 OFFICE = "Офис-менеджер"
 
 
-def _session() -> Session:
+def _session(*, wire_psd: bool = False) -> Session:
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(bind=engine)
     db = sessionmaker(bind=engine, autoflush=False, autocommit=False, future=True)()
     upsert_catalog(db)
+    if wire_psd:
+        _wire_psd_scorers(db)
     db.commit()
     return db
+
+
+def _wire_psd_scorers(db: Session) -> None:
+    """Тесты движка подключают калькуляторы сами: в каталоге должности их больше нет."""
+    from sqlalchemy.orm.attributes import flag_modified
+
+    from app.models.position_kpi import PositionKpiMetric, PositionKpiSource
+
+    modules = {
+        "package_on_time": "kpi.sources.sd_rk_packages",
+        "protocol_on_time": "kpi.sources.sd_rk_protocols",
+        "instructions": "kpi.sources.sd_rk_instructions",
+        "quality": "kpi.sources.sd_rk_quality",
+    }
+    metrics = db.query(PositionKpiMetric).filter(PositionKpiMetric.profile_id == "plnpo010-psd").all()
+    for metric in metrics:
+        module = modules.get(metric.code)
+        if not module:
+            continue
+        sources = (
+            db.query(PositionKpiSource)
+            .filter(PositionKpiSource.metric_id == metric.id, PositionKpiSource.role == "fact")
+            .all()
+        )
+        for source in sources:
+            extra = dict(source.extra_json or {})
+            extra["module"] = module
+            source.extra_json = extra
+            flag_modified(source, "extra_json")
 
 
 def _report(fact: float = 100.0) -> dict:
@@ -165,7 +196,7 @@ def test_unknown_position_raises() -> None:
 
 
 def test_psd_tiles_from_registry_and_cache_skips_recompute(monkeypatch) -> None:
-    db = _session()
+    db = _session(wire_psd=True)
     calls: dict[str, int] = {}
     monkeypatch.setitem(SCORERS, "kpi.sources.sd_rk_packages", _scorer("package", calls))
     monkeypatch.setitem(SCORERS, "kpi.sources.sd_rk_protocols", _scorer("protocol", calls))
@@ -199,7 +230,7 @@ def test_psd_tiles_from_registry_and_cache_skips_recompute(monkeypatch) -> None:
 
 
 def test_failed_scorer_skips_tile_not_response(monkeypatch) -> None:
-    db = _session()
+    db = _session(wire_psd=True)
     calls: dict[str, int] = {}
     monkeypatch.setitem(SCORERS, "kpi.sources.sd_rk_packages", _scorer("package", calls))
     monkeypatch.setitem(SCORERS, "kpi.sources.sd_rk_protocols", _scorer("protocol", calls, fail=True))
@@ -222,7 +253,7 @@ def test_failed_scorer_skips_tile_not_response(monkeypatch) -> None:
 
 
 def test_failed_source_shows_no_data_instead_of_perfect_score(monkeypatch) -> None:
-    db = _session()
+    db = _session(wire_psd=True)
 
     def broken_odata(*_args, **_kwargs):
         raise RuntimeError("HTTP 400: Сегмент пути Тема не найден!")
@@ -247,7 +278,7 @@ def test_failed_source_shows_no_data_instead_of_perfect_score(monkeypatch) -> No
 
 
 def test_refresh_recomputes(monkeypatch) -> None:
-    db = _session()
+    db = _session(wire_psd=True)
     calls: dict[str, int] = {}
     monkeypatch.setitem(SCORERS, "kpi.sources.sd_rk_packages", _scorer("package", calls))
     monkeypatch.setitem(SCORERS, "kpi.sources.sd_rk_protocols", _scorer("protocol", calls))
@@ -268,7 +299,7 @@ def test_refresh_recomputes(monkeypatch) -> None:
 
 
 def test_allow_stale_returns_yesterday_without_recompute(monkeypatch) -> None:
-    db = _session()
+    db = _session(wire_psd=True)
     calls: dict[str, int] = {}
     monkeypatch.setitem(SCORERS, "kpi.sources.sd_rk_packages", _scorer("package", calls))
     monkeypatch.setitem(SCORERS, "kpi.sources.sd_rk_protocols", _scorer("protocol", calls))
@@ -300,7 +331,7 @@ def test_allow_stale_returns_yesterday_without_recompute(monkeypatch) -> None:
 
 
 def test_daily_cache_skips_profiles_already_computed_today(monkeypatch) -> None:
-    db = _session()
+    db = _session(wire_psd=True)
     calls: dict[str, int] = {}
     monkeypatch.setitem(SCORERS, "kpi.sources.sd_rk_packages", _scorer("package", calls))
     monkeypatch.setitem(SCORERS, "kpi.sources.sd_rk_protocols", _scorer("protocol", calls))
@@ -342,7 +373,7 @@ def test_daily_cache_skips_profiles_already_computed_today(monkeypatch) -> None:
 
 
 def test_refresh_all_profiles_warms_catalog(monkeypatch) -> None:
-    db = _session()
+    db = _session(wire_psd=True)
     monkeypatch.setitem(SCORERS, "kpi.sources.sd_rk_packages", _scorer("package"))
     monkeypatch.setitem(SCORERS, "kpi.sources.sd_rk_protocols", _scorer("protocol"))
     monkeypatch.setitem(SCORERS, "kpi.sources.sd_rk_instructions", _scorer("instructions"))

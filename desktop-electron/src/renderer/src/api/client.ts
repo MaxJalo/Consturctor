@@ -1093,6 +1093,18 @@ export class ApiClient {
     return { accessToken: token, user: parseUser((data.user as Record<string, unknown>) ?? {}) }
   }
 
+  /** Exchange a one-time code from Orchestrator for this user's Constructor session. */
+  async redeemDesktopHandoff(code: string): Promise<LoginResult> {
+    const data = await this.request<Record<string, unknown>>('POST', '/api/v1/auth/desktop-handoff/redeem', {
+      body: { code },
+      timeoutMs: 30_000
+    })
+    const token = String(data.access_token ?? '')
+    if (!token) throw new ApiError('Сервер не открыл сессию конструктора')
+    this.token = token
+    return { accessToken: token, user: parseUser((data.user as Record<string, unknown>) ?? {}) }
+  }
+
   async me(timeoutMs = 15_000): Promise<UserProfile> {
     const data = await this.request<Record<string, unknown>>('GET', '/api/v1/auth/me', {
       timeoutMs

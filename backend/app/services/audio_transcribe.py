@@ -14,12 +14,15 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import os
 import re
 import tempfile
 import threading
 from pathlib import Path
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 MAX_BYTES = 500 * 1024 * 1024
 ALLOWED_EXTENSIONS = frozenset(
@@ -384,20 +387,18 @@ def transcribe_run_attachment(
     digest = hashlib.sha256(raw).hexdigest()
     cache_key = f"{digest}:{_engine_tag()}:{prompt}"
     with _inflight_lock:
-        cached = _cache.get(cache_key)
-        if cached is not None and Path(str(cached.get("transcript_path") or "")).is_file():
-            return _with_parts({**cached, "cached": True})
-        stored = _read_disk_cache(cache_key)
-        if stored is not None:
-            _cache[cache_key] = stored
-            return _with_parts({**stored, "cached": True})
+        hit = _cache.get(cache_key)
+        if hit is None or not Path(str(hit.get("transcript_path") or "")).is_file():
+            hit = _read_disk_cache(cache_key)
+            if hit is not None:
+                _cache[cache_key] = hit
         waiter = _inflight.get(cache_key)
-        if waiter is None:
+        owner = hit is None and waiter is None
+        if owner:
             waiter = threading.Event()
             _inflight[cache_key] = waiter
-            owner = True
-        else:
-            owner = False
+    if hit is not None:
+        return _claimed(_with_parts({**hit, "cached": True}), user_id, digest)
     if not owner:
         # A retry of the same file waits for the run already in progress
         # instead of starting a second transcription and starving the API.
@@ -405,7 +406,7 @@ def transcribe_run_attachment(
         with _inflight_lock:
             cached = _cache.get(cache_key)
         if cached is not None:
-            return cached
+            return _claimed(cached, user_id, digest)
         raise RuntimeError("Расшифровка этого файла уже шла и не завершилась. Повторите вызов.")
 
     try:
@@ -442,6 +443,41 @@ def transcribe_run_attachment(
         waiter.set()
         with _inflight_lock:
             _inflight.pop(cache_key, None)
+
+
+def _claimed(result: dict[str, Any], user_id: str, digest: str) -> dict[str, Any]:
+    """Ответ из кэша с transcript_id этого пользователя: чужую запись audio.speakers не откроет."""
+    from app.services.speaker_bank import claim_transcript
+
+    transcript_id = str(result.get("transcript_id") or "")
+    if not transcript_id:
+        return result
+    try:
+        claimed = claim_transcript(transcript_id, user_id, digest)
+    except Exception:
+        logger.exception("Не удалось закрепить расшифровку %s за %s", transcript_id, user_id)
+        return result
+    if claimed is None:
+        return result
+    out = {
+        **result,
+        "transcript_id": claimed["transcript_id"],
+        "known_speakers": claimed["known_speakers"],
+        "unknown_speakers": claimed["unknown_speakers"],
+    }
+    if claimed["pristine"] and claimed["segments"]:
+        # Прежние bind_speakers переписывали общий файл кэша — возвращаем ему метки «Голос N».
+        try:
+            path = _write_transcript(
+                str(result.get("filename") or "audio"),
+                claimed["segments"],
+                float(result.get("duration_sec") or 0.0),
+                digest,
+            )
+            out["transcript_path"] = str(path)
+        except OSError:
+            logger.warning("Не удалось обновить файл расшифровки %s", transcript_id)
+    return out
 
 
 def _persist_transcript(

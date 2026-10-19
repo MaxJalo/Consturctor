@@ -248,17 +248,28 @@ export type IdentifiedTranscript = {
   roster: string
 }
 
+const TOOL_ERROR_STOP =
+  'Инструмент вернул ошибку — остановись и напиши её дословно. Обходных путей не ищи: терминал, исходный код, файлы .env и базу данных не трогай.'
+
 /** Первый запуск: только расшифровка нашим сервисом. В 1С этот запуск не пишет. */
-export function buildTranscribeOnlyMessage(meeting: MeetingEvent | null, audioPath: string, files: RunAudio[] = []): string {
+export function buildTranscribeOnlyMessage(
+  meeting: MeetingEvent | null,
+  audioPath: string,
+  files: RunAudio[] = [],
+  people: string[] = []
+): string {
   return [
     'ТОЛЬКО РАСШИФРОВКА.',
     'Вызови audio.transcribe ровно один раз для приложенного аудио и остановись.',
-    'Инструкцию агента дальше этого шага не выполняй: протокол строится следующим запуском, после проверки голосов человеком.',
+    'Инструкцию агента дальше этого шага не выполняй: протокол строится следующим запуском, после определения говорящих.',
     meeting
       ? 'names — участники совещания из списка ниже, без строк «Совещания» и почтовых ящиков.'
-      : 'names не передавай, если список участников в задании не указан.',
+      : people.length
+        ? `names — присутствующие по протоколу 1С: ${people.join(', ')}.`
+        : 'names не передавай, если список участников в задании не указан.',
     'В 1С не пиши, файлы протокола не создавай, уведомления не отправляй.',
     'В ответе укажи transcript_id из инструмента.',
+    TOOL_ERROR_STOP,
     '',
     ...(meeting
       ? [
@@ -274,9 +285,15 @@ export function buildTranscribeOnlyMessage(meeting: MeetingEvent | null, audioPa
 }
 
 /** Второй агент: кому какой голос принадлежит. */
-export function buildSpeakerMessage(transcriptId: string, meeting: MeetingEvent | null, rosterHint: string): string {
-  const who = meeting ? attendeesList(meeting) : '—'
+export function buildSpeakerMessage(
+  transcriptId: string,
+  meeting: MeetingEvent | null,
+  rosterHint: string,
+  people: string[] = []
+): string {
+  const who = meeting ? attendeesList(meeting) : people.length ? people.map((name) => `- ${name}`).join('\n') : '—'
   return [
+    TOOL_ERROR_STOP,
     'Определи, кому принадлежит каждый голос в расшифровке.',
     `transcript_id: ${transcriptId}`,
     meeting ? `Совещание: ${field(meeting.subject)}, ${formatMeetingStamp(meeting.start)}` : '',
@@ -284,7 +301,10 @@ export function buildSpeakerMessage(transcriptId: string, meeting: MeetingEvent 
     who,
     rosterHint ? `Уже узнаны по отпечатку голоса:\n${rosterHint}` : 'По отпечатку пока никого не узнали.',
     'Расшифровка уже готова. Аудиофайл не открывай и audio.transcribe не вызывай.',
-    'Вызови audio.speakers: текст реплик уже в поле lines. Сопоставь неизвестные голоса только с участниками выше и только если это прямо написано в репликах, затем один раз audio.propose_speakers и остановись.'
+    'Вызови audio.speakers: текст реплик уже в поле lines. Сопоставь неизвестные голоса только с участниками выше и только если это прямо написано в репликах, затем один раз audio.propose_speakers и остановись.',
+    !meeting && people.length
+      ? 'Полное ФИО и user_id каждого, кого назначаешь, возьми из базы: users.list один раз на фамилию (query — фамилия). Ответ без user_id — оставь ФИО участника как в списке.'
+      : ''
   ]
     .filter(Boolean)
     .join('\n')

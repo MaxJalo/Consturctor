@@ -29,6 +29,8 @@ export type PlatformToolStep = {
 }
 
 export type PlatformRunView = {
+  /** Сессия, к которой относятся данные: сразу после смены sessionId хук ещё отдаёт прежнюю. */
+  sessionId: string
   status: SessionStatus | ''
   running: boolean
   error: string
@@ -96,6 +98,21 @@ function parseJson(text: string): unknown {
   }
 }
 
+/** Раннер режет превью ответа до 12 000 символов: отбрасываем недописанные поля верхнего уровня с конца. */
+function parseClipped(text: string): Record<string, unknown> | null {
+  const whole = parseJson(text)
+  if (whole && typeof whole === 'object' && !Array.isArray(whole)) return whole as Record<string, unknown>
+  if (!text.startsWith('{')) return null
+  let end = text.length
+  for (let attempt = 0; attempt < 400; attempt += 1) {
+    end = text.lastIndexOf(', "', end - 1)
+    if (end <= 0) return null
+    const head = parseJson(`${text.slice(0, end)}}`)
+    if (head && typeof head === 'object' && !Array.isArray(head)) return head as Record<string, unknown>
+  }
+  return null
+}
+
 function asObject(value: unknown): Record<string, unknown> {
   return value && typeof value === 'object' && !Array.isArray(value) ? (value as Record<string, unknown>) : {}
 }
@@ -106,7 +123,7 @@ function toolName(event: SessionEvent): string {
   return raw.replace(/^(custom-user-tools|turbotester|constructor)[-_.]+/i, '').replaceAll('__', '.')
 }
 
-/** Текст ответа MCP-инструмента из превью результата, которое пишет раннер. */
+/** Текст ответа MCP-инструмента из превью результата, которое пишет раннер: content[].text — строка или {text}. */
 function resultText(event: SessionEvent): string {
   const result = asObject(parseJson(event.result))
   const value = asObject(result.value)
@@ -115,7 +132,9 @@ function resultText(event: SessionEvent): string {
   return content
     .map((item) => {
       const text = asObject(item).text
-      return typeof text === 'string' ? text : ''
+      if (typeof text === 'string') return text
+      const nested = asObject(text).text
+      return typeof nested === 'string' ? nested : ''
     })
     .join('\n')
 }
@@ -129,7 +148,7 @@ function failed(event: SessionEvent): boolean {
 function protocolFrom(event: SessionEvent): { number: string; refKey: string } | null {
   const text = resultText(event)
   if (!text) return null
-  const body = asObject(parseJson(text))
+  const body = parseClipped(text) ?? {}
   let number = String(body.number || '').trim()
   let refKey = String(body.ref_key || body.erp_document_id || '').trim()
   if (!number && !refKey) {
@@ -197,13 +216,13 @@ export function usePlatformRun(sessionId: string): PlatformRunView {
       const error = failed(event)
       const done = event.status !== '' && event.status !== 'running'
       const args = event.name === 'mcp' ? asObject(asObject(parseJson(event.args)).args) : asObject(parseJson(event.args))
-      const parsed = done && !error && event.name === 'mcp' ? parseJson(resultText(event)) : null
-      const result = parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? (parsed as Record<string, unknown>) : null
+      const result = done && !error && event.name === 'mcp' ? parseClipped(resultText(event)) : null
       steps.push({ id: `${event.seq}`, tool, done, error, args, result })
       if (tool === 'onec.meeting_protocol_write' && done && !error) protocol = protocolFrom(event) ?? protocol
     }
     const status = session?.status ?? ''
     return {
+      sessionId: session?.id ?? '',
       status,
       running: Boolean(sessionId) && (!session || status === 'running'),
       error: session?.error || (status === 'error' ? 'Запуск завершился с ошибкой' : '') || loadError,

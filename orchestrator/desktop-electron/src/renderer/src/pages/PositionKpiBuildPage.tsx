@@ -279,7 +279,7 @@ export function PositionKpiBuildPage({
             {'\u2039'} Назад
           </button>
           <h1 className="page-title" style={{ fontSize: 24 }}>
-            Модули расчёта KPI
+            Расчёт методики
           </h1>
         </div>
         <div className="regchat-subtitle">
@@ -300,8 +300,8 @@ export function PositionKpiBuildPage({
         <div className="regchat-scroll" ref={scrollRef}>
           {visible.length === 0 && !busy ? (
             <div className="regchat-hint">
-              KPI утверждены Finance. Агент сразу пишет модули расчёта: по одному на показатель,
-              с тестами, и подключает их к ежедневному подсчёту.
+              Методика вашей должности уже в профиле. Агент считает только её: пишет недостающие
+              модули и подключает их к ежедневному подсчёту. Другие должности не трогает.
             </div>
           ) : null}
           {visible.map((message) => {

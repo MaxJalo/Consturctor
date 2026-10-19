@@ -33,6 +33,15 @@ class LoginResponse(BaseModel):
     user: UserOut
 
 
+class DesktopHandoffResponse(BaseModel):
+    code: str
+    url: str
+
+
+class DesktopHandoffRedeemRequest(BaseModel):
+    code: str = Field(..., min_length=16, max_length=128)
+
+
 class UserFioListResponse(BaseModel):
     items: list[str]
 

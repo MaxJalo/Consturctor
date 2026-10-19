@@ -7,13 +7,19 @@ import { MarkdownBody } from '../../components/agentfeed/MarkdownBody'
 import type { FeedItem, ToolItem } from '../../components/agentfeed/types'
 import { isInFlightRunStatus } from '../../store/liveRun'
 import {
+  buildSpeakerMessage,
   buildSupplementMessage,
+  buildTranscribeOnlyMessage,
   PROTOCOL_AUDIO_EXTENSIONS,
-  resolveProtocolAgentWorkflowId
+  resolveProtocolAgentWorkflowId,
+  resolveSpeakerAgentWorkflowId,
+  type ExistingProtocol,
+  type IdentifiedTranscript
 } from '../../workplace/meetingProtocolAgent'
 import type { ProtocolRow } from '../../workplace/fetchDocflowProtocols'
 import {
   decidePlatformApproval,
+  lastPlatformResult,
   startPlatformProtocolRun,
   uploadRunAudio,
   usePlatformRun,
@@ -23,6 +29,7 @@ import {
   audioMarkTitle,
   forgetProtocolAudio,
   markAudioNames,
+  patchProtocolAudio,
   rememberProtocolAudio,
   saveProtocolAudioBackendRun,
   saveProtocolAudioResult,
@@ -106,17 +113,21 @@ function feedResult(items: FeedItem[], error: string, finished: boolean): Protoc
   }
 }
 
-/** То же по сессии платформы агентов (конфигурация 2). */
-function platformResult(run: PlatformRunView): ProtocolAudioResult {
+function transcriptOf(result: Record<string, unknown> | null): ProtocolAudioMark['transcript'] {
+  const path = String(result?.transcript_path || '').trim()
+  if (!path) return undefined
+  return { name: String(result?.filename || ''), path, durationSec: Number(result?.duration_sec) || 0 }
+}
+
+/** То же по сессии платформы агентов (конфигурация 2). Расшифровка из первого этапа берётся из отметки. */
+function platformResult(run: PlatformRunView, mark?: ProtocolAudioMark): ProtocolAudioResult {
   const done = run.steps.filter((step) => step.done)
+  const own = done
+    .filter((step) => step.tool === 'audio.transcribe')
+    .map((step) => transcriptOf(step.result))
+    .filter((item): item is NonNullable<typeof item> => Boolean(item))
   return {
-    transcripts: done
-      .filter((step) => step.tool === 'audio.transcribe' && step.result?.transcript_path)
-      .map((step) => ({
-        name: String(step.result?.filename || ''),
-        path: String(step.result?.transcript_path || ''),
-        durationSec: Number(step.result?.duration_sec) || 0
-      })),
+    transcripts: own.length ? own : mark?.transcript ? [mark.transcript] : [],
     changes: done
       .filter((step) => step.tool === 'onec.meeting_protocol_write')
       .map((step) => ({
@@ -126,8 +137,80 @@ function platformResult(run: PlatformRunView): ProtocolAudioResult {
         error: step.error
       })),
     explanation: run.answer,
-    error: run.error,
+    error: run.error || mark?.chainError || '',
     finished: !run.running
+  }
+}
+
+type ProtocolCard = { number?: string; editable?: boolean; form: Record<string, unknown> }
+
+async function readProtocolCard(refKey: string): Promise<ProtocolCard> {
+  const res = await api.invokeServerTool('onec.meeting_protocols', { ref_key: refKey }, 90_000)
+  const card = (res.ok && res.result && typeof res.result === 'object'
+    ? (res.result as { protocol?: Record<string, unknown> }).protocol
+    : undefined) as Partial<ProtocolCard> | undefined
+  if (!card?.form) throw new Error(res.error || 'Не удалось прочитать протокол из 1С')
+  return { ...card, form: card.form }
+}
+
+function existingProtocol(card: ProtocolCard, row: ProtocolRow): ExistingProtocol {
+  return { number: String(card.number || row.number), refKey: row.id, editable: card.editable !== false, form: card.form }
+}
+
+/** Присутствующие, руководитель и ответственный протокола 1С — люди, чьи голоса могут быть в записи. */
+function cardPeople(form: Record<string, unknown>): string[] {
+  const listed = Array.isArray(form.participants) ? form.participants : []
+  const names = [...listed, form.leader, form.responsible].map((value) => (typeof value === 'string' ? value.trim() : ''))
+  return [...new Set(names.filter(Boolean))]
+}
+
+function rosterLines(value: unknown): string {
+  return rows(value)
+    .map((row) => {
+      const fio = String(row.fio || '').trim()
+      const label = String(row.label || '').trim()
+      const speaker = String(row.speaker || '').trim()
+      if (!fio) return ''
+      return label && label !== fio ? `${label} — ${fio} (был ${speaker})` : `${speaker} — ${fio}`
+    })
+    .filter(Boolean)
+    .join('\n')
+}
+
+/**
+ * ФИО, которые предложил агент говорящих, подставляются в расшифровку инициалами.
+ * Отпечатки голосов в банк не пишутся: это догадка агента, человек её не проверял.
+ */
+async function applyProposedSpeakers(transcriptId: string): Promise<IdentifiedTranscript> {
+  const spoken = await api.invokeServerTool('audio.speakers', { transcript_id: transcriptId }, 60_000)
+  if (!spoken.ok) throw new Error(spoken.error || 'Не удалось прочитать голоса расшифровки')
+  const payload = (spoken.result || {}) as { transcript_path?: string; voices?: unknown }
+  const named = rows(payload.voices).filter((voice) => String(voice.fio || '').trim())
+  const unnamed = 'Остальные голоса не определены: в протоколе оставляй метки «Голос N».'
+  if (!named.length) {
+    return { transcriptId, transcriptPath: String(payload.transcript_path || ''), roster: unnamed }
+  }
+  const bound = await api.invokeServerTool(
+    'audio.bind_speakers',
+    {
+      transcript_id: transcriptId,
+      voices: named.map((voice) => ({
+        speaker: String(voice.speaker || ''),
+        fio: String(voice.fio || '').trim(),
+        user_id: String(voice.user_id || '')
+      })),
+      save_voices: false,
+      initials: true
+    },
+    60_000
+  )
+  if (!bound.ok) throw new Error(bound.error || 'Не удалось подставить ФИО в расшифровку')
+  const result = (bound.result || {}) as { transcript_path?: string; people?: unknown }
+  const roster = rosterLines(result.people)
+  return {
+    transcriptId,
+    transcriptPath: String(result.transcript_path || payload.transcript_path || ''),
+    roster: named.length < rows(payload.voices).length ? `${roster}\n${unnamed}` : roster
   }
 }
 
@@ -215,11 +298,11 @@ function AudioRunSection(props: SectionProps): React.JSX.Element {
 function PlatformAudioRun({ protocolId, mark, open, onToggle }: SectionProps): React.JSX.Element {
   const run = usePlatformRun(mark.platformSessionId || '')
   const [progressOpen, setProgressOpen] = useState(false)
-  const loaded = Boolean(run.status)
-  const result = loaded ? platformResult(run) : mark.result
+  const loaded = Boolean(run.status) && run.sessionId === mark.platformSessionId
+  const result = loaded ? platformResult(run, mark) : mark.result
   useEffect(() => {
-    if (loaded) saveProtocolAudioResult(protocolId, mark.runId, platformResult(run))
-  }, [loaded, mark.runId, protocolId, run])
+    if (loaded) saveProtocolAudioResult(protocolId, mark.runId, platformResult(run, mark))
+  }, [loaded, mark, protocolId, run])
   return (
     <>
       <AudioRunBody
@@ -436,8 +519,10 @@ export function ProtocolAudioBadge({ row }: { row: Pick<ProtocolRow, 'id' | 'com
 }
 
 /**
- * «Дополнить из аудио» / «Догрузить ГС»: агент протоколов на платформе (конфигурация 2) расшифровывает
- * запись инструментом audio.transcribe, дописывает задачи и проверяет по записи их выполнение.
+ * «Дополнить из аудио» / «Догрузить ГС» на платформе агентов (конфигурация 2). Одна запись идёт тремя
+ * запусками: расшифровка audio.transcribe → агент говорящих (голос → сотрудник по базе и контексту,
+ * в репликах инициалы) → агент протоколов дописывает задачи и проверяет выполнение. Несколько ГС —
+ * одним запуском агента протоколов, он расшифровывает каждое сам.
  */
 export function ProtocolAudioSupplement({
   row,
@@ -456,7 +541,9 @@ export function ProtocolAudioSupplement({
   const last = own.at(-1)
   const sessionId = last?.platformSessionId || ''
   const run = usePlatformRun(sessionId)
-  const live = Boolean(sessionId) && run.running
+  const stage = last?.stage
+  const chained = Boolean(sessionId) && (stage === 'transcribe' || stage === 'speakers') && !last?.chainError
+  const live = (Boolean(sessionId) && run.running) || chained
   const wasLive = useRef(false)
 
   useEffect(() => {
@@ -464,9 +551,65 @@ export function ProtocolAudioSupplement({
     wasLive.current = live
   }, [live, onFinished])
 
+  const current = Boolean(sessionId) && run.sessionId === sessionId
   useEffect(() => {
-    if (sessionId && last?.runId && run.status) saveProtocolAudioResult(row.id, last.runId, platformResult(run))
-  }, [last?.runId, row.id, run, sessionId])
+    if (current && last?.runId && run.status) saveProtocolAudioResult(row.id, last.runId, platformResult(run, last))
+  }, [current, last, row.id, run])
+
+  const chainKey = useRef('')
+  useEffect(() => {
+    if (!last || !chained || !current || run.running || !run.status) return
+    const key = `${stage}:${sessionId}`
+    if (chainKey.current === key) return
+    chainKey.current = key
+    const fail = (err: unknown): void =>
+      patchProtocolAudio(row.id, last.at, {
+        chainError: err instanceof Error ? err.message : 'Не удалось передать запись следующему агенту'
+      })
+    if (stage === 'transcribe') {
+      void (async () => {
+        if (run.status !== 'finished') throw new Error(run.error || 'Расшифровка остановлена')
+        const result = lastPlatformResult(run.steps, 'audio.transcribe')
+        const transcriptId = String(result?.transcript_id || '').trim()
+        if (!transcriptId) throw new Error('Агент закончил без расшифровки — подробности в «Ход работы»')
+        const known = rows(result?.known_speakers)
+          .map((item) => `${item.speaker} — ${item.fio}`)
+          .join('\n')
+        const speakerWorkflow = await resolveSpeakerAgentWorkflowId()
+        const next = await startPlatformProtocolRun(
+          speakerWorkflow,
+          buildSpeakerMessage(transcriptId, null, known, last.participants || [])
+        )
+        patchProtocolAudio(row.id, last.at, {
+          stage: 'speakers',
+          platformSessionId: next,
+          transcriptId,
+          transcript: transcriptOf(result)
+        })
+      })().catch(fail)
+      return
+    }
+    void (async () => {
+      const transcriptId = (last.transcriptId || '').trim()
+      if (!transcriptId) throw new Error('Нет расшифровки для протокола')
+      // Агент говорящих мог упасть или ничего не предложить — протокол всё равно дописываем по меткам голосов.
+      const identified = await applyProposedSpeakers(transcriptId)
+      const card = await readProtocolCard(row.id)
+      const workflowId = await resolveProtocolAgentWorkflowId()
+      const message = buildSupplementMessage(null, last.audioPath || '', existingProtocol(card, row), {
+        extra: last.extra,
+        previousAudio: own.slice(0, -1).flatMap(markAudioNames),
+        identified
+      })
+      const next = await startPlatformProtocolRun(workflowId, message)
+      patchProtocolAudio(row.id, last.at, {
+        stage: 'protocol',
+        platformSessionId: next,
+        workflowId,
+        transcript: last.transcript && identified.transcriptPath ? { ...last.transcript, path: identified.transcriptPath } : last.transcript
+      })
+    })().catch(fail)
+  }, [chained, current, last, own, row, run, sessionId, stage])
 
   const decide = async (allow: boolean): Promise<void> => {
     if (!sessionId || !run.approval || deciding) return
@@ -492,26 +635,20 @@ export function ProtocolAudioSupplement({
       })
       const audioPaths = (paths || []).filter(Boolean)
       if (!audioPaths.length) return
-      const res = await api.invokeServerTool('onec.meeting_protocols', { ref_key: row.id }, 90_000)
-      const card = (res.ok && res.result && typeof res.result === 'object'
-        ? (res.result as { protocol?: Record<string, unknown> }).protocol
-        : undefined) as { number?: string; editable?: boolean; form?: Record<string, unknown> } | undefined
-      if (!card?.form) throw new Error(res.error || 'Не удалось прочитать протокол из 1С')
+      const card = await readProtocolCard(row.id)
       const workflowId = await resolveProtocolAgentWorkflowId()
       setBusy('Загрузка аудио…')
       const files = await uploadRunAudio(workflowId, audioPaths)
       setBusy('Запуск…')
-      const message = buildSupplementMessage(
-        null,
-        audioPaths,
-        {
-          number: String(card.number || row.number),
-          refKey: row.id,
-          editable: card.editable !== false,
-          form: card.form
-        },
-        { extra, previousAudio: own.flatMap(markAudioNames), files }
-      )
+      const single = audioPaths.length === 1
+      const people = cardPeople(card.form)
+      const message = single
+        ? buildTranscribeOnlyMessage(null, audioPaths[0], files, people)
+        : buildSupplementMessage(null, audioPaths, existingProtocol(card, row), {
+            extra,
+            previousAudio: own.flatMap(markAudioNames),
+            files
+          })
       const platformSessionId = await startPlatformProtocolRun(workflowId, message)
       const names = audioPaths.map(basename)
       rememberProtocolAudio({
@@ -523,8 +660,9 @@ export function ProtocolAudioSupplement({
         workflowId,
         runId: platformSessionId,
         at: new Date().toISOString(),
-        stage: 'protocol',
-        platformSessionId
+        stage: single ? 'transcribe' : 'protocol',
+        platformSessionId,
+        participants: people
       })
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Не удалось запустить агента по аудиозаписи')
@@ -537,9 +675,12 @@ export function ProtocolAudioSupplement({
     ? 'Ждёт вашего разрешения'
     : run.question
       ? 'Агент задал вопрос'
-      : run.steps.some((step) => step.tool === 'audio.transcribe' && !step.done)
+      : stage === 'transcribe' || run.steps.some((step) => step.tool === 'audio.transcribe' && !step.done)
         ? 'Расшифровка записи…'
-        : 'Агент работает…'
+        : stage === 'speakers'
+          ? 'Определение говорящих…'
+          : 'Агент дополняет протокол…'
+  const chainError = last?.chainError || ''
   return (
     <div className="docflow-audio-row">
       <div className="docflow-audio-actions">
@@ -624,7 +765,9 @@ export function ProtocolAudioSupplement({
           ) : null}
         </div>
       ) : null}
-      {last?.result?.error && !live ? <p className="meeting-protocol-error">{last.result.error}</p> : null}
+      {!live && (chainError || last?.result?.error) ? (
+        <p className="meeting-protocol-error">{chainError || last?.result?.error}</p>
+      ) : null}
       {progressOpen && sessionId ? <PlatformRunDialog sessionId={sessionId} onClose={() => setProgressOpen(false)} /> : null}
       {reportOpen ? (
         <ProtocolAudioReport protocolId={row.id} number={row.number} marks={own} onClose={() => setReportOpen(false)} />

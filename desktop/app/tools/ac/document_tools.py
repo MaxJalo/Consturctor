@@ -107,6 +107,16 @@ class ReportExportDocumentTool(BaseTool):
                                 "Текст расшифровки в sections не передавай."
                             ),
                         },
+                        "append": {
+                            "type": "boolean",
+                            "description": (
+                                "true — дописать sections в конец файла с тем же filename, "
+                                "созданного этим инструментом раньше в этом запуске "
+                                "(title/summary/kpis берутся из первого вызова). Большой отчёт "
+                                "пиши частями: первый вызов — сводка, следующие — append=true "
+                                "по нескольку разделов. Один огромный вызов обрывается."
+                            ),
+                        },
                     },
                     "required": ["filename"],
                 },
@@ -149,6 +159,34 @@ class ReportExportDocumentTool(BaseTool):
                 "REPORT_EMPTY",
                 "Нет данных для отчёта: заполни summary/sections по собранным данным.",
             )
+
+        state_path = workspace.directory / "materials" / "reports" / f"{stem}.json"
+        if bool(input_data.get("append")):
+            previous = _load_report_state(state_path)
+            if previous is None:
+                return self._fail(
+                    "APPEND_WITHOUT_REPORT",
+                    f"Нет начатого отчёта {stem}: сначала вызови без append, тем же filename.",
+                )
+            title = previous.get("title") or title
+            summary = previous.get("summary") or summary
+            kpis = previous.get("kpis") or kpis
+            theme = previous.get("theme") or theme
+            headers = previous.get("headers") or headers
+            rows = previous.get("rows") or rows
+            sections = [*previous.get("sections", []), *sections]
+        _save_report_state(
+            state_path,
+            {
+                "title": title,
+                "summary": summary,
+                "kpis": kpis,
+                "theme": theme,
+                "headers": headers,
+                "rows": rows,
+                "sections": sections,
+            },
+        )
 
         use_docx = want != "md" and _docx_available()
         try:
@@ -260,6 +298,26 @@ def _load_transcript(transcript_path: str) -> str:
     if not text:
         raise RuntimeError("Расшифровка по transcript_path не найдена на сервере")
     return text
+
+
+def _load_report_state(path: Path) -> dict[str, Any] | None:
+    import json
+
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def _save_report_state(path: Path, state: dict[str, Any]) -> None:
+    import json
+
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(state, ensure_ascii=False), encoding="utf-8")
+    except OSError:
+        pass
 
 
 def _docx_available() -> bool:

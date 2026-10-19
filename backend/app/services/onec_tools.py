@@ -19,7 +19,9 @@ from app.services.docflow_tasks import (
     stub_docflow_tasks as _stub_docflow_tasks,
 )
 from app.services.docflow_task_action import (
+    handle_docflow_rework as _docflow_rework,
     handle_docflow_task_action as _docflow_task_action,
+    stub_docflow_rework as _stub_docflow_rework,
     stub_docflow_task_action as _stub_docflow_task_action,
 )
 from app.services.docflow_create import (
@@ -211,6 +213,7 @@ ONEC_TOOLS = frozenset(
         "onec.erp_write_probe",
         "onec.docflow_tasks",
         "onec.docflow_task_action",
+        "onec.docflow_rework",
         "onec.docflow_create",
         "onec.docflow_memos",
         "onec.docflow_memo_card",
@@ -241,6 +244,7 @@ ONEC_WRITE_TOOLS = ONEC_ODATA_WRITE_TOOLS | frozenset(
         "onec.erp_assignments_write",
         "onec.incoming_correspondence_write",
         "onec.docflow_task_action",
+        "onec.docflow_rework",
         "onec.docflow_create",
         "onec.meeting_protocol_write",
         "onec.docflow_document_create",
@@ -257,6 +261,7 @@ _JWT_ONEC_TOOLS = _ERP_TASK_TOOLS | {
     "onec.erp_tasks_odata",
     "onec.docflow_tasks",
     "onec.docflow_task_action",
+    "onec.docflow_rework",
     "onec.docflow_create",
     "onec.erp_write_probe",
     "onec.meeting_protocol_write",
@@ -378,6 +383,7 @@ def invoke_onec(
             **handlers,
             "onec.docflow_tasks": REAL_HANDLERS["onec.docflow_tasks"],
             "onec.docflow_task_action": REAL_HANDLERS["onec.docflow_task_action"],
+            "onec.docflow_rework": REAL_HANDLERS["onec.docflow_rework"],
             "onec.docflow_create": REAL_HANDLERS["onec.docflow_create"],
         }
     handler = handlers.get(tool)
@@ -1662,6 +1668,7 @@ STUB_HANDLERS = {
     "onec.erp_write_probe": _stub_erp_write_probe,
     "onec.docflow_tasks": _stub_docflow_tasks,
     "onec.docflow_task_action": _stub_docflow_task_action,
+    "onec.docflow_rework": _stub_docflow_rework,
     "onec.docflow_create": _stub_docflow_create,
     "onec.docflow_memos": _docflow_memos,
     "onec.docflow_memo_card": _docflow_memo_card,
@@ -1700,6 +1707,7 @@ REAL_HANDLERS = {
     "onec.erp_write_probe": _erp_write_probe,
     "onec.docflow_tasks": _docflow_tasks,
     "onec.docflow_task_action": _docflow_task_action,
+    "onec.docflow_rework": _docflow_rework,
     "onec.docflow_create": _docflow_create,
     "onec.docflow_memos": _docflow_memos,
     "onec.docflow_memo_card": _docflow_memo_card,

@@ -145,6 +145,19 @@ const api = {
       ipcRenderer.removeListener('session:kicked', listener)
     }
   },
+  consumeHandoff: (): Promise<string> => ipcRenderer.invoke('session:consumeHandoff'),
+  takeHandoffPassword: (): Promise<{ login: string; password: string } | null> =>
+    ipcRenderer.invoke('session:takeHandoffPassword'),
+  ackHandoff: (code: string): Promise<{ ok: boolean }> => ipcRenderer.invoke('session:ackHandoff', code),
+  onSessionHandoff: (callback: (code: string) => void): (() => void) => {
+    const listener = (_event: unknown, code: string): void => {
+      callback(String(code || ''))
+    }
+    ipcRenderer.on('session:handoff', listener)
+    return () => {
+      ipcRenderer.removeListener('session:handoff', listener)
+    }
+  },
   onChatEvent: (callback: (payload: Record<string, unknown>) => void): (() => void) => {
     const listener = (_event: unknown, payload: Record<string, unknown>): void => {
       callback(payload)

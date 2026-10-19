@@ -289,6 +289,15 @@ GROUPS: list[PassportGroup] = [
                 title="Привязка голосов к сотрудникам",
                 requires=["Расшифровка audio.transcribe на сервере Constructor"],
             ),
+            Passport(
+                "audio.propose_speakers",
+                summary=(
+                    "Сохраняет предложение агента «Голос N» → ФИО для расшифровки. В базу отпечатков "
+                    "и в 1С не пишет: список проверяет автор."
+                ),
+                title="Предложение говорящих",
+                requires=["Расшифровка audio.transcribe на сервере Constructor"],
+            ),
         ],
     ),
     PassportGroup(

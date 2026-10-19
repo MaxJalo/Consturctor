@@ -62,7 +62,10 @@ class CursorSdkUnavailable(CursorSdkError):
     pass
 
 
+RUNNER_CRASH_PREFIX = "Процесс Cursor SDK аварийно завершился"
+
 _TRANSIENT_SDK_MARKERS = (
+    RUNNER_CRASH_PREFIX.casefold(),
     "network request failed",
     "cursor sdk run failed",
     "econnreset",
@@ -78,6 +81,36 @@ _TRANSIENT_SDK_MARKERS = (
 def is_transient_cursor_error(exc: BaseException | str) -> bool:
     blob = str(exc or "").casefold()
     return any(token in blob for token in _TRANSIENT_SDK_MARKERS)
+
+
+_NATIVE_FRAME = re.compile(r"^\s*\d+:\s+[0-9A-Fa-f]{8,}\b")
+
+
+def runner_stderr_reason(lines: list[str]) -> str:
+    """Readable reason from runner stderr; a native Node crash keeps its cause above the frames."""
+    rows = [line.rstrip() for line in lines if line and line.strip()]
+    if not rows:
+        return ""
+    tail = rows[-20:]
+    frames = sum(1 for line in tail if _NATIVE_FRAME.match(line))
+    if frames * 2 < len(tail):
+        return "\n".join(tail)
+    head = [line.strip() for line in rows if not _NATIVE_FRAME.match(line)]
+    cause = "\n".join(head[:6]).strip() or "сбой Node.js без описания"
+    return f"{RUNNER_CRASH_PREFIX}: {cause}"
+
+
+def save_runner_stderr(run_id: str, lines: list[str]) -> Path | None:
+    if not any(line.strip() for line in lines):
+        return None
+    local = os.environ.get("LOCALAPPDATA") or str(Path.home())
+    path = Path(local) / "Constructor" / "logs" / f"sdk-runner-{run_id}.log"
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("\n".join(lines), encoding="utf-8")
+    except OSError:
+        return None
+    return path
 
 
 def cursor_sdk_error_text(
@@ -123,6 +156,129 @@ def is_complete_kpi_list_answer(text: str) -> bool:
 
 SdkEventCallback = Callable[[dict[str, Any]], None]
 
+_SDK_OWNER_ENV = "CONSTRUCTOR_SDK_OWNER"
+
+
+def _norm_cmd(text: str) -> str:
+    return text.replace("/", "\\").casefold()
+
+
+def foreign_runner_pids(
+    rows: list[tuple[int, int, str]],
+    *,
+    owner: str,
+    me: int,
+) -> list[int]:
+    """Pids of SDK runners that belong to a previous sidecar of this app, or to none.
+
+    A runner whose parent chain still reaches this process is kept. A runner
+    owned by another app (a different sidecar path) is kept too.
+    """
+    owner_norm = _norm_cmd(owner)
+    if not owner_norm:
+        return []
+    by_pid = {pid: (ppid, cmd) for pid, ppid, cmd in rows}
+    doomed: list[int] = []
+    seen: set[int] = set()
+    for pid, _ppid, cmd in rows:
+        folded = cmd.casefold()
+        if "runner.ts" not in folded or "sdk-agent" not in folded:
+            continue
+        kill_pid, sidecar_pid, sidecar_cmd = _runner_owner(pid, by_pid)
+        if kill_pid is None or sidecar_pid == me:
+            continue
+        if sidecar_pid and owner_norm not in _norm_cmd(sidecar_cmd):
+            continue
+        if kill_pid in seen:
+            continue
+        seen.add(kill_pid)
+        doomed.append(kill_pid)
+    return doomed
+
+
+def _runner_owner(
+    runner_pid: int, by_pid: dict[int, tuple[int, str]]
+) -> tuple[int | None, int, str]:
+    """Return (pid to kill, sidecar pid or 0, sidecar command)."""
+    seen: set[int] = set()
+    current = runner_pid
+    child_of_sidecar = runner_pid
+    while current and current not in seen:
+        seen.add(current)
+        row = by_pid.get(current)
+        if row is None:
+            return runner_pid, 0, ""
+        ppid, cmd = row
+        if "agent_sidecar.py" in cmd.casefold():
+            return child_of_sidecar, current, cmd
+        if ppid <= 0 or ppid == current or ppid not in by_pid:
+            return current, 0, ""
+        child_of_sidecar = current
+        current = ppid
+    return None, 0, ""
+
+
+def _kill_pid_tree(pid: int) -> None:
+    if not pid or pid == os.getpid():
+        return
+    if sys.platform != "win32":
+        try:
+            os.kill(pid, 15)
+        except OSError:
+            return
+        return
+    try:
+        subprocess.run(
+            ["taskkill", "/F", "/T", "/PID", str(pid)],
+            capture_output=True,
+            check=False,
+            timeout=15,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return
+
+
+def _win_process_rows() -> list[tuple[int, int, str]]:
+    script = (
+        "Get-CimInstance Win32_Process | "
+        "ForEach-Object { '{0}|{1}|{2}' -f $_.ProcessId, $_.ParentProcessId, "
+        "(($_.CommandLine) -replace '[\\r\\n|]', ' ') }"
+    )
+    try:
+        result = subprocess.run(
+            ["powershell", "-NoProfile", "-Command", script],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=20,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return []
+    rows: list[tuple[int, int, str]] = []
+    for line in (result.stdout or "").splitlines():
+        parts = line.split("|", 2)
+        if len(parts) != 3:
+            continue
+        try:
+            pid = int(parts[0])
+            ppid = int(parts[1])
+        except ValueError:
+            continue
+        rows.append((pid, ppid, parts[2]))
+    return rows
+
+
+def reap_foreign_sdk_runners() -> None:
+    """Drop model processes left behind by a replaced or killed sidecar."""
+    owner = os.environ.get(_SDK_OWNER_ENV, "").strip()
+    if sys.platform != "win32" or not owner:
+        return
+    rows = _win_process_rows()
+    for pid in foreign_runner_pids(rows, owner=owner, me=os.getpid()):
+        _kill_pid_tree(pid)
+
 
 class CursorSdkBridge:
     def __init__(self, *, node: str = "node", runner: Path | None = None) -> None:
@@ -137,6 +293,28 @@ class CursorSdkBridge:
         self._active_tool_names: dict[str, str] = {}
         self._tool_workers: list[threading.Thread] = []
         self._process: subprocess.Popen[str] | None = None
+
+    def close(self) -> None:
+        """Stop the SDK runner and the model process it spawned."""
+        self._kill_tree(self._process)
+
+    def _kill_tree(self, process: subprocess.Popen[str] | None) -> None:
+        if process is None or process.poll() is not None:
+            return
+        pid = process.pid
+        if sys.platform == "win32" and pid:
+            # tsx.cmd is cmd.exe. Killing only that pid leaves the node model running.
+            _kill_pid_tree(pid)
+            if process.poll() is None:
+                try:
+                    process.kill()
+                except OSError:
+                    return
+            return
+        try:
+            process.kill()
+        except OSError:
+            return
 
     def skip_tool(self, request_id: str = "") -> bool:
         rid = (request_id or "").strip()
@@ -308,6 +486,10 @@ class CursorSdkBridge:
             env=self._env(),
         )
         stderr_lines: list[str] = []
+        self._writes_action_tracker = tools is None or any(
+            isinstance(spec, dict) and spec.get("name") == "excel.write_action_tracker"
+            for spec in tools
+        )
         run_cwd = cwd or self._workspace_cwd(workflow_id)
         agent_id = resume_agent_id.strip()
         stderr_thread = threading.Thread(
@@ -317,6 +499,35 @@ class CursorSdkBridge:
         )
         stderr_thread.start()
         self._process = process
+
+        def stderr_reason() -> str:
+            stderr_thread.join(timeout=2)
+            reason = runner_stderr_reason(stderr_lines)
+            saved = save_runner_stderr(run_id, stderr_lines)
+            if saved is not None and reason.startswith(RUNNER_CRASH_PREFIX):
+                reason += f"\nПолный вывод: {saved}"
+            return reason
+
+        if should_stop is not None:
+            def _watch_stop() -> None:
+                # The stdout loop only notices a stop when the next line arrives.
+                # A model waiting on the network emits nothing, so the previous
+                # runner has to be killed from here or it stays beside the next one.
+                while process.poll() is None:
+                    try:
+                        stopped = bool(should_stop())
+                    except Exception:
+                        return
+                    if stopped:
+                        self._kill_tree(process)
+                        return
+                    time.sleep(0.4)
+
+            threading.Thread(
+                target=_watch_stop,
+                name="sdk-stop-watch",
+                daemon=True,
+            ).start()
         try:
             final: dict[str, Any] | None = None
             interview = mode == "interview"
@@ -382,9 +593,7 @@ class CursorSdkBridge:
                     process.wait(timeout=5)
                 except subprocess.TimeoutExpired:
                     pass
-                stderr_thread.join(timeout=2)
-                err = "\n".join(stderr_lines[-20:]).strip()
-                raise CursorSdkError(err or str(exc)) from exc
+                raise CursorSdkError(stderr_reason() or str(exc)) from exc
             assert process.stdout is not None
             # "assistant" events are raw stream deltas of one message: join them
             # as-is (no strip / separators) or words get split in half.
@@ -425,7 +634,7 @@ class CursorSdkBridge:
                         self._send(process, {"type": "cancel", "id": run_id})
                     except CursorSdkError:
                         pass
-                    process.kill()
+                    self._kill_tree(process)
                     return {
                         "answer": collected_answer(),
                         "status": "ok",
@@ -466,7 +675,7 @@ class CursorSdkBridge:
                         self._send(process, {"type": "cancel", "id": run_id})
                     except CursorSdkError:
                         pass
-                    process.kill()
+                    self._kill_tree(process)
                     return {
                         "answer": collected_answer(),
                         "status": "ok",
@@ -476,7 +685,7 @@ class CursorSdkBridge:
             try:
                 process.wait(timeout=8)
             except subprocess.TimeoutExpired:
-                process.kill()
+                self._kill_tree(process)
             if final is None:
                 collected = collected_answer()
                 if collected:
@@ -486,8 +695,9 @@ class CursorSdkBridge:
                         "run_id": run_id,
                         "agent_id": agent_id,
                     }
-                err = "\n".join(stderr_lines[-20:]).strip()
-                raise CursorSdkError(err or "Cursor SDK runner завершился без результата")
+                raise CursorSdkError(
+                    stderr_reason() or "Cursor SDK runner завершился без результата"
+                )
             status = str(final.get("status") or "")
             answer = (
                 str(final.get("answer") or "")
@@ -511,7 +721,7 @@ class CursorSdkBridge:
                         status=status,
                         answer=answer,
                         error_events=error_events,
-                        stderr="\n".join(stderr_lines[-8:]),
+                        stderr=stderr_reason(),
                     )
                 )
             if mode == "run":
@@ -525,7 +735,7 @@ class CursorSdkBridge:
         finally:
             self._process = None
             if process.poll() is None:
-                process.kill()
+                self._kill_tree(process)
 
     def _ensure_ready(self) -> None:
         reload_cursor_api_key()
@@ -893,8 +1103,10 @@ class CursorSdkBridge:
         raw_bytes = len(raw.encode("utf-8", errors="replace"))
         if result.get("externalized") and isinstance(result.get("result_file"), str):
             return result
-        journal_extract = tool in {"onec.erp_assignments", "onec.meeting_protocols"} and not result.get(
-            "error"
+        journal_extract = (
+            tool in {"onec.erp_assignments", "onec.meeting_protocols"}
+            and not result.get("error")
+            and getattr(self, "_writes_action_tracker", True)
         )
         if not journal_extract and not self._should_externalize_result(result, raw_bytes):
             return result
@@ -910,7 +1122,7 @@ class CursorSdkBridge:
         target.write_text(raw, encoding="utf-8")
         rel_path = target.relative_to(base).as_posix()
         next_step = EXTERNALIZED_NEXT_STEP
-        if tool in {"onec.erp_assignments", "onec.meeting_protocols"}:
+        if journal_extract:
             next_step = (
                 "Не читай result_file и не открывай tool_results. "
                 "После обеих выборок один раз вызови excel.write_action_tracker "
