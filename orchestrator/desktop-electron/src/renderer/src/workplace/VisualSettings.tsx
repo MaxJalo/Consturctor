@@ -1,14 +1,12 @@
-import { useEffect, useMemo, useState } from 'react'
+import { Trash2 } from 'lucide-react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import type { LayoutItem } from 'react-grid-layout/legacy'
 import type { UserProfile } from '../api/types'
 import { isIlchenkoAccount } from './boardReportReadiness'
 import {
-  defaultTodayTileVisibility,
-  defaultTodayWidgetVisibility,
   readTodayTileOrder,
   readTodayTileVisibility,
   readTodayWidgetVisibility,
-  TODAY_TILE_IDS,
   TODAY_TILE_LABELS,
   TODAY_WIDGET_IDS,
   TODAY_WIDGET_LABELS,
@@ -18,6 +16,11 @@ import {
   writeTodayTileVisibility,
   writeTodayWidgetVisibility
 } from '../tabs/grid/todayWidgetSettings'
+import {
+  DEFAULT_TODAY_WIDGET_LAYOUT,
+  readTodayWidgetLayoutSettings,
+  writeTodayWidgetLayoutSettings
+} from '../tabs/grid/useTodayWidgetLayout'
 import { tabChromeGridDimensions } from '../tabs/grid/tabLayouts'
 import {
   readVisualDraft,
@@ -49,6 +52,8 @@ export function VisualSettings({ user }: { user: UserProfile }): React.JSX.Eleme
   const [tileDraft, setTileDraft] = useState(() => readTodayTileVisibility(user.id))
   const [tileOrder, setTileOrder] = useState(() => readTodayTileOrder(user.id))
   const [tileOrderDraft, setTileOrderDraft] = useState(() => readTodayTileOrder(user.id))
+  const [todayLayout, setTodayLayout] = useState(() => readTodayWidgetLayoutSettings(user.id))
+  const [todayLayoutSaved, setTodayLayoutSaved] = useState(() => readTodayWidgetLayoutSettings(user.id))
   const [note, setNote] = useState('')
 
   useEffect(() => {
@@ -64,6 +69,9 @@ export function VisualSettings({ user }: { user: UserProfile }): React.JSX.Eleme
     const order = readTodayTileOrder(user.id)
     setTileOrder(order)
     setTileOrderDraft(order)
+    const layout = readTodayWidgetLayoutSettings(user.id)
+    setTodayLayout(layout)
+    setTodayLayoutSaved(layout)
   }, [user.id])
 
   useEffect(() => {
@@ -81,34 +89,40 @@ export function VisualSettings({ user }: { user: UserProfile }): React.JSX.Eleme
       tabsDirty ||
       JSON.stringify(widgetDraft) !== JSON.stringify(widgetVisibility) ||
       JSON.stringify(tileDraft) !== JSON.stringify(tileVisibility) ||
-      JSON.stringify(tileOrderDraft) !== JSON.stringify(tileOrder)
+      JSON.stringify(tileOrderDraft) !== JSON.stringify(tileOrder) ||
+      JSON.stringify(todayLayout) !== JSON.stringify(todayLayoutSaved)
     )
-  }, [drafts, saved, widgetDraft, widgetVisibility, tileDraft, tileVisibility, tileOrderDraft, tileOrder])
+  }, [
+    drafts,
+    saved,
+    widgetDraft,
+    widgetVisibility,
+    tileDraft,
+    tileVisibility,
+    tileOrderDraft,
+    tileOrder,
+    todayLayout,
+    todayLayoutSaved
+  ])
 
   function patchDraft(tabKey: string, next: VisualDraft): void {
     setDrafts((prev) => ({ ...prev, [tabKey]: next }))
   }
 
-  function moveWidget(id: string, direction: -1 | 1): void {
-    const order = [...draft.layout].sort((left, right) => left.y - right.y || left.x - right.x)
-    const index = order.findIndex((item) => item.i === id)
-    const target = index + direction
-    if (index < 0 || target < 0 || target >= order.length) return
-    const current = order[index]
-    const other = order[target]
-    order[index] = { ...current, x: other.x, y: other.y }
-    order[target] = { ...other, x: current.x, y: current.y }
-    patchDraft(tab.id, { ...draft, layout: order })
-  }
-
-  function resizeWidget(id: string, axis: 'w' | 'h', delta: number): void {
+  function placeWidget(id: string, x: number, y: number, w?: number, h?: number): void {
+    if (!draft) return
     const { cols, maxRows } = tabChromeGridDimensions(tab.id)
     const layout = draft.layout.map((item) => {
       if (item.i !== id) return item
-      const limit = axis === 'w' ? cols - item.x : maxRows - item.y
-      const min = axis === 'w' ? item.minW ?? 1 : item.minH ?? 1
-      const max = Math.min(axis === 'w' ? item.maxW ?? cols : item.maxH ?? maxRows, limit)
-      return { ...item, [axis]: Math.max(min, Math.min(max, item[axis] + delta)) }
+      const nextW = Math.max(item.minW ?? 1, Math.min(item.maxW ?? cols, w ?? item.w))
+      const nextH = Math.max(item.minH ?? 1, Math.min(item.maxH ?? maxRows, h ?? item.h))
+      return {
+        ...item,
+        w: nextW,
+        h: nextH,
+        x: Math.max(0, Math.min(cols - nextW, x)),
+        y: Math.max(0, Math.min(maxRows - nextH, y))
+      }
     })
     patchDraft(tab.id, { ...draft, layout })
   }
@@ -121,33 +135,34 @@ export function VisualSettings({ user }: { user: UserProfile }): React.JSX.Eleme
     })
   }
 
-  function setColor(id: string, color: string): void {
-    const current = draft.meta[id]
-    patchDraft(tab.id, {
-      ...draft,
-      meta: { ...draft.meta, [id]: { ...current, color } }
-    })
+  function placeToday(id: string, x: number, y: number, w?: number, h?: number): void {
+    const { cols, maxRows } = tabChromeGridDimensions('today')
+    setTodayLayout((current) =>
+      current.map((item) => {
+        if (item.i !== id) return item
+        const nextW = Math.max(item.minW ?? 1, Math.min(item.maxW ?? cols, w ?? item.w))
+        const nextH = Math.max(item.minH ?? 1, Math.min(item.maxH ?? maxRows, h ?? item.h))
+        return {
+          ...item,
+          w: nextW,
+          h: nextH,
+          x: Math.max(0, Math.min(cols - nextW, x)),
+          y: Math.max(0, Math.min(maxRows - nextH, y))
+        }
+      })
+    )
   }
 
   function resetTab(): void {
+    if (tabId === 'today') {
+      setTodayLayout(DEFAULT_TODAY_WIDGET_LAYOUT.map((item) => ({ ...item })))
+      return
+    }
     patchDraft(tab.id, {
       layout: tab.defaults.map((item) => ({ ...item })),
       meta: Object.fromEntries(
         tab.defaults.map((item) => [item.i, { visible: true, color: '', locked: false, binned: false }])
       )
-    })
-  }
-
-  function moveTile(id: TodayTileId, direction: -1 | 1): void {
-    setTileOrderDraft((current) => {
-      const index = current.indexOf(id)
-      const next = index + direction
-      if (index < 0 || next < 0 || next >= current.length) return current
-      const copy = [...current]
-      const swapped = copy[index]
-      copy[index] = copy[next]
-      copy[next] = swapped
-      return copy
     })
   }
 
@@ -159,6 +174,8 @@ export function VisualSettings({ user }: { user: UserProfile }): React.JSX.Eleme
       nextSaved[item.id] = value
     }
     setSaved(nextSaved)
+    writeTodayWidgetLayoutSettings(user.id, todayLayout)
+    setTodayLayoutSaved(todayLayout.map((item) => ({ ...item })))
     writeTodayWidgetVisibility(user.id, widgetDraft)
     setWidgetVisibility(widgetDraft)
     writeTodayTileVisibility(user.id, tileDraft)
@@ -169,11 +186,11 @@ export function VisualSettings({ user }: { user: UserProfile }): React.JSX.Eleme
     setNote('Внешний вид сохранён')
   }
 
-  const ordered = [...draft.layout].sort((left, right) => left.y - right.y || left.x - right.x)
+  const ordered = [...(draft?.layout ?? [])].sort((left, right) => left.y - right.y || left.x - right.x)
   const showAssignments = isIlchenkoAccount(user)
 
   return (
-    <div className="set-body">
+    <div className="set-body set-body-visual">
       <header className="set-head">
         <div>
           <h1 className="page-title">Визуал</h1>
@@ -216,116 +233,231 @@ export function VisualSettings({ user }: { user: UserProfile }): React.JSX.Eleme
 
       {tabId === 'today' ? (
         <TodayVisual
+          layout={todayLayout}
           widgetDraft={widgetDraft}
           tileDraft={tileDraft}
           tileOrderDraft={tileOrderDraft}
           showAssignments={showAssignments}
+          onMove={placeToday}
           onToggleWidget={(id) => setWidgetDraft((prev) => ({ ...prev, [id]: prev[id] === false }))}
           onToggleTile={(id) => setTileDraft((prev) => ({ ...prev, [id]: prev[id] === false }))}
-          onMoveTile={moveTile}
-          onReset={() => {
-            setWidgetDraft(defaultTodayWidgetVisibility())
-            setTileDraft(defaultTodayTileVisibility())
-            setTileOrderDraft([...TODAY_TILE_IDS])
-          }}
+          onReorderTiles={(from, to) =>
+            setTileOrderDraft((current) => {
+              const next = [...current]
+              const [moved] = next.splice(from, 1)
+              next.splice(to, 0, moved)
+              return next
+            })
+          }
         />
       ) : (
-        <section className="set-card set-visual-card">
+        <section className="set-card set-visual-card set-visual-fill">
           <h2>{tab.label}</h2>
-          <p className="set-muted">Пустые блоки показывают, как встанут виджеты. Данные на превью не загружаются.</p>
-          <TabPreview tab={tab} draft={draft} onPick={toggleWidget} />
-          <div className="set-visual-rows">
-            {ordered.map((item, index) => {
-              const on = draft.meta[item.i]?.visible !== false
-              const color = draft.meta[item.i]?.color || ''
-              return (
-                <div key={item.i} className={`set-visual-row${on ? '' : ' is-off'}`}>
-                  <button type="button" aria-label="Выше" disabled={index === 0} onClick={() => moveWidget(item.i, -1)}>
-                    ↑
-                  </button>
-                  <button
-                    type="button"
-                    aria-label="Ниже"
-                    disabled={index === ordered.length - 1}
-                    onClick={() => moveWidget(item.i, 1)}
-                  >
-                    ↓
-                  </button>
-                  <button
-                    type="button"
-                    className={`set-widget-toggle${on ? ' is-on' : ''}`}
-                    aria-pressed={on}
-                    onClick={() => toggleWidget(item.i)}
-                  >
-                    {visualWidgetLabel(tab, item.i)}
-                  </button>
-                  <span className="set-visual-size">
-                    <button type="button" onClick={() => resizeWidget(item.i, 'w', -1)} aria-label="Уже">
-                      −
-                    </button>
-                    <em>
-                      {item.w}×{item.h}
-                    </em>
-                    <button type="button" onClick={() => resizeWidget(item.i, 'w', 1)} aria-label="Шире">
-                      +
-                    </button>
-                    <button type="button" onClick={() => resizeWidget(item.i, 'h', -1)} aria-label="Ниже">
-                      −
-                    </button>
-                    <button type="button" onClick={() => resizeWidget(item.i, 'h', 1)} aria-label="Выше по высоте">
-                      +
-                    </button>
-                  </span>
-                  <label className="set-visual-color" title="Цвет виджета">
-                    <input
-                      type="color"
-                      value={color || '#ffffff'}
-                      onChange={(event) => setColor(item.i, event.target.value)}
-                    />
-                  </label>
-                  {color ? (
-                    <button type="button" className="set-visual-color-reset" onClick={() => setColor(item.i, '')}>
-                      Без цвета
-                    </button>
-                  ) : null}
-                </div>
-              )
-            })}
-          </div>
+          <p className="set-muted">
+            Сетка как на вкладке: плитки, строка фильтров и виджеты. Блок берётся мышью и встаёт по клеткам,
+            стрелки сдвигают на одну клетку. Данные не загружаются.
+          </p>
+          <TabPreview tab={tab} draft={draft} onMove={placeWidget} onHide={toggleWidget} />
+          <InactiveTray
+            label="Выключенные виджеты"
+            items={ordered
+              .filter((item) => draft.meta[item.i]?.visible === false)
+              .map((item) => ({ id: item.i, label: visualWidgetLabel(tab, item.i) }))}
+            onEnable={toggleWidget}
+          />
         </section>
       )}
     </div>
   )
 }
 
+type DragState = {
+  id: string
+  mode: 'move' | 'resize'
+  x: number
+  y: number
+  w: number
+  h: number
+  pointerX: number
+  pointerY: number
+}
+
+const TODAY_VISUAL_TAB: VisualTab = {
+  id: 'today',
+  label: 'Сегодня',
+  defaults: DEFAULT_TODAY_WIDGET_LAYOUT,
+  labels: { ...TODAY_WIDGET_LABELS }
+}
+
 function TabPreview({
   tab,
   draft,
-  onPick
+  onMove,
+  onHide,
+  tileRow
 }: {
   tab: VisualTab
   draft: VisualDraft
-  onPick: (id: string) => void
+  onMove: (id: string, x: number, y: number, w?: number, h?: number) => void
+  onHide: (id: string) => void
+  tileRow?: React.ReactNode
 }): React.JSX.Element {
+  const boardRef = useRef<HTMLDivElement>(null)
+  const dragRef = useRef<DragState | null>(null)
+  const [activeId, setActiveId] = useState<string | null>(null)
   const { cols, maxRows } = tabChromeGridDimensions(tab.id)
   const visible = draft.layout.filter((item) => draft.meta[item.i]?.visible !== false)
+
+  function cellSize(): { cellW: number; cellH: number } | null {
+    const board = boardRef.current
+    if (!board) return null
+    const style = getComputedStyle(board)
+    const padX = parseFloat(style.paddingLeft) + parseFloat(style.paddingRight)
+    const padY = parseFloat(style.paddingTop) + parseFloat(style.paddingBottom)
+    const cellW = (board.clientWidth - padX) / cols
+    const cellH = (board.clientHeight - padY) / maxRows
+    if (cellW < 1 || cellH < 1) return null
+    return { cellW, cellH }
+  }
+
+  function startDrag(event: React.PointerEvent<HTMLElement>, item: LayoutItem, mode: 'move' | 'resize'): void {
+    event.stopPropagation()
+    dragRef.current = {
+      id: item.i,
+      mode,
+      x: item.x,
+      y: item.y,
+      w: item.w,
+      h: item.h,
+      pointerX: event.clientX,
+      pointerY: event.clientY
+    }
+    event.currentTarget.setPointerCapture(event.pointerId)
+    setActiveId(item.i)
+  }
+
+  function moveDrag(event: React.PointerEvent<HTMLElement>): void {
+    const drag = dragRef.current
+    const size = cellSize()
+    if (!drag || !size) return
+    const item = draft.layout.find((row) => row.i === drag.id)
+    if (!item) return
+    const dx = Math.round((event.clientX - drag.pointerX) / size.cellW)
+    const dy = Math.round((event.clientY - drag.pointerY) / size.cellH)
+    if (drag.mode === 'resize') {
+      const w = Math.max(item.minW ?? 1, Math.min(item.maxW ?? cols, drag.w + dx, cols - drag.x))
+      const h = Math.max(item.minH ?? 1, Math.min(item.maxH ?? maxRows, drag.h + dy, maxRows - drag.y))
+      if (w !== item.w || h !== item.h) onMove(item.i, drag.x, drag.y, w, h)
+      return
+    }
+    const x = Math.max(0, Math.min(cols - item.w, drag.x + dx))
+    const y = Math.max(0, Math.min(maxRows - item.h, drag.y + dy))
+    if (x !== item.x || y !== item.y) onMove(item.i, x, y)
+  }
+
+  function endDrag(event: React.PointerEvent<HTMLElement>): void {
+    dragRef.current = null
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId)
+    }
+  }
+
   return (
-    <div
-      className="set-visual-preview"
-      style={{ gridTemplateColumns: `repeat(${cols}, 1fr)`, gridTemplateRows: `repeat(${maxRows}, 1fr)` }}
-      aria-hidden
-    >
-      {visible.map((item) => (
-        <button
-          key={item.i}
-          type="button"
-          className="set-visual-block"
-          style={blockStyle(item, draft.meta[item.i]?.color || '')}
-          onClick={() => onPick(item.i)}
-        >
-          {visualWidgetLabel(tab, item.i)}
-        </button>
-      ))}
+    <div className="set-visual-stage">
+      <div className="set-visual-tiles" aria-hidden={tileRow ? undefined : true}>
+        {tileRow ??
+          Array.from({ length: cols }, (_, index) => <span key={index}>Плитка</span>)}
+      </div>
+      <div className="set-visual-filters" aria-hidden>
+        <span>Фильтры</span>
+        <span>Период</span>
+        <span>Поиск</span>
+      </div>
+      <div
+        ref={boardRef}
+        className="set-visual-preview"
+        onPointerDown={(event) => {
+          if (event.target === event.currentTarget) setActiveId(null)
+        }}
+        style={{
+          gridTemplateColumns: `repeat(${cols}, minmax(0, 1fr))`,
+          gridTemplateRows: `repeat(${maxRows}, minmax(0, 1fr))`,
+          ['--visual-cols' as string]: String(cols),
+          ['--visual-rows' as string]: String(maxRows)
+        }}
+      >
+        {visible.map((item) => (
+          <div
+            key={item.i}
+            className={item.i === activeId ? 'set-visual-block is-editing' : 'set-visual-block'}
+            style={blockStyle(item, draft.meta[item.i]?.color || '')}
+            title={`${visualWidgetLabel(tab, item.i)} · ${item.w}×${item.h}, минимум ${item.minW ?? 1}×${item.minH ?? 1}`}
+            onPointerDown={(event) => startDrag(event, item, 'move')}
+            onPointerMove={moveDrag}
+            onPointerUp={endDrag}
+            onPointerCancel={endDrag}
+          >
+            {item.i === activeId ? (
+              <button
+                type="button"
+                className="set-visual-trash"
+                aria-label={`Убрать с отображения: ${visualWidgetLabel(tab, item.i)}`}
+                title="Убрать с отображения"
+                onPointerDown={(event) => event.stopPropagation()}
+                onClick={(event) => {
+                  event.stopPropagation()
+                  setActiveId(null)
+                  onHide(item.i)
+                }}
+              >
+                <Trash2 size={14} strokeWidth={2} aria-hidden />
+              </button>
+            ) : null}
+            <strong>{visualWidgetLabel(tab, item.i)}</strong>
+            <em>
+              {item.w}×{item.h} · мин {item.minW ?? 1}×{item.minH ?? 1}
+            </em>
+            <span
+              className="set-visual-resize"
+              role="separator"
+              aria-label="Изменить размер"
+              onPointerDown={(event) => startDrag(event, item, 'resize')}
+            />
+          </div>
+        ))}
+      </div>
+    </div>
+  )
+}
+
+function InactiveTray({
+  label,
+  items,
+  onEnable
+}: {
+  label: string
+  items: { id: string; label: string; enable?: () => void }[]
+  onEnable?: (id: string) => void
+}): React.JSX.Element {
+  return (
+    <div className="set-visual-inactive">
+      <span className="set-visual-inactive-label">{label}</span>
+      {items.length ? (
+        <div className="set-visual-presence" role="group" aria-label={label}>
+          {items.map((item) => (
+            <button
+              key={item.id}
+              type="button"
+              className="today-filter-layout-btn"
+              onClick={() => (item.enable ? item.enable() : onEnable?.(item.id))}
+            >
+              {item.label}
+            </button>
+          ))}
+        </div>
+      ) : (
+        <p className="set-muted">Все включены</p>
+      )}
     </div>
   )
 }
@@ -339,97 +471,82 @@ function blockStyle(item: LayoutItem, color: string): React.CSSProperties {
 }
 
 function TodayVisual({
+  layout,
   widgetDraft,
   tileDraft,
   tileOrderDraft,
   showAssignments,
+  onMove,
   onToggleWidget,
   onToggleTile,
-  onMoveTile,
-  onReset
+  onReorderTiles
 }: {
+  layout: LayoutItem[]
   widgetDraft: Record<TodayWidgetId, boolean>
   tileDraft: Record<TodayTileId, boolean>
   tileOrderDraft: TodayTileId[]
   showAssignments: boolean
+  onMove: (id: string, x: number, y: number, w?: number, h?: number) => void
   onToggleWidget: (id: TodayWidgetId) => void
   onToggleTile: (id: TodayTileId) => void
-  onMoveTile: (id: TodayTileId, direction: -1 | 1) => void
-  onReset: () => void
+  onReorderTiles: (from: number, to: number) => void
 }): React.JSX.Element {
   const tiles = tileOrderDraft.filter((id) => id !== 'assignments' || showAssignments)
+  const tileDrag = useRef<number | null>(null)
+  const draft: VisualDraft = {
+    layout,
+    meta: Object.fromEntries(
+      TODAY_WIDGET_IDS.map((id) => [
+        id,
+        { visible: widgetDraft[id] !== false, color: '', locked: false, binned: false }
+      ])
+    )
+  }
   return (
-    <>
-      <section className="set-card">
-        <h2>Плитки «Сегодня»</h2>
-        <div className="set-visual-preview set-visual-preview--tiles" aria-hidden>
-          {tiles
-            .filter((id) => tileDraft[id] !== false)
-            .map((id) => (
-              <span key={id} className="set-visual-block">
-                {TODAY_TILE_LABELS[id]}
-              </span>
-            ))}
-        </div>
-        <div className="set-tile-order">
-          {tiles.map((id) => {
-            const on = tileDraft[id] !== false
-            const index = tileOrderDraft.indexOf(id)
-            return (
-              <div key={id} className="set-tile-order-row">
-                <button type="button" className="set-tile-order-move" disabled={index === 0} onClick={() => onMoveTile(id, -1)}>
-                  ↑
-                </button>
-                <button
-                  type="button"
-                  className="set-tile-order-move"
-                  disabled={index === tileOrderDraft.length - 1}
-                  onClick={() => onMoveTile(id, 1)}
-                >
-                  ↓
-                </button>
-                <button
-                  type="button"
-                  className={`set-widget-toggle${on ? ' is-on' : ''}`}
-                  aria-pressed={on}
-                  onClick={() => onToggleTile(id)}
-                >
-                  {TODAY_TILE_LABELS[id]}
-                </button>
-              </div>
-            )
-          })}
-        </div>
-      </section>
-      <section className="set-card">
-        <h2>Виджеты «Сегодня»</h2>
-        <div className="set-visual-preview set-visual-preview--tiles" aria-hidden>
-          {TODAY_WIDGET_IDS.filter((id) => widgetDraft[id] !== false).map((id) => (
-            <span key={id} className="set-visual-block">
-              {TODAY_WIDGET_LABELS[id]}
+    <section className="set-card set-visual-card set-visual-fill">
+      <h2>Сегодня</h2>
+      <p className="set-muted">
+        Та же сетка 16×12, что на остальных вкладках. Виджет берётся мышью, размер меняется за угол.
+      </p>
+      <TabPreview
+        tab={TODAY_VISUAL_TAB}
+        draft={draft}
+        onMove={onMove}
+        onHide={(id) => onToggleWidget(id as TodayWidgetId)}
+        tileRow={tiles.map((id, index) =>
+          tileDraft[id] === false ? null : (
+            <span
+              key={id}
+              draggable
+              onDragStart={() => {
+                tileDrag.current = index
+              }}
+              onDragOver={(event) => event.preventDefault()}
+              onDrop={() => {
+                const from = tileDrag.current
+                tileDrag.current = null
+                if (from === null || from === index) return
+                onReorderTiles(from, index)
+              }}
+            >
+              {TODAY_TILE_LABELS[id]}
             </span>
-          ))}
-        </div>
-        <div className="set-widget-grid-9">
-          {TODAY_WIDGET_IDS.map((id) => {
-            const on = widgetDraft[id] !== false
-            return (
-              <button
-                key={id}
-                type="button"
-                className={`set-widget-toggle${on ? ' is-on' : ''}`}
-                aria-pressed={on}
-                onClick={() => onToggleWidget(id)}
-              >
-                {TODAY_WIDGET_LABELS[id]}
-              </button>
-            )
-          })}
-        </div>
-        <button className="btn-ghost" type="button" onClick={onReset}>
-          Все плитки и виджеты
-        </button>
-      </section>
-    </>
+          )
+        )}
+      />
+      <InactiveTray
+        label="Выключенные плитки и виджеты"
+        items={[
+          ...tiles
+            .filter((id) => tileDraft[id] === false)
+            .map((id) => ({ id, label: TODAY_TILE_LABELS[id], enable: () => onToggleTile(id) })),
+          ...TODAY_WIDGET_IDS.filter((id) => widgetDraft[id] === false).map((id) => ({
+            id,
+            label: TODAY_WIDGET_LABELS[id],
+            enable: () => onToggleWidget(id)
+          }))
+        ]}
+      />
+    </section>
   )
 }
