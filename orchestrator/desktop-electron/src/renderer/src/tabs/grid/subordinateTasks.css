@@ -266,7 +266,13 @@
 }
 
 .sub-org-dialog-table {
+  flex: 1 1 auto;
+  min-height: 0;
   overflow: auto;
+}
+
+.sub-org-dialog-table .sub-tasks-table th {
+  top: 0;
 }
 
 .sub-tree-hint {
@@ -275,6 +281,47 @@
   color: #5c6770;
   font-size: 12px;
   line-height: 1.35;
+}
+
+.sub-group-line {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 6px;
+  padding: 8px 2px 10px;
+}
+
+.sub-group-person {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  width: 100%;
+  padding: 8px 10px;
+  border: 1px solid #c5d4e8;
+  border-radius: 10px;
+  background: #fff;
+  color: #10141a;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.sub-group-person strong {
+  font-size: 13px;
+  font-weight: 650;
+}
+
+.sub-group-person em {
+  color: #5c6770;
+  font-style: normal;
+  font-size: 11px;
+}
+
+.sub-group-person.is-selected,
+.sub-group-person:hover {
+  border-color: #0d3b73;
+  background: #f5f9fe;
 }
 
 .sub-org-board {
@@ -783,8 +830,10 @@
   border-radius: 6px;
 }
 
-.sub-tasks-folder.is-over {
+.sub-tasks-folder.is-over,
+.sub-tasks-folder.is-selected {
   border-color: #1565c0;
+  border-style: solid;
   background: #e8f1fb;
 }
 
@@ -1399,6 +1448,15 @@
   background: #fff;
   border-color: #c5d4e8;
   color: #0d3b73;
+}
+
+.sub-kpi-plus.sub-group-delete {
+  color: #8b939e;
+}
+
+.sub-kpi-plus.sub-group-delete:hover {
+  color: #9b2c2c;
+  border-color: #e8c4c4;
 }
 
 .sub-kpi-person-row select,

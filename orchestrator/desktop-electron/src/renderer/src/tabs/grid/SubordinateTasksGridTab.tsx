@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { ArrowDown, ArrowUp, ChevronDown, ChevronRight, Filter, Plus } from 'lucide-react'
+import { ArrowDown, ArrowUp, ChevronDown, ChevronRight, Filter, Plus, Trash2 } from 'lucide-react'
 import { api } from '../../api/client'
 import type { UserProfile } from '../../api/types'
 import { canUseSubordinateTasks } from '../../extensions/extensionAccess'
@@ -589,6 +589,34 @@ function schemeToTree(layout: SchemeLayout, directory: Map<string, PersonNode>):
   return (children.get('') || []).map((fio) => build(fio, new Set()))
 }
 
+type SchemeRow = {
+  id: string
+  name: string
+  parentFio: string
+  members: PersonNode[]
+}
+
+function branchPeople(node: PersonNode): PersonNode[] {
+  const people: PersonNode[] = []
+  const walk = (current: PersonNode) => {
+    if (current.fio) people.push(current)
+    for (const child of current.subordinates) walk(child)
+  }
+  walk(node)
+  return people
+}
+
+function schemeRows(roots: PersonNode[]): SchemeRow[] {
+  return roots
+    .filter((node) => node.fio)
+    .map((node, index) => ({
+      id: `scheme-manager-${node.fio}`,
+      name: `Группа ${index + 1}`,
+      parentFio: node.fio,
+      members: branchPeople(node)
+    }))
+}
+
 function personInitials(fio: string): string {
   const parts = fio.split(/\s+/).filter(Boolean)
   return ((parts[0]?.[0] || '') + (parts[1]?.[0] || '')).toUpperCase()
@@ -808,6 +836,7 @@ export function SubordinateTasksGridTab({
   const [filter, setFilter] = useState<TaskFilter>('all')
   const [picked, setPicked] = useState<string[]>(() => readPicked(user.id))
   const [focusFio, setFocusFio] = useState('')
+  const [focusGroupId, setFocusGroupId] = useState('')
   const [kpiOpen, setKpiOpen] = useState(false)
   const [kpiMode, setKpiMode] = useState<'all' | 'groups' | 'people'>('all')
   const appliedKpi = useRef('')
@@ -904,6 +933,28 @@ export function SubordinateTasksGridTab({
   }, [user.id, scheme])
 
   useEffect(() => {
+    if (!people.length) return
+    const org = buildSchemeFromOrg(orgRoots(people))
+    setScheme((current) => {
+      if (!current || current.order.length === 0) return org
+      const have = new Set(current.order)
+      const missing = org.order.filter((fio) => fio && !have.has(fio))
+      if (!missing.length) return current
+      const order = [...current.order]
+      const parent = { ...current.parent }
+      for (const fio of missing) {
+        order.push(fio)
+        have.add(fio)
+      }
+      for (const fio of missing) {
+        const orgParent = org.parent[fio] || ''
+        parent[fio] = orgParent && have.has(orgParent) ? orgParent : ''
+      }
+      return { order, parent }
+    })
+  }, [people])
+
+  useEffect(() => {
     localStorage.setItem(groupsKey(user.id), JSON.stringify(groups))
   }, [groups, user.id])
 
@@ -989,6 +1040,18 @@ export function SubordinateTasksGridTab({
   const activeScheme = scheme ?? orgLayout
   const schemeFios = useMemo(() => new Set(activeScheme.order), [activeScheme])
   const schemeRoots = useMemo(() => schemeToTree(activeScheme, peopleByFio), [activeScheme, peopleByFio])
+  const derivedRows = useMemo(() => schemeRows(schemeRoots), [schemeRoots])
+
+  useEffect(() => {
+    if (!people.length) return
+    setGroups(
+      derivedRows.map((row) => ({
+        id: row.id,
+        name: row.name,
+        members: row.members.map((node) => node.fio)
+      }))
+    )
+  }, [derivedRows, people.length])
   const focusedTasks = useMemo(
     () => (focusFio ? periodTasks.filter((row) => row.fio === focusFio && matchesFilter(row, filter)) : []),
     [periodTasks, focusFio, filter]
@@ -1024,9 +1087,16 @@ export function SubordinateTasksGridTab({
     return rows.filter((row) => textMatchesPageSearch(row.fio, pageQuery))
   }, [activeScheme, loadByFio, peopleByFio, pageQuery])
 
+  const focusGroup = focusGroupId ? groups.find((group) => group.id === focusGroupId) : undefined
+  const allFios = useMemo(() => new Set(people.map((person) => person.fio).filter(Boolean)), [people])
+  const taskRoster = useMemo(() => {
+    if (focusGroup) return new Set(focusGroup.members)
+    if (focusFio) return new Set([focusFio])
+    return allFios
+  }, [focusGroup, focusFio, allFios])
   const visibleTasks = useMemo(() => {
-    const filtered = scopedTasks.filter((row) => {
-      if (focusFio && row.fio !== focusFio) return false
+    const filtered = periodTasks.filter((row) => {
+      if (!taskRoster.has(row.fio)) return false
       if (!matchesFilter(row, filter)) return false
       for (const col of TASK_COLUMNS) {
         if (col.filter === false) continue
@@ -1040,11 +1110,11 @@ export function SubordinateTasksGridTab({
     })
     if (!sort) return filtered
     return [...filtered].sort((left, right) => compareTasks(left, right, sort.col, sort.dir))
-  }, [scopedTasks, focusFio, filter, pageQuery, columnFilters, sort])
+  }, [periodTasks, taskRoster, filter, pageQuery, columnFilters, sort])
 
   const filterOptions = useMemo(() => {
-    const pool = scopedTasks.filter((row) => {
-      if (focusFio && row.fio !== focusFio) return false
+    const pool = periodTasks.filter((row) => {
+      if (!taskRoster.has(row.fio)) return false
       if (!matchesFilter(row, filter)) return false
       return true
     })
@@ -1055,26 +1125,30 @@ export function SubordinateTasksGridTab({
       )
     }
     return options
-  }, [scopedTasks, focusFio, filter])
+  }, [periodTasks, taskRoster, filter])
 
   const tiles = useMemo<SpecSummaryTile[]>(() => {
-    const focused = focusFio && pickedSet.has(focusFio) ? focusFio : ''
-    const tileTasks = focused ? scopedTasks.filter((row) => row.fio === focused) : scopedTasks
+    const focused = !focusGroup && focusFio ? focusFio : ''
+    const tileTasks = periodTasks.filter((row) => taskRoster.has(row.fio))
     const open = tileTasks.filter((row) => row.kind !== 'done')
     const overdue = tileTasks.filter((row) => row.kind === 'overdue')
     const critical = tileTasks.filter((row) => row.kind === 'critical')
     const done = tileTasks.filter((row) => row.kind === 'done')
     const total = tileTasks.length
-    const scopeNote = focused ? `Сотрудник: ${focused}.` : 'Все добавленные сотрудники.'
+    const scopeNote = focusGroup
+      ? `${focusGroup.name}.`
+      : focused
+        ? `Сотрудник: ${focused}.`
+        : 'Все подчинённые из оргструктуры.'
     return [
       {
         id: 'people',
         label: 'Подчинённые',
-        value: String(focused ? 1 : picked.length),
-        note: focused ? focused.split(' ')[0] : undefined,
+        value: String(taskRoster.size),
+        note: focusGroup ? focusGroup.name : focused ? focused.split(' ')[0] : undefined,
         tone: 'blue',
         icon: 'proj',
-        tooltip: focused ? focused : 'Сотрудники, добавленные на эту страницу'
+        tooltip: focusGroup ? focusGroup.name : focused ? focused : 'Подчинённые из оргструктуры'
       },
       {
         id: 'open',
@@ -1111,7 +1185,7 @@ export function SubordinateTasksGridTab({
         tooltip: `${scopeNote} Процент — выполненные от всех задач: ${done.length} из ${total}.`
       }
     ]
-  }, [focusFio, picked.length, pickedSet, scopedTasks])
+  }, [focusFio, focusGroup, periodTasks, taskRoster])
 
   const globalSearchEntries = useMemo<GlobalSearchEntry[]>(
     () =>
@@ -1163,8 +1237,23 @@ export function SubordinateTasksGridTab({
 
   function selectPerson(fio: string) {
     if (!fio) return
+    setFocusGroupId('')
     setFocusFio((current) => (current === fio ? '' : fio))
     setPicked((current) => (current.includes(fio) ? current : [...current, fio]))
+  }
+
+  function selectGroup(id: string) {
+    const group = groups.find((item) => item.id === id)
+    if (!group) return
+    setFocusFio('')
+    setFocusGroupId((current) => (current === id ? '' : id))
+    setPicked((current) => {
+      const next = [...current]
+      for (const fio of group.members) {
+        if (fio && !next.includes(fio)) next.push(fio)
+      }
+      return next.length === current.length ? current : next
+    })
   }
 
   function addPerson(fio: string) {
@@ -1459,7 +1548,11 @@ export function SubordinateTasksGridTab({
                     type="button"
                     className={`sub-tasks-preset${staffView === id ? ' is-active' : ''}`}
                     aria-pressed={staffView === id}
-                    onClick={() => setStaffView(id)}
+                    onClick={() => {
+                      setStaffView(id)
+                      if (id !== 'groups') setFocusGroupId('')
+                      if (id === 'scheme') setFocusFio('')
+                    }}
                     onDragOver={(event) => {
                       if (!draggingFio) return
                       event.preventDefault()
@@ -1536,11 +1629,15 @@ export function SubordinateTasksGridTab({
               <p className="sub-tasks-empty">Групп пока нет. Нажмите «+», чтобы создать первую.</p>
             ) : (
               groups.map((group) => {
-                const members = visibleLoads.filter((row) => group.members.includes(row.fio))
+                const memberByFio = new Map(visibleLoads.map((row) => [row.fio, row]))
+                const members = group.members.flatMap((fio) => {
+                  const row = memberByFio.get(fio)
+                  return row ? [row] : []
+                })
                 return (
                   <div
                     key={group.id}
-                    className={`sub-tasks-folder${overId === group.id ? ' is-over' : ''}`}
+                    className={`sub-tasks-folder${overId === group.id ? ' is-over' : ''}${focusGroupId === group.id ? ' is-selected' : ''}`}
                     onDragOver={(event) => {
                       event.preventDefault()
                       setOverId(group.id)
@@ -1568,7 +1665,18 @@ export function SubordinateTasksGridTab({
                           }}
                         />
                       ) : (
-                        <button type="button" onClick={() => setRenameId(group.id)}>
+                        <button
+                          type="button"
+                          title="Показать задачи группы. Двойной щелчок — переименовать."
+                          onClick={(event) => {
+                            if (event.detail > 1) return
+                            selectGroup(group.id)
+                          }}
+                          onDoubleClick={() => {
+                            setFocusGroupId(group.id)
+                            setRenameId(group.id)
+                          }}
+                        >
                           {group.name}
                         </button>
                       )}
@@ -1584,10 +1692,15 @@ export function SubordinateTasksGridTab({
                       </button>
                       <button
                         type="button"
-                        className="sub-tasks-remove"
-                        onClick={() => setGroups((current) => current.filter((item) => item.id !== group.id))}
+                        className="sub-kpi-plus sub-group-delete"
+                        aria-label={`Удалить ${group.name}`}
+                        title="Удалить"
+                        onClick={() => {
+                          setFocusGroupId((current) => (current === group.id ? '' : current))
+                          setGroups((current) => current.filter((item) => item.id !== group.id))
+                        }}
                       >
-                        Удалить
+                        <Trash2 size={16} strokeWidth={2.25} aria-hidden />
                       </button>
                     </div>
                     {pickGroupId === group.id ? (
@@ -1618,26 +1731,23 @@ export function SubordinateTasksGridTab({
                         )}
                       </ul>
                     ) : null}
-                    <table className="sub-tasks-table sub-tasks-load">
-                      <thead>
-                        <tr>
-                          <th>Подчинённый</th>
-                          <th>Откр.</th>
-                          <th>Проср.</th>
-                          <th>Выполн.</th>
-                          <th />
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {members.length === 0 ? (
-                          <tr>
-                            <td colSpan={5}>В группе никого нет. Нажмите «+» и выберите сотрудника.</td>
-                          </tr>
-                        ) : (
-                          members.map((row) => loadRow(row))
-                        )}
-                      </tbody>
-                    </table>
+                    {members.length === 0 ? (
+                      <p className="sub-tasks-empty">В группе никого нет. Нажмите «+» и выберите сотрудника.</p>
+                    ) : (
+                      <div className="sub-group-line">
+                        {members.map((row) => (
+                          <button
+                            key={row.fio}
+                            type="button"
+                            className={`sub-group-person${focusFio === row.fio ? ' is-selected' : ''}`}
+                            onClick={() => selectPerson(row.fio)}
+                          >
+                            <strong>{row.fio}</strong>
+                            {row.position || row.department ? <em>{row.position || row.department}</em> : null}
+                          </button>
+                        ))}
+                      </div>
+                    )}
                   </div>
                 )
               })
@@ -1648,15 +1758,15 @@ export function SubordinateTasksGridTab({
           {staffView === 'scheme' ? null : (
           <section className="sub-tasks-pane" aria-label="Задачи подчинённых">
             <header className="sub-tasks-pane-head">
-              Задачи
+              {focusGroup ? `Задачи · ${focusGroup.name}` : 'Задачи'}
               <span className="sub-tasks-legend">
                 <i className="is-overdue" /> просроченные
                 <i className="is-critical" /> подходит срок
                 <i className="is-open" /> поставленные
               </span>
             </header>
-            {picked.length === 0 ? (
-              <p className="sub-tasks-empty">Добавьте подчинённых слева — здесь появятся только их задачи.</p>
+            {people.length === 0 ? (
+              <p className="sub-tasks-empty">Подчинённых из оргструктуры нет — задачи появятся вместе с сотрудниками.</p>
             ) : visibleTasks.length === 0 ? (
               <p className="sub-tasks-empty">
                 {loading ? 'Читаем задачи…' : 'У выбранных сотрудников в этом периоде и фильтре задач нет.'}
