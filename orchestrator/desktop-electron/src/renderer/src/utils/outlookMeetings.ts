@@ -183,18 +183,23 @@ export function isCanceledMeeting(meeting: Pick<MeetingEvent, 'subject'>): boole
   return /canceled|cancelled|отмен[её]н|отмена/i.test(meeting.subject || '')
 }
 
+function meetingOwnerRank(meeting: MeetingEvent): number {
+  const owner = (meeting.owner || '').trim()
+  if (owner && !isOutlookFolderOwner(owner)) return 2
+  if (owner) return 1
+  return 0
+}
+
 /** Outlook COM may return the same appointment twice (shared calendars / merged folders). */
 export function dedupeMeetingEvents(meetings: MeetingEvent[]): MeetingEvent[] {
-  const seen = new Set<string>()
-  const out: MeetingEvent[] = []
+  const byKey = new Map<string, MeetingEvent>()
   for (const meeting of meetings) {
     if (isCanceledMeeting(meeting)) continue
     const key = meetingDedupeKey(meeting)
-    if (seen.has(key)) continue
-    seen.add(key)
-    out.push(meeting)
+    const prev = byKey.get(key)
+    if (!prev || meetingOwnerRank(meeting) > meetingOwnerRank(prev)) byKey.set(key, meeting)
   }
-  return out
+  return [...byKey.values()]
 }
 
 function normalizeMeeting(raw: OutlookMeetingRaw, index: number): MeetingEvent {
