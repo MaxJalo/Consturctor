@@ -889,3 +889,11 @@
     grid-template-columns: 130px minmax(0, 1fr);
   }
 }
+
+.df1c-check {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 32px;
+  color: #243044;
+}

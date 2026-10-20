@@ -68,6 +68,162 @@ INCOMING_SOURCES = _enum(
     ("Прочее", "Прочее"),
 )
 
+# Заявки в службы. Вид — лист справочника видов; подразделение-исполнитель
+# и статус «Подготовлен» пишет робот, их нет в полях человека.
+_REQUEST_STATUS = {
+    "key": "Статус",
+    "label": "Статус",
+    "type": "enum",
+    "options": _enum(
+        ("Подготовлен", "Подготовлен"),
+        ("НаСогласовании", "На согласовании"),
+        ("НаИсполнении", "На исполнении"),
+        ("Исполнен", "Исполнен"),
+        ("Отклонено", "Отклонено"),
+        ("Отменен", "Отменён"),
+    ),
+}
+TECHNICAL_REQUEST_FIELDS: list[dict[str, Any]] = [
+    {
+        "key": "ВидЗаявки_Key",
+        "label": "Вид заявки",
+        "type": "enum",
+        "required": True,
+        "side": "wide",
+        "hint": "Ветка из меню 1С. Исполнителя по ней подставит запись",
+    },
+    {"key": "Организация_Key", "label": "Организация", "type": "ref", "catalog": ORGS, "required": True},
+    {
+        "key": "Подразделение_Key",
+        "label": "Подразделение автора",
+        "type": "ref",
+        "catalog": DEPARTMENTS,
+        "required": True,
+        "hint": "В 1С берётся из учётной записи. Здесь укажите сами",
+    },
+    {"key": "Здание_Key", "label": "Здание", "type": "ref", "catalog": "Catalog_ТД_Здания", "required": True},
+    {"key": "Помещение", "label": "Помещение", "type": "text", "hint": "Кабинет, цех, участок"},
+    {"key": "ТелефонОбратнойСвязи", "label": "Телефон", "type": "text", "required": True},
+    {"key": "ЖелаемыйСрокИсполнения", "label": "Желаемый срок", "type": "date"},
+    {"key": "Содержание", "label": "Содержание", "type": "textarea", "hint": "Если вида заявки достаточно, можно не заполнять"},
+    {"key": "Ответственный_Key", "label": "Автор", "type": "ref", "catalog": USERS, "required": True, "default": "me"},
+]
+SUPPORT_REQUEST_FIELDS: list[dict[str, Any]] = [
+    {
+        "key": "ВидЗаявки_Key",
+        "label": "Вид заявки",
+        "type": "enum",
+        "required": True,
+        "side": "wide",
+        "hint": "Ветка «Отдел сопровождения 1С»",
+    },
+    {"key": "Организация_Key", "label": "Организация", "type": "ref", "catalog": ORGS, "required": True},
+    {
+        "key": "Подразделение_Key",
+        "label": "Подразделение автора",
+        "type": "ref",
+        "catalog": DEPARTMENTS,
+        "required": True,
+        "hint": "В 1С берётся из учётной записи. Здесь укажите сами",
+    },
+    {"key": "Содержание", "label": "Содержание", "type": "textarea", "required": True},
+    {"key": "ТелефонОбратнойСвязи", "label": "Телефон", "type": "text", "required": True},
+    {"key": "ФизическоеЛицо", "label": "Сотрудник", "type": "text", "hint": "Для учётной записи и рабочего места"},
+    {"key": "Должность", "label": "Должность", "type": "text"},
+    {"key": "ЖелаемыйСрокИсполнения", "label": "Желаемый срок", "type": "date"},
+    {"key": "СоздатьУчетнуюЗаписьERP", "label": "Учётная запись ERP", "type": "bool"},
+    {"key": "СоздатьУчетнуюЗаписьWeb", "label": "Учётная запись Web", "type": "bool"},
+    {"key": "СоздатьУчетнуюЗаписьPM", "label": "Учётная запись PM", "type": "bool"},
+    {"key": "СоздатьУчетнуюЗаписьPLM", "label": "Учётная запись PLM", "type": "bool"},
+    {"key": "СоздатьУчетнуюЗаписьЗУП", "label": "Учётная запись ЗУП", "type": "bool"},
+    {"key": "СоздатьУчетнуюЗаписьУПП", "label": "Учётная запись УПП", "type": "bool"},
+    {"key": "СоздатьУчетнуюЗаписьАЛ", "label": "Учётная запись АЛ", "type": "bool"},
+    {"key": "Ответственный_Key", "label": "Автор", "type": "ref", "catalog": USERS, "required": True, "default": "me"},
+]
+DEVELOPMENT_REQUEST_FIELDS: list[dict[str, Any]] = [
+    {
+        "key": "ВидЗаявки_Key",
+        "label": "Вид заявки",
+        "type": "enum",
+        "required": True,
+        "side": "wide",
+        "hint": "Ветка «Служба развития»",
+    },
+    {"key": "Организация_Key", "label": "Организация", "type": "ref", "catalog": ORGS, "required": True},
+    {
+        "key": "Подразделение_Key",
+        "label": "Подразделение автора",
+        "type": "ref",
+        "catalog": DEPARTMENTS,
+        "required": True,
+        "hint": "В 1С берётся из учётной записи. Здесь укажите сами",
+    },
+    {"key": "Содержание", "label": "Содержание", "type": "textarea", "required": True, "for_kinds": ["Прочее"]},
+    {
+        "key": "Примечание",
+        "label": "Содержание",
+        "type": "textarea",
+        "required": True,
+        "for_kinds": ["Подготовка методических материалов"],
+    },
+    {
+        "key": "ВидМетодическогоМатериала",
+        "label": "Вид методического материала",
+        "type": "text",
+        "for_kinds": ["Подготовка методических материалов"],
+    },
+    {
+        "key": "ДополнительнаяИнформация",
+        "label": "Содержание",
+        "type": "textarea",
+        "required": True,
+        "for_kinds": ["ТЗ для дизайнера"],
+    },
+    {"key": "ФорматПродукции", "label": "Формат продукции", "type": "text", "for_kinds": ["ТЗ для дизайнера"]},
+    {
+        "key": "ПродуктДляЗаявкиНаОбучение",
+        "label": "Продукт",
+        "type": "textarea",
+        "required": True,
+        "for_kinds": ["Заявка на обучение"],
+    },
+    {
+        "key": "ПрограммаОбучения",
+        "label": "Программа обучения",
+        "type": "text",
+        "required": True,
+        "for_kinds": ["Заявка на обучение"],
+    },
+    {"key": "ТелефонОбратнойСвязи", "label": "Телефон", "type": "text", "required": True},
+    {"key": "СрокИсполненияЖелаемый", "label": "Желаемый срок", "type": "date"},
+    {"key": "Ответственный_Key", "label": "Автор", "type": "ref", "catalog": USERS, "required": True, "default": "me"},
+]
+
+
+def _service_kind(title: str, service: str, fields: list[dict[str, Any]], *, fallback: str = "") -> dict[str, Any]:
+    from app.services.docflow_service_requests import SERVICES
+
+    spec = SERVICES[service]
+    kind_field = {**fields[0], "options_from": f"service_kinds:{service}"}
+    own_fields = [kind_field, *fields[1:]]
+    kind: dict[str, Any] = {
+        "title": title,
+        "journal": "requests",
+        "base": "erp",
+        "entity": spec["entity"],
+        "mark_field": "Содержание",
+        "defaults": {"Статус": "Подготовлен"},
+        "executor_from_kind": True,
+        "write_kind_path": spec["entity"] == "Document_ТД_ЗаявкаВ_АХО",
+        "fields": own_fields,
+        "edit_fields": [*own_fields, _REQUEST_STATUS],
+        "tables": [],
+    }
+    if fallback:
+        kind["executor_fallback"] = fallback
+    return kind
+
+
 ORDER_FIELDS: list[dict[str, Any]] = [
     {"key": "Организация_Key", "label": "Организация", "type": "ref", "catalog": ORGS, "required": True},
     {"key": "ТемаСлужебнойЗаписки", "label": "Тема", "type": "text", "required": True, "composite": True},
@@ -81,6 +237,15 @@ ORDER_FIELDS: list[dict[str, Any]] = [
 # type: text | textarea | date | number | ref | enum | bool
 # composite=True — составной реквизит 1С: строка пишется с X_Type=Edm.String.
 # default="me" — ФИО вошедшего пользователя.
+# Проведённые заявки этих видов можно перезаписать: проведение снимается и ставится снова.
+REQUEST_KINDS = {
+    "service_1c",
+    "service_it",
+    "service_exploitation",
+    "service_development",
+    "service_aho",
+}
+
 KINDS: dict[str, dict[str, Any]] = {
     "incoming": {
         "title": "Входящая корреспонденция",
@@ -376,6 +541,20 @@ KINDS: dict[str, dict[str, Any]] = {
         ],
         "tables": [],
     },
+    "service_1c": _service_kind("Заявка в службу сопровождения 1С", "service_1c", SUPPORT_REQUEST_FIELDS),
+    "service_it": _service_kind("Заявка в службу IT", "service_it", SUPPORT_REQUEST_FIELDS),
+    "service_exploitation": _service_kind(
+        "Заявка в эксплуатационную службу", "service_exploitation", TECHNICAL_REQUEST_FIELDS
+    ),
+    "service_development": _service_kind(
+        "Заявка в службу развития", "service_development", DEVELOPMENT_REQUEST_FIELDS
+    ),
+    "service_aho": _service_kind(
+        "Заявка в АХО",
+        "service_aho",
+        TECHNICAL_REQUEST_FIELDS,
+        fallback="3a9ac2db-214f-11e0-b91c-00248c26ee57",
+    ),
 }
 
 # Журналы, у которых уже есть своя форма создания в приложении.
@@ -392,6 +571,11 @@ BASIS_TARGETS: dict[str, list[str]] = {
     "forwarding": ["forwarding"],
     "assignment": ["assignment", "memo"],
     "incentive": ["incentive"],
+    "service_1c": ["service_1c"],
+    "service_it": ["service_it"],
+    "service_exploitation": ["service_exploitation"],
+    "service_development": ["service_development"],
+    "service_aho": ["service_aho"],
 }
 
 # Реквизит-ссылка на документ-основание и какие виды он принимает (по данным журналов 1С).
@@ -412,6 +596,11 @@ FILE_CATALOGS: dict[str, str] = {
     "payment": "Catalog_ЗаявкаНаРасходованиеДенежныхСредствПрисоединенныеФайлы",
     "forwarding": "Catalog_ПоручениеЭкспедиторуПрисоединенныеФайлы",
     "assignment": "Catalog_ТД_ПорученияПрисоединенныеФайлы",
+    "service_1c": "Catalog_ТД_ЗаявкаВСлужбуСопровожденияПрисоединенныеФайлы",
+    "service_it": "Catalog_ТД_ЗаявкаВСлужбуСопровожденияПрисоединенныеФайлы",
+    "service_exploitation": "Catalog_ТД_ЗаявкаВ_АХОПрисоединенныеФайлы",
+    "service_development": "Catalog_ТД_ЗаявкаВСлужбуРазвитияПрисоединенныеФайлы",
+    "service_aho": "Catalog_ТД_ЗаявкаВ_АХОПрисоединенныеФайлы",
 }
 MAX_FILE_BYTES = 20 * 1024 * 1024
 MAX_FILES = 10
@@ -467,10 +656,64 @@ RIGHT_COLUMN: dict[str, set[str]] = {
     "order": {"ГрифДоступа_Key", "Проект_Key", "Ответственный_Key"},
     "directive": {"ГрифДоступа_Key", "Проект_Key", "Ответственный_Key"},
     "incentive": {"approver", "controller", "Ответственный_Key", "Подготовил_Key"},
+    "service_1c": {
+        "ТелефонОбратнойСвязи",
+        "ФизическоеЛицо",
+        "Должность",
+        "ЖелаемыйСрокИсполнения",
+        "Ответственный_Key",
+        "Статус",
+        "СоздатьУчетнуюЗаписьERP",
+        "СоздатьУчетнуюЗаписьWeb",
+        "СоздатьУчетнуюЗаписьPM",
+        "СоздатьУчетнуюЗаписьPLM",
+        "СоздатьУчетнуюЗаписьЗУП",
+        "СоздатьУчетнуюЗаписьУПП",
+        "СоздатьУчетнуюЗаписьАЛ",
+    },
+    "service_it": {
+        "ТелефонОбратнойСвязи",
+        "ФизическоеЛицо",
+        "Должность",
+        "ЖелаемыйСрокИсполнения",
+        "Ответственный_Key",
+        "Статус",
+        "СоздатьУчетнуюЗаписьERP",
+        "СоздатьУчетнуюЗаписьWeb",
+        "СоздатьУчетнуюЗаписьPM",
+        "СоздатьУчетнуюЗаписьPLM",
+        "СоздатьУчетнуюЗаписьЗУП",
+        "СоздатьУчетнуюЗаписьУПП",
+        "СоздатьУчетнуюЗаписьАЛ",
+    },
+    "service_exploitation": {
+        "Здание_Key",
+        "Помещение",
+        "ТелефонОбратнойСвязи",
+        "ЖелаемыйСрокИсполнения",
+        "Ответственный_Key",
+        "Статус",
+    },
+    "service_development": {
+        "ТелефонОбратнойСвязи",
+        "СрокИсполненияЖелаемый",
+        "Ответственный_Key",
+        "Статус",
+    },
+    "service_aho": {
+        "Здание_Key",
+        "Помещение",
+        "ТелефонОбратнойСвязи",
+        "ЖелаемыйСрокИсполнения",
+        "Ответственный_Key",
+        "Статус",
+    },
 }
 
 
 def field_side(kind_id: str, field: dict[str, Any]) -> str:
+    if field.get("side") in {"left", "right", "wide"}:
+        return str(field["side"])
     if field["type"] == "textarea":
         return "wide"
     return "right" if field["key"] in RIGHT_COLUMN.get(kind_id, set()) else "left"
@@ -749,12 +992,44 @@ def _values_with_defaults(kind: dict[str, Any], values: dict[str, Any], actor_fi
     return out
 
 
+def _selected_kind_label(kind: dict[str, Any], values: dict[str, Any]) -> str:
+    """Подпись выбранного вида заявки. Пусто, если у формы нет ветки видов."""
+    guid = str(values.get("ВидЗаявки_Key") or "")
+    if not _GUID_RE.match(guid):
+        return ""
+    source = ""
+    for field in kind["fields"]:
+        raw = str(field.get("options_from") or "")
+        if raw.startswith("service_kinds:"):
+            source = raw.split(":", 1)[1]
+            break
+    if not source:
+        return ""
+    from app.services.docflow_service_requests import kind_options
+
+    for item in kind_options(source):
+        if item["value"] == guid:
+            return item["label"]
+    return ""
+
+
+def _field_applies(field: dict[str, Any], kind_label: str) -> bool:
+    needles = field.get("for_kinds") or []
+    if not needles:
+        return True
+    if not kind_label:
+        return False
+    return any(str(needle) in kind_label for needle in needles)
+
+
 def _missing(kind: dict[str, Any], values: dict[str, Any]) -> list[str]:
+    kind_label = _selected_kind_label(kind, values)
     return [
         field["label"]
         for field in kind["fields"]
         if field.get("required")
         and not field.get("fill_from")
+        and _field_applies(field, kind_label)
         and not str(values.get(field["key"]) or "").strip()
     ]
 
@@ -836,6 +1111,18 @@ def build_body(
             continue
         put_value(body, field, value)
     _fill_from_source(client, kind, body)
+    if kind.get("executor_from_kind") and not _filled(body.get("ПодразделениеИсполнитель_Key")):
+        from app.services.docflow_service_requests import executor_for
+
+        dept = executor_for(client, str(body.get("ВидЗаявки_Key") or ""), str(kind.get("executor_fallback") or ""))
+        if dept:
+            body["ПодразделениеИсполнитель_Key"] = dept
+    if kind.get("write_kind_path"):
+        from app.services.docflow_service_requests import kind_path
+
+        path = kind_path(client, str(body.get("ВидЗаявки_Key") or ""))
+        if path:
+            body["ВидЗаявкиСтрокой"] = path
     if kind_id == "payment":
         body["ДатаПлатежа"] = body.get("ЖелательнаяДатаПлатежа", "")
         body["ФормаОплатыБезналичная"] = body.get("ФормаОплатыЗаявки") == "Безналичная"
@@ -993,8 +1280,13 @@ def _probe_values(kind_id: str, client: _ODataClient, actor_fio: str, topic: str
             values[key] = items[0]["key"]
         elif field["type"] == "enum":
             options = field.get("options") or []
-            if not options and field.get("options_from"):
-                options = _incoming_options().get(field["options_from"], [])
+            source = str(field.get("options_from") or "")
+            if not options and source.startswith("service_kinds:"):
+                from app.services.docflow_service_requests import kind_options
+
+                options = kind_options(source.split(":", 1)[1])
+            elif not options and source:
+                options = _incoming_options().get(source, [])
             values[key] = options[0]["value"] if options else ""
         elif field["type"] == "number":
             values[key] = 1
@@ -1398,14 +1690,26 @@ def _public_fields(
         if field.get("fill_from"):
             item["required"] = False
         item["side"] = field_side(kind_id, field)
-        if field.get("options_from"):
+        source = str(field.get("options_from") or "")
+        if source.startswith("service_kinds:"):
+            cache_key = f"kinds:{source}"
+            if cache_key not in options_cache:
+                try:
+                    from app.services.docflow_service_requests import kind_options
+
+                    options_cache[cache_key] = kind_options(source.split(":", 1)[1])
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("Виды заявок не прочитаны: %s", exc)
+                    options_cache[cache_key] = []
+            item["options"] = options_cache[cache_key]
+        elif source:
             if "value" not in options_cache:
                 try:
                     options_cache["value"] = _incoming_options()
                 except Exception as exc:  # noqa: BLE001
                     logger.warning("Списки входящей не прочитаны: %s", exc)
                     options_cache["value"] = {}
-            item["options"] = options_cache["value"].get(field["options_from"], [])
+            item["options"] = options_cache["value"].get(source, [])
         out.append(item)
     return out
 

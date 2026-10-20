@@ -323,7 +323,9 @@ def _raw_tools() -> list[dict[str, Any]]:
             "name": "onec.docflow_document_create",
             "description": (
                 "Документ журнала «Документооборот» в 1С: incoming, outgoing, memo, assignment, payment, "
-                "forwarding, order, directive — ERP; incentive — база ДО под учёткой сеанса. "
+                "forwarding, order, directive, service_1c, service_it, service_exploitation, "
+                "service_development, service_aho — ERP; "
+                "incentive — база ДО под учёткой сеанса. "
                 "action=schema — поля формы, списки, виды «на основании»; action=lookup + kind + catalog + query — "
                 "поиск в справочнике формы; action=create + kind + values {поле: значение} (+ tables, files, "
                 "basis {kind, ref_key}, post=true — провести) — черновик, либо проведённый документ ERP; "
@@ -343,7 +345,9 @@ def _raw_tools() -> list[dict[str, Any]]:
                     ),
                     "kind": _prop(
                         "string",
-                        "incoming | outgoing | memo | assignment | payment | forwarding | order | directive | incentive",
+                        "incoming | outgoing | memo | assignment | payment | forwarding | order | directive | "
+                        "incentive | service_1c | service_it | service_exploitation | "
+                        "service_development | service_aho",
                     ),
                     "ref_key": _prop("string", "Ref_Key документа (read / update / attach / basis)"),
                     "target": _prop("string", "Вид создаваемого документа (action=basis)"),

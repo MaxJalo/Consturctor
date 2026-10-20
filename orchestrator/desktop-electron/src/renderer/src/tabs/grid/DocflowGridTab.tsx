@@ -12,6 +12,7 @@ import {
   Send,
   Truck,
   Wallet,
+  Wrench,
   type LucideIcon
 } from 'lucide-react'
 import type { UserProfile } from '../../api/types'
@@ -41,6 +42,7 @@ import { DocflowMemosPanel } from './DocflowMemosPanel'
 import { DocflowOrdersPanel } from './DocflowOrdersPanel'
 import { DocflowPaymentRequestsPanel } from './DocflowPaymentRequestsPanel'
 import { DocflowProtocolsPanel } from './DocflowProtocolsPanel'
+import { DocflowServiceRequestsPanel } from './DocflowServiceRequestsPanel'
 import { DocflowSearch, SortTh, useDocflowTable } from './docflowTableTools'
 import './docflowGrid.css'
 import { useRegisterGlobalSearch, type GlobalSearchEntry } from '../../layout/globalSearch'
@@ -69,7 +71,14 @@ const CREATE_BUTTONS: Record<JournalId, { target: CreateTarget; label: string }[
   assignments: [{ target: 'assignment', label: 'Создать поручение' }],
   protocols: [{ target: 'protocol', label: 'Создать протокол' }],
   payments: [{ target: 'payment', label: 'Создать заявку' }],
-  forwarding: [{ target: 'forwarding', label: 'Создать поручение' }]
+  forwarding: [{ target: 'forwarding', label: 'Создать поручение' }],
+  requests: [
+    { target: 'service_1c', label: 'В службу 1С' },
+    { target: 'service_it', label: 'В службу IT' },
+    { target: 'service_exploitation', label: 'В эксплуатацию' },
+    { target: 'service_development', label: 'В службу развития' },
+    { target: 'service_aho', label: 'В АХО' }
+  ]
 }
 
 function blankMeeting(): MeetingEvent {
@@ -105,6 +114,13 @@ const JOURNALS: { id: string; title: string; hint: string; icon: LucideIcon; ton
     hint: 'Доставка, груз и ответственные',
     icon: Truck,
     tone: 'blue'
+  },
+  {
+    id: 'requests',
+    title: 'Заявки в службы',
+    hint: '1С, IT, эксплуатация и АХО',
+    icon: Wrench,
+    tone: 'orange'
   }
 ]
 
@@ -117,6 +133,7 @@ type JournalId =
   | 'protocols'
   | 'payments'
   | 'forwarding'
+  | 'requests'
 
 const PERIOD_JOURNALS = new Set<JournalId>([
   'correspondence',
@@ -125,7 +142,8 @@ const PERIOD_JOURNALS = new Set<JournalId>([
   'assignments',
   'protocols',
   'payments',
-  'forwarding'
+  'forwarding',
+  'requests'
 ])
 
 const MAIL_VIEWS: { id: CorrespondenceKind; title: string; hint: string; icon: LucideIcon }[] = [
@@ -145,7 +163,9 @@ const SUBTITLES: Record<JournalId, string> = {
   payments:
     'Заявки на расходование ДС из 1С: статус, хозяйственная операция, сумма, получатель и расшифровка платежа. Прокрутите вниз — подгрузятся следующие.',
   forwarding:
-    'Поручения экспедитору из 1С: тип заявки, способ доставки, груз, склад и ответственные. Прокрутите вниз — подгрузятся следующие.'
+    'Поручения экспедитору из 1С: тип заявки, способ доставки, груз, склад и ответственные. Прокрутите вниз — подгрузятся следующие.',
+  requests:
+    'Списки 1С: сопровождение, IT, эксплуатация, служба развития и журнал АХО. Прокрутите таблицу вправо — колонок больше, чем помещается на экран.'
 }
 
 function cell(value: string): string {
@@ -681,6 +701,15 @@ export function DocflowGridTab({ user }: { user: UserProfile }): React.JSX.Eleme
             <DocflowPaymentRequestsPanel key={reloadKey} user={user} from={from} to={to} onOpenDocument={openDocument} />
           ) : journal === 'forwarding' ? (
             <DocflowForwardingPanel key={reloadKey} user={user} from={from} to={to} onOpenDocument={openDocument} />
+          ) : journal === 'requests' ? (
+            <DocflowServiceRequestsPanel
+              key={reloadKey}
+              user={user}
+              from={from}
+              to={to}
+              reload={reloadKey}
+              onOpenDocument={openDocument}
+            />
           ) : (
             <div className="docflow-table-card wp-card docflow-placeholder">
               <span className={`docflow-nav-icon docflow-placeholder-icon tone-${activeJournal.tone}`} aria-hidden>
