@@ -2600,6 +2600,9 @@ def _compute_free_slots(
     """Рабочие окна без занятых встреч Outlook — свободные ячейки календаря."""
     busy: list[tuple[datetime, datetime]] = []
     for event in events:
+        # Напоминание «на весь день» не занимает рабочие часы.
+        if _truthy(event.get("all_day")):
+            continue
         start = _coerce_datetime(event.get("start"))
         end = _coerce_datetime(event.get("end"))
         if start is None:
@@ -3122,6 +3125,10 @@ def _collect_calendar_events(
             importance = int(getattr(event, "Importance", 1) or 0)
         except Exception:
             importance = 1
+        try:
+            all_day = bool(getattr(event, "AllDayEvent", False))
+        except Exception:
+            all_day = False
         events.append(
             {
                 "entry_id": entry_id,
@@ -3130,6 +3137,7 @@ def _collect_calendar_events(
                 "end": _iso_com_datetime(event_end),
                 "location": location,
                 "importance": importance,
+                "all_day": all_day,
                 "calendar_owner": calendar_owner,
                 "own_calendar": bool(own_calendar),
                 "organizer": _read_guarded_property(event, PR_SENT_REPRESENTING_NAME_W),

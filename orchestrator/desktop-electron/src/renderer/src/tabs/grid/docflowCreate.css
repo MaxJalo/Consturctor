@@ -378,6 +378,13 @@
   white-space: nowrap;
 }
 
+.df1c-task-files {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  align-items: center;
+}
+
 .df1c-btn--tiny {
   height: 28px;
   padding: 0 10px;

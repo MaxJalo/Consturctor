@@ -1049,15 +1049,15 @@ export function Sidebar({
                   <button type="button" onClick={() => setFolderEditor(null)} aria-label="Отменить переименование">
                     <X size={15} aria-hidden />
                   </button>
-                </div>
-              ) : (
+            </div>
+          ) : (
                 <div className="nav-folder-row" data-nav-node={nodeId}>
-                  <button
+            <button
                     type="button"
                     className="nav-folder-toggle"
                     aria-expanded={collapsed ? undefined : folder.expanded}
                     title={folder.name}
-                    onClick={() => {
+              onClick={() => {
                       if (collapsed) setCollapsed(false)
                       else persistNavLayout(toggleSidebarFolder(navLayout, folder.id))
                     }}
@@ -1085,14 +1085,14 @@ export function Sidebar({
                         aria-label={`Удалить папку «${folder.name}»`}
                       >
                         <Trash2 size={13} aria-hidden />
-                      </button>
+            </button>
                       <span className="nav-folder-grip" {...dragHandleProps(nodeId, folder.name)}>
                         <GripVertical size={15} strokeWidth={2} aria-hidden />
                       </span>
                     </span>
                   ) : null}
-                </div>
-              )}
+        </div>
+      )}
               {!collapsed && folder.expanded ? (
                 <div className="nav-folder-children">
                   {folder.tabKeys.map((key) => {

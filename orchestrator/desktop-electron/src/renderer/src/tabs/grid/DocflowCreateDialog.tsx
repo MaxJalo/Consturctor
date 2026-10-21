@@ -273,6 +273,8 @@ export function DocflowCreateDialog({
 }): React.JSX.Element | null {
   const titleId = useId()
   const fileInputRef = useRef<HTMLInputElement | null>(null)
+  const fileTargetRow = useRef('')
+  const [rowFiles, setRowFiles] = useState<Record<string, string[]>>({})
   const schema = request ? schemas.find((item) => item.id === request.kind) || null : null
   const editing = request?.mode === 'edit'
   const prefill = request?.mode === 'create' ? request.prefill : undefined
@@ -303,6 +305,7 @@ export function DocflowCreateDialog({
   const resetState = (): void => {
     setChanged([])
     setFiles([])
+    setRowFiles({})
     setPending(null)
     setShowMissing(false)
     setBusy(false)
@@ -458,7 +461,7 @@ export function DocflowCreateDialog({
     )
   }
 
-  const addFiles = async (list: FileList | File[]): Promise<void> => {
+  const addFiles = async (list: FileList | File[], rowId = ''): Promise<void> => {
     if (!schema.files) return
     const problems: string[] = []
     const accepted: DocflowUploadFile[] = []
@@ -476,12 +479,21 @@ export function DocflowCreateDialog({
     const names = new Set(files.map((file) => file.name))
     const merged = [...files, ...accepted.filter((file) => !names.has(file.name))]
     if (merged.length > maxFiles) problems.push(`Не больше ${maxFiles} файлов за раз`)
-    setFiles(merged.slice(0, maxFiles))
+    const kept = merged.slice(0, maxFiles)
+    setFiles(kept)
+    if (rowId && accepted.length) {
+      const added = accepted.map((file) => file.name).filter((name) => kept.some((file) => file.name === name))
+      setRowFiles((current) => ({
+        ...current,
+        [rowId]: [...new Set([...(current[rowId] || []), ...added])]
+      }))
+    }
     setError(problems.join('; '))
     setNotice('')
     if (!accepted.length) return
-    setTab('files')
-    setPending(editing ? 'attach' : null)
+    if (rowId && !editing) return
+    if (!rowId) setTab('files')
+    if (editing) setPending('attach')
   }
 
   const payloadValues = (): Record<string, string> =>
@@ -968,7 +980,7 @@ export function DocflowCreateDialog({
                 </button>
               ) : null}
               {schema.files && (!editing || (card && !card.deleted)) ? (
-                <button type="button" className="df1c-btn" disabled={busy} onClick={() => fileInputRef.current?.click()}>
+                <button type="button" className="df1c-btn" disabled={busy} onClick={() => { fileTargetRow.current = ''; fileInputRef.current?.click() }}>
                   <Paperclip size={14} aria-hidden /> Прикрепить файл
                 </button>
               ) : null}
@@ -1014,7 +1026,8 @@ export function DocflowCreateDialog({
           multiple
           hidden
           onChange={(event) => {
-            if (event.target.files?.length) void addFiles(event.target.files)
+            if (event.target.files?.length) void addFiles(event.target.files, fileTargetRow.current)
+            fileTargetRow.current = ''
             event.target.value = ''
           }}
         />
@@ -1098,6 +1111,7 @@ export function DocflowCreateDialog({
                               {column.label}
                             </th>
                           ))}
+                          {schema.files && table.key === 'Поручения' ? <th className="df1c-col-ref">Файл</th> : null}
                           {!readOnly ? <th className="df1c-col-delete" /> : null}
                         </tr>
                       </thead>
@@ -1123,13 +1137,44 @@ export function DocflowCreateDialog({
                                 />
                               </td>
                             ))}
+                            {schema.files && table.key === 'Поручения' ? (
+                              <td className="df1c-col-ref">
+                                <div className="df1c-task-files">
+                                  {(rowFiles[row.id] || []).map((name) => (
+                                    <span key={name} className="df1c-file-name" title={name}>
+                                      {name}
+                                    </span>
+                                  ))}
+                                  {readOnly ? null : (
+                                    <button
+                                      type="button"
+                                      className="df1c-btn df1c-btn--tiny"
+                                      title="Файл запишется в поручение — его можно прикрепить к задаче исполнителя"
+                                      onClick={() => {
+                                        fileTargetRow.current = row.id
+                                        fileInputRef.current?.click()
+                                      }}
+                                    >
+                                      <Paperclip size={13} aria-hidden /> Файл
+                                    </button>
+                                  )}
+                                </div>
+                              </td>
+                            ) : null}
                             {!readOnly ? (
                               <td className="df1c-col-delete">
                                 <button
                                   type="button"
                                   className="df1c-icon-btn"
                                   title="Удалить строку"
-                                  onClick={() => updateTable(table.key, (rows) => rows.filter((item) => item.id !== row.id))}
+                                  onClick={() => {
+                                    setRowFiles((current) => {
+                                      const next = { ...current }
+                                      delete next[row.id]
+                                      return next
+                                    })
+                                    updateTable(table.key, (rows) => rows.filter((item) => item.id !== row.id))
+                                  }}
                                 >
                                   <Trash2 size={14} aria-hidden />
                                 </button>
@@ -1190,12 +1235,13 @@ export function DocflowCreateDialog({
           ) : (
             <div className="df1c-files">
               {!editing || (card && !card.deleted) ? (
-                <button type="button" className="df1c-drop" onClick={() => fileInputRef.current?.click()}>
+                <button type="button" className="df1c-drop" onClick={() => { fileTargetRow.current = ''; fileInputRef.current?.click() }}>
                   <Upload size={22} aria-hidden />
                   <strong>Перетащите файлы сюда или нажмите, чтобы выбрать</strong>
                   <span>
                     До {maxFiles} файлов за раз, каждый до {schema.max_file_mb || 20} МБ.{' '}
-                    {editing ? 'Прикрепятся к документу в 1С после подтверждения.' : 'Прикрепятся сразу после записи документа.'}
+                    {editing ? 'Прикрепятся к документу в 1С после подтверждения.' : 'Прикрепятся сразу после записи документа.'}{' '}
+                    Этот файл потом можно прикрепить к задачам документа.
                   </span>
                 </button>
               ) : null}

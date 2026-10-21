@@ -8,9 +8,7 @@ import {
   DEFAULT_PROCESS_LAYOUT,
   DEFAULT_STANDARD_LAYOUT,
   DEFAULT_WIDE_MAIN_LAYOUT,
-  scaleLayoutItems,
-  tabChromeGridDimensions,
-  tabChromeLayoutMigration
+  tabChromeGridDimensions
 } from './tabLayouts'
 import type { TabChromeMeta, TabChromePersist } from './useTabChromeLayout'
 
@@ -65,10 +63,10 @@ export function visualWidgetLabel(tab: VisualTab, id: string): string {
 /** Ключ хранения совпадает с рабочими вкладками, чтобы превью и вкладка делили одну раскладку. */
 export function visualStorageKey(tabId: string, userId: string): string {
   const uid = userId.trim() || 'default'
-  if (tabId === 'assignments_registry') return `orch-tab-chrome-v11:assignments_registry-v3:${uid}`
-  if (tabId === 'agent_library') return `orch-tab-chrome-v11:agent_library-v2:${uid}`
+  if (tabId === 'assignments_registry') return `orch-tab-chrome-v11:assignments_registry-v2:${uid}`
+  if (tabId === 'agent_library') return `orch-tab-chrome-v11:agent_library-v1:${uid}`
   if (tabId === 'meetings') return `orch-tab-chrome-v11:meetings-v3:${uid}`
-  if (tabId === 'kpi') return `orch-tab-chrome-v11:kpi-v5:${uid}`
+  if (tabId === 'kpi') return `orch-tab-chrome-v11:kpi-v4:${uid}`
   return `orch-tab-chrome-v11:${tabId}:${uid}`
 }
 
@@ -86,22 +84,10 @@ export function readVisualDraft(tab: VisualTab, userId: string): VisualDraft {
   const meta = defaultMeta(ids)
   const layout = tab.defaults.map((item) => ({ ...item }))
   try {
-    const uid = userId.trim() || 'default'
-    let raw = localStorage.getItem(visualStorageKey(tab.id, userId))
-    let legacyScale: { sx: number; sy: number } | null = null
-    if (!raw) {
-      const migration = tabChromeLayoutMigration(tab.id)
-      if (migration) {
-        raw = localStorage.getItem(`orch-tab-chrome-v11:${migration.legacySuffix}:${uid}`)
-        legacyScale = migration
-      }
-    }
+    const raw = localStorage.getItem(visualStorageKey(tab.id, userId))
     if (!raw) return { layout, meta }
     const parsed = JSON.parse(raw) as Partial<TabChromePersist>
-    const storedLayout = legacyScale
-      ? scaleLayoutItems(parsed.layout || [], legacyScale.sx, legacyScale.sy)
-      : parsed.layout || []
-    const saved = new Map(storedLayout.map((item) => [item.i, item]))
+    const saved = new Map((parsed.layout || []).map((item) => [item.i, item]))
     const { cols, maxRows } = tabChromeGridDimensions(tab.id)
     for (const item of layout) {
       const found = saved.get(item.i)

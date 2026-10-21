@@ -607,21 +607,16 @@ function OccupancyBoard({
                         <div key={task.key} className="sub-kpi-gantt-row">
                           <span title={task.title}>{cut(task.title, 22)}</span>
                           <div className="sub-kpi-gantt-lane">
-                            {left != null ? (
-                              <div
-                                className="sub-kpi-gantt-window"
-                                style={{ width: `${Math.max(width, left === 0 ? 0 : 2)}%` }}
-                              >
+                            {left == null ? (
+                              <span className="sub-kpi-load-scale">нет срока</span>
+                            ) : width > 0 ? (
+                              <div className="sub-kpi-gantt-window" style={{ width: `${width}%` }}>
                                 <button
                                   type="button"
                                   style={{ width: '100%', background: kind?.color || DUE }}
                                   aria-label={task.title}
                                   onMouseEnter={(event) =>
-                                    showTip(event, [
-                                      task.title,
-                                      `срок ${dueText}`,
-                                      left === 0 ? 'срок сегодня или прошёл' : `осталось ${left} дн.`
-                                    ])
+                                    showTip(event, [task.title, `срок ${dueText}`, `осталось ${left} дн.`])
                                   }
                                 />
                               </div>
