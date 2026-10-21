@@ -2382,6 +2382,8 @@ def delete_event(input_data: dict) -> dict:
             status = int(getattr(target, "MeetingStatus", 0) or 0)
         except Exception:
             status = 0
+        parent = getattr(target, "Parent", None)
+        slot_start = _naive_datetime(getattr(target, "Start", None)) or start
         cancellation_sent = False
         if send_cancellation and status == _OL_MEETING:
             try:
@@ -2391,9 +2393,16 @@ def delete_event(input_data: dict) -> dict:
                 _log_progress("step=delete_event cancellation sent")
             except Exception as exc:
                 _log_progress(f"step=delete_event cancellation failed: {exc}")
-                _delete_appointment(target)
-        else:
-            _delete_appointment(target)
+        # Send() только рассылает отмену и оставляет встречу в календаре.
+        _remove_from_calendar(
+            namespace,
+            target,
+            entry_id,
+            store_id,
+            start,
+            occurrence=target is not appt,
+        )
+        _delete_same_slot(parent, subject, slot_start)
         _log_progress("step=delete_event ok")
         _ = outlook
         return {
@@ -2430,11 +2439,121 @@ def _single_occurrence(appt: Any, start: datetime | None) -> Any:
     raise OutlookComError("Outlook не открыл этот повтор серии, серию целиком не удаляю") from last_error
 
 
-def _delete_appointment(appt: Any) -> None:
+def _already_gone(exc: Exception) -> bool:
+    text = str(exc).casefold()
+    return any(
+        mark in text
+        for mark in (
+            "not found",
+            "не найден",
+            "moved or deleted",
+            "has been moved",
+            "0x8004010f",
+            "mapi_e_not_found",
+        )
+    )
+
+
+def _remove_from_calendar(
+    namespace: Any,
+    appt: Any,
+    entry_id: str,
+    store_id: str,
+    start: datetime | None,
+    *,
+    occurrence: bool,
+) -> None:
+    """Убрать встречу из календаря. После отмены объект COM часто уже недействителен."""
     try:
         appt.Delete()
+        _log_progress("step=delete_event removed")
+        return
     except Exception as exc:
+        if _already_gone(exc):
+            _log_progress("step=delete_event already gone")
+            return
+        _log_progress(f"step=delete_event delete retry: {exc}")
+    try:
+        again = (
+            namespace.GetItemFromID(entry_id, store_id)
+            if store_id
+            else namespace.GetItemFromID(entry_id)
+        )
+    except Exception as exc:
+        if _already_gone(exc):
+            _log_progress("step=delete_event already gone")
+            return
         raise OutlookComError(f"Outlook не удалил совещание: {exc}") from exc
+    if again is None:
+        return
+    if occurrence:
+        again = _single_occurrence(again, start)
+    try:
+        again.Delete()
+        _log_progress("step=delete_event removed")
+    except Exception as exc:
+        if _already_gone(exc):
+            _log_progress("step=delete_event already gone")
+            return
+        raise OutlookComError(f"Outlook не удалил совещание: {exc}") from exc
+
+
+def _naive_datetime(value: Any) -> datetime | None:
+    if isinstance(value, datetime):
+        return value.replace(tzinfo=None)
+    return None
+
+
+def _subject_is_same_meeting(item_subject: str, subject: str) -> bool:
+    left = item_subject.strip().casefold()
+    right = subject.strip().casefold()
+    if not left or not right:
+        return False
+    if left == right:
+        return True
+    prefixes = ("отменено:", "отмена:", "canceled:", "cancelled:")
+    for prefix in prefixes:
+        if left.startswith(prefix) and left[len(prefix) :].strip() == right:
+            return True
+        if right.startswith(prefix) and right[len(prefix) :].strip() == left:
+            return True
+    return False
+
+
+def _delete_same_slot(folder: Any, subject: str, start: datetime | None) -> None:
+    """Удалить копию, которую Send() оставил в календаре под той же темой и временем.
+
+    После отмены EntryID часто меняется, а тема получает префикс «Отменено:».
+    """
+    if folder is None or start is None or not subject.strip():
+        return
+    try:
+        items = folder.Items
+        items.Sort("[Start]")
+        items.IncludeRecurrences = True
+    except Exception as exc:
+        _log_progress(f"step=delete_event slot scan skipped: {exc}")
+        return
+    window_start = start - timedelta(minutes=2)
+    window_end = start + timedelta(minutes=2)
+    restricted, restricted_ok = _restrict_calendar_items(items, window_start, window_end)
+    scan = restricted if restricted_ok else items
+    matched: list[Any] = []
+    for item in _iter_outlook_items(scan):
+        item_start = _naive_datetime(getattr(item, "Start", None))
+        if item_start is None or abs((item_start - start).total_seconds()) > 90:
+            continue
+        item_subject = _safe_str(getattr(item, "Subject", "") or "")
+        if _subject_is_same_meeting(item_subject, subject):
+            matched.append(item)
+    for item in matched:
+        try:
+            item.Delete()
+            _log_progress("step=delete_event slot removed")
+        except Exception as exc:
+            if _already_gone(exc):
+                continue
+            raise OutlookComError(f"Outlook не удалил совещание: {exc}") from exc
 
 
 def _dispatch_outlook(win32com_client: Any) -> Any:

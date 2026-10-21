@@ -34,6 +34,8 @@ def lookup_profile_overrides(fio: str) -> tuple[str | None, str | None]:
         if normalize_fio_key(needle) in key:
             position = override
             break
+    if position is None and all(part in key for part in ("тищенко", "марина", "николаевна")):
+        position = "Помощник Председателя совета директоров"
     return department, position
 
 

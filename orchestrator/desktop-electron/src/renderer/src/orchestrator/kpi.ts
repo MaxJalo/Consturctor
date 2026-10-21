@@ -20,10 +20,16 @@ export const PSD_ASSISTANT_USER_IDS = new Set([
   'BD0A93075DA6962342D8FDA0B89FB13B'
 ])
 
-const PSD_ASSISTANT_FIO = ['ильченко', 'тищенко марина николаевна']
+const PSD_ASSISTANT_FIO = ['ильченко']
+
+function isMarinaTishchenko(fio: string): boolean {
+  const name = fio.toLowerCase().replace(/ё/g, 'е')
+  return name.includes('тищенко') && name.includes('марина') && name.includes('николаевна')
+}
 
 export function isPsdAssistant(userId = '', fio = ''): boolean {
   if (PSD_ASSISTANT_USER_IDS.has((userId || '').trim())) return true
+  if (isMarinaTishchenko(fio || '')) return true
   const name = (fio || '').toLowerCase().replace(/ё/g, 'е')
   return PSD_ASSISTANT_FIO.some((mark) => name.includes(mark))
 }

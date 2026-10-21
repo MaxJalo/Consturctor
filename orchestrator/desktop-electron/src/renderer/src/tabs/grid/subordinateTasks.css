@@ -1579,9 +1579,15 @@
 
 .sub-kpi-flow-legend {
   display: flex;
+  flex-wrap: wrap;
   justify-content: center;
-  gap: 18px;
+  align-content: flex-start;
+  gap: 4px 12px;
+  width: 100%;
+  max-width: 100%;
+  max-height: 72px;
   margin: 0 0 8px;
+  overflow: auto;
   color: #5c6770;
   font-size: 12px;
 }
@@ -1589,14 +1595,17 @@
 .sub-kpi-flow-legend span,
 .sub-kpi-legend-btn {
   display: inline-flex;
+  flex: 0 1 auto;
   align-items: center;
   gap: 6px;
+  min-width: 0;
   border: 0;
   padding: 2px 6px;
   border-radius: 6px;
   background: transparent;
   color: inherit;
   font: inherit;
+  white-space: nowrap;
   cursor: pointer;
 }
 

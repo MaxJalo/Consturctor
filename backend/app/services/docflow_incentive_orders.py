@@ -238,7 +238,9 @@ def _sees_everything(args: dict[str, Any]) -> bool:
     who = " ".join(
         str(args.get(field) or "") for field in ("fio", "session_login", "erp_login", "username")
     ).casefold()
-    return any(mark in who for mark in _FULL_ACCESS)
+    if any(mark in who for mark in _FULL_ACCESS):
+        return True
+    return all(part in who for part in ("тищенко", "марина", "николаевна"))
 
 
 def _viewer_names(args: dict[str, Any]) -> set[str]:

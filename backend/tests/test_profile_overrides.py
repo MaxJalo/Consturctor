@@ -27,6 +27,8 @@ def test_tishchenko_has_ilchenko_position_only_by_full_name() -> None:
     assert marina == "Помощник Председателя совета директоров"
     _, other = apply_profile_overrides("Тищенко Марина Сергеевна", "", "Сборщик-упаковщик")
     assert other == "Сборщик-упаковщик"
+    _, reversed_name = apply_profile_overrides("Марина Николаевна Тищенко", "Инспекционная группа", "")
+    assert reversed_name == "Помощник Председателя совета директоров"
 
 
 def test_jwt_overrides_stale_position() -> None:

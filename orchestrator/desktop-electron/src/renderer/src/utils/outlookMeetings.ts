@@ -313,14 +313,23 @@ function writeCache(cache: MeetingCache): void {
 }
 
 /** Users whose meetings come from someone else's shared Outlook calendar instead of their own. */
-const SHARED_MEETING_CALENDARS: { surname: string; calendarOwner: string }[] = [
-  { surname: 'ильченко', calendarOwner: 'Амураль Игорь Борисович' }
-]
+const SHARED_MEETING_OWNER = 'Амураль Игорь Борисович'
+
+function foldMeetingFio(value: string): string {
+  return value.toLocaleLowerCase('ru').replace(/ё/g, 'е')
+}
+
+function isMarinaTishchenko(fio: string): boolean {
+  const name = foldMeetingFio(fio)
+  return name.includes('тищенко') && name.includes('марина') && name.includes('николаевна')
+}
 
 export function sharedMeetingCalendarFor(fio: string | undefined): string {
-  const surname = String(fio || '').trim().split(/\s+/)[0]?.toLocaleLowerCase('ru') || ''
-  if (!surname) return ''
-  return SHARED_MEETING_CALENDARS.find((item) => item.surname === surname)?.calendarOwner || ''
+  const folded = foldMeetingFio(String(fio || '').trim())
+  if (!folded) return ''
+  const surname = folded.split(/\s+/)[0] || ''
+  if (surname === 'ильченко' || isMarinaTishchenko(folded)) return SHARED_MEETING_OWNER
+  return ''
 }
 
 type CalendarRequestResult = {
