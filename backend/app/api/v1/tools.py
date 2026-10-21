@@ -82,6 +82,7 @@ _SERVER_TOOLS = (
     | _USERS_TOOLS
     | _AUDIO_TOOLS
     | MEETING_PLANNER_TOOLS
+    | frozenset({"external_order.case"})
 )
 
 
@@ -143,6 +144,10 @@ def _dispatch_server_tool(
             result = _invoke_users_tool(tool_name, arguments, auth)
         elif tool_name in _AUDIO_TOOLS:
             result = _invoke_audio_tool(tool_name, arguments, auth)
+        elif tool_name == "external_order.case":
+            from app.services.external_orders import invoke_tool as invoke_external_order
+
+            result = invoke_external_order(arguments, fio=auth.fio or "")
         elif tool_name in MEETING_PLANNER_TOOLS:
             if tool_name in MEETING_PLANNER_WRITE_TOOLS:
                 _require_meeting_planner_writer(auth)

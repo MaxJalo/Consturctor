@@ -1255,6 +1255,30 @@ def _desktop_ac_tools() -> list[dict[str, Any]]:
         ("agent.schedule.cancel", "Отменить ранее созданный триггер agent.schedule по trigger_id.", {
             "trigger_id": _prop("string", "id триггера из ответа agent.schedule"),
         }, ["trigger_id"]),
+        (
+            "external_order.case",
+            "Дело внешнего заказа. action=read — карточка, чек-листы, сверка и блокировки. "
+            "action=propose — записать черновики выводов и расхождений со ссылкой на документ и место в нём; "
+            "фактом они не становятся. action=draft_1c — подготовить текст записки или поручения, "
+            "без записи в 1С. Запись в 1С — только onec.docflow_document_create, человек подтверждает.",
+            {
+                "action": _prop("string", "read | propose | draft_1c", default="read"),
+                "order_id": _prop("string", "id карточки внешнего заказа"),
+                "findings": _prop(
+                    "array",
+                    "Черновики: {field, value, source_ref, location, confidence, owner_role}. "
+                    "location — абзац, страница или ячейка; без него вывод не сохранится.",
+                ),
+                "diffs": _prop(
+                    "array",
+                    "Черновики сверки: {code, left_value, right_value, note}",
+                ),
+                "kind": _prop("string", "Для draft_1c: memo или assignment"),
+                "title": _prop("string", "Заголовок черновика для 1С"),
+                "text": _prop("string", "Текст черновика для 1С"),
+            },
+            ["action", "order_id"],
+        ),
     ]
     server_tools = {
         "users.current",
@@ -1263,6 +1287,7 @@ def _desktop_ac_tools() -> list[dict[str, Any]]:
         "notify.send",
         "chat.send_direct",
         "data.process",
+        "external_order.case",
     }
     tools: list[dict[str, Any]] = []
     for item in items:
@@ -1554,6 +1579,14 @@ _CONTRACTS: dict[str, tuple[str, str, str | tuple[str, ...], list[str], list[str
         "none",
     ),
     "chat.send_direct": ("constructor", "chat_message", "notify", ["text"], ["sent"], "none"),
+    "external_order.case": (
+        "constructor",
+        "external_order",
+        ("read", "create"),
+        ["action", "order_id"],
+        ["id", "code", "blocks", "note"],
+        "none",
+    ),
     "agent.schedule": ("constructor", "trigger", "create", [], ["trigger_id"], "none"),
     "agent.schedule.cancel": ("constructor", "trigger", "delete", ["trigger_id"], [], "none"),
 }

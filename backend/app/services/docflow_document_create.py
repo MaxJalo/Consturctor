@@ -914,7 +914,15 @@ class _ODataClient:
         with httpx.Client(timeout=self.timeout, auth=self.auth) as client:
             return client.request(method, self._url(path), json=body, headers=headers)
 
-    def get(self, entity: str, *, filt: str = "", top: int = 20, ref_key: str = "") -> list[dict[str, Any]]:
+    def get(
+        self,
+        entity: str,
+        *,
+        filt: str = "",
+        top: int = 20,
+        ref_key: str = "",
+        orderby: str = "",
+    ) -> list[dict[str, Any]]:
         entity = self._entity(entity)
         if ref_key:
             path = f"{entity}(guid'{ref_key}')?$format=json"
@@ -922,6 +930,8 @@ class _ODataClient:
             path = f"{entity}?$format=json&$top={top}"
             if filt:
                 path += "&$filter=" + quote(filt, safe="=,'()")
+            if orderby:
+                path += "&$orderby=" + quote(orderby, safe=", ")
         response = self._send("GET", path)
         self._check(response)
         data = response.json()
