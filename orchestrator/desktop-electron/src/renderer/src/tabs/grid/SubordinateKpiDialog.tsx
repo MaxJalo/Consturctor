@@ -676,6 +676,7 @@ export function SubordinateKpiDialog({
   const [from, setFrom] = useState(dateFrom)
   const [to, setTo] = useState(dateTo)
   const [checked, setChecked] = useState<Set<string>>(() => new Set(people))
+  const knownPeople = useRef(new Set(people))
   const [hoverDay, setHoverDay] = useState('')
   const [hoverKind, setHoverKind] = useState<HoverKind>('')
   const [hoverKey, setHoverKey] = useState('')
@@ -699,6 +700,17 @@ export function SubordinateKpiDialog({
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
   }, [onClose])
+
+  useEffect(() => {
+    const added = people.filter((fio) => fio && !knownPeople.current.has(fio))
+    for (const fio of people) knownPeople.current.add(fio)
+    if (!added.length) return
+    setChecked((current) => {
+      const next = new Set(current)
+      for (const fio of added) next.add(fio)
+      return next
+    })
+  }, [people])
 
   const staff = useMemo(() => {
     const names = [...people]

@@ -102,6 +102,9 @@ def _sample_tiles() -> list[dict]:
 def test_is_ilchenko_by_id_and_fio() -> None:
     assert is_ilchenko(user_id="A2DCC949FEDEC70D40318ABA83C618F4")
     assert is_ilchenko(fio="Ильченко Екатерина Александровна")
+    assert is_ilchenko(user_id="BD0A93075DA6962342D8FDA0B89FB13B")
+    assert is_ilchenko(fio="Тищенко Марина Николаевна")
+    assert not is_ilchenko(fio="Тищенко Марина Сергеевна")
     assert not is_ilchenko(user_id="other", fio="Анна Де Армас")
     assert has_locked_position_kpi(position=PSD_POSITION_NAME)
     assert has_locked_position_kpi(position="  помощник  председателя совета директоров  ")

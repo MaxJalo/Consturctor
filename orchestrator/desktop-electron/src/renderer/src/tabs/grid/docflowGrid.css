@@ -347,6 +347,18 @@
   padding: 10px 14px 0;
 }
 
+.docflow-request-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-left: auto;
+}
+
+.docflow-request-actions .docflow-open-form {
+  margin: 0;
+}
+
 .docflow-request-head h2 {
   margin: 0;
   font-size: 16px;

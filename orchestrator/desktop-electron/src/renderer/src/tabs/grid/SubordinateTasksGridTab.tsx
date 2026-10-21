@@ -429,6 +429,8 @@ function normName(value: string): string {
 type SchemeLayout = {
   order: string[]
   parent: Record<string, string>
+  /** Люди, которых убрали со схемы. Повторная загрузка из 1С их не возвращает. */
+  removed: string[]
 }
 
 type SchemeDrop = 'before' | 'after' | 'inside'
@@ -485,7 +487,7 @@ function buildSchemeFromOrg(roots: PersonNode[]): SchemeLayout {
     }
   }
   walk(roots, '')
-  return { order, parent }
+  return { order, parent, removed: [] }
 }
 
 function schemeStorageKey(userId: string): string {
@@ -509,7 +511,15 @@ function readScheme(userId: string): SchemeLayout | null {
       const value = stored[fio]
       parent[fio] = typeof value === 'string' ? value.trim() : ''
     }
-    return { order, parent }
+    const removed: string[] = []
+    const rawRemoved = (parsed as { removed?: unknown }).removed
+    if (Array.isArray(rawRemoved)) {
+      for (const item of rawRemoved) {
+        const fio = String(item || '').trim()
+        if (fio && !order.includes(fio) && !removed.includes(fio)) removed.push(fio)
+      }
+    }
+    return { order, parent, removed }
   } catch {
     return null
   }
@@ -557,7 +567,7 @@ function relocatePerson(layout: SchemeLayout, fio: string, target: string, place
   if (place === 'after') index += 1
   if (place === 'inside') index = lastInSubtree(order, parent, target) + 1
   order.splice(index, 0, fio)
-  return { order, parent }
+  return { order, parent, removed: layout.removed }
 }
 
 function schemeToTree(layout: SchemeLayout, directory: Map<string, PersonNode>): PersonNode[] {
@@ -936,9 +946,10 @@ export function SubordinateTasksGridTab({
     if (!people.length) return
     const org = buildSchemeFromOrg(orgRoots(people))
     setScheme((current) => {
-      if (!current || current.order.length === 0) return org
+      if (!current) return org
+      const removed = new Set(current.removed)
       const have = new Set(current.order)
-      const missing = org.order.filter((fio) => fio && !have.has(fio))
+      const missing = org.order.filter((fio) => fio && !have.has(fio) && !removed.has(fio))
       if (!missing.length) return current
       const order = [...current.order]
       const parent = { ...current.parent }
@@ -950,7 +961,7 @@ export function SubordinateTasksGridTab({
         const orgParent = org.parent[fio] || ''
         parent[fio] = orgParent && have.has(orgParent) ? orgParent : ''
       }
-      return { order, parent }
+      return { order, parent, removed: current.removed }
     })
   }, [people])
 
@@ -1019,10 +1030,6 @@ export function SubordinateTasksGridTab({
   const scopedTasks = useMemo(
     () => periodTasks.filter((row) => pickedSet.has(row.fio)),
     [periodTasks, pickedSet]
-  )
-  const kpiTasks = useMemo(
-    () => tasks.filter((row) => pickedSet.has(row.fio)),
-    [tasks, pickedSet]
   )
   const focusedFio = focusFio && pickedSet.has(focusFio) ? focusFio : ''
 
@@ -1261,8 +1268,9 @@ export function SubordinateTasksGridTab({
     setPicked((current) => (current.includes(fio) ? current : [...current, fio]))
     setScheme((current) => {
       const base = current ?? buildSchemeFromOrg(orgRoots(people))
-      if (base.order.includes(fio)) return current
-      return { order: [...base.order, fio], parent: { ...base.parent, [fio]: '' } }
+      const removed = base.removed.filter((item) => item !== fio)
+      if (base.order.includes(fio)) return removed.length === base.removed.length ? current : { ...base, removed }
+      return { order: [...base.order, fio], parent: { ...base.parent, [fio]: '' }, removed }
     })
   }
 
@@ -1272,14 +1280,15 @@ export function SubordinateTasksGridTab({
     setFocusFio((current) => (current === fio ? '' : current))
     setScheme((current) => {
       const base = current ?? buildSchemeFromOrg(orgRoots(people))
-      if (!base.order.includes(fio)) return current
+      const removed = base.removed.includes(fio) ? base.removed : [...base.removed, fio]
+      if (!base.order.includes(fio)) return { ...base, removed }
       const parentFio = base.parent[fio] || ''
       const parent = { ...base.parent }
       delete parent[fio]
       for (const [child, owner] of Object.entries(parent)) {
         if (owner === fio) parent[child] = parentFio
       }
-      return { order: base.order.filter((item) => item !== fio), parent }
+      return { order: base.order.filter((item) => item !== fio), parent, removed }
     })
   }
 
@@ -1916,11 +1925,11 @@ export function SubordinateTasksGridTab({
       ) : null}
       {kpiOpen ? (
         <SubordinateKpiDialog
-          tasks={kpiTasks}
-          people={picked}
+          tasks={tasks}
+          people={activeScheme.order}
           directory={loads.map((row) => row.fio)}
           ownerId={user.id}
-          onAddPerson={(fio) => setPicked((current) => (current.includes(fio) ? current : [...current, fio]))}
+          onAddPerson={addPerson}
           dateFrom={dateFrom}
           dateTo={dateTo}
           person={focusedFio}

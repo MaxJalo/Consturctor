@@ -106,6 +106,36 @@ def test_aho_request_takes_executor_from_fallback(fake_client: _Client) -> None:
     assert body["Ответственный_Key"] == USER
 
 
+def test_nomenclature_market_and_pr_are_their_own_journals() -> None:
+    nomenclature = sr.service_spec("service_nomenclature")
+    market = sr.service_spec("service_market")
+    pr = sr.service_spec("service_pr")
+    assert nomenclature["entity"] == "Document_ТД_ЗаявкаНаСозданиеНоменклатуры"
+    assert nomenclature["all_documents"] is True
+    assert market["entity"] == "Document_ТД_ЗаявкаОПотребностиРынка"
+    assert pr["entity"] == "Document_ТД_ЗаявкаВСекторРекламыИPR"
+    assert dc.KINDS["service_nomenclature"]["entity"] == nomenclature["entity"]
+    assert dc.KINDS["service_market"]["defaults"]["Статус"] == "ПоставленаВПлан"
+    assert dc.FILE_CATALOGS["service_pr"].endswith("ИPRПрисоединенныеФайлы")
+    row = sr._row_view(
+        {
+            "Ref_Key": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+            "Number": "1",
+            "Статус": "ПоставленаВПлан",
+            "Наименование": "Датчик",
+            "Категория": {"Description": "КИП"},
+            "Партнер": {"Description": "Завод"},
+        },
+        technical=False,
+        form_kind="service_market",
+    )
+    assert row["text"] == "Датчик"
+    assert row["kind"] == "КИП"
+    assert row["organization"] == "Завод"
+    assert row["status"] == "Поставлена в план"
+    assert row["document_type"] == "Заявка о потребности рынка"
+
+
 def test_it_request_takes_executor_from_the_kind(fake_client: _Client) -> None:
     fake_client.catalogs[sr.KIND_CATALOG] = [
         {"Ref_Key": LEAF, "Description": "Новое", "Подразделение_Key": sr.IT_DEPARTMENT}

@@ -72,13 +72,7 @@ const CREATE_BUTTONS: Record<JournalId, { target: CreateTarget; label: string }[
   protocols: [{ target: 'protocol', label: 'Создать протокол' }],
   payments: [{ target: 'payment', label: 'Создать заявку' }],
   forwarding: [{ target: 'forwarding', label: 'Создать поручение' }],
-  requests: [
-    { target: 'service_1c', label: 'В службу 1С' },
-    { target: 'service_it', label: 'В службу IT' },
-    { target: 'service_exploitation', label: 'В эксплуатацию' },
-    { target: 'service_development', label: 'В службу развития' },
-    { target: 'service_aho', label: 'В АХО' }
-  ]
+  requests: []
 }
 
 function blankMeeting(): MeetingEvent {
@@ -118,7 +112,7 @@ const JOURNALS: { id: string; title: string; hint: string; icon: LucideIcon; ton
   {
     id: 'requests',
     title: 'Заявки в службы',
-    hint: '1С, IT, эксплуатация и АХО',
+    hint: '1С, IT, эксплуатация, номенклатура, рынок и PR',
     icon: Wrench,
     tone: 'orange'
   }
@@ -165,7 +159,7 @@ const SUBTITLES: Record<JournalId, string> = {
   forwarding:
     'Поручения экспедитору из 1С: тип заявки, способ доставки, груз, склад и ответственные. Прокрутите вниз — подгрузятся следующие.',
   requests:
-    'Списки 1С: сопровождение, IT, эксплуатация, служба развития и журнал АХО. Прокрутите таблицу вправо — колонок больше, чем помещается на экран.'
+    'Списки 1С: сопровождение, IT, эксплуатация, служба развития, создание номенклатуры, потребность рынка и сектор рекламы и PR. Прокрутите таблицу вправо — колонок больше, чем помещается на экран.'
 }
 
 function cell(value: string): string {
@@ -709,6 +703,7 @@ export function DocflowGridTab({ user }: { user: UserProfile }): React.JSX.Eleme
               to={to}
               reload={reloadKey}
               onOpenDocument={openDocument}
+              onCreate={openCreate}
             />
           ) : (
             <div className="docflow-table-card wp-card docflow-placeholder">

@@ -2345,6 +2345,98 @@ def update_event(input_data: dict) -> dict:
     return _run_com_read(_write, "Ошибка изменения встречи в Outlook Calendar")
 
 
+_OL_MEETING = 1
+_OL_MEETING_CANCELED = 5
+_OL_APPT_MASTER = 1
+
+
+def delete_event(input_data: dict) -> dict:
+    """Удалить встречу Outlook по EntryID. Повтор — только этот экземпляр, не всю серию.
+
+    Если это совещание организатора и send_cancellation не выключен, участникам уходит отмена.
+    """
+    entry_id = _safe_str(input_data.get("entry_id") or "").strip()
+    if not entry_id:
+        raise OutlookComError("Нужен entry_id встречи для удаления")
+    store_id = _safe_str(input_data.get("store_id") or "").strip()
+    start = _coerce_datetime(input_data.get("start"))
+    send_cancellation = _truthy(input_data.get("send_cancellation", True))
+
+    def _write(win32com_client: Any) -> dict:
+        _log_progress("step=delete_event dispatch_outlook start")
+        outlook = _dispatch_outlook(win32com_client)
+        namespace = _mapi_namespace(outlook)
+        try:
+            appt = (
+                namespace.GetItemFromID(entry_id, store_id)
+                if store_id
+                else namespace.GetItemFromID(entry_id)
+            )
+        except Exception as exc:
+            raise OutlookComError(f"Встреча не найдена в Outlook: {exc}") from exc
+        if appt is None:
+            raise OutlookComError("Встреча не найдена в Outlook")
+        target = _single_occurrence(appt, start)
+        subject = _safe_str(getattr(target, "Subject", "") or "")
+        try:
+            status = int(getattr(target, "MeetingStatus", 0) or 0)
+        except Exception:
+            status = 0
+        cancellation_sent = False
+        if send_cancellation and status == _OL_MEETING:
+            try:
+                target.MeetingStatus = _OL_MEETING_CANCELED
+                target.Send()
+                cancellation_sent = True
+                _log_progress("step=delete_event cancellation sent")
+            except Exception as exc:
+                _log_progress(f"step=delete_event cancellation failed: {exc}")
+                _delete_appointment(target)
+        else:
+            _delete_appointment(target)
+        _log_progress("step=delete_event ok")
+        _ = outlook
+        return {
+            "ok": True,
+            "deleted": True,
+            "entry_id": entry_id,
+            "subject": subject,
+            "cancellation_sent": cancellation_sent,
+            "source": "outlook_com",
+        }
+
+    return _run_com_read(_write, "Ошибка удаления встречи в Outlook Calendar")
+
+
+def _single_occurrence(appt: Any, start: datetime | None) -> Any:
+    """Мастер серии не удаляем целиком: берём повтор на время этой карточки."""
+    try:
+        state = int(getattr(appt, "RecurrenceState", 0) or 0)
+    except Exception:
+        state = 0
+    if state != _OL_APPT_MASTER or start is None:
+        return appt
+    try:
+        pattern = appt.GetRecurrencePattern()
+    except Exception as exc:
+        raise OutlookComError("Outlook не открыл повтор серии, серию целиком не удаляю") from exc
+    last_error: Exception | None = None
+    probes = (start, start.replace(second=0, microsecond=0))
+    for probe in probes:
+        try:
+            return pattern.GetOccurrence(probe)
+        except Exception as exc:
+            last_error = exc
+    raise OutlookComError("Outlook не открыл этот повтор серии, серию целиком не удаляю") from last_error
+
+
+def _delete_appointment(appt: Any) -> None:
+    try:
+        appt.Delete()
+    except Exception as exc:
+        raise OutlookComError(f"Outlook не удалил совещание: {exc}") from exc
+
+
 def _dispatch_outlook(win32com_client: Any) -> Any:
     """Держать один Outlook.Application на сессию, не поднимать новый процесс на запрос."""
     global _cached_outlook

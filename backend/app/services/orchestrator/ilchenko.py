@@ -11,6 +11,9 @@ ILCHENKO_USER_IDS = frozenset(
         "E11C4E11K00000000000000000000001",
     }
 )
+# Тищенко М.Н. на той же должности: те же функции, что у помощника ПСД.
+PSD_ASSISTANT_USER_IDS = ILCHENKO_USER_IDS | frozenset({"BD0A93075DA6962342D8FDA0B89FB13B"})
+_PSD_ASSISTANT_FIO = ("ильченко", "тищенко марина николаевна")
 
 DAY_SECONDS = 24 * 3600
 SIX_HOURS_SECONDS = 6 * 3600
@@ -24,9 +27,10 @@ ILCHENKO_SUMMARY = (
 
 
 def is_ilchenko(*, user_id: str = "", fio: str = "") -> bool:
-    if (user_id or "").strip() in ILCHENKO_USER_IDS:
+    if (user_id or "").strip() in PSD_ASSISTANT_USER_IDS:
         return True
-    return "ильченко" in (fio or "").casefold()
+    folded = (fio or "").casefold().replace("ё", "е")
+    return any(mark in folded for mark in _PSD_ASSISTANT_FIO)
 
 
 def _norm_position(value: str) -> str:

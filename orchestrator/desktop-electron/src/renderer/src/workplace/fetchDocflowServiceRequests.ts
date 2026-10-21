@@ -9,7 +9,9 @@ export type ServiceRequestId =
   | 'service_it'
   | 'service_exploitation'
   | 'service_development'
-  | 'service_aho'
+  | 'service_nomenclature'
+  | 'service_market'
+  | 'service_pr'
 
 export type ServiceRequestRow = {
   id: string
@@ -58,12 +60,14 @@ export type ServiceRequestPage = {
 
 export const SERVICE_REQUEST_PAGE_SIZE = 40
 
-export const SERVICE_REQUESTS: { id: ServiceRequestId; kind: DocflowKindId; title: string; hint: string }[] = [
-  { id: 'service_1c', kind: 'service_1c', title: 'Заявки в службу сопровождения 1С', hint: 'Служба 1С' },
-  { id: 'service_it', kind: 'service_it', title: 'Заявки в службу IT', hint: 'Служба IT' },
-  { id: 'service_exploitation', kind: 'service_exploitation', title: 'Заявки в Эксплуатационную службу', hint: 'Эксплуатация' },
-  { id: 'service_development', kind: 'service_development', title: 'Заявки в службу развития', hint: 'Служба развития' },
-  { id: 'service_aho', kind: 'service_aho', title: 'Журнал заявок в АХО и технические службы', hint: 'АХО и технические' }
+export const SERVICE_REQUESTS: { id: ServiceRequestId; kind: DocflowKindId; title: string; hint: string; create: string }[] = [
+  { id: 'service_1c', kind: 'service_1c', title: 'Заявки в службу сопровождения 1С', hint: 'Служба 1С', create: 'В службу 1С' },
+  { id: 'service_it', kind: 'service_it', title: 'Заявки в службу IT', hint: 'Служба IT', create: 'В службу IT' },
+  { id: 'service_exploitation', kind: 'service_exploitation', title: 'Заявки в Эксплуатационную службу', hint: 'Эксплуатация', create: 'В эксплуатацию' },
+  { id: 'service_development', kind: 'service_development', title: 'Заявки в службу развития', hint: 'Служба развития', create: 'В службу развития' },
+  { id: 'service_nomenclature', kind: 'service_nomenclature', title: 'Заявки на создание номенклатуры', hint: 'Номенклатура', create: 'Номенклатура' },
+  { id: 'service_market', kind: 'service_market', title: 'Заявки о потребности рынка', hint: 'Потребность рынка', create: 'Потребность рынка' },
+  { id: 'service_pr', kind: 'service_pr', title: 'Заявки в сектор рекламы и PR', hint: 'Реклама и PR', create: 'Реклама и PR' }
 ]
 
 function str(value: unknown): string {

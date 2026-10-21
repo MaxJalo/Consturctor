@@ -55,6 +55,9 @@ THEME_KEY = {
     "service_it": "Содержание",
     "service_exploitation": "Содержание",
     "service_development": "Содержание",
+    "service_nomenclature": "Содержание",
+    "service_market": "Наименование",
+    "service_pr": "Содержание",
     "service_aho": "Содержание",
 }
 TEXT_KEY = {
@@ -68,6 +71,9 @@ TEXT_KEY = {
     "service_it": "Содержание",
     "service_exploitation": "Содержание",
     "service_development": "Содержание",
+    "service_nomenclature": "Содержание",
+    "service_market": "ОписаниеПроблемы",
+    "service_pr": "Содержание",
     "service_aho": "Содержание",
 }
 

@@ -22,6 +22,9 @@ export const ATTACHED_FILES = {
   service_it: 'Catalog_ТД_ЗаявкаВСлужбуСопровожденияПрисоединенныеФайлы',
   service_exploitation: 'Catalog_ТД_ЗаявкаВ_АХОПрисоединенныеФайлы',
   service_development: 'Catalog_ТД_ЗаявкаВСлужбуРазвитияПрисоединенныеФайлы',
+  service_nomenclature: 'Catalog_ТД_ЗаявкаНаСозданиеНоменклатурыПрисоединенныеФайлы',
+  service_market: 'Catalog_ТД_ЗаявкаОПотребностиРынкаПрисоединенныеФайлы',
+  service_pr: 'Catalog_ТД_ЗаявкаВСекторРекламыИPRПрисоединенныеФайлы',
   service_aho: 'Catalog_ТД_ЗаявкаВ_АХОПрисоединенныеФайлы'
 } as const
 

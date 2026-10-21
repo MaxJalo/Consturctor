@@ -324,7 +324,7 @@ def _raw_tools() -> list[dict[str, Any]]:
             "description": (
                 "Документ журнала «Документооборот» в 1С: incoming, outgoing, memo, assignment, payment, "
                 "forwarding, order, directive, service_1c, service_it, service_exploitation, "
-                "service_development, service_aho — ERP; "
+                "service_development, service_nomenclature, service_market, service_pr, service_aho — ERP; "
                 "incentive — база ДО под учёткой сеанса. "
                 "action=schema — поля формы, списки, виды «на основании»; action=lookup + kind + catalog + query — "
                 "поиск в справочнике формы; action=create + kind + values {поле: значение} (+ tables, files, "
@@ -347,7 +347,7 @@ def _raw_tools() -> list[dict[str, Any]]:
                         "string",
                         "incoming | outgoing | memo | assignment | payment | forwarding | order | directive | "
                         "incentive | service_1c | service_it | service_exploitation | "
-                        "service_development | service_aho",
+                        "service_development | service_nomenclature | service_market | service_pr | service_aho",
                     ),
                     "ref_key": _prop("string", "Ref_Key документа (read / update / attach / basis)"),
                     "target": _prop("string", "Вид создаваемого документа (action=basis)"),

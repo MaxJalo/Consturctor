@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { Building2, GraduationCap, HardHat, Monitor, Wrench } from 'lucide-react'
+import { GraduationCap, HardHat, Megaphone, Monitor, Package, Plus, Store, Wrench } from 'lucide-react'
 import type { UserProfile } from '../../api/types'
 import { formatCorrespondenceDate } from '../../workplace/fetchDocflowCorrespondence'
 import {
@@ -18,7 +18,9 @@ const ICONS = {
   service_it: Monitor,
   service_exploitation: HardHat,
   service_development: GraduationCap,
-  service_aho: Building2
+  service_nomenclature: Package,
+  service_market: Store,
+  service_pr: Megaphone
 } as const
 
 function cell(value: string): string {
@@ -35,7 +37,7 @@ function mark(value: boolean): string {
 }
 
 function statusTone(code: string): string {
-  if (code === 'Исполнен') return 'is-done'
+  if (code === 'Исполнен' || code === 'Закрыта') return 'is-done'
   if (code === 'НаИсполнении' || code === 'НаСогласовании') return 'is-work'
   if (code === 'Отклонено' || code === 'Отменен' || code === 'Аннулирован') return 'is-stop'
   return 'is-draft'
@@ -111,25 +113,57 @@ const COLUMNS: Record<ServiceRequestId, Column[]> = {
     { key: 'doneAt', label: 'Срок исполнения фактический', value: (row) => when(row.doneAt) },
     { key: 'confirmed', label: 'Испол.', value: (row) => mark(row.confirmed) }
   ],
-  service_aho: [
-    { key: 'date', label: 'Дата', value: (row) => when(row.date) },
+  service_nomenclature: [
     { key: 'number', label: 'Номер', value: (row) => cell(row.number) },
-    { key: 'documentType', label: 'Тип документа', value: (row) => cell(row.documentType) },
+    { key: 'date', label: 'Дата', value: (row) => when(row.date) },
+    { key: 'responsible', label: 'Автор', value: (row) => cell(row.responsible) },
+    { key: 'department', label: 'Подразделение', value: (row) => cell(row.department) },
     { key: 'kind', label: 'Вид заявки', value: (row) => cell(row.kind), title: (row) => row.kindPath },
     { key: 'status', label: 'Статус', value: (row) => cell(row.status) },
-    { key: 'responsible', label: 'Автор', value: (row) => cell(row.responsible) },
-    { key: 'organization', label: 'Организация', value: (row) => cell(row.organization) },
+    { key: 'text', label: 'Содержание', value: (row) => cell(row.text) },
     { key: 'executorDepartment', label: 'Подразделение исполнитель', value: (row) => cell(row.executorDepartment) },
+    { key: 'due', label: 'Желаемый срок', value: (row) => when(row.due) },
+    { key: 'doneAt', label: 'Дата исполнения', value: (row) => when(row.doneAt) },
+    { key: 'organization', label: 'Организация', value: (row) => cell(row.organization) }
+  ],
+  service_market: [
+    { key: 'number', label: 'Номер', value: (row) => cell(row.number) },
+    { key: 'date', label: 'Дата', value: (row) => when(row.date) },
+    { key: 'text', label: 'Наименование', value: (row) => cell(row.text) },
+    { key: 'kind', label: 'Категория', value: (row) => cell(row.kind) },
+    { key: 'status', label: 'Статус', value: (row) => cell(row.status) },
+    { key: 'responsible', label: 'Менеджер', value: (row) => cell(row.responsible) },
+    { key: 'organization', label: 'Партнёр', value: (row) => cell(row.organization) },
+    { key: 'department', label: 'Подразделение', value: (row) => cell(row.department) },
+    { key: 'executor', label: 'Принял заявку', value: (row) => cell(row.executor) },
+    { key: 'due', label: 'Срок отработки', value: (row) => when(row.due) },
+    { key: 'doneAt', label: 'Срок факт', value: (row) => when(row.doneAt) },
+    { key: 'resolution', label: 'Описание', value: (row) => cell(row.resolution) }
+  ],
+  service_pr: [
+    { key: 'number', label: 'Номер', value: (row) => cell(row.number) },
+    { key: 'date', label: 'Дата', value: (row) => when(row.date) },
+    { key: 'responsible', label: 'Автор', value: (row) => cell(row.responsible) },
+    { key: 'department', label: 'Подразделение', value: (row) => cell(row.department) },
+    { key: 'kind', label: 'Вид заявки', value: (row) => cell(row.kind), title: (row) => row.kindPath },
+    { key: 'status', label: 'Статус', value: (row) => cell(row.status) },
+    { key: 'text', label: 'Содержание', value: (row) => cell(row.text) },
     { key: 'executor', label: 'Фактический исполнитель', value: (row) => cell(row.executor) },
-    { key: 'confirmed', label: 'Подтверждение автора об исполнении', value: (row) => mark(row.confirmed) },
-    { key: 'acceptedAt', label: 'Принято в обработку', value: (row) => when(row.acceptedAt) },
-    { key: 'doneAt', label: 'Срок исполнения фактический', value: (row) => when(row.doneAt) }
+    { key: 'resolution', label: 'Резолюция', value: (row) => cell(row.resolution) },
+    { key: 'due', label: 'Желаемый срок', value: (row) => when(row.due) },
+    { key: 'doneAt', label: 'Дата исполнения', value: (row) => when(row.doneAt) },
+    { key: 'organization', label: 'Организация', value: (row) => cell(row.organization) }
   ]
 }
 
 function searchText(row: ServiceRequestRow): string {
   return [
     row.date,
+    when(row.date),
+    when(row.due),
+    when(row.acceptedAt),
+    when(row.plannedAt),
+    when(row.doneAt),
     row.number,
     row.status,
     row.kind,
@@ -141,7 +175,14 @@ function searchText(row: ServiceRequestRow): string {
     row.department,
     row.executor,
     row.executorDepartment,
-    row.resolution
+    row.resolution,
+    row.room,
+    row.building,
+    row.phone,
+    row.person,
+    row.position,
+    row.priority,
+    row.accounts
   ].join(' ')
 }
 
@@ -167,13 +208,15 @@ export function DocflowServiceRequestsPanel({
   from,
   to,
   reload,
-  onOpenDocument
+  onOpenDocument,
+  onCreate
 }: {
   user: UserProfile
   from: string
   to: string
   reload: number
   onOpenDocument?: (kind: DocflowKindId, refKey: string) => void
+  onCreate?: (kind: DocflowKindId) => void
 }): React.JSX.Element {
   const [service, setService] = useState<ServiceRequestId>('service_exploitation')
   const [rows, setRows] = useState<ServiceRequestRow[]>([])
@@ -242,6 +285,18 @@ export function DocflowServiceRequestsPanel({
     if (node.scrollTop + node.clientHeight >= node.scrollHeight - 80) fetchPage(skip, false)
   }
 
+  const query = table.query.trim()
+
+  useEffect(() => {
+    if (!hasMore || loading || error) return
+    if (!visible.length) {
+      if (query) fetchPage(skip, false)
+      return
+    }
+    const node = scrollRef.current
+    if (!node || node.scrollHeight <= node.clientHeight + 8) fetchPage(skip, false)
+  }, [visible.length, hasMore, loading, error, skip, fetchPage, query])
+
   return (
     <div className="docflow-requests">
       <div className="docflow-kind" role="tablist" aria-label="Служба">
@@ -267,19 +322,30 @@ export function DocflowServiceRequestsPanel({
       <div className="docflow-table-card wp-card">
           <div className="docflow-request-head">
             <h2>{active.title}</h2>
-            {selected ? (
-              <DocflowOpenFormBar
-                refKey={selected.id}
-                hint="двойной щелчок по строке"
-                onOpen={onOpenDocument && (() => onOpenDocument(selected.formKind, selected.id))}
-              />
-            ) : null}
+            <div className="docflow-request-actions">
+              {onCreate ? (
+                <button
+                  type="button"
+                  className="docflow-edit-btn is-primary docflow-create-btn"
+                  onClick={() => onCreate(active.kind)}
+                >
+                  <Plus size={14} aria-hidden /> {active.create}
+                </button>
+              ) : null}
+              {selected ? (
+                <DocflowOpenFormBar
+                  refKey={selected.id}
+                  hint="двойной щелчок по строке"
+                  onOpen={onOpenDocument && (() => onOpenDocument(selected.formKind, selected.id))}
+                />
+              ) : null}
+            </div>
           </div>
           <div className="docflow-order-filters">
             <DocflowSearch
               value={table.query}
               onChange={table.setQuery}
-              placeholder="Номер, вид, автор, исполнитель…"
+              placeholder="Номер, вид, текст, автор, исполнитель…"
               found={visible.length}
               total={rows.length}
             />
@@ -295,13 +361,20 @@ export function DocflowServiceRequestsPanel({
               </select>
             </label>
           </div>
-          {loading && !rows.length ? <p className="docflow-status">Загружаем из 1С…</p> : null}
           {error ? <p className="docflow-status docflow-status-error">{error}</p> : null}
-          {!loading && !error && !visible.length ? (
-            <p className="docflow-status">За выбранные даты заявок нет. Расширьте период сверху.</p>
+          {!error && !visible.length ? (
+            <p className="docflow-status">
+              {hasMore || loading
+                ? rows.length
+                  ? 'Ищем заявку в журнале…'
+                  : 'Загружаем из 1С…'
+                : rows.length
+                  ? 'Под этот поиск заявок нет. Расширьте период сверху.'
+                  : 'За выбранные даты заявок нет. Расширьте период сверху.'}
+            </p>
           ) : null}
-          {visible.length ? (
-            <div className="docflow-table-scroll" ref={scrollRef} onScroll={onScroll}>
+          <div className="docflow-table-scroll" ref={scrollRef} onScroll={onScroll}>
+            {visible.length ? (
               <table className="docflow-table">
                 <thead>
                   <tr>
@@ -339,8 +412,8 @@ export function DocflowServiceRequestsPanel({
                   ))}
                 </tbody>
               </table>
-            </div>
-          ) : null}
+            ) : null}
+          </div>
       </div>
     </div>
   )

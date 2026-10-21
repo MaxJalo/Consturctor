@@ -20,6 +20,9 @@ export type DocflowKindId =
   | 'service_it'
   | 'service_exploitation'
   | 'service_development'
+  | 'service_nomenclature'
+  | 'service_market'
+  | 'service_pr'
   | 'service_aho'
 
 export type DocflowFieldType = 'text' | 'textarea' | 'date' | 'number' | 'ref' | 'enum' | 'bool'

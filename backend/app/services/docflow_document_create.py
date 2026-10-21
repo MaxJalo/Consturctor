@@ -198,9 +198,93 @@ DEVELOPMENT_REQUEST_FIELDS: list[dict[str, Any]] = [
     {"key": "СрокИсполненияЖелаемый", "label": "Желаемый срок", "type": "date"},
     {"key": "Ответственный_Key", "label": "Автор", "type": "ref", "catalog": USERS, "required": True, "default": "me"},
 ]
+ORG_DEPARTMENTS = "Catalog_ПодразделенияОрганизаций"
+MARKET_CATEGORIES = "Catalog_ТД_КатегорииЗаявокОПотребностиРынка"
+_MARKET_STATUS = {
+    "key": "Статус",
+    "label": "Статус",
+    "type": "enum",
+    "options": _enum(
+        ("ПоставленаВПлан", "Поставлена в план"),
+        ("Приостановлена", "Приостановлена"),
+        ("Закрыта", "Закрыта"),
+        ("Аннулирована", "Аннулирована"),
+    ),
+}
+NOMENCLATURE_REQUEST_FIELDS: list[dict[str, Any]] = [
+    {
+        "key": "ВидЗаявки_Key",
+        "label": "Вид заявки",
+        "type": "enum",
+        "required": True,
+        "side": "wide",
+        "hint": "Создание или корректировка номенклатуры",
+    },
+    {"key": "Организация_Key", "label": "Организация", "type": "ref", "catalog": ORGS, "required": True},
+    {"key": "Подразделение_Key", "label": "Подразделение", "type": "ref", "catalog": DEPARTMENTS, "required": True},
+    {"key": "Содержание", "label": "Содержание", "type": "textarea", "required": True},
+    {"key": "Комментарий", "label": "Комментарий", "type": "textarea"},
+    {"key": "ТелефонОбратнойСвязи", "label": "Телефон", "type": "text"},
+    {"key": "ЖелаемыйСрокИсполнения", "label": "Желаемый срок", "type": "date"},
+    {"key": "Ответственный_Key", "label": "Автор", "type": "ref", "catalog": USERS, "required": True, "default": "me"},
+]
+NOMENCLATURE_TABLES: list[dict[str, Any]] = [
+    {
+        "key": "СписокНовыхНоменклатур",
+        "label": "Новая номенклатура",
+        "columns": [
+            {"key": "НаименованиеНоменклатуры", "label": "Наименование", "type": "text", "required": True},
+            {"key": "НазначениеНоменклатуры", "label": "Назначение", "type": "text"},
+        ],
+    },
+    {
+        "key": "СписокНоменклатурыДляКорректировки",
+        "label": "Номенклатура для корректировки",
+        "columns": [
+            {"key": "Номенклатура_Key", "label": "Номенклатура", "type": "ref", "catalog": "Catalog_Номенклатура", "required": True},
+            {"key": "Комментарий", "label": "Что изменить", "type": "text"},
+        ],
+    },
+]
+PR_REQUEST_FIELDS: list[dict[str, Any]] = [
+    {
+        "key": "ВидЗаявки_Key",
+        "label": "Вид заявки",
+        "type": "enum",
+        "required": True,
+        "side": "wide",
+        "hint": "Сектор рекламы и PR",
+    },
+    {"key": "Организация_Key", "label": "Организация", "type": "ref", "catalog": ORGS, "required": True},
+    {"key": "Подразделение_Key", "label": "Подразделение", "type": "ref", "catalog": ORG_DEPARTMENTS, "required": True},
+    {"key": "Содержание", "label": "Содержание", "type": "textarea", "required": True},
+    {"key": "Задача", "label": "Задача", "type": "text"},
+    {"key": "ТекстДляСайта", "label": "Текст для сайта", "type": "textarea"},
+    {"key": "СсылкаНаСайт", "label": "Ссылка на сайт", "type": "text"},
+    {"key": "ТелефонОбратнойСвязи", "label": "Телефон", "type": "text"},
+    {"key": "СрокИсполненияЖелаемый", "label": "Желаемый срок", "type": "date"},
+    {"key": "Ответственный_Key", "label": "Автор", "type": "ref", "catalog": USERS, "required": True, "default": "me"},
+]
+MARKET_REQUEST_FIELDS: list[dict[str, Any]] = [
+    {"key": "Наименование", "label": "Наименование", "type": "text", "required": True, "side": "wide"},
+    {"key": "Категория_Key", "label": "Категория", "type": "ref", "catalog": MARKET_CATEGORIES, "required": True},
+    {"key": "Партнер_Key", "label": "Партнёр", "type": "ref", "catalog": PARTNERS},
+    {"key": "Подразделение_Key", "label": "Подразделение", "type": "ref", "catalog": DEPARTMENTS, "required": True},
+    {"key": "Менеджер_Key", "label": "Менеджер", "type": "ref", "catalog": USERS, "required": True, "default": "me"},
+    {"key": "ОписаниеПроблемы", "label": "Описание проблемы", "type": "textarea", "required": True},
+    {"key": "КонтактнаяИнформация", "label": "Контакт", "type": "text"},
+    {"key": "СрокОтработки", "label": "Срок отработки", "type": "date"},
+]
 
 
-def _service_kind(title: str, service: str, fields: list[dict[str, Any]], *, fallback: str = "") -> dict[str, Any]:
+def _service_kind(
+    title: str,
+    service: str,
+    fields: list[dict[str, Any]],
+    *,
+    fallback: str = "",
+    tables: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
     from app.services.docflow_service_requests import SERVICES
 
     spec = SERVICES[service]
@@ -217,7 +301,7 @@ def _service_kind(title: str, service: str, fields: list[dict[str, Any]], *, fal
         "write_kind_path": spec["entity"] == "Document_ТД_ЗаявкаВ_АХО",
         "fields": own_fields,
         "edit_fields": [*own_fields, _REQUEST_STATUS],
-        "tables": [],
+        "tables": tables or [],
     }
     if fallback:
         kind["executor_fallback"] = fallback
@@ -243,6 +327,9 @@ REQUEST_KINDS = {
     "service_it",
     "service_exploitation",
     "service_development",
+    "service_nomenclature",
+    "service_market",
+    "service_pr",
     "service_aho",
 }
 
@@ -555,6 +642,28 @@ KINDS: dict[str, dict[str, Any]] = {
         TECHNICAL_REQUEST_FIELDS,
         fallback="3a9ac2db-214f-11e0-b91c-00248c26ee57",
     ),
+    "service_nomenclature": _service_kind(
+        "Заявка на создание номенклатуры",
+        "service_nomenclature",
+        NOMENCLATURE_REQUEST_FIELDS,
+        tables=NOMENCLATURE_TABLES,
+    ),
+    "service_pr": _service_kind(
+        "Заявка в сектор рекламы и PR",
+        "service_pr",
+        PR_REQUEST_FIELDS,
+    ),
+    "service_market": {
+        "title": "Заявка о потребности рынка",
+        "journal": "requests",
+        "base": "erp",
+        "entity": "Document_ТД_ЗаявкаОПотребностиРынка",
+        "mark_field": "Наименование",
+        "defaults": {"Статус": "ПоставленаВПлан"},
+        "fields": MARKET_REQUEST_FIELDS,
+        "edit_fields": [*MARKET_REQUEST_FIELDS, _MARKET_STATUS],
+        "tables": [],
+    },
 }
 
 # Журналы, у которых уже есть своя форма создания в приложении.
@@ -575,6 +684,9 @@ BASIS_TARGETS: dict[str, list[str]] = {
     "service_it": ["service_it"],
     "service_exploitation": ["service_exploitation"],
     "service_development": ["service_development"],
+    "service_nomenclature": ["service_nomenclature"],
+    "service_market": ["service_market"],
+    "service_pr": ["service_pr"],
     "service_aho": ["service_aho"],
 }
 
@@ -600,6 +712,9 @@ FILE_CATALOGS: dict[str, str] = {
     "service_it": "Catalog_ТД_ЗаявкаВСлужбуСопровожденияПрисоединенныеФайлы",
     "service_exploitation": "Catalog_ТД_ЗаявкаВ_АХОПрисоединенныеФайлы",
     "service_development": "Catalog_ТД_ЗаявкаВСлужбуРазвитияПрисоединенныеФайлы",
+    "service_nomenclature": "Catalog_ТД_ЗаявкаНаСозданиеНоменклатурыПрисоединенныеФайлы",
+    "service_market": "Catalog_ТД_ЗаявкаОПотребностиРынкаПрисоединенныеФайлы",
+    "service_pr": "Catalog_ТД_ЗаявкаВСекторРекламыИPRПрисоединенныеФайлы",
     "service_aho": "Catalog_ТД_ЗаявкаВ_АХОПрисоединенныеФайлы",
 }
 MAX_FILE_BYTES = 20 * 1024 * 1024
@@ -705,6 +820,27 @@ RIGHT_COLUMN: dict[str, set[str]] = {
         "Помещение",
         "ТелефонОбратнойСвязи",
         "ЖелаемыйСрокИсполнения",
+        "Ответственный_Key",
+        "Статус",
+    },
+    "service_nomenclature": {
+        "ТелефонОбратнойСвязи",
+        "ЖелаемыйСрокИсполнения",
+        "Ответственный_Key",
+        "Статус",
+    },
+    "service_market": {
+        "Партнер_Key",
+        "Менеджер_Key",
+        "КонтактнаяИнформация",
+        "СрокОтработки",
+        "Статус",
+    },
+    "service_pr": {
+        "Задача",
+        "СсылкаНаСайт",
+        "ТелефонОбратнойСвязи",
+        "СрокИсполненияЖелаемый",
         "Ответственный_Key",
         "Статус",
     },

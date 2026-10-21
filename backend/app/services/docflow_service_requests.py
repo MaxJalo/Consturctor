@@ -1,10 +1,9 @@
 """Журналы заявок 1С.
 
 Служба 1С и IT — документ Document_ТД_ЗаявкаВСлужбуСопровождения, разные папки
-видов. Эксплуатация и заявки АХО — Document_ТД_ЗаявкаВ_АХО, фильтр по корню
-Catalog_ТД_ВидыЗаявокВТехническиеСлужбы. Служба развития — свой документ
-Document_ТД_ЗаявкаВСлужбуРазвития. Журнал АХО за период собирает заявки АХО
-и сопровождения: отдельного OData-журнала в ERP нет.
+видов. Эксплуатационная служба — Document_ТД_ЗаявкаВ_АХО: отдельной заявки АХО нет.
+Служба развития — Document_ТД_ЗаявкаВСлужбуРазвития. Создание номенклатуры,
+потребность рынка и сектор рекламы и PR — свои документы.
 
 Человек заполняет вид заявки, место, телефон, срок и текст.
 Робот (здесь — запись сервисной учёткой, в 1С это сеанс пользователя) ставит
@@ -29,6 +28,12 @@ DEVELOPMENT_ENTITY = "Document_ТД_ЗаявкаВСлужбуРазвития"
 TECHNICAL_FILES = "Catalog_ТД_ЗаявкаВ_АХОПрисоединенныеФайлы"
 SUPPORT_FILES = "Catalog_ТД_ЗаявкаВСлужбуСопровожденияПрисоединенныеФайлы"
 DEVELOPMENT_FILES = "Catalog_ТД_ЗаявкаВСлужбуРазвитияПрисоединенныеФайлы"
+NOMENCLATURE_ENTITY = "Document_ТД_ЗаявкаНаСозданиеНоменклатуры"
+MARKET_ENTITY = "Document_ТД_ЗаявкаОПотребностиРынка"
+PR_ENTITY = "Document_ТД_ЗаявкаВСекторРекламыИPR"
+NOMENCLATURE_FILES = "Catalog_ТД_ЗаявкаНаСозданиеНоменклатурыПрисоединенныеФайлы"
+MARKET_FILES = "Catalog_ТД_ЗаявкаОПотребностиРынкаПрисоединенныеФайлы"
+PR_FILES = "Catalog_ТД_ЗаявкаВСекторРекламыИPRПрисоединенныеФайлы"
 
 EMPTY_GUID = "00000000-0000-0000-0000-000000000000"
 IT_DEPARTMENT = "bafd0e4c-1f39-11e2-855f-001e67112509"
@@ -77,6 +82,29 @@ SERVICES: dict[str, dict[str, Any]] = {
         # Весь документ — этот журнал, отдельный фильтр по папке видов не нужен.
         "all_documents": True,
     },
+    "service_nomenclature": {
+        "title": "Заявки на создание номенклатуры",
+        "entity": NOMENCLATURE_ENTITY,
+        "files": NOMENCLATURE_FILES,
+        "roots": ["Заявки на создание / корректировку номенклатуры"],
+        "form_kind": "service_nomenclature",
+        "all_documents": True,
+    },
+    "service_market": {
+        "title": "Заявки о потребности рынка",
+        "entity": MARKET_ENTITY,
+        "files": MARKET_FILES,
+        "form_kind": "service_market",
+        "all_documents": True,
+    },
+    "service_pr": {
+        "title": "Заявки в сектор рекламы и PR",
+        "entity": PR_ENTITY,
+        "files": PR_FILES,
+        "roots": ["Заявки в сектор рекламы и PR"],
+        "form_kind": "service_pr",
+        "all_documents": True,
+    },
     "service_aho": {
         "title": "Журнал заявок в АХО и технические службы",
         "entity": TECHNICAL_ENTITY,
@@ -96,6 +124,13 @@ STATUSES = {
     "Отклонено": "Отклонено",
     "Отменен": "Отменён",
     "Аннулирован": "Аннулирован",
+}
+
+MARKET_STATUSES = {
+    "ПоставленаВПлан": "Поставлена в план",
+    "Приостановлена": "Приостановлена",
+    "Закрыта": "Закрыта",
+    "Аннулирована": "Аннулирована",
 }
 
 _GUID_RE = re.compile(r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$")
@@ -189,6 +224,82 @@ _DEV_NAVS = (
     "ПодразделениеИсполнитель",
     "ФактическийИсполнитель",
 )
+_NOM_FIELDS = (
+    "Ref_Key",
+    "Number",
+    "Date",
+    "Posted",
+    "Статус",
+    "Содержание",
+    "ТелефонОбратнойСвязи",
+    "ЖелаемыйСрокИсполнения",
+    "РезолюцияИсполнителя",
+    "РезолюцияДиректораОрганизации",
+    "Комментарий",
+    "ВремяВыполнения",
+    "ПринятоВОбработку",
+    "СрокИсполненияФактический",
+    "ПодтверждениеАвтораОбИсполнении",
+    "СуммаДокумента",
+)
+_NOM_NAVS = (
+    "ВидЗаявки",
+    "Организация",
+    "Ответственный",
+    "Подразделение",
+    "ПодразделениеИсполнитель",
+)
+_MARKET_FIELDS = (
+    "Ref_Key",
+    "Number",
+    "Date",
+    "Posted",
+    "Статус",
+    "Наименование",
+    "ОписаниеПроблемы",
+    "ДополнительнаяИнформация",
+    "Комментарий",
+    "КонтактнаяИнформация",
+    "СрокОтработки",
+    "СрокОтработкиФакт",
+    "ПринятыеМеры",
+)
+_MARKET_NAVS = (
+    "Категория",
+    "Партнер",
+    "Менеджер",
+    "МенеджерПринявшийЗаявку",
+    "Подразделение",
+    "КонтактноеЛицо",
+)
+_PR_FIELDS = (
+    "Ref_Key",
+    "Number",
+    "Date",
+    "Posted",
+    "Статус",
+    "Содержание",
+    "Примечание",
+    "Задача",
+    "ТелефонОбратнойСвязи",
+    "СрокИсполненияЖелаемый",
+    "РезолюцияИсполнителя",
+    "ВремяВыполнения",
+    "ПринятоВОбработку",
+    "СрокИсполненияПлановый",
+    "СрокИсполненияФактический",
+    "ПодтверждениеАвтораОбИсполнении",
+    "СсылкаНаСайт",
+    "ТекстДляСайта",
+)
+_PR_NAVS = (
+    "ВидЗаявки",
+    "Организация",
+    "Ответственный",
+    "Подразделение",
+    "ПодразделениеИсполнитель",
+    "ФактическийИсполнитель",
+)
 _ACCOUNT_FLAGS = (
     ("erp", "СоздатьУчетнуюЗаписьERP", "ERP"),
     ("web", "СоздатьУчетнуюЗаписьWeb", "Web"),
@@ -208,7 +319,8 @@ def service_spec(service: str) -> dict[str, Any]:
     spec = SERVICES.get(service)
     if not spec:
         raise ServiceRequestError(
-            "Служба: service_1c, service_it, service_exploitation, service_development или service_aho"
+            "Служба: service_1c, service_it, service_exploitation, service_development, "
+            "service_nomenclature, service_market или service_pr"
         )
     return spec
 
@@ -399,7 +511,19 @@ def _entity_shape(entity: str) -> tuple[tuple[str, ...], tuple[str, ...]]:
         return _TECH_FIELDS, _TECH_NAVS
     if entity == DEVELOPMENT_ENTITY:
         return _DEV_FIELDS, _DEV_NAVS
+    if entity == NOMENCLATURE_ENTITY:
+        return _NOM_FIELDS, _NOM_NAVS
+    if entity == MARKET_ENTITY:
+        return _MARKET_FIELDS, _MARKET_NAVS
+    if entity == PR_ENTITY:
+        return _PR_FIELDS, _PR_NAVS
     return _SUPPORT_FIELDS, _SUPPORT_NAVS
+
+
+def _status_labels(service: str) -> dict[str, str]:
+    if service == "service_market":
+        return MARKET_STATUSES
+    return STATUSES
 
 
 def _list_path(entity: str, filters: list[str], *, top: int, skip: int) -> str:
@@ -432,7 +556,7 @@ def _row_view(row: dict[str, Any], *, technical: bool, form_kind: str) -> dict[s
         for _key, field, label in _ACCOUNT_FLAGS
         if _flag(row.get(field))
     ]
-    return {
+    view = {
         "id": _text(row.get("Ref_Key")),
         "number": _text(row.get("Number")),
         "date": _text(row.get("Date")),
@@ -440,19 +564,22 @@ def _row_view(row: dict[str, Any], *, technical: bool, form_kind: str) -> dict[s
         "status_code": status,
         "kind": kind,
         "kind_path": path or leaf,
-        "document_type": (
-            "Заявка в службу развития"
-            if form_kind == "service_development"
-            else "Заявка в АХО"
-            if technical
-            else "Заявка в службу сопровождения"
-        ),
+        "document_type": {
+            "service_development": "Заявка в службу развития",
+            "service_nomenclature": "Заявка на создание номенклатуры",
+            "service_market": "Заявка о потребности рынка",
+            "service_pr": "Заявка в сектор рекламы и PR",
+        }.get(form_kind, "Заявка в АХО" if technical else "Заявка в службу сопровождения"),
         "form_kind": form_kind,
         "text": _text(row.get("Содержание")),
         "room": _text(row.get("Помещение")),
         "building": _nav(row, "Здание"),
         "phone": _text(row.get("ТелефонОбратнойСвязи")),
-        "due": _text(row.get("ЖелаемыйСрокИсполнения")) or _text(row.get("СрокИсполненияЖелаемый")),
+        "due": (
+            _text(row.get("ЖелаемыйСрокИсполнения"))
+            or _text(row.get("СрокИсполненияЖелаемый"))
+            or _text(row.get("СрокОтработки"))
+        ),
         "organization": _nav(row, "Организация"),
         "responsible": _nav(row, "Ответственный"),
         "department": _nav(row, "Подразделение"),
@@ -462,7 +589,7 @@ def _row_view(row: dict[str, Any], *, technical: bool, form_kind: str) -> dict[s
         "hours": _hours(row.get("ВремяВыполнения")),
         "accepted_at": _text(row.get("ПринятоВОбработку")),
         "planned_at": _text(row.get("СрокИсполненияПлановый")),
-        "done_at": _text(row.get("СрокИсполненияФактический")),
+        "done_at": _text(row.get("СрокИсполненияФактический")) or _text(row.get("СрокОтработкиФакт")),
         "confirmed": bool(_text(row.get("ПодтверждениеАвтораОбИсполнении"))),
         "confirmed_at": _text(row.get("ПодтверждениеАвтораОбИсполнении")),
         "person": _text(row.get("ФизическоеЛицо")),
@@ -472,9 +599,23 @@ def _row_view(row: dict[str, Any], *, technical: bool, form_kind: str) -> dict[s
         "posted": _flag(row.get("Posted")),
         "technical": technical,
     }
+    if form_kind == "service_market":
+        view["kind"] = _nav(row, "Категория")
+        view["text"] = _text(row.get("Наименование"))
+        view["organization"] = _nav(row, "Партнер")
+        view["responsible"] = _nav(row, "Менеджер")
+        view["executor"] = _nav(row, "МенеджерПринявшийЗаявку")
+        view["resolution"] = _text(row.get("ОписаниеПроблемы")) or _text(row.get("ДополнительнаяИнформация"))
+        view["phone"] = _text(row.get("КонтактнаяИнформация"))
+        view["status"] = MARKET_STATUSES.get(status, view["status"])
+    elif form_kind == "service_pr":
+        note = _text(row.get("Примечание"))
+        task = _text(row.get("Задача"))
+        view["text"] = " ".join(part for part in (view["text"], task, note) if part)
+    return view
 
 
-def _period_filters(args: dict[str, Any]) -> list[str]:
+def _period_filters(args: dict[str, Any], allowed: dict[str, str]) -> list[str]:
     filters = ["DeletionMark eq false"]
     start = _day(args.get("date_from"), end=False)
     finish = _day(args.get("date_to"), end=True)
@@ -484,7 +625,7 @@ def _period_filters(args: dict[str, Any]) -> list[str]:
         filters.append(f"Date le datetime'{finish}'")
     status = str(args.get("status") or "").strip()
     if status:
-        if status not in STATUSES:
+        if status not in allowed:
             raise ServiceRequestError("Неизвестный статус заявки")
         filters.append(f"Статус eq '{status}'")
     return filters
@@ -500,7 +641,16 @@ def _fetch_rows(entity: str, filters: list[str], *, top: int, skip: int, form_ki
     return [_row_view(row, technical=technical, form_kind=form_kind) for row in raw]
 
 
-def _page(service: str, title: str, rows: list[dict[str, Any]], *, skip: int, top: int, fetched: int) -> dict[str, Any]:
+def _page(
+    service: str,
+    title: str,
+    rows: list[dict[str, Any]],
+    *,
+    skip: int,
+    top: int,
+    fetched: int,
+    statuses: dict[str, str],
+) -> dict[str, Any]:
     return {
         "summary": f"{title}: {len(rows)}",
         "service": service,
@@ -510,7 +660,7 @@ def _page(service: str, title: str, rows: list[dict[str, Any]], *, skip: int, to
         "skip": skip,
         "next_skip": skip + len(rows),
         "has_more": fetched >= top,
-        "statuses": [{"code": code, "label": label} for code, label in STATUSES.items()],
+        "statuses": [{"code": code, "label": label} for code, label in statuses.items()],
     }
 
 
@@ -536,7 +686,8 @@ def list_requests(args: dict[str, Any]) -> dict[str, Any]:
     spec = service_spec(service)
     top = max(1, min(int(args.get("top") or _DEFAULT_PAGE), _MAX_PAGE))
     skip = max(0, int(args.get("skip") or 0))
-    filters = _period_filters(args)
+    labels = _status_labels(service)
+    filters = _period_filters(args, labels)
     if spec.get("journal"):
         # Журнал 1С собирает заявки в службы и заявки в АХО. Отдельного OData-журнала нет.
         window = min(_MAX_PAGE, top + skip)
@@ -548,7 +699,7 @@ def list_requests(args: dict[str, Any]) -> dict[str, Any]:
             reverse=True,
         )
         page = merged[skip: skip + top]
-        return _page(service, spec["title"], page, skip=skip, top=top, fetched=len(merged[skip:]))
+        return _page(service, spec["title"], page, skip=skip, top=top, fetched=len(merged[skip:]), statuses=labels)
     if not spec.get("all_documents"):
         if not kind_keys(service):
             raise ServiceRequestError(f"В 1С нет видов заявок для «{spec['title']}»")
@@ -560,7 +711,7 @@ def list_requests(args: dict[str, Any]) -> dict[str, Any]:
         skip=skip,
         form_kind=str(spec.get("form_kind") or service),
     )
-    return _page(service, spec["title"], rows, skip=skip, top=top, fetched=len(rows))
+    return _page(service, spec["title"], rows, skip=skip, top=top, fetched=len(rows), statuses=labels)
 
 
 def handle_docflow_service_requests(args: dict[str, Any], **_: Any) -> dict[str, Any]:
