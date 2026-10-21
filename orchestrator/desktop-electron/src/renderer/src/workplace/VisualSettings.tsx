@@ -29,6 +29,7 @@ import {
   readVisualDraft,
   VISUAL_CHANGED_EVENT,
   VISUAL_TABS,
+  VISUAL_TAB_TILES,
   visualWidgetLabel,
   writeVisualDraft,
   type VisualDraft,
@@ -329,7 +330,14 @@ export function VisualSettings({ user }: { user: UserProfile }): React.JSX.Eleme
             Сетка как на вкладке. После переноса незакреплённые виджеты занимают свободные клетки. Булавка
             фиксирует блок на месте.
           </p>
-          <TabPreview tab={tab} draft={draft} onMove={placeWidget} onHide={toggleWidget} onToggleLock={toggleLock} />
+          <TabPreview
+            tab={tab}
+            draft={draft}
+            onMove={placeWidget}
+            onHide={toggleWidget}
+            onToggleLock={toggleLock}
+            tileRow={visualTileRow(VISUAL_TAB_TILES[tab.id])}
+          />
           <InactiveTray
             label="Выключенные виджеты"
             items={ordered
@@ -354,6 +362,11 @@ type DragState = {
   pointerY: number
 }
 
+function visualTileRow(labels: string[] | undefined): React.ReactNode | false {
+  if (!labels?.length) return false
+  return labels.map((label) => <span key={label}>{label}</span>)
+}
+
 const TODAY_VISUAL_TAB: VisualTab = {
   id: 'today',
   label: 'Сегодня',
@@ -374,7 +387,8 @@ function TabPreview({
   onMove: (id: string, x: number, y: number, w?: number, h?: number) => void
   onHide: (id: string) => void
   onToggleLock: (id: string) => void
-  tileRow?: React.ReactNode
+  /** false — у вкладки нет полосы плиток, заглушки не рисуем. */
+  tileRow?: React.ReactNode | false
 }): React.JSX.Element {
   const boardRef = useRef<HTMLDivElement>(null)
   const dragRef = useRef<DragState | null>(null)
@@ -440,6 +454,7 @@ function TabPreview({
 
   return (
     <div className="set-visual-stage">
+      {tileRow === false ? null : (
       <div className="set-visual-tiles" aria-hidden={tileRow ? undefined : true}>
         {tileRow ??
           Array.from({ length: cols }, (_, index) => (
@@ -461,6 +476,7 @@ function TabPreview({
             </span>
           ))}
       </div>
+      )}
       <div className="set-visual-filters" aria-hidden>
         <span>Фильтры</span>
         <span>Период</span>
