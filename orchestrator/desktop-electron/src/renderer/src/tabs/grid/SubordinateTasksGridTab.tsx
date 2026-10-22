@@ -969,47 +969,81 @@ export function SubordinateTasksGridTab({
     localStorage.setItem(groupsKey(user.id), JSON.stringify(groups))
   }, [groups, user.id])
 
+  const turboFios = useMemo(
+    () => [...new Set(people.map((person) => person.fio).filter(Boolean))].sort((a, b) => a.localeCompare(b, 'ru')),
+    [people]
+  )
+
   useEffect(() => {
-    if (!allowed || picked.length === 0) {
+    if (!allowed || turboFios.length === 0) {
       setTurboTasks([])
       setTurboNote('')
       return
     }
     let cancelled = false
-    void api
-      .invokeServerTool('turboproject.tasks_for_people', { fios: picked, limit_projects: 8 }, 120_000)
-      .then((response) => {
+    setTurboNote('Читаю задачи Турбопроекта…')
+    const chunks: string[][] = []
+    for (let index = 0; index < turboFios.length; index += 40) chunks.push(turboFios.slice(index, index + 40))
+    void Promise.all(
+      chunks.map((fios) =>
+        api.invokeServerTool('turboproject.tasks_for_people', { fios, limit_projects: 24 }, 120_000)
+      )
+    )
+      .then((responses) => {
         if (cancelled) return
-        if (!response.ok) {
+        const failed = responses.find((response) => !response.ok)
+        if (failed && responses.every((response) => !response.ok)) {
           setTurboTasks([])
-          setTurboNote(response.error || '')
+          setTurboNote(failed.error || 'Не удалось прочитать задачи Турбопроекта')
           return
         }
-        const payload = rec(response.result)
-        const rows = Array.isArray(payload.tasks) ? payload.tasks : []
+        const byFio = new Map(people.map((person) => [person.fio, person]))
         const flat: FlatTask[] = []
-        for (const item of rows) {
-          const task = readTask(item)
-          if (!task) continue
-          const fio = str(rec(item).performer)
-          if (!fio) continue
-          flat.push({ ...task, fio, position: '', department: '', kind: taskKind(task) })
+        let scanned = 0
+        let matched = 0
+        for (const response of responses) {
+          if (!response.ok) continue
+          const payload = rec(response.result)
+          scanned += Number(payload.projects_scanned) || 0
+          matched += Number(payload.matched_projects_count) || 0
+          const rows = Array.isArray(payload.tasks) ? payload.tasks : []
+          for (const item of rows) {
+            const task = readTask(item)
+            if (!task) continue
+            const fio = str(rec(item).performer)
+            if (!fio) continue
+            const known = byFio.get(fio)
+            flat.push({
+              ...task,
+              fio,
+              position: known?.position || '',
+              department: known?.department || '',
+              kind: taskKind(task)
+            })
+          }
         }
         setTurboTasks(flat)
-        setTurboNote(rows.length === 0 ? '' : '')
+        setTurboNote(
+          matched > scanned
+            ? `Турбопроект: открыто ${scanned} из ${matched} проектов, где есть эти сотрудники.`
+            : ''
+        )
       })
       .catch(() => {
-        if (!cancelled) setTurboTasks([])
+        if (!cancelled) {
+          setTurboTasks([])
+          setTurboNote('Не удалось прочитать задачи Турбопроекта')
+        }
       })
     return () => {
       cancelled = true
     }
-  }, [allowed, picked])
+  }, [allowed, turboFios])
 
   const tasks = useMemo(() => {
     const base = flattenTasks(people)
-    const seen = new Set(base.map((row) => `${row.fio}\n${row.number}\n${row.title}`))
-    const extra = turboTasks.filter((row) => !seen.has(`${row.fio}\n${row.number}\n${row.title}`))
+    const seen = new Set(base.map((row) => `${row.fio}\n${row.source}\n${row.number}\n${row.title}`))
+    const extra = turboTasks.filter((row) => !seen.has(`${row.fio}\n${row.source}\n${row.number}\n${row.title}`))
     return extra.length ? sortTasks(keepCurrentTerm([...base, ...extra])) : base
   }, [people, turboTasks])
   const periodTasks = useMemo(
@@ -1469,7 +1503,7 @@ export function SubordinateTasksGridTab({
         </div>
 
         <p className="sub-tasks-lead">
-          Здесь задачи, где исполнителем в общей базе 1С указан подчинённый. Свой рабочий стол 1С в этот список не
+          Здесь задачи подчинённых из 1С и Турбопроекта. Свой рабочий стол 1С в этот список не
           входит: каскадную задачу можно контролировать по сроку исполнителя, не держа дубль у себя.
         </p>
 

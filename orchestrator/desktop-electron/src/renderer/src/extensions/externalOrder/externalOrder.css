@@ -388,10 +388,158 @@
 }
 
 .eo-card {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.eo-card .eo-actions button,
+.eo-card .eo-form > button,
+.eo-card .eo-check button,
+.eo-card p > button {
+  height: 32px;
+  border-radius: 8px;
+  border: 1px solid rgba(13, 59, 115, 0.16);
+  background: #fff;
+  color: #0d3b73;
+  font-weight: 600;
+  font-size: 13px;
+  padding: 0 12px;
+  cursor: pointer;
+}
+
+.eo-card .eo-actions button.is-primary,
+.eo-card .eo-form > button.is-primary,
+.eo-card .eo-check button.is-primary,
+.eo-card p > button.is-primary {
+  background: #0d3b73;
+  color: #fff;
+  border-color: #0d3b73;
+}
+
+.eo-card .eo-back {
+  height: 32px;
+  border-radius: 8px;
+  border: 1px solid rgba(13, 59, 115, 0.16);
+  background: #fff;
+  color: #0d3b73;
+  padding: 0 12px;
+}
+
+.eo-line {
+  display: flex;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  overflow: auto;
+}
+
+.eo-line li {
+  flex: 1 0 108px;
+  padding: 8px 10px;
+  border: 1px solid rgba(13, 59, 115, 0.1);
+  border-radius: 12px;
+  background: #fff;
+  color: #8aa0b8;
+}
+
+.eo-line li b,
+.eo-line li small {
+  display: block;
+}
+
+.eo-line li small {
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.eo-line li.is-done {
+  color: #5d7290;
+  background: #f4f7fb;
+}
+
+.eo-line li.is-now {
+  background: #0d3b73;
+  border-color: #0d3b73;
+  color: #fff;
+}
+
+.eo-pages {
   display: grid;
-  grid-template-columns: minmax(280px, 360px) minmax(0, 1fr);
-  gap: 14px;
-  align-items: start;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: 8px;
+}
+
+.eo-pages button {
+  min-height: 64px;
+  border-radius: 14px;
+  border: 1px solid rgba(13, 59, 115, 0.08);
+  background: #fff;
+  box-shadow: 0 1px 3px rgba(16, 32, 51, 0.05);
+  text-align: left;
+  padding: 10px 12px;
+  cursor: pointer;
+  color: #102033;
+  font-weight: 700;
+}
+
+.eo-pages button small {
+  display: block;
+  margin-top: 2px;
+  font-weight: 500;
+  color: #5d7290;
+  font-size: 12px;
+}
+
+.eo-pages button.is-active {
+  background: #0d3b73;
+  color: #fff;
+  border-color: #0d3b73;
+}
+
+.eo-pages button.is-active small {
+  color: rgba(255, 255, 255, 0.78);
+}
+
+.eo-now {
+  display: grid;
+  grid-template-columns: minmax(280px, 1.3fr) minmax(240px, 1fr);
+  gap: 12px;
+}
+
+.eo-now-main,
+.eo-now-side {
+  background: #fff;
+  border: 1px solid rgba(13, 59, 115, 0.08);
+  border-radius: 14px;
+  box-shadow: 0 1px 3px rgba(16, 32, 51, 0.05);
+  padding: 16px;
+}
+
+.eo-now-kicker {
+  margin: 0;
+  color: #5d7290;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.eo-now-main h3 {
+  margin: 6px 0;
+  font-size: 28px;
+}
+
+.eo-now-side > button {
+  height: 32px;
+  margin-top: 8px;
+  border-radius: 8px;
+  border: 1px solid rgba(13, 59, 115, 0.16);
+  background: #fff;
+  color: #0d3b73;
+  font-weight: 600;
+  cursor: pointer;
 }
 
 .eo-wide {

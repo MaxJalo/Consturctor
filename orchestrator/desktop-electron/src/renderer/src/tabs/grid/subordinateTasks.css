@@ -1164,14 +1164,20 @@
 
 .sub-kpi-load {
   position: relative;
-  display: grid;
-  grid-template-columns: minmax(220px, 0.9fr) minmax(260px, 1.25fr);
-  gap: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
   flex: 1;
   min-height: 0;
 }
 
+.sub-kpi-load .sub-kpi-chart-modes {
+  justify-content: flex-start;
+  margin: 0;
+}
+
 .sub-kpi-load-pane {
+  flex: 1;
   min-width: 0;
   min-height: 0;
   overflow: auto;
@@ -1728,7 +1734,7 @@
 }
 
 .sub-kpi-load .sub-kpi-bar-row {
-  grid-template-columns: minmax(0, 112px) minmax(48px, 1fr) 36px;
+  grid-template-columns: minmax(108px, 180px) minmax(80px, 1fr) 40px;
   margin-top: 0;
   margin-bottom: 6px;
 }
@@ -1740,16 +1746,36 @@
 }
 
 .sub-kpi-load .sub-kpi-gantt-row {
-  grid-template-columns: minmax(0, 168px) minmax(72px, 1fr) 56px;
-  min-height: 22px;
+  grid-template-columns: minmax(180px, 1.35fr) minmax(140px, 2fr) 96px;
+  min-height: 28px;
+  margin-bottom: 2px;
 }
 
 .sub-kpi-load .sub-kpi-gantt-lane {
+  height: 18px;
   min-width: 0;
 }
 
+.sub-kpi-load .sub-kpi-gantt-lane button {
+  height: 16px;
+}
+
+.sub-kpi-load .sub-kpi-gantt-row > strong {
+  white-space: nowrap;
+}
+
 .sub-kpi-load .sub-kpi-gantt-window {
-  min-width: 4px;
+  min-width: 12px;
+}
+
+.sub-kpi-person-block {
+  margin-bottom: 10px;
+  padding-bottom: 6px;
+  border-bottom: 1px solid #e6eef8;
+}
+
+.sub-kpi-person-block:last-of-type {
+  border-bottom: 0;
 }
 
 .sub-kpi-bar-row i,

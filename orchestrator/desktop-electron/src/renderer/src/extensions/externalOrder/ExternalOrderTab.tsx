@@ -162,6 +162,33 @@ const ROLE_FIELDS: Record<string, { section: string; title: string; fields: { ke
   ]
 }
 
+const LINE: { id: string; label: string; hint: string; statuses: string[] }[] = [
+  { id: 'request', label: 'Запрос', hint: 'Заказчик и продукт уже в карточке. Дальше собираем комплект.', statuses: ['draft', 'collecting'] },
+  { id: 'calc', label: 'Расчёт', hint: 'Считаем цену, срок и состав. Потом заказ идёт в Комитет.', statuses: ['calculating', 'rework'] },
+  { id: 'committee', label: 'Комитет', hint: 'Комитет подтверждает базу или возвращает на доработку.', statuses: ['ready_committee', 'confirmed', 'confirmed_conditions'] },
+  { id: 'tkp', label: 'ТКП', hint: 'Предложение выпущено и ушло заказчику.', statuses: ['tkp_issued'] },
+  { id: 'contract', label: 'Договор', hint: 'Сверяем ТКП с договором и ждём подпись.', statuses: ['contract_review', 'contract_signed'] },
+  { id: 'run', label: 'Исполнение', hint: 'Идут проект и производство.', statuses: ['in_progress', 'production'] },
+  { id: 'ship', label: 'Отгрузка', hint: 'Приёмка, затем отгрузка.', statuses: ['acceptance', 'shipped'] },
+  { id: 'pay', label: 'Оплата', hint: 'Ждём оплату и закрываем заказ.', statuses: ['awaiting_payment', 'closed'] }
+]
+
+const ROLE_NAME: Record<string, string> = {
+  ks: 'Коммерческая служба',
+  development: 'Развитие',
+  rp: 'Руководитель проекта',
+  committee: 'Комитет',
+  kb: 'КБ и ГСПП',
+  omto: 'ОМТО',
+  finance: 'Финансы',
+  production: 'Производство',
+  legal: 'Юристы',
+  it: 'ИТ',
+  viewer: 'Просмотр'
+}
+
+type CardPage = 'now' | 'work' | 'path' | 'checks' | 'deal' | 'diff' | 'committee'
+
 const GATES: Record<string, string> = {
   before_calc: 'До расчёта',
   before_committee: 'До Комитета',
@@ -818,6 +845,14 @@ function Card({
   const [rpName, setRpName] = useState(order.owners?.rp || '')
   const [risk, setRisk] = useState({ title: '', impact: '', measure: '' })
   const [sectionDraft, setSectionDraft] = useState<Record<string, string>>({})
+  const [page, setPage] = useState<CardPage>('now')
+  const lineIndex = Math.max(0, LINE.findIndex((step) => step.statuses.includes(order.status)))
+  const line = LINE[lineIndex]
+  const nextStatuses = new Set(LINE[lineIndex + 1]?.statuses || [])
+  const roleMoves = MOVES[role] || []
+  const nextMoves = roleMoves.filter((move) => nextStatuses.has(move.target))
+  const laterMoves = roleMoves.filter((move) => !nextStatuses.has(move.target))
+  const myOpen = order.checks.filter((item) => item.owner_role === role && item.status !== 'done' && item.status !== 'not_applicable')
   useEffect(() => {
     const next: Record<string, string> = {}
     for (const form of ROLE_FIELDS[role] || []) {
@@ -831,6 +866,9 @@ function Card({
     setSectionDraft(next)
     setRpName(order.owners?.rp || '')
   }, [order.id, order.audit.length, role, order.owners, order.sections])
+  useEffect(() => {
+    setPage('now')
+  }, [order.id])
   const [baseline, setBaseline] = useState({
     composition: '',
     cost: '',
@@ -851,58 +889,79 @@ function Card({
     }
   }
 
+  const pages: { id: CardPage; label: string; note: string }[] = [
+    { id: 'now', label: 'Сейчас', note: line.label },
+    { id: 'work', label: 'Моя работа', note: `${myOpen.length} открытых` },
+    { id: 'path', label: 'Путь в 1С', note: order.onec_number || 'ТКП' },
+    { id: 'checks', label: 'Пункты', note: 'по шагам' },
+    { id: 'diff', label: 'Сверка', note: `${order.diffs.filter((item) => item.status !== 'closed').length} открыто` },
+    { id: 'committee', label: 'Комитет', note: order.decisions[0]?.decision || 'нет решения' },
+    { id: 'deal', label: 'Дело', note: `${order.documents.length} файлов` }
+  ]
+
   return (
     <article className="eo-card">
       <header className="eo-wide eo-head">
         <div>
           <button type="button" className="eo-back" onClick={onBack}>К списку</button>
           <h2>{order.code} · {order.customer}</h2>
-          <p className="eo-muted">{order.product}. {order.stage_label}, {order.status_label}. {order.payment_note}</p>
-          <div className="eo-tags">
-            {ROUTES.map((item) => (
-              <button
-                key={item.id}
-                type="button"
-                className={order.route === item.id ? 'eo-chip-btn is-active' : 'eo-chip-btn'}
-                onClick={() => {
-                  if (role !== 'development' && role !== 'committee') return
-                  void onRun(() => api.patchExternalOrder(order.id, { route: item.id }, asRole))
-                }}
-              >
-                {item.label}
-              </button>
-            ))}
-          </div>
+          <p className="eo-muted">{order.product}. Шаг {lineIndex + 1} из {LINE.length}: {order.status_label}.</p>
         </div>
         <div className="eo-actions">
           <button type="button" className="is-primary" disabled={helperBusy} onClick={onHelper}>{helperBusy ? 'Помощник…' : 'Помощник'}</button>
-          {(MOVES[role] || []).map((move) => (
-            <button key={move.target} type="button" onClick={() => void onRun(() => api.transitionExternalOrder(order.id, move.target, asRole))}>
-              {move.label}
-            </button>
-          ))}
         </div>
       </header>
-      {helper ? <div className="eo-wide"><HelperPanel review={helper} log={helperLog} /></div> : null}
-      <div className="eo-wide eo-progress">
-        {Object.entries(GATES).map(([gate, title]) => {
-          const items = order.checks.filter((item) => item.gate === gate && item.status !== 'not_applicable')
-          const done = items.filter((item) => item.status === 'done').length
-          const width = items.length ? Math.round((done / items.length) * 100) : 0
-          return (
-            <div key={gate} className="eo-meter">
-              <b>{title}</b>
-              <div className="eo-bar"><span style={{ width: `${width}%` }} /></div>
-              <small>{done} из {items.length}</small>
+      <ol className="eo-line" aria-label="Путь заказа">
+        {LINE.map((step, index) => (
+          <li key={step.id} className={index < lineIndex ? 'is-done' : index === lineIndex ? 'is-now' : ''}>
+            <b>{index + 1}. {step.label}</b>
+            <small>{index < lineIndex ? 'пройдено' : index === lineIndex ? 'сейчас' : 'потом'}</small>
+          </li>
+        ))}
+      </ol>
+      <div className="eo-pages" role="tablist" aria-label="Страницы заказа">
+        {pages.map((item) => (
+          <button
+            key={item.id}
+            type="button"
+            className={page === item.id ? 'is-active' : ''}
+            aria-pressed={page === item.id}
+            onClick={() => setPage(item.id)}
+          >
+            {item.label}
+            <small>{item.note}</small>
+          </button>
+        ))}
+      </div>
+      {page === 'now' ? (
+        <div className="eo-now">
+          <section className="eo-now-main">
+            <p className="eo-now-kicker">{ROLE_NAME[role] || 'Сотрудник'} · сейчас</p>
+            <h3>{line.label}</h3>
+            <p>{order.status_label}. {line.hint}</p>
+            {order.blocks[0] ? <p className="eo-note">{order.blocks[0]}</p> : null}
+            <div className="eo-actions">
+              {nextMoves.map((move) => (
+                <button key={move.target} type="button" className="is-primary" onClick={() => void onRun(() => api.transitionExternalOrder(order.id, move.target, asRole))}>
+                  Дальше: {move.label}
+                </button>
+              ))}
+              {nextMoves.length === 0 ? <button type="button" onClick={() => setPage('work')}>Открыть мою работу</button> : null}
+              {laterMoves.length ? <button type="button" onClick={() => setPage('work')}>Другие переходы</button> : null}
             </div>
-          )
-        })}
-      </div>
-      <div className="eo-blocks">
-        {order.blocks.map((block) => <p key={block}>{block}</p>)}
-        <p className="eo-note">{order.payment_note}. {order.project_note}.</p>
-      </div>
-      <section className="eo-form eo-wide">
+          </section>
+          <section className="eo-now-side">
+            <p className="eo-now-kicker">Ваши пункты</p>
+            {myOpen.length === 0 ? <p className="eo-muted">На вас открытых пунктов нет.</p> : myOpen.slice(0, 4).map((item) => (
+              <p key={item.id}>{item.text}</p>
+            ))}
+            {myOpen.length > 4 ? <button type="button" onClick={() => setPage('checks')}>Ещё {myOpen.length - 4}</button> : null}
+            {order.payment_note ? <p className="eo-muted">{order.payment_note}</p> : null}
+          </section>
+        </div>
+      ) : null}
+      {page === 'now' && helper ? <HelperPanel review={helper} log={helperLog} /> : null}
+      {page === 'path' ? <section className="eo-form eo-wide">
         <h3>Путь в 1С, с ТКП</h3>
         {pathSteps(linked?.path).length ? (
           <ol className="eo-path">
@@ -971,10 +1030,35 @@ function Card({
             ))}
           </>
         ) : null}
-      </section>
-      {forms.length || RISK_ROLES.has(role) || OWNER_ROLES.has(role) ? (
+      </section> : null}
+      {page === 'work' ? (
         <section className="eo-wide">
           <h3>Работа должности</h3>
+          <div className="eo-tags">
+            {ROUTES.map((item) => (
+              <button
+                key={item.id}
+                type="button"
+                className={order.route === item.id ? 'eo-chip-btn is-active' : 'eo-chip-btn'}
+                onClick={() => {
+                  if (role !== 'development' && role !== 'committee') return
+                  void onRun(() => api.patchExternalOrder(order.id, { route: item.id }, asRole))
+                }}
+              >
+                {item.label}
+              </button>
+            ))}
+          </div>
+          {laterMoves.length ? (
+            <div className="eo-actions">
+              {laterMoves.map((move) => (
+                <button key={move.target} type="button" onClick={() => void onRun(() => api.transitionExternalOrder(order.id, move.target, asRole))}>
+                  {move.label}
+                </button>
+              ))}
+            </div>
+          ) : null}
+          {forms.length || RISK_ROLES.has(role) || OWNER_ROLES.has(role) ? null : <p className="eo-muted">На этом шаге у должности нет своих полей. Переход — кнопками выше.</p>}
           {forms.map((form) => (
             <div key={form.section} className="eo-form">
               <h3>{form.title}</h3>
@@ -1040,7 +1124,7 @@ function Card({
           ) : null}
         </section>
       ) : null}
-      <section className="eo-wide">
+      {page === 'deal' ? <section className="eo-wide">
         <h3>Дело</h3>
         {canUpload ? (
         <div className="eo-actions">
@@ -1153,8 +1237,8 @@ function Card({
         {(order.notices || []).map((item) => (
           <p key={item.id} className="eo-note">{item.title}. {item.body} {item.mail_status}</p>
         ))}
-      </section>
-      <section className="eo-wide">
+      </section> : null}
+      {page === 'checks' ? <section className="eo-wide">
         <h3>Чек-листы</h3>
         <div className="eo-checks">
         {Object.entries(GATES).map(([gate, title]) => {
@@ -1187,8 +1271,8 @@ function Card({
           )
         })}
         </div>
-      </section>
-      <section className="eo-wide">
+      </section> : null}
+      {page === 'diff' ? <section className="eo-wide">
         <h3>Сверка ТКП и договора</h3>
         <table className="eo-table">
           <thead>
@@ -1216,8 +1300,8 @@ function Card({
             ))}
           </tbody>
         </table>
-      </section>
-      <section className="eo-wide">
+      </section> : null}
+      {page === 'committee' ? <section className="eo-wide">
         <h3>Комитет</h3>
         {order.decisions.map((item) => (
           <p key={item.id}>
@@ -1274,8 +1358,8 @@ function Card({
             </div>
           </div>
         ) : <p className="eo-muted">Решение фиксирует только Комитет.</p>}
-      </section>
-      <section className="eo-wide">
+      </section> : null}
+      {page === 'deal' ? <section className="eo-wide">
         <h3>Выводы агента</h3>
         {order.findings.length === 0 ? <p className="eo-muted">Черновиков нет.</p> : null}
         {order.findings.map((item) => (
@@ -1288,15 +1372,15 @@ function Card({
             ) : null}
           </p>
         ))}
-      </section>
-      <section className="eo-wide">
+      </section> : null}
+      {page === 'deal' ? <section className="eo-wide">
         <h3>История</h3>
         {order.documents.map((item) => <p key={item.id}>{item.title} {item.version}</p>)}
         {order.documents.length === 0 ? <p className="eo-muted">Файлы в дело ещё не внесены.</p> : null}
         {order.audit.map((item) => (
           <p key={item.id} className="eo-muted">{item.actor_fio} ({item.actor_role}): {item.action}. {item.detail}</p>
         ))}
-      </section>
+      </section> : null}
     </article>
   )
 }
