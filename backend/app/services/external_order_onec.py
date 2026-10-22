@@ -225,8 +225,86 @@ def status_label(value: str) -> str:
     return _STATUS_LABELS.get(text, text)
 
 
+_PARTNER = "Catalog_Партнеры"
+_ORG = "Catalog_Организации"
+_USER = "Catalog_Пользователи"
+_CURRENCY = "Catalog_Валюты"
+_AGREEMENT = "Catalog_СоглашенияСКлиентами"
+_ENUM = {
+    "РеализацияКлиенту": "Реализация клиенту",
+    "ЗакупкаУПоставщика": "Закупка у поставщика",
+    "Безналичная": "Безналичная",
+    "Наличная": "Наличная",
+    "Самовывоз": "Самовывоз",
+    "СиламиПеревозчикаПоАдресу": "Силами перевозчика по адресу",
+    "СиламиПеревозчика": "Силами перевозчика",
+    "ДоКлиента": "До клиента",
+    "ПродажаОблагаетсяНДС": "Продажа облагается НДС",
+    "ЭкспортНесырьевыхТоваров": "Экспорт несырьевых товаров",
+    "ПродажаНеОблагаетсяНДС": "Продажа не облагается НДС",
+    "УказываетсяВДняхСМоментаЗаказа": "В днях с момента заказа",
+}
+
+
+def _enum_label(value: str) -> str:
+    text = (value or "").strip()
+    if not text or text in {"0", "0001-01-01T00:00:00"}:
+        return ""
+    if text in _ENUM:
+        return _ENUM[text]
+    labeled = status_label(text)
+    if labeled != text:
+        return labeled
+    split = re.sub(r"([a-zа-яё])([A-ZА-ЯЁ])", r"\1 \2", text)
+    if split == text:
+        return text
+    return split[:1].upper() + split[1:].lower()
+
+
+def _stamp(value: str, *, with_time: bool = False) -> str:
+    text = (value or "").strip()
+    if len(text) < 10 or text.startswith("0001"):
+        return ""
+    year, month, day = text[:10].split("-")
+    shown = f"{day}.{month}.{year}"
+    if with_time and len(text) >= 16 and text[11:16] != "00:00":
+        shown += " " + text[11:16]
+    return shown
+
+
+def _money_text(value: Any) -> str:
+    amount = _money(value)
+    sign = "-" if amount < 0 else ""
+    whole, frac = f"{abs(amount):.2f}".split(".")
+    groups: list[str] = []
+    while whole:
+        groups.append(whole[-3:])
+        whole = whole[:-3]
+    return sign + " ".join(reversed(groups)) + "," + frac
+
+
+def _yes(value: Any) -> str:
+    return "да" if value is True else "нет"
+
+
+def _titles(client: _ODataClient, entity: str, keys: set[str], *, number: bool = False) -> dict[str, str]:
+    clean = [key for key in keys if _optional_guid(key)]
+    found: dict[str, str] = {}
+    for start in range(0, len(clean), 12):
+        chunk = clean[start : start + 12]
+        filt = " or ".join(f"Ref_Key eq guid'{key}'" for key in chunk)
+        try:
+            rows = _rows(client, entity, filt=f"({filt})", top=len(chunk))
+        except OnecLinkError:
+            continue
+        for row in rows:
+            ref = str(row.get("Ref_Key") or "")
+            found[ref] = str(row.get("Number") or "").strip() if number else _name(row)
+    return found
+
+
 def recent_tkp(top: int = 20) -> dict:
-    """Проведённые коммерческие предложения. С них в ERP начинается путь заказа."""
+    """Проведённые коммерческие предложения. Колонки — как в списке документа 1С."""
     client = _client()
     try:
         rows = _rows(
@@ -238,22 +316,61 @@ def recent_tkp(top: int = 20) -> dict:
         )
     except OnecLinkError:
         rows = _rows(client, _TKP, filt="DeletionMark eq false", top=top, orderby="Date desc")
+    rows = [row for row in rows if str(row.get("Ref_Key") or "").strip()]
+
+    def keys_of(*fields: str) -> set[str]:
+        return {str(row.get(field) or "") for row in rows for field in fields}
+
+    partners = _titles(client, _PARTNER, keys_of("Партнер_Key", "ПартнерКонечногоЗаказчика_Key"))
+    parties = _titles(client, _CONTRACTOR, keys_of("Контрагент_Key", "КонтрагентКонечныйЗаказчик_Key"))
+    deals = _titles(client, _DEAL, keys_of("Сделка_Key"))
+    contracts = _titles(client, _CONTRACT, keys_of("ДоговорКонтрагента_Key"))
+    orgs = _titles(client, _ORG, keys_of("Организация_Key"))
+    users = _titles(client, _USER, keys_of("Менеджер_Key"))
+    currencies = _titles(client, _CURRENCY, keys_of("Валюта_Key"))
+    agreements = _titles(client, _AGREEMENT, keys_of("Соглашение_Key"))
+    sale_orders = _titles(client, _ORDER, keys_of("ЗаказКлиента_Key"), number=True)
+
     orders = []
     for row in rows:
-        key = str(row.get("Ref_Key") or "").strip()
-        if not key:
-            continue
-        order_key = str(row.get("ЗаказКлиента_Key") or "")
-        amount = _money(row.get("СуммаДокументаТКП") or row.get("СуммаДокумента"))
-        status = str(row.get("Статус") or "").strip()
+        order_key = _optional_guid(str(row.get("ЗаказКлиента_Key") or ""))
+        end_customer = parties.get(str(row.get("КонтрагентКонечныйЗаказчик_Key") or "")) or partners.get(
+            str(row.get("ПартнерКонечногоЗаказчика_Key") or "")
+        )
+        delivery_days = str(row.get("СрокПоставки") or "").strip()
+        if delivery_days in {"", "0", "0.0"}:
+            delivery_days = ""
+        else:
+            delivery_days = delivery_days.split(".", 1)[0] + " дн."
+        amount = row.get("СуммаДокументаТКП")
+        if not _money(amount):
+            amount = row.get("СуммаДокумента")
         orders.append(
             {
-                "key": key,
+                "key": str(row.get("Ref_Key") or "").strip(),
                 "number": str(row.get("Number") or "").strip(),
-                "date": str(row.get("Date") or "")[:10],
-                "amount": f"{amount:.2f}",
-                "status": status_label(status),
-                "has_order": "1" if order_key and order_key != _EMPTY else "",
+                "date": _stamp(str(row.get("Date") or ""), with_time=True),
+                "client": partners.get(str(row.get("Партнер_Key") or ""), ""),
+                "counterparty": parties.get(str(row.get("Контрагент_Key") or ""), ""),
+                "end_customer": end_customer or "",
+                "deal": deals.get(str(row.get("Сделка_Key") or ""), ""),
+                "contract": contracts.get(str(row.get("ДоговорКонтрагента_Key") or ""), ""),
+                "order_number": sale_orders.get(order_key, ""),
+                "organization": orgs.get(str(row.get("Организация_Key") or ""), ""),
+                "manager": users.get(str(row.get("Менеджер_Key") or ""), ""),
+                "agreement": agreements.get(str(row.get("Соглашение_Key") or ""), ""),
+                "currency": currencies.get(str(row.get("Валюта_Key") or ""), ""),
+                "amount": _money_text(amount),
+                "status": status_label(str(row.get("Статус") or "")),
+                "valid_until": _stamp(str(row.get("СрокДействия") or "")),
+                "delivery_days": delivery_days,
+                "payment_form": _enum_label(str(row.get("ФормаОплаты") or "")),
+                "delivery": _enum_label(str(row.get("СпособДоставки") or "")),
+                "vat": _enum_label(str(row.get("НалогообложениеНДС") or "")),
+                "approved": _yes(row.get("Согласован")),
+                "agreed": _yes(row.get("СогласованоСКлиентом")),
+                "operation": _enum_label(str(row.get("ХозяйственнаяОперация") or "")),
+                "has_order": "1" if order_key else "",
             }
         )
     return {"configured": True, "counterparties": [], "orders": orders}

@@ -90,10 +90,37 @@ export type ExternalOrderReview = {
   diffs: { code: string; area: string; title: string; owner_label: string; level: string; verdict: string; note: string }[]
 }
 
+export type ExternalOnecTkp = {
+  key: string
+  number: string
+  date: string
+  amount: string
+  status?: string
+  client?: string
+  counterparty?: string
+  end_customer?: string
+  deal?: string
+  contract?: string
+  order_number?: string
+  organization?: string
+  manager?: string
+  agreement?: string
+  currency?: string
+  valid_until?: string
+  delivery_days?: string
+  payment_form?: string
+  delivery?: string
+  vat?: string
+  approved?: string
+  agreed?: string
+  operation?: string
+  has_order?: string
+}
+
 export type ExternalOnecSearch = {
   configured: boolean
   counterparties: { key: string; name: string; inn: string }[]
-  orders: { key: string; number: string; date: string; amount: string }[]
+  orders: ExternalOnecTkp[]
 }
 
 export type ExternalOrder = ExternalOrderBrief & {

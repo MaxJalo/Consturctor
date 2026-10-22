@@ -1,11 +1,12 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
+import { Paperclip } from 'lucide-react'
 import type { UserProfile } from '../../api/types'
 import { ApiError } from '../../api/types'
 import { api } from '../../api/client'
 import { OrchSlotMain } from '../../layout/GridSlots'
 import { useExternalOrderDock } from './externalOrderDock'
 import { HelperPanel } from './externalOrderReview'
-import type { ExternalOnecSearch, ExternalOrderReview } from './externalOrderTypes'
+import type { ExternalOnecSearch, ExternalOnecTkp, ExternalOrderReview } from './externalOrderTypes'
 import './externalOrder.css'
 
 const ROLE_KEY = 'orch.external-order.role'
@@ -64,6 +65,10 @@ const FILE_KINDS: { id: string; label: string }[] = [
   { id: 'acceptance', label: 'Приёмка' },
   { id: 'protocol', label: 'Протокол' }
 ]
+
+function kindLabel(id: string): string {
+  return FILE_KINDS.find((item) => item.id === id)?.label || id
+}
 
 const ROLE_FIELDS: Record<string, { section: string; title: string; fields: { key: string; label: string }[] }[]> = {
   ks: [
@@ -349,7 +354,7 @@ export function ExternalOrderTab({
   const [protocol, setProtocol] = useState('')
   const [baseVersion, setBaseVersion] = useState('')
   const [price, setPrice] = useState('')
-  const [onecRows, setOnecRows] = useState<{ key: string; number: string; date: string; amount: string; status?: string; has_order?: string }[]>([])
+  const [onecRows, setOnecRows] = useState<ExternalOnecTkp[]>([])
   const [onecTried, setOnecTried] = useState(false)
   const [onecLoading, setOnecLoading] = useState(false)
   const [deskOrder, setDeskOrder] = useState<Order | null>(null)
@@ -598,39 +603,84 @@ export function ExternalOrderTab({
                 </div>
                 {onecLoading && !onecRows.length ? <p>Читаю проведённые ТКП из 1С…</p> : null}
                 {onecRows.length ? (
-                  <table className="eo-table">
-                    <thead>
-                      <tr><th>ТКП</th><th>Дата</th><th>Статус в 1С</th><th>Заказ клиента</th><th></th></tr>
-                    </thead>
-                    <tbody>
-                      {onecRows.map((item) => {
-                        const taken = orders.some((order) => order.onec_tkp_key === item.key)
-                        return (
-                          <tr key={item.key}>
-                            <td>{item.number || 'без номера'}</td>
-                            <td>{item.date || '—'}</td>
-                            <td>{item.status || '—'}</td>
-                            <td>{item.has_order ? 'есть' : 'ещё нет'}</td>
-                            <td>
-                              {taken ? 'в деле' : (
-                                <button
-                                  className="eo-btn is-primary"
-                                  type="button"
-                                  onClick={() => void run(async () => {
-                                    const created = await api.importExternalTkp(item.key, asRole)
-                                    setCurrent(created)
-                                    return created
-                                  })}
-                                >
-                                  Открыть путь
-                                </button>
-                              )}
-                            </td>
-                          </tr>
-                        )
-                      })}
-                    </tbody>
-                  </table>
+                  <div className="eo-tkp-scroll">
+                    <table className="eo-table eo-tkp">
+                      <thead>
+                        <tr>
+                          <th>Номер</th>
+                          <th>Дата</th>
+                          <th>Клиент</th>
+                          <th>Контрагент</th>
+                          <th>Конечный заказчик</th>
+                          <th>Сделка</th>
+                          <th>Договор</th>
+                          <th>Заказ клиента</th>
+                          <th>Организация</th>
+                          <th>Менеджер</th>
+                          <th>Соглашение</th>
+                          <th>Валюта</th>
+                          <th>Сумма</th>
+                          <th>Статус</th>
+                          <th>Срок действия</th>
+                          <th>Срок поставки</th>
+                          <th>Форма оплаты</th>
+                          <th>Доставка</th>
+                          <th>НДС</th>
+                          <th>Согласован</th>
+                          <th>С клиентом</th>
+                          <th>Операция</th>
+                          <th></th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {onecRows.map((item) => {
+                          const taken = orders.some((order) => order.onec_tkp_key === item.key)
+                          const text = (value?: string) => (value || '').trim() || '—'
+                          return (
+                            <tr key={item.key}>
+                              <td>{item.number || 'без номера'}</td>
+                              <td>{text(item.date)}</td>
+                              <td>{text(item.client)}</td>
+                              <td>{text(item.counterparty)}</td>
+                              <td>{text(item.end_customer)}</td>
+                              <td>{text(item.deal)}</td>
+                              <td>{text(item.contract)}</td>
+                              <td>{text(item.order_number)}</td>
+                              <td>{text(item.organization)}</td>
+                              <td>{text(item.manager)}</td>
+                              <td>{text(item.agreement)}</td>
+                              <td>{text(item.currency)}</td>
+                              <td className="eo-num">{text(item.amount)}</td>
+                              <td>{text(item.status)}</td>
+                              <td>{text(item.valid_until)}</td>
+                              <td>{text(item.delivery_days)}</td>
+                              <td>{text(item.payment_form)}</td>
+                              <td>{text(item.delivery)}</td>
+                              <td>{text(item.vat)}</td>
+                              <td>{text(item.approved)}</td>
+                              <td>{text(item.agreed)}</td>
+                              <td>{text(item.operation)}</td>
+                              <td>
+                                {taken ? 'в деле' : (
+                                  <button
+                                    className="eo-btn is-primary"
+                                    type="button"
+                                    onClick={() => void run(async () => {
+                                      const created = await api.importExternalTkp(item.key, asRole)
+                                      setCurrent(created)
+                                      return created
+                                    })}
+                                  >
+                                    Открыть путь
+                                  </button>
+                                )}
+                              </td>
+                            </tr>
+                          )
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
                 ) : null}
               </section>
             ) : null}
@@ -841,6 +891,7 @@ function Card({
   const fileKinds = role === 'committee' ? FILE_KINDS.filter((item) => item.id === 'protocol') : FILE_KINDS
   const forms = ROLE_FIELDS[role] || []
   const [fileKind, setFileKind] = useState(role === 'committee' ? 'protocol' : 'contract')
+  const fileRef = useRef<HTMLInputElement>(null)
   const [conditions, setConditions] = useState('')
   const [rpName, setRpName] = useState(order.owners?.rp || '')
   const [risk, setRisk] = useState({ title: '', impact: '', measure: '' })
@@ -1124,19 +1175,31 @@ function Card({
           ) : null}
         </section>
       ) : null}
-      {page === 'deal' ? <section className="eo-wide">
-        <h3>Дело</h3>
-        {canUpload ? (
-        <div className="eo-actions">
-          <select
-            value={fileKinds.some((item) => item.id === fileKind) ? fileKind : fileKinds[0].id}
-            onChange={(event) => setFileKind(event.target.value)}
-          >
+      {page === 'deal' ? (
+      <section className="eo-journal" aria-label="Файлы дела">
+        <div className="eo-journal-bar">
+          <div className="eo-kind-tabs" role="tablist" aria-label="Вид файла">
             {fileKinds.map((item) => (
-              <option key={item.id} value={item.id}>{item.label}</option>
+              <button
+                key={item.id}
+                type="button"
+                role="tab"
+                aria-selected={fileKind === item.id}
+                className={fileKind === item.id ? 'is-active' : ''}
+                onClick={() => setFileKind(item.id)}
+              >
+                {item.label}
+              </button>
             ))}
-          </select>
+          </div>
+          {canUpload ? (
+            <button type="button" className="is-primary" onClick={() => fileRef.current?.click()}>
+              <Paperclip size={14} aria-hidden /> Прикрепить
+            </button>
+          ) : null}
           <input
+            ref={fileRef}
+            className="eo-file-input"
             type="file"
             accept=".docx,.xlsx,.pdf"
             onChange={(event) => {
@@ -1159,85 +1222,86 @@ function Card({
             }}
           />
         </div>
-        ) : null}
-        {order.documents.map((item) => (
-          <p key={item.id}>
-            {item.title} {item.version} {item.approved ? '· утверждён' : ''}
-            {!item.approved && (role === 'ks' || role === item.owner_role) ? (
-              <button type="button" onClick={() => void onRun(() => api.approveExternalFile(order.id, item.id, asRole))}>
-                Утвердить
-              </button>
-            ) : null}
-            {!item.approved && canUpload ? (
-              <button type="button" onClick={() => void onRun(() => api.deleteExternalFile(order.id, item.id, asRole))}>
-                Удалить
-              </button>
-            ) : null}
-            {role === 'committee' && item.owner_role && item.owner_role !== 'committee'
-              ? order.decisions.filter((decision) => decision.conditions && !decision.conditions_closed).map((decision) => (
-                <button
-                  key={decision.id}
-                  type="button"
-                  onClick={() => void onRun(() => api.closeExternalConditions(order.id, decision.id, item.id, asRole))}
-                >
-                  Закрыть условие этим документом
-                </button>
-              ))
-              : null}
-          </p>
-        ))}
+        <div className="eo-journal-scroll">
+          <table className="eo-journal-table">
+            <thead>
+              <tr>
+                <th>Вид</th>
+                <th>Документ</th>
+                <th>Версия</th>
+                <th>Статус</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody>
+              {order.documents.length === 0 ? (
+                <tr>
+                  <td className="eo-journal-empty" colSpan={5}>Файлов в деле ещё нет.</td>
+                </tr>
+              ) : order.documents.map((item) => (
+                <tr key={item.id}>
+                  <td>{kindLabel(item.kind)}</td>
+                  <td>{item.title || item.file_name || '—'}</td>
+                  <td>{item.version || '—'}</td>
+                  <td>
+                    <span className={item.approved ? 'eo-status is-ok' : 'eo-status'}>
+                      {item.approved ? 'утверждён' : 'черновик'}
+                    </span>
+                  </td>
+                  <td>
+                    <div className="eo-journal-actions">
+                      {!item.approved && (role === 'ks' || role === item.owner_role) ? (
+                        <button type="button" onClick={() => void onRun(() => api.approveExternalFile(order.id, item.id, asRole))}>
+                          Утвердить
+                        </button>
+                      ) : null}
+                      {!item.approved && canUpload ? (
+                        <button type="button" onClick={() => void onRun(() => api.deleteExternalFile(order.id, item.id, asRole))}>
+                          Удалить
+                        </button>
+                      ) : null}
+                      {role === 'committee' && item.owner_role && item.owner_role !== 'committee'
+                        ? order.decisions.filter((decision) => decision.conditions && !decision.conditions_closed).map((decision) => (
+                          <button
+                            key={decision.id}
+                            type="button"
+                            onClick={() => void onRun(() => api.closeExternalConditions(order.id, decision.id, item.id, asRole))}
+                          >
+                            Закрыть условие
+                          </button>
+                        ))
+                        : null}
+                    </div>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
         {(order.gaps || []).filter((item) => item.status === 'open').map((item) => (
-          <p key={item.id} className="eo-note">
+          <p key={item.id} className="eo-journal-note">
             Пробел «{item.field}», {item.owner_label}{item.due_at ? `, до ${item.due_at.slice(0, 16).replace('T', ' ')}` : ''}. {item.detail}
           </p>
         ))}
-        {(order.lines || []).filter((item) => item.change !== 'same').map((item) => (
-          <p key={item.id}>{item.change}: {item.name}, {item.qty}, {item.amount}</p>
-        ))}
-        <h3>Базовая версия</h3>
-        {(order.baselines || []).map((item) => (
-          <p key={item.id}>{item.code}{item.immutable ? ' · неизменяема' : ''} {item.reason}</p>
-        ))}
-        {role === 'ks' || role === 'finance' || role === 'rp' || role === 'committee' ? (
-          <div className="eo-form">
-            <input placeholder="Состав" value={baseline.composition} onChange={(event) => setBaseline({ ...baseline, composition: event.target.value })} />
-            <input placeholder="Стоимость" value={baseline.cost} onChange={(event) => setBaseline({ ...baseline, cost: event.target.value })} />
-            <input placeholder="МЦР" value={baseline.mcr} onChange={(event) => setBaseline({ ...baseline, mcr: event.target.value })} />
-            <input placeholder="Маржа" value={baseline.margin} onChange={(event) => setBaseline({ ...baseline, margin: event.target.value })} />
-            <input placeholder="БДДС" value={baseline.bdds} onChange={(event) => setBaseline({ ...baseline, bdds: event.target.value })} />
-            <input placeholder="Сроки" value={baseline.deadlines} onChange={(event) => setBaseline({ ...baseline, deadlines: event.target.value })} />
-            <input placeholder="Основание новой версии" value={baseline.reason} onChange={(event) => setBaseline({ ...baseline, reason: event.target.value })} />
-            <button
-              type="button"
-              onClick={() => void onRun(() => api.createExternalBaseline(order.id, baseline, asRole))}
-            >
-              Создать версию
-            </button>
-          </div>
+        {(order.lines || []).filter((item) => item.change !== 'same').length ? (
+          <table className="eo-journal-table">
+            <thead>
+              <tr><th>Изменение</th><th>Позиция</th><th>Количество</th><th>Сумма</th></tr>
+            </thead>
+            <tbody>
+              {(order.lines || []).filter((item) => item.change !== 'same').map((item) => (
+                <tr key={item.id}>
+                  <td>{item.change}</td>
+                  <td>{item.name}</td>
+                  <td>{item.qty}</td>
+                  <td>{item.amount}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
         ) : null}
-        <h3>План</h3>
-        {(order.tasks || []).map((item) => (
-          <p key={item.id}>
-            {item.critical ? 'Критический путь. ' : ''}{item.title}
-            {item.approved ? ' · утверждён' : ''}
-            {item.published ? ' · опубликован' : ''}
-          </p>
-        ))}
-        {role === 'ks' || role === 'rp' ? (
-          <div className="eo-actions">
-            <button type="button" onClick={() => void onRun(() => api.buildExternalPlan(order.id, asRole))}>Собрать проект плана</button>
-            {role === 'rp' ? (
-              <button type="button" onClick={() => void onRun(() => api.approveExternalPlan(order.id, asRole))}>Утвердить базовый план</button>
-            ) : null}
-            {role === 'rp' ? (
-              <button type="button" onClick={() => void onRun(() => api.publishExternalPlan(order.id, asRole))}>Опубликовать без копий</button>
-            ) : null}
-          </div>
-        ) : null}
-        {(order.notices || []).map((item) => (
-          <p key={item.id} className="eo-note">{item.title}. {item.body} {item.mail_status}</p>
-        ))}
-      </section> : null}
+      </section>
+      ) : null}
       {page === 'checks' ? <section className="eo-wide">
         <h3>Чек-листы</h3>
         <div className="eo-checks">
@@ -1359,28 +1423,153 @@ function Card({
           </div>
         ) : <p className="eo-muted">Решение фиксирует только Комитет.</p>}
       </section> : null}
-      {page === 'deal' ? <section className="eo-wide">
-        <h3>Выводы агента</h3>
-        {order.findings.length === 0 ? <p className="eo-muted">Черновиков нет.</p> : null}
-        {order.findings.map((item) => (
-          <p key={item.id}>
-            {item.field}: {item.value} ({item.source_ref}) — {item.status === 'accepted' ? 'принято' : 'черновик'}
-            {item.status !== 'accepted' && role === item.owner_role ? (
-              <button type="button" onClick={() => void onRun(() => api.acceptExternalFinding(order.id, item.id, asRole))}>
-                Принять
-              </button>
-            ) : null}
-          </p>
+      {page === 'deal' ? (
+      <section className="eo-journal" aria-label="Базовая версия">
+        <div className="eo-journal-bar">
+          <h3>Базовая версия</h3>
+          <span className="eo-status">{(order.baselines || []).length}</span>
+        </div>
+        <div className="eo-journal-scroll">
+          <table className="eo-journal-table">
+            <thead>
+              <tr><th>Код</th><th>Признак</th><th>Основание</th></tr>
+            </thead>
+            <tbody>
+              {(order.baselines || []).length === 0 ? (
+                <tr><td className="eo-journal-empty" colSpan={3}>Базовой версии ещё нет.</td></tr>
+              ) : (order.baselines || []).map((item) => (
+                <tr key={item.id}>
+                  <td>{item.code || '—'}</td>
+                  <td>{item.immutable ? 'неизменяема' : 'черновик'}</td>
+                  <td>{item.reason || '—'}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+        {role === 'ks' || role === 'finance' || role === 'rp' || role === 'committee' ? (
+          <div className="eo-journal-form">
+            <label>Состав<input value={baseline.composition} onChange={(event) => setBaseline({ ...baseline, composition: event.target.value })} /></label>
+            <label>Стоимость<input value={baseline.cost} onChange={(event) => setBaseline({ ...baseline, cost: event.target.value })} /></label>
+            <label>МЦР<input value={baseline.mcr} onChange={(event) => setBaseline({ ...baseline, mcr: event.target.value })} /></label>
+            <label>Маржа<input value={baseline.margin} onChange={(event) => setBaseline({ ...baseline, margin: event.target.value })} /></label>
+            <label>БДДС<input value={baseline.bdds} onChange={(event) => setBaseline({ ...baseline, bdds: event.target.value })} /></label>
+            <label>Сроки<input value={baseline.deadlines} onChange={(event) => setBaseline({ ...baseline, deadlines: event.target.value })} /></label>
+            <label>Основание<input value={baseline.reason} onChange={(event) => setBaseline({ ...baseline, reason: event.target.value })} /></label>
+            <button type="button" className="is-primary" onClick={() => void onRun(() => api.createExternalBaseline(order.id, baseline, asRole))}>
+              Создать версию
+            </button>
+          </div>
+        ) : null}
+      </section>
+      ) : null}
+      {page === 'deal' ? (
+      <section className="eo-journal" aria-label="План">
+        <div className="eo-journal-bar">
+          <h3>План</h3>
+          {role === 'ks' || role === 'rp' ? (
+            <div className="eo-journal-actions">
+              <button type="button" onClick={() => void onRun(() => api.buildExternalPlan(order.id, asRole))}>Собрать проект плана</button>
+              {role === 'rp' ? (
+                <button type="button" onClick={() => void onRun(() => api.approveExternalPlan(order.id, asRole))}>Утвердить базовый план</button>
+              ) : null}
+              {role === 'rp' ? (
+                <button type="button" onClick={() => void onRun(() => api.publishExternalPlan(order.id, asRole))}>Опубликовать без копий</button>
+              ) : null}
+            </div>
+          ) : <span className="eo-status">{(order.tasks || []).length}</span>}
+        </div>
+        <div className="eo-journal-scroll">
+          <table className="eo-journal-table">
+            <thead>
+              <tr><th>Задача</th><th>Путь</th><th>Статус</th></tr>
+            </thead>
+            <tbody>
+              {(order.tasks || []).length === 0 ? (
+                <tr><td className="eo-journal-empty" colSpan={3}>Задач плана нет.</td></tr>
+              ) : (order.tasks || []).map((item) => (
+                <tr key={item.id}>
+                  <td>{item.title}</td>
+                  <td>{item.critical ? 'критический' : 'обычный'}</td>
+                  <td>
+                    <span className={item.approved ? 'eo-status is-ok' : 'eo-status'}>
+                      {item.published ? 'опубликован' : item.approved ? 'утверждён' : 'черновик'}
+                    </span>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+        {(order.notices || []).map((item) => (
+          <p key={item.id} className="eo-journal-note">{item.title}. {item.body} {item.mail_status}</p>
         ))}
-      </section> : null}
-      {page === 'deal' ? <section className="eo-wide">
-        <h3>История</h3>
-        {order.documents.map((item) => <p key={item.id}>{item.title} {item.version}</p>)}
-        {order.documents.length === 0 ? <p className="eo-muted">Файлы в дело ещё не внесены.</p> : null}
-        {order.audit.map((item) => (
-          <p key={item.id} className="eo-muted">{item.actor_fio} ({item.actor_role}): {item.action}. {item.detail}</p>
-        ))}
-      </section> : null}
+      </section>
+      ) : null}
+      {page === 'deal' ? (
+      <section className="eo-journal" aria-label="Выводы агента">
+        <div className="eo-journal-bar">
+          <h3>Выводы агента</h3>
+          <span className="eo-status">{order.findings.length}</span>
+        </div>
+        <div className="eo-journal-scroll">
+          <table className="eo-journal-table">
+            <thead>
+              <tr><th>Поле</th><th>Значение</th><th>Источник</th><th>Статус</th><th></th></tr>
+            </thead>
+            <tbody>
+              {order.findings.length === 0 ? (
+                <tr><td className="eo-journal-empty" colSpan={5}>Черновиков нет.</td></tr>
+              ) : order.findings.map((item) => (
+                <tr key={item.id}>
+                  <td>{item.field}</td>
+                  <td>{item.value}</td>
+                  <td>{item.source_ref || '—'}</td>
+                  <td>
+                    <span className={item.status === 'accepted' ? 'eo-status is-ok' : 'eo-status'}>
+                      {item.status === 'accepted' ? 'принято' : 'черновик'}
+                    </span>
+                  </td>
+                  <td>
+                    {item.status !== 'accepted' && role === item.owner_role ? (
+                      <button type="button" onClick={() => void onRun(() => api.acceptExternalFinding(order.id, item.id, asRole))}>
+                        Принять
+                      </button>
+                    ) : null}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </section>
+      ) : null}
+      {page === 'deal' ? (
+      <section className="eo-journal" aria-label="История">
+        <div className="eo-journal-bar">
+          <h3>История</h3>
+          <span className="eo-status">{order.audit.length}</span>
+        </div>
+        <div className="eo-journal-scroll">
+          <table className="eo-journal-table">
+            <thead>
+              <tr><th>Кто</th><th>Действие</th><th>Подробности</th></tr>
+            </thead>
+            <tbody>
+              {order.audit.length === 0 ? (
+                <tr><td className="eo-journal-empty" colSpan={3}>Записей ещё нет.</td></tr>
+              ) : order.audit.map((item) => (
+                <tr key={item.id}>
+                  <td>{item.actor_fio}<br /><small>{item.actor_role}</small></td>
+                  <td>{item.action}</td>
+                  <td>{item.detail || '—'}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </section>
+      ) : null}
     </article>
   )
 }
