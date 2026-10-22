@@ -970,9 +970,9 @@
   position: relative;
   display: flex;
   flex-direction: column;
-  width: min(1080px, 100%);
-  height: min(760px, calc(100vh - 48px));
-  max-height: 760px;
+  width: min(1360px, calc(100vw - 32px));
+  height: min(960px, calc(100vh - 24px));
+  max-height: calc(100vh - 24px);
   overflow: hidden;
   padding: 18px 20px 16px;
   border-radius: 12px;
@@ -1187,15 +1187,13 @@
   background: #fff;
 }
 
-.sub-kpi-load-pane h3 {
+.sub-kpi-load .sub-kpi-gantt-person {
   position: sticky;
   top: 0;
-  z-index: 1;
-  margin: 0 0 8px;
-  padding-bottom: 4px;
-  background: #fff;
-  color: #0d3b73;
-  font-size: 13px;
+  z-index: 2;
+  margin: -12px -12px 0;
+  padding: 12px 12px 10px;
+  background: #f4f7fb;
 }
 
 .sub-kpi-bar-row,
@@ -1282,8 +1280,16 @@
 .sub-kpi-gantt-person {
   display: block;
   width: 100%;
-  margin: 8px 0 4px;
-  font-weight: 650;
+  margin: 0 0 10px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: #102033;
+  font: inherit;
+  font-size: 20px;
+  font-weight: 700;
+  text-align: left;
+  cursor: pointer;
 }
 
 .sub-kpi-gantt-axis {
@@ -1745,6 +1751,12 @@
   min-width: 0;
 }
 
+.sub-kpi-load .sub-kpi-bar-row > button {
+  color: #102033;
+  font-size: 16px;
+  font-weight: 700;
+}
+
 .sub-kpi-load .sub-kpi-gantt-row {
   grid-template-columns: minmax(180px, 1.35fr) minmax(140px, 2fr) 96px;
   min-height: 28px;
@@ -1769,13 +1781,16 @@
 }
 
 .sub-kpi-person-block {
-  margin-bottom: 10px;
-  padding-bottom: 6px;
-  border-bottom: 1px solid #e6eef8;
+  margin: 0 0 16px;
+  padding: 12px 12px 14px;
+  border: 1px solid rgba(13, 59, 115, 0.14);
+  border-left: 4px solid #0d3b73;
+  border-radius: 10px;
+  background: #f4f7fb;
 }
 
-.sub-kpi-person-block:last-of-type {
-  border-bottom: 0;
+.sub-kpi-person-block + .sub-kpi-person-block {
+  margin-top: 4px;
 }
 
 .sub-kpi-bar-row i,

@@ -572,8 +572,8 @@ function OccupancyBoard({
       <div className="sub-tasks-presets sub-kpi-chart-modes" role="group" aria-label="Вид гистограммы">
         {(
           [
-            ['tasks', 'Какие задачи'],
-            ['origin', 'Откуда']
+            ['tasks', 'Задачи'],
+            ['origin', 'Источник']
           ] as const
         ).map(([id, label]) => (
           <button
@@ -593,8 +593,8 @@ function OccupancyBoard({
         ) : null}
       </div>
       {loadView === 'origin' ? (
-      <section className="sub-kpi-load-pane" aria-label="Откуда задачи">
-        <h3>Из какой системы задачи</h3>
+      <section className="sub-kpi-load-pane" aria-label="Источник задач">
+        <h3>Источник</h3>
         {shown.map((row) => (
           <div
             key={row.fio}
@@ -639,8 +639,7 @@ function OccupancyBoard({
         </div>
       </section>
       ) : (
-      <section className="sub-kpi-load-pane" aria-label="Какие задачи">
-        <h3>Какие задачи занимают сотрудника</h3>
+      <section className="sub-kpi-load-pane" aria-label="Задачи">
         {shownTasks.length === 0 ? (
           <p className="sub-kpi-note">В этом периоде задач нет.</p>
         ) : (
@@ -656,12 +655,10 @@ function OccupancyBoard({
             {shown
               .filter((row) => row.total > 0)
               .map((row) => (
-                <div key={row.fio} className="sub-kpi-person-block">
-                  {focusFio ? null : (
-                    <button type="button" className="sub-kpi-gantt-person" onClick={() => toggleFocus(row.fio)}>
-                      {surname(row.fio)} · {row.total}
-                    </button>
-                  )}
+                <div key={row.fio} className="sub-kpi-person-block" data-fio={row.fio}>
+                  <button type="button" className="sub-kpi-gantt-person" onClick={() => toggleFocus(row.fio)}>
+                    {surname(row.fio)} · {row.total}
+                  </button>
                   {row.parts.open
                     .concat(row.parts.overdue, row.parts.ontime, row.parts.late)
                     .map((task) => {
@@ -1001,7 +998,7 @@ export function SubordinateKpiDialog({
             <h2 id="sub-kpi-title">Сводка KPI</h2>
             <p>
               {view === 'load'
-                ? '«Какие задачи» — имя каждой задачи и сколько дней до срока. «Откуда» — доля 1С, документооборота и Турбопроекта. Нажатие на сотрудника оставляет только его.'
+                ? '«Задачи» — имя каждой задачи и сколько дней до срока. «Источник» — доля 1С, документооборота и Турбопроекта. Нажатие на сотрудника оставляет только его.'
                 : 'Наведите на точку — задачи появятся над графиком. Нажмите — линия от постановки до выполнения.'}
             </p>
           </div>
