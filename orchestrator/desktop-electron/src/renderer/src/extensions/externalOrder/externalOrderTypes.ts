@@ -1,5 +1,14 @@
 export type ExternalOrderRole = { id: string; label: string }
 
+export type ExternalOrderSimplifiedStep = {
+  id: string
+  title: string
+  detail: string
+  form: string
+  file: string
+  prompt: string
+}
+
 export type ExternalOrderMeta = {
   role: string
   role_label: string
@@ -8,6 +17,7 @@ export type ExternalOrderMeta = {
   desk: { title: string; sees: string[]; denied: string[] }
   integrations: { system: string; state: string; note: string }[]
   routes: ExternalOrderRole[]
+  simplified_path?: ExternalOrderSimplifiedStep[]
 }
 
 export type ExternalOrderBrief = {
@@ -24,6 +34,14 @@ export type ExternalOrderBrief = {
   onec_key?: string
   onec_tkp_key?: string
   path_label?: string
+  route?: string
+  route_label?: string
+  stage?: string
+  payment_percent?: number
+  open_checks_count?: number
+  open_diffs_count?: number
+  draft_findings_count?: number
+  waiting_roles?: string[]
 }
 
 export type ExternalOrderCheck = {
@@ -33,6 +51,9 @@ export type ExternalOrderCheck = {
   owner_role: string
   owner_label: string
   status: string
+  status_label?: string
+  due_at?: string
+  blocking?: boolean
   evidence: string
 }
 
@@ -55,8 +76,14 @@ export type ExternalOrderFinding = {
   field: string
   value: string
   source_ref: string
+  location?: string
   status: string
   owner_role: string
+  owner_label?: string
+  proposed_by?: string
+  kind?: string
+  label?: string
+  prefill?: Record<string, unknown>
 }
 
 export type ExternalOrderDecision = {
@@ -66,6 +93,54 @@ export type ExternalOrderDecision = {
   conditions: string
   conditions_closed: boolean
   base_version: string
+}
+
+export type StagePassportOpenCheck = {
+  id: string
+  gate: string
+  text: string
+  owner_role: string
+  owner_label: string
+  blocking: boolean
+}
+
+export type StagePassportDoc = {
+  kind: string
+  label: string
+  present: boolean
+  approved: boolean
+  version: string
+}
+
+export type StagePassport = {
+  id: string
+  label: string
+  hint: string
+  statuses: string[]
+  state: 'done' | 'current' | 'blocked' | 'upcoming'
+  owner_roles: string[]
+  owner_labels: string[]
+  gates: string[]
+  checks_done: number
+  checks_total: number
+  open_checks: StagePassportOpenCheck[]
+  required_docs: StagePassportDoc[]
+  blocker: string
+  completed_by: string
+}
+
+export type CopilotQuestion = {
+  id: string
+  field: string
+  section?: string
+  key?: string
+  check_id?: string
+  gap_id?: string
+  prompt: string
+  placeholder: string
+  current_value?: string
+  owner_role: string
+  owner_label: string
 }
 
 export type ExternalOrderMatrix = {
@@ -127,14 +202,81 @@ export type ExternalOrder = ExternalOrderBrief & {
   inn: string
   contact: string
   route: string
+  order_type?: string
+  priority?: string
   project_note: string
   owners: Record<string, string>
   sections: Record<string, Record<string, string>>
   checks: ExternalOrderCheck[]
   diffs: ExternalOrderDiff[]
-  risks: { id: string; title: string; impact: string; status: string }[]
+  risks: { id: string; title: string; impact: string; measure?: string; status: string; source?: string }[]
   decisions: ExternalOrderDecision[]
   findings: ExternalOrderFinding[]
-  documents: { id: string; kind: string; title: string; version: string; note: string }[]
-  audit: { id: string; actor_fio: string; actor_role: string; action: string; detail: string }[]
+  documents: {
+    id: string
+    kind: string
+    title: string
+    version: string
+    note: string
+    file_name?: string
+    approved?: boolean
+    owner_role?: string
+  }[]
+  gaps?: {
+    id: string
+    field: string
+    owner_role: string
+    owner_label: string
+    due_at: string
+    detail: string
+    status: string
+  }[]
+  baselines?: {
+    id: string
+    code: string
+    composition: string
+    cost: string
+    mcr?: string
+    margin: string
+    bdds?: string
+    deadlines?: string
+    immutable: boolean
+    reason: string
+  }[]
+  tasks?: {
+    id: string
+    title: string
+    kind: string
+    critical: boolean
+    approved: boolean
+    published: boolean
+    depends_on: string
+    owner_role?: string
+  }[]
+  lines?: { id: string; name: string; qty: string; amount: string; change: string }[]
+  notices?: { id: string; title: string; body: string; mail_status: string; role: string; kind?: string }[]
+  audit: {
+    id: string
+    actor_fio: string
+    actor_role: string
+    action: string
+    detail: string
+    before_value?: string
+    after_value?: string
+    created_at?: string
+  }[]
+  stage_passports?: StagePassport[]
+  role_questions?: Record<string, CopilotQuestion[]>
+  questions?: CopilotQuestion[]
+  copilot_summary?: string
+}
+
+export type ExternalOrderCopilotResponse = ExternalOrder & {
+  order?: ExternalOrder
+  summary?: string
+  copilot_summary?: string
+  log?: string[]
+  questions?: CopilotQuestion[]
+  stage_passport?: StagePassport
+  review?: ExternalOrderReview
 }

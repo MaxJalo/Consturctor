@@ -24,6 +24,9 @@ import {
   formatFileSize,
   initialValues,
   lookupDocflowCatalog,
+  lookupEmployeeCard,
+  paymentAccountLabel,
+  paymentFieldVisible,
   postDocflowDocument,
   missingFields,
   readDocflowDocument,
@@ -409,9 +412,21 @@ export function DocflowCreateDialog({
   const selectedKind = kindField ? keys[kindField.key] || values[kindField.key] || '' : ''
   const kindLabel = kindField?.options?.find((item) => item.value === selectedKind)?.label || ''
   const visibleFields = fields.filter(
-    (field) => !field.for_kinds?.length || field.for_kinds.some((part) => kindLabel.includes(part))
+    (field) =>
+      (!field.for_kinds?.length || field.for_kinds.some((part) => kindLabel.includes(part))) &&
+      (schema.id !== 'payment' || paymentFieldVisible(field, values))
   )
-  const missing = missingFields(visibleFields, values)
+  const lineCashFlow = (tables['РасшифровкаПлатежа'] || [])
+    .map((row) => row.keys['СтатьяДвиженияДенежныхСредств_Key'] || row.cells['СтатьяДвиженияДенежныхСредств_Key'] || '')
+    .find((value) => value.trim())
+  const missing = missingFields(visibleFields, values).filter(
+    (field) =>
+      !(
+        schema.id === 'payment' &&
+        field.key === 'СтатьяДвиженияДенежныхСредств_Key' &&
+        (lineCashFlow || '').trim()
+      )
+  )
   const missingKeys = new Set(missing.map((field) => field.key))
   const existingFiles = card?.files || []
   const basisTargets = (schema.basis_targets || []).filter((target) => schemas.some((item) => item.id === target.id))
@@ -432,6 +447,35 @@ export function DocflowCreateDialog({
     })
     setAutofilled((current) => current.filter((item) => item !== key))
     markChanged(key)
+    if (schema?.id === 'payment' && key === 'ПодотчетноеЛицо_Key' && value.trim()) {
+      void lookupEmployeeCard(user, value.trim()).then((card) => {
+        if (!card) return
+        const patch: Record<string, string> = {
+          ИННПолучателя: card.inn,
+          БанкПолучателя: card.bank_name,
+          БИКБанкаПолучателя: card.bank_bik,
+          НомерСчетаПолучателя: card.account_number,
+          БанковскийСчетКонтрагента_Key: card.account_name
+        }
+        const patchKeys: Record<string, string> = {}
+        if (card.department_name) {
+          patch['Подразделение_Key'] = card.department_name
+          if (card.department_key) patchKeys['Подразделение_Key'] = card.department_key
+        }
+        if (card.user_name) {
+          patch['КтоЗаявил_Key'] = card.user_name
+          if (card.user_key) patchKeys['КтоЗаявил_Key'] = card.user_key
+        }
+        if (card.account_key) patchKeys['БанковскийСчетКонтрагента_Key'] = card.account_key
+        setValues((current) => ({ ...current, ...patch }))
+        setKeys((current) => {
+          const next = { ...current, ...patchKeys }
+          if (!card.account_key) delete next['БанковскийСчетКонтрагента_Key']
+          return next
+        })
+        setAutofilled((current) => [...new Set([...current, ...Object.keys(patch)])])
+      })
+    }
   }
 
   const clearAutofill = (): void => {
@@ -496,8 +540,15 @@ export function DocflowCreateDialog({
     if (editing) setPending('attach')
   }
 
-  const payloadValues = (): Record<string, string> =>
-    Object.fromEntries(visibleFields.map((field) => [field.key, keys[field.key] || values[field.key] || '']))
+  const payloadValues = (): Record<string, string> => {
+    const out = Object.fromEntries(
+      visibleFields.map((field) => [field.key, keys[field.key] || values[field.key] || ''])
+    )
+    if (schema.id === 'payment' && !(out['СтатьяДвиженияДенежныхСредств_Key'] || '').trim() && lineCashFlow) {
+      out['СтатьяДвиженияДенежныхСредств_Key'] = lineCashFlow
+    }
+    return out
+  }
 
   const payloadTables = (): Record<string, Record<string, string>[]> =>
     Object.fromEntries(
@@ -731,7 +782,7 @@ export function DocflowCreateDialog({
         }${autofilled.includes(field.key) ? ' is-autofilled' : ''}${changed.includes(field.key) && editing ? ' is-changed' : ''}`}
       >
         <label className="df1c-label" title={field.required ? 'Обязательное поле' : undefined}>
-          {field.label}:
+          {schema.id === 'payment' ? paymentAccountLabel(field, values) : field.label}:
         </label>
         <div className="df1c-control">
           <FieldInput
@@ -741,7 +792,7 @@ export function DocflowCreateDialog({
             value={values[field.key] || ''}
             userHints={userHints}
             emailHints={emailHints}
-            readOnly={readOnly}
+            readOnly={readOnly || Boolean(field.readonly)}
             onChange={(value) => setValue(field.key, value)}
           />
         </div>

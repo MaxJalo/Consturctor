@@ -231,7 +231,10 @@ async def onec_status(auth: AuthContext = Depends(get_current_user)) -> dict[str
 _JOURNAL_EXECUTOR = ThreadPoolExecutor(max_workers=3, thread_name_prefix="tool-journal")
 _BULK_EXECUTOR = ThreadPoolExecutor(max_workers=2, thread_name_prefix="tool-bulk")
 _SLOW_EXECUTOR = ThreadPoolExecutor(max_workers=4, thread_name_prefix="tool-slow")
+# Карточка внешнего заказа читается из своей базы и не должна ждать журналы 1С.
+_CASE_EXECUTOR = ThreadPoolExecutor(max_workers=2, thread_name_prefix="tool-case")
 _SLOW_TOOLS = frozenset({"onec.docflow_tasks"})
+_CASE_TOOLS = frozenset({"external_order.case"})
 _BULK_TOOLS = frozenset({"onec.odata_get"}) | _IMAP_TOOLS
 _READ_COALESCE = _SLOW_TOOLS | _BULK_TOOLS | frozenset(
     {
@@ -264,6 +267,8 @@ def _bearer_token(request: Request) -> str:
 
 
 def _executor_for(tool_name: str) -> ThreadPoolExecutor:
+    if tool_name in _CASE_TOOLS:
+        return _CASE_EXECUTOR
     if tool_name in _SLOW_TOOLS:
         return _SLOW_EXECUTOR
     if tool_name in _BULK_TOOLS:

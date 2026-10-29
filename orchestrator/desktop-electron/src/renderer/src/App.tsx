@@ -55,6 +55,7 @@ import { isInFlightRunStatus, liveEntryMatchesRun } from './store/liveRun'
 import { ChatDock } from './workplace/ChatDock'
 import { isPersonalAgentWorkflowId, personalAgentWorkflowId } from './workplace/personalAgent'
 import { DiagnosticsPage, SettingsTab, TicketsPage } from './workplace/WorkplaceTabs'
+import { SetupHotkey } from './workplace/SetupPanel'
 import { GridDataRefreshProvider } from './workplace/GridDataRefreshContext'
 import { WorkplacePeriodProvider } from './workplace/workplacePeriod'
 import { clearGridCacheForUser } from './workplace/gridDataCache'
@@ -223,6 +224,7 @@ export function App(): React.JSX.Element {
     <RunProvider>
       <ComCredentialsRevisionProvider>
         <AppShell />
+        <SetupHotkey />
       </ComCredentialsRevisionProvider>
     </RunProvider>
   )

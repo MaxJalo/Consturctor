@@ -1,6 +1,6 @@
 import { app, BrowserWindow } from 'electron'
 import { spawn } from 'node:child_process'
-import { createWriteStream, existsSync, mkdirSync, unlinkSync } from 'node:fs'
+import { closeSync, createWriteStream, existsSync, mkdirSync, openSync, readSync, statSync, unlinkSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { finished } from 'node:stream/promises'
 
@@ -273,17 +273,39 @@ async function downloadInstaller(asset: GithubAsset, dest: string): Promise<void
   if (!existsSync(dest)) {
     throw new Error('Installer was not saved to disk')
   }
+  assertInstallerFile(dest, total)
+}
+
+function assertInstallerFile(dest: string, expectedSize: number): void {
+  const size = statSync(dest).size
+  if (size < 1_000_000 || (expectedSize > 0 && size < expectedSize * 0.9)) {
+    throw new Error('Установщик скачался не полностью')
+  }
+  const fd = openSync(dest, 'r')
+  try {
+    const header = Buffer.alloc(2)
+    readSync(fd, header, 0, 2, 0)
+    if (header.toString('ascii') !== 'MZ') {
+      throw new Error('Скачанный файл не является установщиком')
+    }
+  } finally {
+    closeSync(fd)
+  }
 }
 
 function launchInstaller(installerPath: string): void {
-  // CreateProcess cannot raise UAC. ShellExecute with runas asks for administrator,
-  // which the route script needs in order to write a persistent LAN route.
-  const escaped = installerPath.replace(/'/g, "''")
-  const command = `Start-Process -FilePath '${escaped}' -ArgumentList '/S','--updated','--force-run' -Verb RunAs`
-  const child = spawn('powershell.exe', ['-NoProfile', '-Command', command], {
+  // explorer.exe is outside this app's job, so quitting does not kill the setup.
+  // The pause lets Orchestrator release its files before NSIS renames the folder.
+  const scriptPath = join(updateDir(), 'run-setup.cmd')
+  const quoted = installerPath.replace(/"/g, '')
+  writeFileSync(
+    scriptPath,
+    ['@echo off', 'ping 127.0.0.1 -n 5 >nul', `start "" "${quoted}" /S --updated --force-run`, ''].join('\r\n'),
+    'utf8'
+  )
+  const child = spawn('explorer.exe', [scriptPath], {
     detached: true,
-    stdio: 'ignore',
-    windowsHide: true
+    stdio: 'ignore'
   })
   child.unref()
 }

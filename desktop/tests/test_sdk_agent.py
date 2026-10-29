@@ -1160,6 +1160,23 @@ def test_server_catalog_exposes_both_worlds() -> None:
     assert "onec.download_artifact" in SERVER_TOOL_NAMES
 
 
+def test_production_order_prompt_calls_plan() -> None:
+    record = WorkflowRecord(
+        id="wf-production",
+        title="ИИ-агент внешнего заказа · Производство, качество и сервис",
+        phase="done",
+    )
+    prompt = build_sdk_prompt(record, "ВЗ-0005")
+    assert "action=plan" in prompt
+    assert "не останавливайся" in prompt
+    other = WorkflowRecord(
+        id="wf-ks",
+        title="ИИ-агент внешнего заказа · Коммерческая служба",
+        phase="done",
+    )
+    assert "action=plan" not in build_sdk_prompt(other, "ВЗ-0005")
+
+
 def test_meeting_run_prompt_skips_manifest_bulk_reads() -> None:
     record = WorkflowRecord(
         id="wf-rk",

@@ -60,6 +60,41 @@ export function filterRegistryRowsByPeriod(
   })
 }
 
+function weekDayBound(iso: string, end = false): Date | null {
+  const text = (iso || '').trim()
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(text)) return null
+  const [y, m, d] = text.split('-').map(Number)
+  return new Date(y, m - 1, d, end ? 23 : 0, end ? 59 : 0, end ? 59 : 0, end ? 999 : 0)
+}
+
+/** Понедельник–пятница недели, в которую попадает день. */
+export function currentWorkWeek(now = new Date()): { from: string; to: string } {
+  const monday = new Date(now.getFullYear(), now.getMonth(), now.getDate())
+  const weekday = monday.getDay()
+  monday.setDate(monday.getDate() + (weekday === 0 ? -6 : 1 - weekday))
+  const friday = new Date(monday)
+  friday.setDate(monday.getDate() + 4)
+  return { from: formatIsoDay(monday), to: formatIsoDay(friday) }
+}
+
+/**
+ * Рабочая неделя: созданные в эти дни, со сроком сдачи в эти дни и просроченные
+ * (даже если документ и срок раньше понедельника).
+ */
+export function filterRegistryWorkWeek(
+  rows: AssignmentRegistryRow[],
+  dateFrom: string,
+  dateTo: string
+): AssignmentRegistryRow[] {
+  const from = weekDayBound(dateFrom)
+  const to = weekDayBound(dateTo, true)
+  if (!from || !to) return rows
+  const inWeek = (value: Date | null): boolean => Boolean(value && value >= from && value <= to)
+  return rows.filter(
+    (row) => row.overdue || inWeek(parseRegistryDay(row.date)) || inWeek(parseRegistryDay(row.fullRemediationDue))
+  )
+}
+
 /** Какие интервалы дат ещё нужно запросить у 1С. */
 export function planRegistryFetchSlices(
   loaded: RegistryLoadedSpan | null,

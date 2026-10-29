@@ -25,6 +25,7 @@ import { ATTACHED_FILES } from '../../workplace/docflowAttachments'
 import type { DocflowKindId } from '../../workplace/docflowDocumentCreate'
 import { DocflowAttachments } from './DocflowAttachments'
 import { DocflowOpenFormBar } from './DocflowOpenFormBar'
+import { DocflowProcessBlock } from './DocflowProcessBlock'
 import { SortTh, useDocflowTable } from './docflowTableTools'
 import {
   useRegisterGlobalSearch,
@@ -507,6 +508,7 @@ export function DocflowOrdersPanel({
             />
             {selected.subject ? <p className="docflow-side-subject">{selected.subject}</p> : null}
             <div className="docflow-side-scroll">
+              <DocflowProcessBlock />
               <DocflowAttachments
                 user={user}
                 entity={selected.kind === 'order' ? ATTACHED_FILES.order : ATTACHED_FILES.directive}

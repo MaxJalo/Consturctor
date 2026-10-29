@@ -90,9 +90,9 @@ export function LoginPage({ onLoggedIn, banner }: LoginPageProps): React.JSX.Ele
     <div className="login-wrap">
       <div className="login-bg" />
       <div className="login-card">
-        <img className="login-logo" src={logoUrl} alt="Оркестратор" />
-        <div className="brand">Оркестратор</div>
-        <div className="subtitle">Оркестратор должности</div>
+        <img className="login-logo" src={logoUrl} alt="Orch_mx" />
+        <div className="brand">Orch_mx</div>
+        <div className="subtitle">должности</div>
         <div className="hint">Вход через учётную запись 1С</div>
         {banner ? <div className="login-banner">{banner}</div> : null}
 

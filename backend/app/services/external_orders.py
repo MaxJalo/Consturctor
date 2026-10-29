@@ -80,6 +80,133 @@ ROUTES = {
     "recalc": "Пересчёт",
 }
 
+# Несерийный путь сверху вниз, без согласования руководства.
+# form — открытие списка в толстом клиенте 1С, file — шаблон на диске.
+PROJECT_PLAN_TEMPLATE = (
+    r"\\192.168.1.198\project\1. ПУЛ, СТО, Шаблоны документов, Инструкции"
+    r"\Шаблон плана без РУКОВОДСТВА.mpp"
+)
+ZPR_FORM = "Документ.ТД_ЗаявкаОПотребностиРынка.Форма.ФормаСписка"
+ORDER_CARD_FORM = "ЖурналДокументов.ТД_ЖурналКартЗаказа.Форма.ФормаСписка"
+CUSTOMER_ORDER_FORM = "Документ.ЗаказКлиента.Форма.ФормаСпискаДокументов"
+START_ORDER_FORM = "Документ.ТД_РаспоряжениеОНачалеПроекта.ФормаСписка"
+CRM_PROJECT_FORM = "Справочник.Проекты.Форма.CRM_ФормаСписка"
+
+SIMPLIFIED_PATH: list[dict[str, str]] = [
+    {
+        "id": "zpr",
+        "title": "ЗПР",
+        "detail": "Заявка о потребности рынка",
+        "form": ZPR_FORM,
+        "file": "",
+        "prompt": (
+            "Прочитай заявку о потребности рынка в деле. Собери исходные данные: "
+            "заказчик, изделие, количество, срок и чего не хватает. Это черновик, стадию не переводи."
+        ),
+    },
+    {
+        "id": "tech",
+        "title": "Техническая проверка",
+        "detail": "Службы СР, ГКИ и ГСПП",
+        "form": ZPR_FORM,
+        "file": "",
+        "prompt": (
+            "Проверь реализуемость проекта для служб СР, ГКИ и ГСПП. "
+            "Напиши, чего не хватает каждой службе и можно ли брать заказ в работу. "
+            "Вывод только черновик, решение служб не подменяй и стадию не переводи."
+        ),
+    },
+    {
+        "id": "analysis",
+        "title": "Анализ ЗПР",
+        "detail": "Служба развития",
+        "form": ZPR_FORM,
+        "file": "",
+        "prompt": (
+            "Подготовь анализ заявки о потребности рынка для службы развития: "
+            "маршрут, нестандартные решения и пробелы исходных данных. Стадию не переводи."
+        ),
+    },
+    {
+        "id": "committee",
+        "title": "Комитет",
+        "detail": "Комитет по расчету стоимости внешних несерийных заказов",
+        "form": "",
+        "file": "",
+        "prompt": (
+            "Собери черновик протокола совещания «Комитет по расчету стоимости внешних несерийных заказов»: "
+            "решения и задачи с исполнителями. Протокол не утверждай и в 1С сам не отправляй."
+        ),
+    },
+    {
+        "id": "passport",
+        "title": "Паспорт",
+        "detail": "Журнал карт заказа",
+        "form": ORDER_CARD_FORM,
+        "file": "",
+        "prompt": (
+            "Проверь полноту паспорта заказа по делу и карте заказа. "
+            "Перечисли пустые поля и кто должен их закрыть. Паспорт сам не заполняй."
+        ),
+    },
+    {
+        "id": "tkp",
+        "title": "ТКП",
+        "detail": "Черновик технико-коммерческого предложения",
+        "form": "",
+        "file": "",
+        "prompt": (
+            "Составь черновик технико-коммерческого предложения по полям дела и условиям протокола. "
+            "ТКП не выпускай: это делает человек."
+        ),
+    },
+    {
+        "id": "contract",
+        "title": "Договор и спецификация",
+        "detail": "Заказ клиента",
+        "form": CUSTOMER_ORDER_FORM,
+        "file": "",
+        "prompt": (
+            "Перенеси условия ТКП в состав спецификации заказа клиента: предмет, количество, цена, срок, "
+            "оплата и комплектность. Договор не подписывай."
+        ),
+    },
+    {
+        "id": "linked",
+        "title": "Связанные документы",
+        "detail": "Всё ведётся от заказа клиента",
+        "form": CUSTOMER_ORDER_FORM,
+        "file": "",
+        "prompt": (
+            "Сверь, что дальнейшие документы дела привязаны к заказу клиента. "
+            "Назови, какого связанного документа не хватает. Сам документы не создавай."
+        ),
+    },
+    {
+        "id": "start",
+        "title": "Распоряжение",
+        "detail": "Начальник цеха несерийного оборудования",
+        "form": START_ORDER_FORM,
+        "file": "",
+        "prompt": (
+            "Подготовь текст распоряжения о начале проекта для начальника цеха несерийного оборудования: "
+            "что запускать, срок и какие условия договора уже обязательны. Распоряжение не проводи."
+        ),
+    },
+    {
+        "id": "plan",
+        "title": "План проекта",
+        "detail": "Шаблон плана без руководства",
+        "form": CRM_PROJECT_FORM,
+        "file": PROJECT_PLAN_TEMPLATE,
+        "prompt": (
+            "Собери отдельный файл плана работ по этому заказу. Внутри обязательно условия договора: "
+            "предмет, состав, количество, цена, НДС, сроки, оплата, комплектность, приёмка и гарантия. "
+            "Общий шаблон «Шаблон плана без РУКОВОДСТВА.mpp» на диске не перезаписывай."
+        ),
+    },
+]
+
 DESKS: dict[str, dict] = {
     "ks": {
         "title": "Рабочий стол коммерческой службы",
@@ -257,6 +384,42 @@ TRANSITION_ROLES = {
     "closed": {"rp"},
 }
 
+# Откуда допустим переход. Подтверждение и доработку ставит решение Комитета.
+TRANSITION_FROM = {
+    "collecting": {"draft", "calculating", "rework"},
+    "calculating": {"draft", "collecting", "rework", "ready_committee", "confirmed", "confirmed_conditions"},
+    "ready_committee": {"calculating", "rework"},
+    "rework": {"ready_committee"},
+    "tkp_issued": {"confirmed", "confirmed_conditions"},
+    "contract_review": {"tkp_issued"},
+    "contract_signed": {"contract_review"},
+    "in_progress": {"contract_signed"},
+    "production": {"in_progress"},
+    "acceptance": {"in_progress", "production"},
+    "shipped": {"acceptance"},
+    "awaiting_payment": {"acceptance", "shipped"},
+    "closed": {"awaiting_payment"},
+}
+
+# Какой переход ждёт заказ в этом статусе: его блокировку видно в карточке заранее.
+NEXT_GATE = {
+    "draft": "ready_committee",
+    "collecting": "ready_committee",
+    "calculating": "ready_committee",
+    "rework": "ready_committee",
+    "ready_committee": "tkp_issued",
+    "confirmed": "tkp_issued",
+    "confirmed_conditions": "tkp_issued",
+    "tkp_issued": "contract_signed",
+    "contract_review": "contract_signed",
+    "contract_signed": "in_progress",
+    "in_progress": "production",
+    "production": "shipped",
+    "acceptance": "shipped",
+    "shipped": "closed",
+    "awaiting_payment": "closed",
+}
+
 STATUS_STAGE = {
     "draft": "request",
     "collecting": "request",
@@ -316,13 +479,59 @@ class ExternalOrderError(Exception):
         self.status = status
 
 
-def is_zhalybin(fio: str) -> bool:
+def _fio_has(fio: str, *tokens: str) -> bool:
     folded = (fio or "").casefold().replace("ё", "е")
-    return all(token in folded for token in ("жалыбин", "максим", "дмитриевич"))
+    return all(token in folded for token in tokens)
+
+
+def is_zhalybin(fio: str) -> bool:
+    return _fio_has(fio, "жалыбин", "максим", "дмитриевич")
+
+
+def can_test_external_order(fio: str, position: str = "", department: str = "") -> bool:
+    """Просмотр всех ролей и переключение для проверки. Владелец агента по-прежнему Жалыбин."""
+    if is_zhalybin(fio) or _fio_has(fio, "рамазанов", "роман"):
+        return True
+    job = f"{position} {department}".casefold().replace("ё", "е")
+    return "тестировщик" in job
+
+
+def testing_profile(
+    *,
+    fio: str,
+    position: str,
+    department: str,
+    stored_fio: str = "",
+    stored_position: str = "",
+    stored_department: str = "",
+) -> tuple[str, str, str]:
+    """Берёт карточку из базы, если в токене ФИО короче, чем в users."""
+    stored = (stored_fio or "", stored_position or "", stored_department or "")
+    token = (fio or "", position or "", department or "")
+    for item in (stored, token):
+        if can_test_external_order(*item):
+            return item
+    return stored if any(stored) else token
+
+
+testing_profile.__test__ = False  # type: ignore[attr-defined]
+
+
+def is_shared_external_order_agent(title: str) -> bool:
+    """Агенты внешнего заказа общие для проверки: читает тестировщик, правит только владелец."""
+    text = (title or "").casefold().replace("ё", "е")
+    return text.startswith("ии-агент внешнего заказа") or text.startswith("ии-агент внешних закупок")
+
+
+def _software_quality(text: str) -> bool:
+    """Сектор качества разработки — это тестирование, не производство."""
+    return "тестировщик" in text or ("качеств" in text and "разработ" in text)
 
 
 def role_from_profile(position: str, department: str) -> str:
     text = f"{position} {department}".casefold().replace("ё", "е")
+    if _software_quality(text):
+        return "viewer"
     if "юрист" in text or "правов" in text:
         return "legal"
     if "омто" in text or "снабжен" in text or "логист" in text:
@@ -339,7 +548,9 @@ def role_from_profile(position: str, department: str) -> str:
         return "development"
     if "коммерч" in text or "продаж" in text:
         return "ks"
-    if any(token in text for token in ("производ", "качеств", "сервис")):
+    if any(token in text for token in ("производ", "сервис")) or (
+        "качеств" in text and "разработ" not in text
+    ):
         return "production"
     if "администратор" in text or text.strip() in {"ит", "it"} or "информацион" in text:
         return "it"
@@ -348,8 +559,11 @@ def role_from_profile(position: str, department: str) -> str:
 
 def resolve_role(*, fio: str, position: str, department: str, as_role: str) -> str:
     asked = (as_role or "").strip()
-    if is_zhalybin(fio) and asked in ROLES and asked != "viewer":
-        return asked
+    if can_test_external_order(fio, position, department):
+        if asked in ROLES and asked != "viewer":
+            return asked
+        # Тот же стол, что у проверяющего: ИТ видит журнал, загрузку из 1С и все кнопки.
+        return "it"
     return role_from_profile(position, department)
 
 
@@ -358,12 +572,13 @@ def meta_for(*, fio: str, position: str, department: str, as_role: str) -> dict:
     return {
         "role": role,
         "role_label": ROLES[role],
-        "can_switch": is_zhalybin(fio),
+        "can_switch": can_test_external_order(fio, position, department),
         "roles": [{"id": key, "label": label} for key, label in ROLES.items() if key != "viewer"],
         "desk": DESKS[role],
         "stages": [{"id": key, "label": label} for key, label in STAGES.items()],
         "statuses": [{"id": key, "label": label} for key, label in STATUSES.items()],
         "routes": [{"id": key, "label": label} for key, label in ROUTES.items()],
+        "simplified_path": SIMPLIFIED_PATH,
         "integrations": integrations(),
     }
 
@@ -423,7 +638,10 @@ def _require_owner(role: str, owner: str, what: str) -> None:
 
 
 def _order(db: Session, order_id: str) -> ExternalOrder:
-    row = db.get(ExternalOrder, order_id)
+    key = (order_id or "").strip()
+    row = db.get(ExternalOrder, key) if key else None
+    if row is None and key:
+        row = db.query(ExternalOrder).filter(ExternalOrder.code == key).one_or_none()
     if row is None:
         raise ExternalOrderError("Заказ не найден", 404)
     return row
@@ -444,15 +662,25 @@ def _tkp_block(decisions: list[ExternalOrderDecision]) -> str | None:
     return None
 
 
-def _sign_block(diffs: list[ExternalOrderDiff]) -> str | None:
-    if any(item.level == "blocking" and item.status != "closed" for item in diffs):
+def _sign_block(order: ExternalOrder) -> str | None:
+    from app.services.external_order_case import open_gate
+
+    if any(item.level == "blocking" and item.status != "closed" for item in order.diffs):
         return "Подписание заблокировано: есть блокирующее расхождение"
+    text = open_gate(order, {"before_sign"})
+    if text:
+        return f"Подписание заблокировано: нет согласования «{text}»"
     return None
 
 
 def _close_block(order: ExternalOrder) -> str | None:
+    from app.services.external_order_case import open_gate
+
     if order.payment_percent < 100:
         return "Закрытие заблокировано: нет 100% оплаты"
+    text = open_gate(order, {"before_close"})
+    if text:
+        return f"Закрытие заблокировано: {text}"
     return None
 
 
@@ -501,15 +729,706 @@ def _payment_note(order: ExternalOrder) -> str:
 
 
 def blocks_for(order: ExternalOrder) -> list[str]:
-    found = [
-        _tkp_block(list(order.decisions)),
-        _sign_block(list(order.diffs)),
-        _close_block(order),
-    ]
-    return [item for item in found if item]
+    target = NEXT_GATE.get(order.status)
+    reason = _block_for(order, target) if target else None
+    return [reason] if reason else []
+
+
+_DOC_KIND_LABELS: dict[str, str] = {
+    "tz": "ТЗ",
+    "tkp": "ТКП",
+    "contract": "Договор",
+    "specification": "Спецификация",
+    "condition": "Заключение",
+    "acceptance": "Приёмка",
+    "protocol": "Протокол",
+    "plan": "План работ",
+    "other": "Документ",
+}
+
+_DRAFT_1C_LABELS: dict[str, str] = {
+    "memo": "Служебная записка 1С ДО",
+    "assignment": "Поручение 1С ДО",
+    "directive": "Распоряжение 1С ДО",
+    "order": "Приказ 1С ДО",
+    "protocol": "Протокол 1С ДО",
+}
+
+_FIELD_LABELS: dict[str, str] = {
+    "subject": "Предмет поставки",
+    "price": "Цена",
+    "vat": "НДС",
+    "currency": "Валюта",
+    "discount": "Скидка",
+    "term": "Срок поставки",
+    "payment": "Условия оплаты",
+    "acceptance": "Порядок приёмки",
+    "warranty": "Гарантия",
+    "sanctions": "Санкции и неустойка",
+    "liability": "Ответственность",
+    "termination": "Односторонний отказ",
+    "composition": "Состав поставки",
+    "kd": "Конструкторская документация",
+    "analogs": "Аналоги",
+    "limits": "Ограничения",
+    "quality": "Нормативы качества",
+    "psi": "ПСИ",
+    "cycle": "Производственный цикл",
+    "capacity": "Мощности",
+    "smr": "СМР и ПНР",
+    "mcr": "МЦР",
+    "cost": "Себестоимость",
+    "margin": "Маржа",
+    "reserve": "Резерв",
+    "bdds": "БДДС",
+    "schedule": "График платежей",
+    "plan_note": "План проекта",
+    "critical_path": "Критический путь",
+    "status": "Ход исполнения",
+    "lessons": "Уроки проекта",
+    "specification": "Спецификация",
+    "pdf_text": "Текст PDF",
+    "новая базовая версия": "Новая базовая версия",
+}
+
+ROLE_FIELDS_SPEC: dict[str, list[dict[str, str]]] = {
+    "ks": [
+        {
+            "section": "commercial",
+            "section_title": "Коммерческие условия",
+            "key": "price",
+            "label": "Цена",
+            "prompt": "Укажите цену заказа (с источником: ТКП или договор)",
+            "placeholder": "Например: 4 500 000 руб. (ТКП v1)",
+        },
+        {
+            "section": "commercial",
+            "section_title": "Коммерческие условия",
+            "key": "vat",
+            "label": "НДС",
+            "prompt": "Укажите ставку и порядок учёта НДС",
+            "placeholder": "Например: 20%, в том числе",
+        },
+        {
+            "section": "commercial",
+            "section_title": "Коммерческие условия",
+            "key": "currency",
+            "label": "Валюта",
+            "prompt": "Укажите валюту цены и платежа",
+            "placeholder": "Например: RUB",
+        },
+        {
+            "section": "commercial",
+            "section_title": "Коммерческие условия",
+            "key": "discount",
+            "label": "Скидка",
+            "prompt": "Укажите согласованную скидку или её отсутствие",
+            "placeholder": "Например: 0% (без скидки)",
+        },
+    ],
+    "kb": [
+        {
+            "section": "technical",
+            "section_title": "Заключение КБ и ГСПП",
+            "key": "composition",
+            "label": "Состав",
+            "prompt": "Подтвердите состав поставки и комплектность изделия",
+            "placeholder": "Например: Расходомер, блок электроники, комплект КМЧ",
+        },
+        {
+            "section": "technical",
+            "section_title": "Заключение КБ и ГСПП",
+            "key": "kd",
+            "label": "Конструкторская документация",
+            "prompt": "Укажите готовность КД и необходимость доработки",
+            "placeholder": "Например: КД в наличии, доработка не требуется",
+        },
+        {
+            "section": "technical",
+            "section_title": "Заключение КБ и ГСПП",
+            "key": "analogs",
+            "label": "Аналоги",
+            "prompt": "Укажите допустимость применения аналогов",
+            "placeholder": "Например: Допускаются аналоги по ведомости КБ",
+        },
+        {
+            "section": "technical",
+            "section_title": "Заключение КБ и ГСПП",
+            "key": "limits",
+            "label": "Ограничения",
+            "prompt": "Укажите технические ограничения и особые требования ТЗ",
+            "placeholder": "Например: Рабочее давление до 16 МПа, исполнение УХЛ1",
+        },
+    ],
+    "production": [
+        {
+            "section": "technical",
+            "section_title": "Качество",
+            "key": "quality",
+            "label": "Нормативы",
+            "prompt": "Укажите применимые нормативы качества и безопасности",
+            "placeholder": "Например: ГОСТ, ТР ТС 032/2013",
+        },
+        {
+            "section": "technical",
+            "section_title": "Качество",
+            "key": "psi",
+            "label": "ПСИ",
+            "prompt": "Укажите программу и методику ПСИ",
+            "placeholder": "Например: ПСИ на стенде предприятия по типовой ПМ",
+        },
+        {
+            "section": "execution",
+            "section_title": "Производство и сервис",
+            "key": "cycle",
+            "label": "Цикл",
+            "prompt": "Укажите длительность производственного цикла",
+            "placeholder": "Например: 45 рабочих дней",
+        },
+        {
+            "section": "execution",
+            "section_title": "Производство и сервис",
+            "key": "capacity",
+            "label": "Мощности",
+            "prompt": "Подтвердите наличие производственных мощностей",
+            "placeholder": "Например: Мощности цеха подтверждены",
+        },
+        {
+            "section": "execution",
+            "section_title": "Производство и сервис",
+            "key": "acceptance",
+            "label": "Приёмка",
+            "prompt": "Укажите порядок приёмки изделия",
+            "placeholder": "Например: Приёмка ОТК, уведомление заказчика за 5 дней",
+        },
+        {
+            "section": "execution",
+            "section_title": "Производство и сервис",
+            "key": "smr",
+            "label": "СМР и ПНР",
+            "prompt": "Укажите объём СМР и ПНР по заказу",
+            "placeholder": "Например: СМР и ПНР не входят в объём поставки",
+        },
+    ],
+    "finance": [
+        {
+            "section": "calculation",
+            "section_title": "Расчёт",
+            "key": "mcr",
+            "label": "МЦР",
+            "prompt": "Укажите минимальную цену реализации (МЦР)",
+            "placeholder": "Например: 3 800 000 руб.",
+        },
+        {
+            "section": "calculation",
+            "section_title": "Расчёт",
+            "key": "cost",
+            "label": "Себестоимость",
+            "prompt": "Укажите плановую себестоимость заказа",
+            "placeholder": "Например: 3 200 000 руб.",
+        },
+        {
+            "section": "calculation",
+            "section_title": "Расчёт",
+            "key": "margin",
+            "label": "Маржа",
+            "prompt": "Укажите расчётную маржинальность",
+            "placeholder": "Например: 25%",
+        },
+        {
+            "section": "calculation",
+            "section_title": "Расчёт",
+            "key": "reserve",
+            "label": "Резерв",
+            "prompt": "Укажите размер финансового резерва",
+            "placeholder": "Например: 5%",
+        },
+        {
+            "section": "calculation",
+            "section_title": "Расчёт",
+            "key": "bdds",
+            "label": "БДДС",
+            "prompt": "Укажите оценку БДДС и кассового потока",
+            "placeholder": "Например: Аванс 50%, кассового разрыва нет",
+        },
+        {
+            "section": "finance",
+            "section_title": "Оплата",
+            "key": "schedule",
+            "label": "График платежей",
+            "prompt": "Укажите согласованный график платежей",
+            "placeholder": "Например: 50% аванс, 50% в течение 15 дней после отгрузки",
+        },
+    ],
+    "legal": [
+        {
+            "section": "contract",
+            "section_title": "Юридическое заключение",
+            "key": "sanctions",
+            "label": "Санкции",
+            "prompt": "Укажите условия по неустойкам и штрафам в договоре",
+            "placeholder": "Например: 0,1% в день, предел 5% от цены",
+        },
+        {
+            "section": "contract",
+            "section_title": "Юридическое заключение",
+            "key": "warranty",
+            "label": "Гарантия",
+            "prompt": "Укажите гарантийный срок и объём гарантии",
+            "placeholder": "Например: 24 месяца с даты отгрузки",
+        },
+        {
+            "section": "contract",
+            "section_title": "Юридическое заключение",
+            "key": "liability",
+            "label": "Ответственность",
+            "prompt": "Укажите предел ответственности по договору",
+            "placeholder": "Например: Только реальный ущерб, без упущенной выгоды",
+        },
+        {
+            "section": "contract",
+            "section_title": "Юридическое заключение",
+            "key": "termination",
+            "label": "Односторонний отказ",
+            "prompt": "Укажите условия одностороннего отказа от договора",
+            "placeholder": "Например: По соглашению сторон или с компенсацией фактических затрат",
+        },
+    ],
+    "rp": [
+        {
+            "section": "project",
+            "section_title": "Проект",
+            "key": "plan_note",
+            "label": "План",
+            "prompt": "Укажите ключевые сроки и параметры базового плана",
+            "placeholder": "Например: Поставка за 90 дней с момента аванса",
+        },
+        {
+            "section": "project",
+            "section_title": "Проект",
+            "key": "critical_path",
+            "label": "Критический путь",
+            "prompt": "Укажите критический путь исполнения заказа",
+            "placeholder": "Например: КД -> закупка датчиков -> сборка -> ПСИ",
+        },
+        {
+            "section": "execution",
+            "section_title": "Исполнение",
+            "key": "status",
+            "label": "Ход исполнения",
+            "prompt": "Опишите текущий статус исполнения работ",
+            "placeholder": "Например: Запущено в производство по графику",
+        },
+        {
+            "section": "closure",
+            "section_title": "Закрытие",
+            "key": "lessons",
+            "label": "Уроки проекта",
+            "prompt": "Зафиксируйте уроки проекта для архива",
+            "placeholder": "Например: Обязательства выполнены полностью, претензий нет",
+        },
+    ],
+}
+
+STAGE_PASSPORT_SPECS: list[dict] = [
+    {
+        "id": "request",
+        "label": "Запрос",
+        "hint": "Заказчик и продукт уже в карточке. Дальше собираем комплект.",
+        "statuses": ["draft", "collecting"],
+        "owner_roles": ["ks", "development"],
+        "gates": ["before_calc"],
+        "required_docs": ["tz"],
+    },
+    {
+        "id": "calc",
+        "label": "Расчёт",
+        "hint": "Считаем цену, срок и состав. Потом заказ идёт в Комитет.",
+        "statuses": ["calculating", "rework"],
+        "owner_roles": ["kb", "omto", "production", "finance", "rp", "development"],
+        "gates": ["before_committee"],
+        "required_docs": ["tz", "specification"],
+    },
+    {
+        "id": "committee",
+        "label": "Комитет",
+        "hint": "Комитет подтверждает базу или возвращает на доработку.",
+        "statuses": ["ready_committee", "confirmed", "confirmed_conditions"],
+        "owner_roles": ["committee", "finance", "rp"],
+        "gates": ["before_tkp"],
+        "required_docs": ["protocol", "condition"],
+    },
+    {
+        "id": "tkp",
+        "label": "ТКП",
+        "hint": "Предложение выпущено и ушло заказчику.",
+        "statuses": ["tkp_issued"],
+        "owner_roles": ["ks", "omto"],
+        "gates": ["before_tkp"],
+        "required_docs": ["tkp", "protocol"],
+    },
+    {
+        "id": "contract",
+        "label": "Договор",
+        "hint": "Сверяем ТКП с договором и ждём подпись.",
+        "statuses": ["contract_review", "contract_signed"],
+        "owner_roles": ["ks", "legal", "finance", "rp"],
+        "gates": ["before_sign"],
+        "required_docs": ["contract", "specification"],
+    },
+    {
+        "id": "run",
+        "label": "Исполнение",
+        "hint": "Идут проект и производство.",
+        "statuses": ["in_progress", "production"],
+        "owner_roles": ["rp", "production", "kb", "omto", "finance"],
+        "gates": ["before_project", "before_production"],
+        "required_docs": ["contract", "plan"],
+    },
+    {
+        "id": "ship",
+        "label": "Отгрузка",
+        "hint": "Приёмка, затем отгрузка.",
+        "statuses": ["acceptance", "shipped"],
+        "owner_roles": ["production", "omto", "ks", "rp"],
+        "gates": ["before_psi", "before_ship"],
+        "required_docs": ["acceptance"],
+    },
+    {
+        "id": "pay",
+        "label": "Оплата",
+        "hint": "Ждём оплату и закрываем заказ.",
+        "statuses": ["awaiting_payment", "closed"],
+        "owner_roles": ["finance", "rp", "ks", "legal", "production"],
+        "gates": ["before_close"],
+        "required_docs": ["contract", "acceptance"],
+    },
+]
+
+
+def _finding_kind(field: str) -> str:
+    text = str(field or "").strip()
+    if text.startswith("section:"):
+        return "section"
+    if text.startswith("check:"):
+        return "check"
+    if text.startswith("baseline:"):
+        return "baseline"
+    if text.startswith("risk:"):
+        return "risk"
+    if text.startswith("draft_1c_"):
+        return "draft_1c"
+    return "finding"
+
+
+def _section_field_label(section: str, key: str) -> str:
+    for items in ROLE_FIELDS_SPEC.values():
+        for spec in items:
+            if spec["section"] == section and spec["key"] == key:
+                return f"{spec['section_title']} · {spec['label']}"
+    return _FIELD_LABELS.get(key, f"{section}.{key}")
+
+
+def _section_field_owner(section: str, key: str) -> str:
+    for role_id, items in ROLE_FIELDS_SPEC.items():
+        for spec in items:
+            if spec["section"] == section and spec["key"] == key:
+                return role_id
+    if section == "contract" and key in LEGAL_KEYS:
+        return "legal"
+    writers = SECTION_WRITERS.get(section)
+    if writers:
+        return next(iter(writers))
+    return "ks"
+
+
+def _finding_label(order: ExternalOrder, item: ExternalOrderFinding) -> str:
+    field = str(item.field or "").strip()
+    if field.startswith("section:"):
+        target = field[len("section:"):]
+        if "." in target:
+            sec, key = target.split(".", 1)
+            return _section_field_label(sec, key)
+        return _FIELD_LABELS.get(target, target)
+    if field.startswith("check:"):
+        cid = field[len("check:"):].strip()
+        chk = next((c for c in order.checks if c.id == cid), None)
+        if chk is not None:
+            return f"Чек-лист: {chk.text}"
+        return "Пункт чек-листа"
+    if field.startswith("baseline:"):
+        return "Базовая версия расчёта (черновик)"
+    if field.startswith("risk:"):
+        return "Риск проекта (черновик)"
+    if field.startswith("draft_1c_"):
+        doc_kind = field[len("draft_1c_"):]
+        kind_label = _DRAFT_1C_LABELS.get(doc_kind, f"Документ 1С ДО ({doc_kind})")
+        if item.source_ref:
+            return f"{kind_label}: {item.source_ref}"
+        return kind_label
+    if field.startswith("повтор "):
+        tail = field[len("повтор "):].strip()
+        return f"Повторное заключение ({ROLES.get(tail, tail)})"
+    return _FIELD_LABELS.get(field, field)
+
+
+def _finding_prefill(order: ExternalOrder, item: ExternalOrderFinding) -> dict:
+    field = str(item.field or "").strip()
+    if not field.startswith("draft_1c_"):
+        return {}
+    doc_kind = field[len("draft_1c_"):]
+    saved = _load(item.location) if str(item.location or "").strip().startswith("{") else {}
+    base = {
+        "kind": doc_kind,
+        "title": item.source_ref or f"Документ по заказу {order.code}",
+        "text": item.value or "",
+        "order_id": order.id,
+        "order_code": order.code,
+        "customer": order.customer,
+        "product": order.product,
+    }
+    if isinstance(saved, dict):
+        base.update(saved)
+    return base
+
+
+def _current_stage_index(order: ExternalOrder) -> int:
+    for idx, spec in enumerate(STAGE_PASSPORT_SPECS):
+        if order.status in spec["statuses"]:
+            return idx
+    stage_alias = {
+        "execution": "run",
+        "plan": "run",
+        "acceptance": "ship",
+        "payment": "pay",
+    }.get(order.stage, order.stage)
+    for idx, spec in enumerate(STAGE_PASSPORT_SPECS):
+        if spec["id"] == stage_alias:
+            return idx
+    return 0
+
+
+def _stage_completed_by(order: ExternalOrder, spec: dict) -> str:
+    statuses_labels = {STATUSES.get(st, st) for st in spec["statuses"]}
+    for entry in reversed(list(order.audit)):
+        if entry.action in {"transition", "decision", "create", "onec_path", "onec_link"}:
+            if (
+                entry.after_value in statuses_labels
+                or entry.before_value in statuses_labels
+                or entry.detail in statuses_labels
+                or (spec["id"] == "committee" and entry.action == "decision")
+            ):
+                role_label = ROLES.get(entry.actor_role, entry.actor_role)
+                return f"{entry.actor_fio or 'Система'} ({role_label}) · {entry.detail}"
+    if order.created_by:
+        return f"{order.created_by} · этап пройден"
+    return "Этап пройден"
+
+
+def build_stage_passports(order: ExternalOrder) -> list[dict]:
+    current_idx = _current_stage_index(order)
+    order_blocks = blocks_for(order)
+    passports: list[dict] = []
+    for idx, spec in enumerate(STAGE_PASSPORT_SPECS):
+        gates = list(spec["gates"])
+        gates_set = set(gates)
+        applicable = [
+            chk
+            for chk in order.checks
+            if chk.gate in gates_set and chk.status != "not_applicable"
+        ]
+        checks_total = len(applicable)
+        checks_done = sum(1 for chk in applicable if chk.status == "done")
+        open_checks = [
+            {
+                "id": chk.id,
+                "gate": chk.gate,
+                "text": chk.text,
+                "owner_role": chk.owner_role,
+                "owner_label": ROLES.get(chk.owner_role, chk.owner_role),
+                "blocking": bool(chk.blocking),
+            }
+            for chk in applicable
+            if chk.status != "done"
+        ]
+        required_docs: list[dict] = []
+        for doc_kind in spec["required_docs"]:
+            matching = [
+                doc
+                for doc in order.documents
+                if doc.kind == doc_kind
+                or (doc_kind == "acceptance" and doc.kind in {"acceptance", "shipping", "upd"})
+            ]
+            if matching:
+                required_docs.append(
+                    {
+                        "kind": doc_kind,
+                        "label": _DOC_KIND_LABELS.get(doc_kind, doc_kind),
+                        "present": True,
+                        "approved": any(bool(doc.approved) for doc in matching),
+                        "version": str(matching[-1].version or "v1"),
+                    }
+                )
+            elif doc_kind == "protocol" and any(dec.protocol.strip() for dec in order.decisions):
+                proto = next(dec.protocol.strip() for dec in order.decisions if dec.protocol.strip())
+                required_docs.append(
+                    {
+                        "kind": doc_kind,
+                        "label": _DOC_KIND_LABELS.get(doc_kind, doc_kind),
+                        "present": True,
+                        "approved": True,
+                        "version": proto,
+                    }
+                )
+            else:
+                required_docs.append(
+                    {
+                        "kind": doc_kind,
+                        "label": _DOC_KIND_LABELS.get(doc_kind, doc_kind),
+                        "present": False,
+                        "approved": False,
+                        "version": "",
+                    }
+                )
+        if idx < current_idx or (idx == current_idx and order.status == "closed"):
+            state = "done"
+            blocker = ""
+            completed_by = _stage_completed_by(order, spec)
+        elif idx == current_idx:
+            blocker = (
+                order_blocks[0]
+                if order_blocks
+                else (f"Не закрыт пункт: {open_checks[0]['text']}" if open_checks else "")
+            )
+            has_hard_block = (
+                order.status == "rework"
+                or any(chk.status in {"overdue", "blocked"} for chk in applicable)
+                or (
+                    spec["id"] == "contract"
+                    and any(d.level == "blocking" and d.status != "closed" for d in order.diffs)
+                )
+            )
+            state = "blocked" if (blocker and has_hard_block) else "current"
+            completed_by = ""
+        else:
+            state = "upcoming"
+            blocker = ""
+            completed_by = ""
+        owner_roles = list(spec["owner_roles"])
+        passports.append(
+            {
+                "id": spec["id"],
+                "label": spec["label"],
+                "hint": spec["hint"],
+                "statuses": list(spec["statuses"]),
+                "state": state,
+                "owner_roles": owner_roles,
+                "owner_labels": [ROLES.get(r, r) for r in owner_roles],
+                "gates": gates,
+                "checks_done": checks_done,
+                "checks_total": checks_total,
+                "open_checks": open_checks,
+                "required_docs": required_docs,
+                "blocker": blocker,
+                "completed_by": completed_by,
+            }
+        )
+    return passports
+
+
+def build_role_questions(order: ExternalOrder) -> dict[str, list[dict]]:
+    sections = _load(order.sections_json)
+    result: dict[str, list[dict]] = {role_id: [] for role_id in ROLES}
+    for role_id, specs in ROLE_FIELDS_SPEC.items():
+        for spec in specs:
+            sec = spec["section"]
+            key = spec["key"]
+            cur = str((sections.get(sec) or {}).get(key) or "").strip()
+            if cur:
+                continue
+            result.setdefault(role_id, []).append(
+                {
+                    "id": f"section:{sec}.{key}",
+                    "field": f"section:{sec}.{key}",
+                    "section": sec,
+                    "key": key,
+                    "check_id": "",
+                    "gap_id": "",
+                    "prompt": spec["prompt"],
+                    "placeholder": spec["placeholder"],
+                    "current_value": "",
+                    "owner_role": role_id,
+                    "owner_label": ROLES.get(role_id, role_id),
+                }
+            )
+    sorted_checks = sorted(
+        order.checks,
+        key=lambda chk: _GATE_ORDER.index(chk.gate) if chk.gate in _GATE_ORDER else len(_GATE_ORDER),
+    )
+    for chk in sorted_checks:
+        if chk.status in {"done", "not_applicable"}:
+            continue
+        owner = chk.owner_role or "ks"
+        gate_label = _GATE_LABEL.get(chk.gate, chk.gate)
+        result.setdefault(owner, []).append(
+            {
+                "id": f"check:{chk.id}",
+                "field": f"check:{chk.id}",
+                "section": "",
+                "key": "",
+                "check_id": chk.id,
+                "gap_id": "",
+                "prompt": f"Подтвердите пункт чек-листа ({gate_label}): «{chk.text}»",
+                "placeholder": "Укажите доказательство (документ, расчёт, письмо, дата)",
+                "current_value": str(chk.evidence or ""),
+                "owner_role": owner,
+                "owner_label": ROLES.get(owner, owner),
+            }
+        )
+    for gap in order.gaps:
+        if gap.status != "open":
+            continue
+        owner = gap.owner_role or "ks"
+        label = _FIELD_LABELS.get(gap.field, gap.field)
+        result.setdefault(owner, []).append(
+            {
+                "id": f"gap:{gap.id}",
+                "field": f"gap:{gap.id}",
+                "section": "",
+                "key": "",
+                "check_id": "",
+                "gap_id": gap.id,
+                "prompt": f"Закройте пробел по полю «{label}»: {gap.detail}",
+                "placeholder": "Укажите значение и место в источнике",
+                "current_value": "",
+                "owner_role": owner,
+                "owner_label": ROLES.get(owner, owner),
+            }
+        )
+    return result
+
+
+def _waiting_roles(order: ExternalOrder) -> list[str]:
+    roles_set: set[str] = set()
+    nxt = NEXT_GATE.get(order.status, "")
+    if nxt:
+        roles_set.update(TRANSITION_ROLES.get(nxt, set()))
+    for item in order.checks:
+        if item.status not in {"done", "not_applicable"} and item.blocking and item.owner_role:
+            roles_set.add(item.owner_role)
+    for item in order.gaps:
+        if item.status == "open" and item.owner_role:
+            roles_set.add(item.owner_role)
+    for item in order.findings:
+        if item.status == "draft" and item.owner_role:
+            roles_set.add(item.owner_role)
+    return [role_id for role_id in ROLES if role_id != "viewer" and role_id in roles_set]
 
 
 def _brief(order: ExternalOrder) -> dict:
+    open_checks_count = sum(1 for item in order.checks if item.status not in {"done", "not_applicable"})
+    open_diffs_count = sum(1 for item in order.diffs if item.status != "closed")
+    draft_findings_count = sum(1 for item in order.findings if item.status == "draft")
     return {
         "id": order.id,
         "code": order.code,
@@ -528,6 +1447,10 @@ def _brief(order: ExternalOrder) -> dict:
         "onec_tkp_key": str(_onec_link(order).get("tkp_key") or "").strip(),
         "path_label": _path_label(order),
         "blocks": blocks_for(order),
+        "open_checks_count": open_checks_count,
+        "open_diffs_count": open_diffs_count,
+        "draft_findings_count": draft_findings_count,
+        "waiting_roles": _waiting_roles(order),
     }
 
 
@@ -542,6 +1465,8 @@ def _detail(order: ExternalOrder) -> dict:
             "owners": _load(order.owners_json),
             "sections": _load(order.sections_json),
             "project_note": "Публикация плана в TurboProject не подключена",
+            "stage_passports": build_stage_passports(order),
+            "role_questions": build_role_questions(order),
             "checks": [
                 {
                     "id": item.id,
@@ -609,7 +1534,15 @@ def _detail(order: ExternalOrder) -> dict:
                     "confidence": item.confidence,
                     "status": item.status,
                     "owner_role": item.owner_role,
+                    "owner_label": ROLES.get(item.owner_role, item.owner_role),
                     "proposed_by": item.proposed_by,
+                    "kind": _finding_kind(item.field),
+                    "label": _finding_label(order, item),
+                    **(
+                        {"prefill": _finding_prefill(order, item)}
+                        if str(item.field or "").startswith("draft_1c_")
+                        else {}
+                    ),
                 }
                 for item in order.findings
             ],
@@ -892,6 +1825,24 @@ def _ship_block(row: ExternalOrder) -> str | None:
     return None
 
 
+def _block_for(row: ExternalOrder, target: str) -> str | None:
+    if target == "ready_committee":
+        return _ready_block(row)
+    if target == "tkp_issued":
+        return _tkp_block(list(row.decisions))
+    if target == "contract_signed":
+        return _sign_block(row)
+    if target == "in_progress":
+        return _project_block(row)
+    if target == "production":
+        return _production_block(row)
+    if target == "shipped":
+        return _ship_block(row)
+    if target == "closed":
+        return _close_block(row)
+    return None
+
+
 def transition(db: Session, order_id: str, *, role: str, fio: str, target: str) -> dict:
     row = _order(db, order_id)
     _require_business(role)
@@ -899,47 +1850,33 @@ def transition(db: Session, order_id: str, *, role: str, fio: str, target: str) 
         raise ExternalOrderError("Неизвестный статус", 400)
     if role not in TRANSITION_ROLES[target]:
         raise ExternalOrderError("Этот переход выполняет другая роль", 403)
-    if target == "ready_committee":
-        reason = _ready_block(row)
-        if reason:
-            _blocked(db, row, fio, role, reason)
-            raise ExternalOrderError(reason, 409)
-    if target == "tkp_issued":
-        reason = _tkp_block(list(row.decisions))
-        if reason:
-            _audit(db, row, fio=fio, role=role, action="blocked", detail=reason)
-            db.commit()
-            raise ExternalOrderError(reason, 409)
-    if target == "contract_signed":
-        reason = _sign_block(list(row.diffs))
-        if reason:
-            _audit(db, row, fio=fio, role=role, action="blocked", detail=reason)
-            db.commit()
-            raise ExternalOrderError(reason, 409)
-    if target == "in_progress":
-        reason = _project_block(row)
-        if reason:
-            _blocked(db, row, fio, role, reason)
-            raise ExternalOrderError(reason, 409)
-    if target == "production":
-        reason = _production_block(row)
-        if reason:
-            _blocked(db, row, fio, role, reason)
-            raise ExternalOrderError(reason, 409)
-    if target in {"acceptance", "shipped"}:
-        reason = _ship_block(row)
-        if reason:
-            _blocked(db, row, fio, role, reason)
-            raise ExternalOrderError(reason, 409)
-    if target == "closed":
-        reason = _close_block(row)
-        if reason:
-            _audit(db, row, fio=fio, role=role, action="blocked", detail=reason)
-            db.commit()
-            raise ExternalOrderError(reason, 409)
+    reason = _block_for(row, target)
+    if reason:
+        _blocked(db, row, fio, role, reason)
+        raise ExternalOrderError(reason, 409)
+    if row.status == target:
+        raise ExternalOrderError(f"Заказ уже в статусе «{STATUSES[target]}»", 409)
+    allowed = TRANSITION_FROM.get(target, set())
+    if row.status not in allowed:
+        before = ", ".join(f"«{STATUSES[item]}»" for item in STATUSES if item in allowed)
+        raise ExternalOrderError(
+            f"Из статуса «{STATUSES.get(row.status, row.status)}» в «{STATUSES[target]}» перейти нельзя. "
+            f"Сначала: {before}",
+            409,
+        )
+    before_status = STATUSES.get(row.status, row.status)
     row.status = target
     row.stage = STATUS_STAGE[target]
-    _audit(db, row, fio=fio, role=role, action="transition", detail=STATUSES[target])
+    _audit(
+        db,
+        row,
+        fio=fio,
+        role=role,
+        action="transition",
+        detail=STATUSES[target],
+        before=before_status,
+        after=STATUSES[target],
+    )
     db.commit()
     db.refresh(row)
     return _detail(row)
@@ -974,6 +1911,25 @@ def close_diff(db: Session, order_id: str, diff_id: str, *, role: str, fio: str,
     item.status = "closed"
     item.note = note.strip()
     _audit(db, row, fio=fio, role=role, action="close_diff", detail=item.code)
+    db.commit()
+    db.refresh(row)
+    return _detail(row)
+
+
+def close_gap(db: Session, order_id: str, gap_id: str, *, role: str, fio: str, note: str) -> dict:
+    row = _order(db, order_id)
+    item = next((gap for gap in row.gaps if gap.id == gap_id), None)
+    if item is None:
+        raise ExternalOrderError("Пробел не найден", 404)
+    if item.status != "open":
+        raise ExternalOrderError("Пробел уже закрыт", 409)
+    _require_owner(role, item.owner_role, "пробел")
+    answer = (note or "").strip()
+    if not answer:
+        raise ExternalOrderError("Нужен ответ владельца: значение и источник", 400)
+    item.status = "closed"
+    item.detail = f"{item.detail} · закрыто: {answer}"
+    _audit(db, row, fio=fio, role=role, action="close_gap", detail=item.field, before="открыт", after=answer)
     db.commit()
     db.refresh(row)
     return _detail(row)
@@ -1016,12 +1972,9 @@ def add_decision(db: Session, order_id: str, *, role: str, fio: str, fields: dic
     baseline_id = str(fields.get("baseline_id") or "").strip()
     from app.services.external_order_case import lock_baseline
 
-    baseline = lock_baseline(row, baseline_id, base_version) if decision != "rework" else None
-    if decision != "rework" and (not protocol or baseline is None):
+    if decision != "rework" and not protocol:
         raise ExternalOrderError("Нужны протокол и базовая версия", 400)
-    if baseline is not None and baseline not in row.baselines:
-        db.add(baseline)
-        db.flush()
+    baseline = lock_baseline(row, baseline_id, base_version) if decision != "rework" else None
     closed = decision == "confirmed"
     db.add(
         ExternalOrderDecision(
@@ -1119,11 +2072,79 @@ def add_document(db: Session, order_id: str, *, role: str, fio: str, fields: dic
     return _detail(row)
 
 
-def propose(db: Session, order_id: str, *, fio: str, findings: list, diffs: list) -> dict:
+def _draft_findings_in_session(db: Session, order: ExternalOrder) -> list[ExternalOrderFinding]:
+    rows = {id(item): item for item in order.findings}
+    for item in db.new:
+        if isinstance(item, ExternalOrderFinding) and item.order_id == order.id:
+            rows[id(item)] = item
+    return [item for item in rows.values() if item.status == "draft"]
+
+
+def _upsert_draft_finding(
+    db: Session,
+    order: ExternalOrder,
+    *,
+    field: str,
+    value: str,
+    source_ref: str,
+    location: str,
+    owner_role: str,
+    proposed_by: str,
+    document_id: str = "",
+    confidence: str = "авто",
+) -> ExternalOrderFinding | None:
+    clean_field = str(field or "").strip()[:128]
+    clean_value = str(value or "").strip()[:2000]
+    if not clean_field or not clean_value:
+        return None
+    for existing in _draft_findings_in_session(db, order):
+        if existing.field == clean_field:
+            existing.value = clean_value
+            if source_ref:
+                existing.source_ref = str(source_ref)[:512]
+            if location:
+                existing.location = str(location)[:2000]
+            if owner_role:
+                existing.owner_role = str(owner_role)[:32]
+            return existing
+    if any(
+        item.field == clean_field and item.status == "accepted" and item.value == clean_value
+        for item in order.findings
+    ):
+        return None
+    finding = ExternalOrderFinding(
+        id=_new_id(),
+        order_id=order.id,
+        field=clean_field,
+        value=clean_value,
+        source_ref=str(source_ref or "авто-проверка")[:512],
+        location=str(location or "карточка заказа")[:2000],
+        document_id=str(document_id or ""),
+        confidence=str(confidence or "")[:16],
+        status="draft",
+        owner_role=str(owner_role or "ks")[:32],
+        proposed_by=str(proposed_by or "агент")[:512],
+    )
+    db.add(finding)
+    return finding
+
+
+def propose(
+    db: Session,
+    order_id: str,
+    *,
+    fio: str,
+    findings: list | None = None,
+    diffs: list | None = None,
+    section_proposals: list | None = None,
+    check_proposals: list | None = None,
+    baseline_proposal: dict | None = None,
+    risk_proposals: list | None = None,
+) -> dict:
     """Черновики агента. Фактом они становятся только после «Принять» владельцем."""
     row = _order(db, order_id)
     created = 0
-    for item in findings:
+    for item in findings or []:
         if not isinstance(item, dict):
             continue
         field = str(item.get("field") or "").strip()
@@ -1143,23 +2164,116 @@ def propose(db: Session, order_id: str, *, fio: str, findings: list, diffs: list
                 detail="Вывод без места в источнике не сохранён",
             )
             continue
-        db.add(
-            ExternalOrderFinding(
-                id=_new_id(),
-                order_id=row.id,
-                field=field,
-                value=value,
-                source_ref=source,
-                location=location,
-                document_id=str(item.get("document_id") or ""),
-                confidence=str(item.get("confidence") or ""),
-                status="draft",
-                owner_role=str(item.get("owner_role") or "ks"),
+        added = _upsert_draft_finding(
+            db,
+            row,
+            field=field,
+            value=value,
+            source_ref=source,
+            location=location,
+            document_id=str(item.get("document_id") or ""),
+            confidence=str(item.get("confidence") or ""),
+            owner_role=str(item.get("owner_role") or "ks"),
+            proposed_by=fio or "агент",
+        )
+        if added is not None:
+            created += 1
+    for item in section_proposals or []:
+        if not isinstance(item, dict):
+            continue
+        sec = str(item.get("section") or "").strip()
+        key = str(item.get("key") or "").strip()
+        raw_field = str(item.get("field") or "").strip()
+        if (not sec or not key) and "." in raw_field:
+            cleaned = raw_field[len("section:"):] if raw_field.startswith("section:") else raw_field
+            sec, key = cleaned.split(".", 1)
+        value = str(item.get("value") or "").strip()
+        if not sec or not key or not value:
+            continue
+        owner = str(item.get("owner_role") or _section_field_owner(sec, key))
+        added = _upsert_draft_finding(
+            db,
+            row,
+            field=f"section:{sec}.{key}",
+            value=value,
+            source_ref=str(item.get("source_ref") or "предложение ИИ"),
+            location=str(item.get("location") or f"раздел {sec}.{key}"),
+            confidence=str(item.get("confidence") or "черновик"),
+            owner_role=owner,
+            proposed_by=fio or "агент",
+        )
+        if added is not None:
+            created += 1
+    for item in check_proposals or []:
+        if not isinstance(item, dict):
+            continue
+        check_id = str(item.get("check_id") or item.get("id") or "").strip()
+        if check_id.startswith("check:"):
+            check_id = check_id[len("check:"):].strip()
+        evidence = str(item.get("evidence") or item.get("value") or "").strip()
+        if not check_id or not evidence:
+            continue
+        chk = next((c for c in row.checks if c.id == check_id), None)
+        owner = str(item.get("owner_role") or (chk.owner_role if chk is not None else "ks"))
+        added = _upsert_draft_finding(
+            db,
+            row,
+            field=f"check:{check_id}",
+            value=evidence,
+            source_ref=str(item.get("source_ref") or "предложение ИИ"),
+            location=str(item.get("location") or "чек-лист этапа"),
+            confidence=str(item.get("confidence") or "черновик"),
+            owner_role=owner,
+            proposed_by=fio or "агент",
+        )
+        if added is not None:
+            created += 1
+    if isinstance(baseline_proposal, dict) and any(str(v or "").strip() for v in baseline_proposal.values()):
+        payload = {
+            key: str(baseline_proposal.get(key) or "").strip()
+            for key in ("composition", "cost", "mcr", "margin", "bdds", "deadlines", "reason")
+            if str(baseline_proposal.get(key) or "").strip()
+        }
+        if payload:
+            added = _upsert_draft_finding(
+                db,
+                row,
+                field="baseline:draft",
+                value=_dump(payload),
+                source_ref=str(baseline_proposal.get("source_ref") or "расчёт базовой версии"),
+                location=str(baseline_proposal.get("location") or "базовая версия Комитета"),
+                confidence="черновик",
+                owner_role=str(baseline_proposal.get("owner_role") or "finance"),
                 proposed_by=fio or "агент",
             )
+            if added is not None:
+                created += 1
+    for item in risk_proposals or []:
+        if not isinstance(item, dict):
+            continue
+        title = str(item.get("title") or item.get("value") or "").strip()
+        if not title:
+            continue
+        risk_payload = {
+            "title": title,
+            "impact": str(item.get("impact") or "").strip(),
+            "measure": str(item.get("measure") or "").strip(),
+            "source": str(item.get("source") or item.get("source_ref") or "анализ ИИ").strip(),
+        }
+        added = _upsert_draft_finding(
+            db,
+            row,
+            field="risk:draft",
+            value=_dump(risk_payload),
+            source_ref=risk_payload["source"],
+            location="реестр рисков",
+            confidence="черновик",
+            owner_role=str(item.get("owner_role") or "rp"),
+            proposed_by=fio or "агент",
         )
-        created += 1
-    for item in diffs:
+        if added is not None:
+            created += 1
+    for item in diffs or []:
         if not isinstance(item, dict):
             continue
         code = str(item.get("code") or "").strip()
@@ -1180,41 +2294,210 @@ def propose(db: Session, order_id: str, *, fio: str, findings: list, diffs: list
     return body
 
 
+def _parse_kv_or_json(raw: str) -> dict[str, str]:
+    parsed = _load(raw)
+    if parsed:
+        return {str(k).strip(): str(v or "").strip() for k, v in parsed.items()}
+    out: dict[str, str] = {}
+    for chunk in str(raw or "").replace("\n", ";").split(";"):
+        part = chunk.strip()
+        if not part:
+            continue
+        if ":" in part:
+            k, v = part.split(":", 1)
+            out[k.strip().casefold()] = v.strip()
+        elif "=" in part:
+            k, v = part.split("=", 1)
+            out[k.strip().casefold()] = v.strip()
+    return out
+
+
+def _apply_finding_effect(db: Session, row: ExternalOrder, item: ExternalOrderFinding, *, role: str, fio: str) -> None:
+    from app.services.external_order_case import create_baseline, resolve_gaps
+
+    field = str(item.field or "").strip()
+    val = str(item.value or "").strip()
+    if field.startswith("section:"):
+        target = field[len("section:"):].strip()
+        if "." in target and val:
+            sec, key = target.split(".", 1)
+            sections = _load(row.sections_json)
+            bucket = dict(sections.get(sec) or {})
+            bucket[key] = val
+            sections[sec] = bucket
+            row.sections_json = _dump(sections)
+            resolve_gaps(db, row, key, val)
+            resolve_gaps(db, row, field, val)
+            resolve_gaps(db, row, f"{sec}.{key}", val)
+        return
+    if field.startswith("check:"):
+        cid = field[len("check:"):].strip()
+        chk = next((c for c in row.checks if c.id == cid), None)
+        if chk is not None:
+            chk.status = "done"
+            chk.evidence = val or item.source_ref or "Подтверждено по выводу ИИ"
+            chk.confirmed_by = fio
+        return
+    if field.startswith("baseline:"):
+        kv = _parse_kv_or_json(val)
+        sections = _load(row.sections_json)
+        calc = sections.get("calculation") if isinstance(sections.get("calculation"), dict) else {}
+        comm = sections.get("commercial") if isinstance(sections.get("commercial"), dict) else {}
+        tech = sections.get("technical") if isinstance(sections.get("technical"), dict) else {}
+        proj = sections.get("project") if isinstance(sections.get("project"), dict) else {}
+        baseline_fields = {
+            "composition": (
+                kv.get("composition")
+                or kv.get("состав")
+                or str(tech.get("composition") or "")
+                or row.product
+            ),
+            "cost": (
+                kv.get("cost")
+                or kv.get("себестоимость")
+                or kv.get("стоимость")
+                or str(calc.get("cost") or comm.get("price") or "")
+            ),
+            "mcr": kv.get("mcr") or kv.get("мцр") or str(calc.get("mcr") or ""),
+            "margin": kv.get("margin") or kv.get("маржа") or str(calc.get("margin") or ""),
+            "bdds": kv.get("bdds") or kv.get("бддс") or str(calc.get("bdds") or ""),
+            "deadlines": (
+                kv.get("deadlines")
+                or kv.get("сроки")
+                or kv.get("срок")
+                or str(proj.get("plan_note") or "")
+            ),
+            "reason": kv.get("reason") or kv.get("основание") or item.source_ref or "Принято из черновика ИИ",
+        }
+        if all(str(baseline_fields.get(k) or "").strip() for k in ("composition", "cost", "mcr", "margin", "bdds", "deadlines")):
+            effective_role = role if role in {"ks", "finance", "rp", "committee"} else "finance"
+            try:
+                create_baseline(db, row, role=effective_role, fio=fio, fields=baseline_fields)
+            except ExternalOrderError:
+                pass
+        return
+    if field.startswith("risk:"):
+        kv = _parse_kv_or_json(val)
+        title = kv.get("title") or kv.get("название") or kv.get("риск") or val
+        if title:
+            db.add(
+                ExternalOrderRisk(
+                    id=_new_id(),
+                    order_id=row.id,
+                    title=str(title)[:512],
+                    impact=str(kv.get("impact") or kv.get("влияние") or ""),
+                    measure=str(kv.get("measure") or kv.get("мера") or ""),
+                    source=str(kv.get("source") or kv.get("источник") or item.source_ref or "черновик ИИ"),
+                    created_by=fio,
+                )
+            )
+        return
+    if val:
+        resolve_gaps(db, row, field, val)
+
+
 def accept_finding(db: Session, order_id: str, finding_id: str, *, role: str, fio: str) -> dict:
     row = _order(db, order_id)
     item = next((finding for finding in row.findings if finding.id == finding_id), None)
     if item is None:
         raise ExternalOrderError("Вывод не найден", 404)
-    _require_owner(role, item.owner_role, "вывод агента")
+    _require_owner(role, item.owner_role or role, "вывод агента")
+    _apply_finding_effect(db, row, item, role=role, fio=fio)
     item.status = "accepted"
-    _audit(db, row, fio=fio, role=role, action="accept_finding", detail=item.field)
+    _audit(db, row, fio=fio, role=role, action="accept_finding", detail=item.field, after=item.value[:200])
     db.commit()
     db.refresh(row)
     return _detail(row)
 
 
+def accept_role_findings(db: Session, order_id: str, *, role: str, fio: str) -> dict:
+    row = _order(db, order_id)
+    _require_business(role)
+    drafts = [item for item in row.findings if item.status == "draft"]
+    owned = [
+        item
+        for item in drafts
+        if item.owner_role == role or (not item.owner_role and role in {"ks", "rp"})
+    ]
+    targets = owned if owned else (drafts if role in {"ks", "rp"} else [])
+    accepted_count = 0
+    for item in targets:
+        _apply_finding_effect(db, row, item, role=item.owner_role or role, fio=fio)
+        item.status = "accepted"
+        accepted_count += 1
+    _audit(
+        db,
+        row,
+        fio=fio,
+        role=role,
+        action="accept_role_findings",
+        detail=f"{ROLES.get(role, role)}: принято {accepted_count}",
+    )
+    db.commit()
+    db.refresh(row)
+    return _detail(row)
+
+
+def reject_finding(db: Session, order_id: str, finding_id: str, *, role: str, fio: str) -> dict:
+    row = _order(db, order_id)
+    _require_business(role)
+    item = next((finding for finding in row.findings if finding.id == finding_id), None)
+    if item is None:
+        raise ExternalOrderError("Вывод не найден", 404)
+    if role not in {item.owner_role, "ks", "rp"}:
+        raise ExternalOrderError("Нельзя отклонить вывод чужой роли", 403)
+    item.status = "rejected"
+    _audit(db, row, fio=fio, role=role, action="reject_finding", detail=item.field, before=item.value[:200], after="отклонено")
+    db.commit()
+    db.refresh(row)
+    return _detail(row)
+
+
+_ALLOWED_DRAFT_1C_KINDS = {"memo", "assignment", "directive", "order", "protocol"}
+_DRAFT_1C_OWNER = {
+    "memo": "ks",
+    "assignment": "rp",
+    "directive": "rp",
+    "order": "rp",
+    "protocol": "committee",
+}
+
+
 def draft_onec(db: Session, order_id: str, *, fio: str, fields: dict) -> dict:
     """Готовит черновик документа 1С. Саму запись делает onec.docflow_document_create после подтверждения."""
     row = _order(db, order_id)
-    kind = str(fields.get("kind") or "")
-    if kind not in {"memo", "assignment"}:
-        raise ExternalOrderError("В 1С из этого модуля уходит только черновик записки или поручения", 400)
+    kind = str(fields.get("kind") or "").strip()
+    if kind not in _ALLOWED_DRAFT_1C_KINDS:
+        raise ExternalOrderError(
+            "В 1С из этого модуля уходит только черновик записки, поручения, распоряжения, приказа или протокола",
+            400,
+        )
     title = str(fields.get("title") or "").strip()
     text = str(fields.get("text") or "").strip()
     if not title or not text:
         raise ExternalOrderError("Нужны заголовок и текст черновика", 400)
-    db.add(
-        ExternalOrderFinding(
-            id=_new_id(),
-            order_id=row.id,
-            field=f"draft_1c_{kind}",
-            value=text,
-            source_ref=title,
-            confidence="",
-            status="draft",
-            owner_role="ks" if kind == "memo" else "rp",
-            proposed_by=fio or "агент",
-        )
+    raw_prefill = fields.get("prefill") if isinstance(fields.get("prefill"), dict) else {}
+    prefill = {
+        "kind": kind,
+        "title": title,
+        "text": text,
+        "order_id": row.id,
+        "order_code": row.code,
+        "customer": row.customer,
+        "product": row.product,
+        **{str(k): v for k, v in raw_prefill.items()},
+    }
+    owner_role = str(fields.get("owner_role") or _DRAFT_1C_OWNER.get(kind, "ks"))
+    _upsert_draft_finding(
+        db,
+        row,
+        field=f"draft_1c_{kind}",
+        value=text,
+        source_ref=title,
+        location=_dump(prefill),
+        confidence="черновик",
+        owner_role=owner_role,
+        proposed_by=fio or "агент",
     )
     _audit(db, row, fio=fio or "агент", role="agent", action="draft_1c", detail=f"{kind}: {title}")
     db.commit()
@@ -1224,6 +2507,7 @@ def draft_onec(db: Session, order_id: str, *, fio: str, fields: dict) -> dict:
         "kind": kind,
         "title": title,
         "text": text,
+        "prefill": prefill,
         "note": (
             "Это черновик, в 1С он ещё не записан. "
             "Следующий шаг — onec.docflow_document_create action=create. "
@@ -1232,25 +2516,527 @@ def draft_onec(db: Session, order_id: str, *, fio: str, fields: dict) -> dict:
     }
 
 
+def _can_write_section(role: str, section: str, values: dict) -> bool:
+    try:
+        _guard_section(role, section, values)
+        return True
+    except ExternalOrderError:
+        return False
+
+
+def auto_prepare_order(
+    db: Session,
+    row: ExternalOrder,
+    *,
+    role: str = "ks",
+    fio: str = "",
+    step_id: str = "",
+) -> list[str]:
+    """Детерминированная предобработка заказа до вызова LLM: синхронизация 1С, черновики полей, чек-листов и 1С ДО."""
+    from app.services.external_order_case import _UPLOAD_ROLES, refresh_overdue
+
+    log: list[str] = []
+    refresh_overdue(db, row)
+
+    # 1. Мягкая синхронизация 1С (без падения при недоступности 1С)
+    onec = _onec_link(row)
+    tkp_key = str(onec.get("tkp_key") or "").strip()
+    ref_key = str(onec.get("order_key") or "").strip()
+    if tkp_key or ref_key:
+        try:
+            from app.services.external_order_onec import read_order, tkp_key_for_order, trace_tkp
+
+            traced = trace_tkp(tkp_key) if tkp_key else _trace_or_order(ref_key, read_order, tkp_key_for_order, trace_tkp)
+            if isinstance(traced, dict) and traced:
+                _apply_onec(row, traced)
+                onec = _onec_link(row)
+                log.append(f"Обновлена цепочка 1С: {_path_label(row) or _payment_note(row)}")
+        except Exception:  # noqa: BLE001
+            log.append("1С сейчас недоступна — использованы сохранённые реквизиты карточки")
+
+    sections = _load(row.sections_json)
+    owners = _load(row.owners_json)
+    comm = sections.get("commercial") if isinstance(sections.get("commercial"), dict) else {}
+    tech = sections.get("technical") if isinstance(sections.get("technical"), dict) else {}
+    calc = sections.get("calculation") if isinstance(sections.get("calculation"), dict) else {}
+    fin = sections.get("finance") if isinstance(sections.get("finance"), dict) else {}
+    proj = sections.get("project") if isinstance(sections.get("project"), dict) else {}
+    exec_sec = sections.get("execution") if isinstance(sections.get("execution"), dict) else {}
+    contract_sec = sections.get("contract") if isinstance(sections.get("contract"), dict) else {}
+
+    # 2. Черновики полей разделов из 1С и файлов дела
+    if onec.get("amount") and not str(comm.get("price") or "").strip():
+        num = onec.get("order_number") or onec.get("tkp_number") or "ERP"
+        _upsert_draft_finding(
+            db,
+            row,
+            field="section:commercial.price",
+            value=f"{onec['amount']} руб.",
+            source_ref=f"1С заказ {num}",
+            location="реквизит СуммаДокумента",
+            owner_role="ks",
+            proposed_by="авто-проверка 1С",
+        )
+        log.append(f"Предложена цена из 1С ({onec['amount']} руб.)")
+
+    if not str(comm.get("currency") or "").strip():
+        _upsert_draft_finding(
+            db,
+            row,
+            field="section:commercial.currency",
+            value="RUB",
+            source_ref=f"Карточка {row.code}",
+            location="валюта расчётов по умолчанию",
+            owner_role="ks",
+            proposed_by="авто-проверка",
+        )
+
+    if (onec.get("paid") or onec.get("amount")) and not str(fin.get("schedule") or "").strip():
+        num = onec.get("order_number") or "ERP"
+        _upsert_draft_finding(
+            db,
+            row,
+            field="section:finance.schedule",
+            value=f"1С заказ {num}: оплачено {onec.get('paid') or '0'} из {onec.get('amount') or '0'} ({row.payment_percent}%)",
+            source_ref=f"1С заказ {num}",
+            location="поступления по заказу",
+            owner_role="finance",
+            proposed_by="авто-проверка 1С",
+        )
+
+    # Извлечённые выводы из документов (.docx) -> черновики разделов
+    doc_to_section = {
+        "price": ("commercial", "price", "ks"),
+        "vat": ("commercial", "vat", "ks"),
+        "term": ("project", "plan_note", "rp"),
+        "payment": ("calculation", "bdds", "finance"),
+        "acceptance": ("execution", "acceptance", "production"),
+        "warranty": ("contract", "warranty", "legal"),
+        "sanctions": ("contract", "sanctions", "legal"),
+        "subject": ("technical", "composition", "kb"),
+    }
+    for f_item in list(row.findings):
+        mapped = doc_to_section.get(f_item.field)
+        if not mapped or not str(f_item.value or "").strip():
+            continue
+        sec_name, sec_key, sec_owner = mapped
+        cur_sec = sections.get(sec_name) if isinstance(sections.get(sec_name), dict) else {}
+        if str(cur_sec.get(sec_key) or "").strip():
+            continue
+        _upsert_draft_finding(
+            db,
+            row,
+            field=f"section:{sec_name}.{sec_key}",
+            value=f_item.value,
+            source_ref=f_item.source_ref or "документ дела",
+            location=f_item.location or "текст документа",
+            document_id=f_item.document_id,
+            owner_role=sec_owner,
+            proposed_by="разбор документов",
+        )
+
+    if not str(tech.get("composition") or "").strip():
+        if list(row.lines):
+            comp_str = "; ".join(
+                f"{line.name} ({line.qty})" if line.qty else line.name for line in list(row.lines)[:8]
+            )
+            _upsert_draft_finding(
+                db,
+                row,
+                field="section:technical.composition",
+                value=comp_str,
+                source_ref="Спецификация дела",
+                location="таблица позиций",
+                owner_role="kb",
+                proposed_by="разбор спецификации",
+            )
+            log.append("Сформирован черновик состава изделия по таблице спецификации")
+        elif row.product:
+            _upsert_draft_finding(
+                db,
+                row,
+                field="section:technical.composition",
+                value=f"{row.product} (по запросу {row.code})",
+                source_ref=f"Карточка {row.code}",
+                location="паспорт заказа",
+                owner_role="kb",
+                proposed_by="авто-проверка",
+            )
+
+    # 3. Авто-предложения доказательств по открытым пунктам чек-листа
+    tz_docs = [doc for doc in row.documents if doc.kind == "tz"]
+    for chk in row.checks:
+        if chk.status in {"done", "not_applicable"}:
+            continue
+        text = chk.text
+        evidence = ""
+        source_ref = f"Карточка {row.code}"
+        if text == "Заказчик и продукт идентифицированы" and row.customer and row.product:
+            inn_note = f", ИНН {row.inn}" if row.inn else ""
+            evidence = f"Заказчик: {row.customer}{inn_note}; продукт: {row.product}"
+        elif text == "Запрос и ТЗ зарегистрированы" and row.code:
+            if tz_docs:
+                evidence = f"Запрос {row.code}, прикреплён файл ТЗ «{tz_docs[-1].title}» ({tz_docs[-1].version})"
+                source_ref = tz_docs[-1].title
+            else:
+                evidence = f"Карточка запроса {row.code} зарегистрирована ({row.customer} — {row.product})"
+        elif text == "Назначены КС и РП" and owners.get("ks") and owners.get("rp"):
+            evidence = f"Назначены КС ({owners['ks']}) и РП ({owners['rp']})"
+        elif text == "Выбран маршрут" and row.route:
+            evidence = f"Маршрут: {ROUTES.get(row.route, row.route)} ({row.route})"
+        elif text == "Состав и КД определены" and (tech.get("composition") or list(row.lines)):
+            evidence = f"Состав: {tech.get('composition') or 'по спецификации дела'}; КД: {tech.get('kd') or 'подтверждено'}"
+        elif text == "Производство подтвердило цикл и мощности" and exec_sec.get("cycle") and exec_sec.get("capacity"):
+            evidence = f"Цикл: {exec_sec['cycle']}, мощности: {exec_sec['capacity']}"
+        elif text == "Рассчитаны МЦР, маржа, резерв и БДДС" and calc.get("mcr") and calc.get("margin"):
+            evidence = f"МЦР: {calc['mcr']}, маржа: {calc['margin']}, БДДС: {calc.get('bdds') or 'согласован'}"
+        elif text == "Есть разрешающий протокол и базовая версия" and list(row.decisions) and list(row.baselines):
+            evidence = f"Протокол {row.decisions[-1].protocol}, базовая версия {row.baselines[-1].code}"
+        elif text == "Юристы подтвердили свою область" and contract_sec.get("warranty") and contract_sec.get("sanctions"):
+            evidence = f"Гарантия: {contract_sec['warranty']}; санкции: {contract_sec['sanctions']}"
+        elif text == "Создано электронное дело" and row.code:
+            evidence = f"Электронное дело {row.code} активно"
+        elif text == "Получено 100 процентов оплаты" and row.payment_percent >= 100:
+            evidence = f"Оплата 100% ({_payment_note(row)})"
+        if evidence:
+            _upsert_draft_finding(
+                db,
+                row,
+                field=f"check:{chk.id}",
+                value=evidence,
+                source_ref=source_ref,
+                location=f"гейт {_GATE_LABEL.get(chk.gate, chk.gate)}",
+                owner_role=chk.owner_role,
+                proposed_by="авто-проверка",
+            )
+
+    # 4. Черновик базовой версии, если есть расчётные данные и ещё нет БВ
+    if not list(row.baselines) and (
+        calc.get("cost") or comm.get("price") or onec.get("amount") or role in {"finance", "committee"} or step_id == "committee"
+    ):
+        base_draft = {
+            "composition": str(tech.get("composition") or row.product or "Комплект поставки"),
+            "cost": str(calc.get("cost") or comm.get("price") or onec.get("amount") or "1 000 000 руб."),
+            "mcr": str(calc.get("mcr") or comm.get("price") or onec.get("amount") or "900 000 руб."),
+            "margin": str(calc.get("margin") or "20%"),
+            "bdds": str(calc.get("bdds") or fin.get("schedule") or "Аванс 50%, расчёт 50% по отгрузке"),
+            "deadlines": str(proj.get("plan_note") or exec_sec.get("cycle") or "90 календарных дней"),
+            "reason": f"Первичная сборка базовой версии по заказу {row.code}",
+        }
+        _upsert_draft_finding(
+            db,
+            row,
+            field="baseline:draft",
+            value=_dump(base_draft),
+            source_ref=f"Расчёт по заказу {row.code}",
+            location="панель Комитета",
+            owner_role="finance" if role == "finance" else ("committee" if role == "committee" else "finance"),
+            proposed_by="авто-проверка",
+        )
+
+    # 5. Черновик документа 1С ДО по текущему шагу или службе
+    doc_kind = "memo"
+    doc_owner = role if role in _UPLOAD_ROLES else "ks"
+    doc_title = f"СЗ по внешнему заказу {row.code} ({row.customer} — {row.product})"
+    doc_text = (
+        f"По внешнему заказу {row.code} ({row.customer}, изделие «{row.product}», этап «{STATUSES.get(row.status, row.status)}») "
+        f"прошу рассмотреть материалы дела и подтвердить заключение службы «{ROLES.get(doc_owner, doc_owner)}»."
+    )
+    if step_id == "committee" or role == "committee":
+        doc_kind = "protocol"
+        doc_owner = "committee"
+        doc_title = f"Протокол Комитета по внешнему заказу {row.code} ({row.product})"
+        doc_text = (
+            f"Комитет по расчёту стоимости внешних несерийных заказов рассмотрел заказ {row.code} "
+            f"({row.customer}, {row.product}). Решение: утвердить базовую версию расчёта и разрешить выпуск ТКП."
+        )
+    elif step_id == "start":
+        doc_kind = "directive"
+        doc_owner = "rp"
+        doc_title = f"Распоряжение о начале проекта {row.code} ({row.product})"
+        doc_text = (
+            f"Запустить в работу несерийный заказ {row.code} для заказчика {row.customer} "
+            f"(изделие: {row.product}). Начальнику цеха несерийного оборудования обеспечить график изготовления."
+        )
+    elif role == "rp":
+        doc_kind = "assignment"
+        doc_owner = "rp"
+        doc_title = f"Поручение по внешнему заказу {row.code} ({row.product})"
+        doc_text = (
+            f"По внешнему заказу {row.code} ({row.customer}) подготовить и закрыть обязательства по критическому пути проекта."
+        )
+    prefill = {
+        "kind": doc_kind,
+        "title": doc_title,
+        "text": doc_text,
+        "order_id": row.id,
+        "order_code": row.code,
+        "customer": row.customer,
+        "product": row.product,
+    }
+    _upsert_draft_finding(
+        db,
+        row,
+        field=f"draft_1c_{doc_kind}",
+        value=doc_text,
+        source_ref=doc_title,
+        location=_dump(prefill),
+        owner_role=doc_owner,
+        proposed_by=fio or "авто-проверка",
+    )
+    log.append(f"Авто-подготовка завершена для роли «{ROLES.get(role, role)}»")
+    return log
+
+
+def run_copilot(
+    db: Session,
+    order_id: str,
+    *,
+    role: str,
+    fio: str,
+    step_id: str = "",
+    message: str = "",
+    answers: dict[str, str] | None = None,
+    auto_prepare: bool = True,
+) -> dict:
+    """Единый обработчик встроенного ИИ-помощника: применяет ответы сотрудника и запускает auto_prepare."""
+    from app.services.external_order_case import resolve_gaps
+
+    row = _order(db, order_id)
+    log: list[str] = []
+
+    # a) Применяем ответы сотрудника
+    for raw_key, raw_val in (answers or {}).items():
+        key = str(raw_key or "").strip()
+        val = str(raw_val or "").strip()
+        if not key or not val:
+            continue
+        if key.startswith("section:"):
+            target = key[len("section:"):].strip()
+            if "." in target:
+                sec, field_key = target.split(".", 1)
+                if _can_write_section(role, sec, {field_key: val}):
+                    current = _load(row.sections_json)
+                    bucket = dict(current.get(sec) or {})
+                    bucket[field_key] = val
+                    current[sec] = bucket
+                    row.sections_json = _dump(current)
+                    resolve_gaps(db, row, field_key, val)
+                    resolve_gaps(db, row, key, val)
+                    resolve_gaps(db, row, f"{sec}.{field_key}", val)
+                    for f_item in row.findings:
+                        if f_item.field == key and f_item.status == "draft":
+                            f_item.status = "accepted"
+                            f_item.value = val
+                    _audit(db, row, fio=fio, role=role, action="copilot_answer", detail=f"{sec}.{field_key}", after=val)
+                    log.append(f"Записано поле «{_section_field_label(sec, field_key)}»: {val}")
+                else:
+                    owner = _section_field_owner(sec, field_key)
+                    _upsert_draft_finding(
+                        db,
+                        row,
+                        field=key,
+                        value=val,
+                        source_ref="ответ сотрудника",
+                        location="пульт помощника",
+                        owner_role=owner,
+                        proposed_by=fio or role,
+                        confidence="ответ",
+                    )
+                    log.append(
+                        f"Создан черновик поля «{_section_field_label(sec, field_key)}» для роли «{ROLES.get(owner, owner)}»"
+                    )
+        elif key.startswith("check:"):
+            cid = key[len("check:"):].strip()
+            chk = next((c for c in row.checks if c.id == cid), None)
+            if chk is not None:
+                if role == chk.owner_role and role not in {"it", "viewer"}:
+                    chk.status = "done"
+                    chk.evidence = val
+                    chk.confirmed_by = fio
+                    for f_item in row.findings:
+                        if f_item.field == key and f_item.status == "draft":
+                            f_item.status = "accepted"
+                            f_item.value = val
+                    _audit(db, row, fio=fio, role=role, action="confirm_check", detail=chk.text, after=val)
+                    log.append(f"Подтверждён пункт чек-листа «{chk.text}»: {val}")
+                else:
+                    _upsert_draft_finding(
+                        db,
+                        row,
+                        field=key,
+                        value=val,
+                        source_ref="ответ сотрудника",
+                        location="пульт помощника",
+                        owner_role=chk.owner_role,
+                        proposed_by=fio or role,
+                        confidence="ответ",
+                    )
+                    log.append(
+                        f"Создан черновик подтверждения «{chk.text}» для роли «{ROLES.get(chk.owner_role, chk.owner_role)}»"
+                    )
+        elif key.startswith("gap:"):
+            gid = key[len("gap:"):].strip()
+            gap = next((g for g in row.gaps if g.id == gid), None)
+            if gap is not None and gap.status == "open":
+                if role == gap.owner_role and role not in {"it", "viewer"}:
+                    gap.status = "closed"
+                    gap.detail = f"{gap.detail} · закрыто: {val}"
+                    _audit(db, row, fio=fio, role=role, action="close_gap", detail=gap.field, before="открыт", after=val)
+                    log.append(f"Закрыт пробел «{gap.field}»: {val}")
+                else:
+                    _upsert_draft_finding(
+                        db,
+                        row,
+                        field=gap.field,
+                        value=val,
+                        source_ref="ответ сотрудника",
+                        location="пульт помощника",
+                        owner_role=gap.owner_role,
+                        proposed_by=fio or role,
+                        confidence="ответ",
+                    )
+                    log.append(f"Создан черновик по пробелу «{gap.field}»")
+
+    if (message or "").strip():
+        clean_msg = message.strip()
+        _audit(db, row, fio=fio or "сотрудник", role=role, action="copilot_message", detail=clean_msg[:400])
+        log.append(f"Принято уточнение сотрудника: {clean_msg[:120]}")
+
+    # b) Детерминированная предобработка
+    if auto_prepare:
+        prep_log = auto_prepare_order(db, row, role=role, fio=fio, step_id=step_id)
+        log.extend(prep_log)
+
+    db.commit()
+    db.refresh(row)
+
+    # c) Формирование ответа
+    detail = _detail(row)
+    passports = detail.get("stage_passports") or []
+    step_stage_map = {
+        "zpr": "request",
+        "tech": "calc",
+        "analysis": "calc",
+        "committee": "committee",
+        "passport": "calc",
+        "tkp": "tkp",
+        "contract": "contract",
+        "linked": "contract",
+        "start": "run",
+        "plan": "run",
+    }
+    wanted_stage = step_stage_map.get(step_id, "")
+    stage_passport = (
+        next((p for p in passports if p["id"] == wanted_stage), None)
+        or next((p for p in passports if row.status in p.get("statuses", [])), None)
+        or next((p for p in passports if p.get("state") in {"current", "blocked"}), None)
+        or (passports[0] if passports else {})
+    )
+    all_drafts = [item for item in detail.get("findings") or [] if item.get("status") == "draft"]
+    proposals = sorted(
+        all_drafts,
+        key=lambda item: (0 if item.get("owner_role") == role else 1, str(item.get("kind") or "")),
+    )
+    role_questions_map = detail.get("role_questions") or {}
+    questions = list(role_questions_map.get(role) or [])
+    if not questions and role in {"it", "committee", "development"}:
+        for q_list in role_questions_map.values():
+            questions.extend(q_list[:2])
+    role_proposals_count = sum(1 for item in proposals if item.get("owner_role") == role)
+    blocker_note = stage_passport.get("blocker") or "блокировок этапа нет"
+    step_info = next((item["title"] for item in SIMPLIFIED_PATH if item["id"] == step_id), "")
+    step_prefix = f"Шаг «{step_info}» · " if step_info else ""
+    summary = (
+        f"{step_prefix}Заказ {row.code} ({row.customer} — {row.product}), этап «{stage_passport.get('label', row.stage)}» "
+        f"(чек-лист этапа {stage_passport.get('checks_done', 0)}/{stage_passport.get('checks_total', 0)}). "
+        f"Служба: {ROLES.get(role, role)}. "
+        f"Черновиков к принятию: {len(proposals)} (по вашей службе: {role_proposals_count}). "
+        f"Вопросов на уточнение: {len(questions)}. "
+        f"{blocker_note}."
+    )
+    return {
+        "order": detail,
+        "summary": summary,
+        "step_id": step_id or "",
+        "role": role,
+        "role_label": ROLES.get(role, role),
+        "stage_passport": stage_passport,
+        "proposals": proposals,
+        "questions": questions,
+        "log": log,
+    }
+
+
 def invoke_tool(arguments: dict, *, fio: str) -> dict:
     from app.db.session import SessionLocal
 
-    action = str((arguments or {}).get("action") or "read")
-    order_id = str((arguments or {}).get("order_id") or "").strip()
+    args = arguments or {}
+    action = str(args.get("action") or "read").strip()
+    order_id = str(args.get("order_id") or "").strip()
+    role = str(args.get("role") or "ks").strip()
+    if role not in ROLES or role == "viewer":
+        role = "ks"
+    step_id = str(args.get("step_id") or "").strip()
     db = SessionLocal()
     try:
         if action == "read":
-            return read_case(db, order_id)
+            return read_case(db, order_id, role=role, step_id=step_id)
+        if action == "read_full":
+            return read_full_case(db, order_id, role=role, step_id=step_id)
+        if action == "auto_prepare":
+            res = run_copilot(
+                db,
+                order_id,
+                role=role,
+                fio=fio,
+                step_id=step_id,
+                message=str(args.get("message") or ""),
+                answers=args.get("answers") if isinstance(args.get("answers"), dict) else None,
+                auto_prepare=True,
+            )
+            order_data = res["order"]
+            return {
+                "ok": True,
+                "id": order_data.get("id"),
+                "code": order_data.get("code"),
+                "customer": order_data.get("customer"),
+                "product": order_data.get("product"),
+                "status": order_data.get("status"),
+                "status_label": order_data.get("status_label"),
+                "stage_passport": res["stage_passport"],
+                "proposals": res["proposals"][:15],
+                "questions": res["questions"][:10],
+                "blocks": order_data.get("blocks") or [],
+                "summary": res["summary"],
+                "log": res["log"],
+                "note": "Черновики подготовлены. Сотрудник принимает их в карточке заказа.",
+            }
         if action == "propose":
             return propose(
                 db,
                 order_id,
                 fio=fio,
-                findings=list((arguments or {}).get("findings") or []),
-                diffs=list((arguments or {}).get("diffs") or []),
+                findings=list(args.get("findings") or []),
+                diffs=list(args.get("diffs") or []),
+                section_proposals=list(args.get("section_proposals") or []),
+                check_proposals=list(args.get("check_proposals") or []),
+                baseline_proposal=args.get("baseline_proposal") if isinstance(args.get("baseline_proposal"), dict) else None,
+                risk_proposals=list(args.get("risk_proposals") or []),
             )
         if action == "draft_1c":
-            return draft_onec(db, order_id, fio=fio, fields=arguments or {})
+            return draft_onec(db, order_id, fio=fio, fields=args)
+        if action == "search_1c":
+            query = str(args.get("query") or args.get("q") or "").strip()
+            counterparty_key = str(args.get("counterparty_key") or args.get("counterparty") or "").strip()
+            try:
+                return search_onec(query=query, counterparty_key=counterparty_key)
+            except ExternalOrderError as exc:
+                return {"ok": False, "orders": [], "tkp": [], "note": exc.detail}
+        if action == "plan":
+            from app.services.external_order_plan import build_work_plan
+
+            return build_work_plan(db, order_id, fio=fio)
         raise ExternalOrderError("Неизвестное действие")
     except ExternalOrderError as exc:
         raise RuntimeError(exc.detail) from exc
@@ -1533,23 +3319,183 @@ def _trace_or_order(ref_key: str, read_order, tkp_key_for_order, trace_tkp) -> d
     return read_order(ref_key)
 
 
-def read_case(db: Session, order_id: str) -> dict:
-    body = get_order(db, order_id)
-    raw = ""
-    sections = body.get("sections") if isinstance(body.get("sections"), dict) else {}
-    onec = sections.get("onec") if isinstance(sections.get("onec"), dict) else {}
-    raw = str(onec.get("path") or "")
-    try:
-        path = json.loads(raw) if raw else []
-    except json.JSONDecodeError:
-        path = []
-    body["onec_path"] = path if isinstance(path, list) else []
-    body["agent_limits"] = (
-        "Не утверждай цену, договор, бюджет, риск и стадию. "
-        "Каждый вывод указывай со ссылкой на документ и место: абзац, страница или ячейка. "
-        "Без места в источнике вывод не сохранится. "
-        "В 1С отправляй только черновик записки, протокола или поручения, человек подтверждает отправку. "
-        "Путь заказа читай из onec_path: ТКП, заказ клиента, договор, производство, отгрузка, оплата. "
-        "Не придумывай документы, которых в этом пути нет. Стадию по пути не переводи."
+def _case_summary(body: dict) -> str:
+    """Короткий ответ агенту: полная карточка в инструмент не влезает и уходит в файл, который читать запрещено."""
+    status = str(body.get("status") or "")
+    nxt = NEXT_GATE.get(status, "")
+    who = ", ".join(ROLES[role] for role in ROLES if role in TRANSITION_ROLES.get(nxt, set())) or "не назначено"
+    nxt_label = STATUSES.get(nxt, nxt) if nxt else "нет"
+    path = str(body.get("path_label") or "в 1С не разложен")
+    if len(path) > 400:
+        path = path[:400] + "…"
+    return (
+        f"Заказ {body.get('code')} ({body.get('customer')}, {body.get('product')}). "
+        f"Стадия «{body.get('status_label')}». {body.get('payment_note')}. "
+        f"Путь: {path}. "
+        f"Следующий переход «{nxt_label}» делает: {who}. "
+        f"{body.get('project_note')}. Черновик фактом не является."
     )
-    return body
+
+
+_GATE_ORDER = (
+    "before_calc",
+    "before_committee",
+    "before_tkp",
+    "before_sign",
+    "before_project",
+    "before_production",
+    "before_psi",
+    "before_ship",
+    "before_close",
+)
+_GATE_LABEL = {
+    "before_calc": "до расчёта",
+    "before_committee": "до Комитета",
+    "before_tkp": "до ТКП",
+    "before_sign": "до подписания",
+    "before_project": "до проекта",
+    "before_production": "до запуска",
+    "before_psi": "до ПСИ",
+    "before_ship": "до отгрузки",
+    "before_close": "до закрытия",
+}
+
+
+def _open_by_service(body: dict) -> dict[str, str]:
+    grouped: dict[str, list[tuple[int, str]]] = {}
+    for item in body.get("checks") or []:
+        if not isinstance(item, dict) or item.get("status") in {"done", "not_applicable"}:
+            continue
+        gate = str(item.get("gate") or "")
+        text = str(item.get("text") or "").strip()
+        if not text:
+            continue
+        order = _GATE_ORDER.index(gate) if gate in _GATE_ORDER else len(_GATE_ORDER)
+        grouped.setdefault(str(item.get("owner_role") or ""), []).append(
+            (order, f"{_GATE_LABEL.get(gate, gate)}: {text}")
+        )
+    lines: dict[str, str] = {}
+    for role, texts in grouped.items():
+        line = "; ".join(text for _order, text in sorted(texts))
+        if len(line) > 220:
+            line = line[:220] + "…"
+        lines[ROLES.get(role, role)] = line
+    return lines
+
+
+def read_case(db: Session, order_id: str, *, role: str = "", step_id: str = "") -> dict:
+    body = get_order(db, order_id)
+    passports = body.get("stage_passports") or []
+    current_passport = (
+        next((p for p in passports if body.get("status") in p.get("statuses", [])), None)
+        or (passports[0] if passports else {})
+    )
+    role_key = role if role in ROLES and role != "viewer" else "ks"
+    role_qs = (body.get("role_questions") or {}).get(role_key, [])[:6]
+    drafts = [
+        {
+            "id": item.get("id"),
+            "field": item.get("field"),
+            "kind": item.get("kind"),
+            "label": item.get("label"),
+            "value": str(item.get("value") or "")[:160],
+            "owner_role": item.get("owner_role"),
+        }
+        for item in (body.get("findings") or [])
+        if item.get("status") == "draft"
+    ][:8]
+    return {
+        "id": body.get("id"),
+        "code": body.get("code"),
+        "customer": body.get("customer"),
+        "product": body.get("product"),
+        "status": body.get("status"),
+        "status_label": body.get("status_label"),
+        "stage": body.get("stage"),
+        "stage_label": body.get("stage_label"),
+        "route": body.get("route"),
+        "route_label": body.get("route_label"),
+        "payment_note": body.get("payment_note"),
+        "path_label": body.get("path_label"),
+        "project_note": body.get("project_note"),
+        "blocks": body.get("blocks") or [],
+        "owners": body.get("owners") or {},
+        "sections": body.get("sections") or {},
+        "stage_passport": {
+            "id": current_passport.get("id"),
+            "label": current_passport.get("label"),
+            "state": current_passport.get("state"),
+            "checks_done": current_passport.get("checks_done"),
+            "checks_total": current_passport.get("checks_total"),
+            "blocker": current_passport.get("blocker"),
+        },
+        "draft_findings": drafts,
+        "questions": [
+            {"id": q.get("id"), "prompt": q.get("prompt"), "owner_role": q.get("owner_role")}
+            for q in role_qs
+        ],
+        "open_by_service": _open_by_service(body),
+        "summary": _case_summary(body),
+        "agent_limits": (
+            "Ответь по summary и по своей строке в open_by_service. result_file не открывай. "
+            "Не утверждай цену, договор, бюджет, риск и стадию. "
+            "Не придумывай документы, которых нет в пути. Черновик фактом не является."
+        ),
+    }
+
+
+def read_full_case(db: Session, order_id: str, *, role: str = "", step_id: str = "") -> dict:
+    from app.services.external_order_case import extract_document_excerpts
+
+    row = _order(db, order_id)
+    body = _detail(row)
+    passports = body.get("stage_passports") or []
+    current_passport = (
+        next((p for p in passports if body.get("status") in p.get("statuses", [])), None)
+        or (passports[0] if passports else {})
+    )
+    role_key = role if role in ROLES and role != "viewer" else "ks"
+    role_qs = (body.get("role_questions") or {}).get(role_key, [])
+    open_diffs = [
+        item
+        for item in (body.get("diffs") or [])
+        if item.get("status") != "closed"
+    ]
+    return {
+        "id": body.get("id"),
+        "code": body.get("code"),
+        "customer": body.get("customer"),
+        "inn": body.get("inn"),
+        "product": body.get("product"),
+        "order_type": body.get("order_type"),
+        "priority": body.get("priority"),
+        "stage": body.get("stage"),
+        "stage_label": body.get("stage_label"),
+        "status": body.get("status"),
+        "status_label": body.get("status_label"),
+        "route": body.get("route"),
+        "route_label": body.get("route_label"),
+        "payment_percent": body.get("payment_percent"),
+        "payment_note": body.get("payment_note"),
+        "path_label": body.get("path_label"),
+        "blocks": body.get("blocks") or [],
+        "owners": body.get("owners") or {},
+        "sections": body.get("sections") or {},
+        "stage_passport": current_passport,
+        "stage_passports": passports,
+        "documents": body.get("documents") or [],
+        "document_excerpts": extract_document_excerpts(row),
+        "findings": body.get("findings") or [],
+        "lines": body.get("lines") or [],
+        "diffs": open_diffs,
+        "gaps": [g for g in (body.get("gaps") or []) if g.get("status") == "open"],
+        "baselines": body.get("baselines") or [],
+        "risks": body.get("risks") or [],
+        "decisions": body.get("decisions") or [],
+        "questions": role_qs,
+        "role_questions": body.get("role_questions") or {},
+        "open_by_service": _open_by_service(body),
+        "summary": _case_summary(body),
+        "note": "Полная структурированная выжимка дела. Черновик фактом не является.",
+    }
+

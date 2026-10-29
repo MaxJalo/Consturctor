@@ -36,6 +36,11 @@ function directRoute(workflowId: string): PlatformAgentSource | undefined {
   return agentId ? { kind: 'platform', agentId } : undefined
 }
 
+function externalOrderAgentTitle(title: string): boolean {
+  const text = title.toLowerCase().replaceAll('ё', 'е')
+  return text.includes('ии-агент внешнего заказа') || text.includes('ии-агент внешних закупок')
+}
+
 function routeOf(record: WorkflowRecord): PlatformAgentSource | null {
   const platformId = platformAgentIdFromNotes(record.notes)
   if (platformId) return { kind: 'platform', agentId: platformId }
@@ -63,12 +68,14 @@ export function AgentRunRouter(props: AgentRunRouterProps): React.JSX.Element {
     api
       .getWorkflow(workflowId)
       .then((record) => {
-        const found = routeOf(record)
+        const found =
+          routeOf(record) ??
+          (externalOrderAgentTitle(record.title || props.title) ? { kind: 'constructor' } : null)
         routes.set(workflowId, found)
         if (alive) setRoute(found)
       })
       .catch(() => {
-        if (alive) setRoute(null)
+        if (alive) setRoute(externalOrderAgentTitle(props.title) ? { kind: 'constructor' } : null)
       })
     return () => {
       alive = false

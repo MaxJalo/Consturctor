@@ -20,6 +20,7 @@ import {
 import { formatAmount } from '../../workplace/fetchDocflowPaymentRequests'
 import type { DocflowKindId } from '../../workplace/docflowDocumentCreate'
 import { DocflowOpenFormBar } from './DocflowOpenFormBar'
+import { DocflowProcessBlock } from './DocflowProcessBlock'
 import { DocflowSearch, SortTh, useDocflowTable } from './docflowTableTools'
 
 function cell(value: string): string {
@@ -144,6 +145,7 @@ function IncentiveOrderCardView({ row }: { row: IncentiveOrderRow }): React.JSX.
       </header>
       {row.title ? <p className="docflow-side-subject">{row.title}</p> : null}
       <div className="docflow-side-scroll">
+        <DocflowProcessBlock />
         <section className="docflow-card-block">
           <h4>Мера</h4>
           <dl className="docflow-detail-list">

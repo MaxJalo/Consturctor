@@ -31,7 +31,15 @@ from app.models.external_order import (
 _ALLOWED = {".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document", ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", ".pdf": "application/pdf"}
 _KINDS = {"tz", "tkp", "contract", "specification", "protocol", "condition", "acceptance", "other"}
 _UPLOAD_ROLES = {"ks", "development", "rp", "legal", "kb", "finance", "omto", "production", "committee"}
-_BLOCK_GATES = {"before_calc", "before_committee", "before_project", "before_production", "before_ship"}
+_BLOCK_GATES = {
+    "before_calc",
+    "before_committee",
+    "before_sign",
+    "before_project",
+    "before_production",
+    "before_ship",
+    "before_close",
+}
 _FIELDS = (
     ("subject", "предмет", "B02", "ks"),
     ("price", "цена", "B05", "finance"),
@@ -110,6 +118,8 @@ def open_gate(order: ExternalOrder, gates: set[str]) -> str | None:
 
 
 def add_gap(db: Session, order: ExternalOrder, *, field: str, owner_role: str, detail: str, hours: int = 48) -> None:
+    if any(item.field == field[:128] for item in _open_gaps(db, order)):
+        return
     db.add(
         ExternalOrderGap(
             id=_new_id(),
@@ -121,6 +131,26 @@ def add_gap(db: Session, order: ExternalOrder, *, field: str, owner_role: str, d
             detail=detail,
         )
     )
+
+
+def resolve_gaps(db: Session, order: ExternalOrder, field: str, resolution: str) -> int:
+    closed = 0
+    for item in _open_gaps(db, order):
+        if item.field != field:
+            continue
+        item.status = "closed"
+        item.detail = f"{item.detail} · закрыто: {resolution}"
+        closed += 1
+    return closed
+
+
+def _open_gaps(db: Session, order: ExternalOrder) -> list[ExternalOrderGap]:
+    """Пробелы дела вместе с ещё не сохранёнными в этой сессии."""
+    rows = {id(item): item for item in order.gaps}
+    for item in db.new:
+        if isinstance(item, ExternalOrderGap) and item.order_id == order.id:
+            rows[id(item)] = item
+    return [item for item in rows.values() if item.status == "open"]
 
 
 def notify(db: Session, order: ExternalOrder, *, kind: str, role: str, title: str, body: str) -> None:
@@ -140,7 +170,9 @@ def notify(db: Session, order: ExternalOrder, *, kind: str, role: str, title: st
             role=role,
             title=title[:256],
             body=body,
-            mail_status=f"почта: {mail}" if mail else "карточка: у роли нет почтового адреса",
+            mail_status=(
+                f"в карточке; письмо на {mail} не отправлялось" if mail else "в карточке; у роли нет почтового адреса"
+            ),
         )
     )
 
@@ -175,8 +207,7 @@ def store_file(
     digest = hashlib.sha256(raw).hexdigest()
     if any(item.sha256 == digest for item in order.documents):
         raise ExternalOrderError("Такой файл уже есть в деле", 409)
-    same = [item for item in order.documents if item.kind == kind]
-    version = f"v{len(same) + 1}"
+    version = f"v{_next_number([item.version for item in order.documents if item.kind == kind], 'v')}"
     doc_id = _new_id()
     folder = BACKEND_ROOT / "storage" / "external_orders" / order.id
     folder.mkdir(parents=True, exist_ok=True)
@@ -237,7 +268,11 @@ def delete_file(db: Session, order: ExternalOrder, document_id: str, *, role: st
     )
     if path and path.is_file():
         path.unlink()
-    db.delete(doc)
+    for line in [item for item in order.lines if item.document_id == doc.id]:
+        order.lines.remove(line)
+    for finding in [item for item in order.findings if item.document_id == doc.id and item.status == "draft"]:
+        order.findings.remove(finding)
+    order.documents.remove(doc)
 
 
 def create_baseline(db: Session, order: ExternalOrder, *, role: str, fio: str, fields: dict) -> ExternalOrderBaseline:
@@ -251,11 +286,10 @@ def create_baseline(db: Session, order: ExternalOrder, *, role: str, fio: str, f
     reason = str(fields.get("reason") or "").strip()
     if any(item.immutable for item in order.baselines) and not reason:
         raise ExternalOrderError("Новая базовая версия создаётся с основанием", 400)
-    number = len(list(order.baselines)) + 1
     row = ExternalOrderBaseline(
         id=_new_id(),
         order_id=order.id,
-        code=f"БВ-{number}",
+        code=f"БВ-{_next_number([item.code for item in order.baselines], 'БВ-')}",
         composition=str(fields.get("composition") or ""),
         cost=str(fields.get("cost") or ""),
         mcr=str(fields.get("mcr") or ""),
@@ -266,27 +300,35 @@ def create_baseline(db: Session, order: ExternalOrder, *, role: str, fio: str, f
         created_by=fio,
     )
     db.add(row)
+    resolve_gaps(db, order, "новая базовая версия", row.code)
     _audit(db, order, fio=fio, role=role, action="baseline", detail=row.code, after=reason)
     return row
 
 
-def lock_baseline(order: ExternalOrder, baseline_id: str, code: str) -> ExternalOrderBaseline | None:
-    if baseline_id:
-        found = next((item for item in order.baselines if item.id == baseline_id), None)
-        if found is None:
-            return None
-        found.immutable = True
-        return found
-    if not code:
-        return None
-    row = ExternalOrderBaseline(
-        id=_new_id(),
-        order_id=order.id,
-        code=code,
-        reason="зафиксировано протоколом",
-        immutable=True,
+def lock_baseline(order: ExternalOrder, baseline_id: str, code: str) -> ExternalOrderBaseline:
+    """Протокол фиксирует только уже собранную версию: состав, стоимость, МЦР, маржа, БДДС и сроки."""
+    from app.services.external_orders import ExternalOrderError
+
+    wanted = code.strip().casefold()
+    found = next(
+        (
+            item
+            for item in order.baselines
+            if (baseline_id and item.id == baseline_id) or (not baseline_id and wanted and item.code.casefold() == wanted)
+        ),
+        None,
     )
-    return row
+    if found is None:
+        if not baseline_id and not wanted:
+            raise ExternalOrderError("Нужны протокол и базовая версия", 400)
+        raise ExternalOrderError(
+            f"Базовая версия {code or baseline_id} не найдена в деле. Сначала соберите её: состав, стоимость, МЦР, маржа, БДДС и сроки",
+            400,
+        )
+    if not all((found.composition, found.cost, found.mcr, found.margin, found.bdds, found.deadlines)):
+        raise ExternalOrderError(f"Базовая версия {found.code} не заполнена: протоколом её зафиксировать нельзя", 400)
+    found.immutable = True
+    return found
 
 
 def build_plan(db: Session, order: ExternalOrder, *, role: str, fio: str) -> int:
@@ -368,8 +410,7 @@ def _extract(db: Session, order: ExternalOrder, doc: ExternalOrderDocument, raw:
         if not rows:
             add_gap(db, order, field="specification", owner_role="kb", detail="Строки спецификации не прочитаны")
             return
-        previous = [line for line in order.lines if line.document_id != doc.id]
-        changes = _compare(previous, rows)
+        changes = _compare(_previous_lines(order, doc), rows)
         for name, qty, amount, change in changes:
             db.add(
                 ExternalOrderLine(
@@ -411,6 +452,7 @@ def _remember(db: Session, order, doc, *, field: str, value: str, location: str,
             proposed_by="разбор файла",
         )
     )
+    resolve_gaps(db, order, field, f"{doc.title} {doc.version}, {location}")
     match = next((item for item in order.diffs if item.code == code), None)
     if match is None or match.status == "closed":
         return
@@ -419,6 +461,31 @@ def _remember(db: Session, order, doc, *, field: str, value: str, location: str,
     elif doc.kind in {"contract", "specification"}:
         match.right_value = value[:2000]
     match.note = location
+
+
+def _previous_lines(order: ExternalOrder, doc: ExternalOrderDocument) -> list[ExternalOrderLine]:
+    """Строки последней прежней спецификации: новая версия сравнивается только с ней."""
+    with_lines = {line.document_id for line in order.lines}
+    earlier = [
+        item
+        for item in order.documents
+        if item.kind == "specification" and item.id != doc.id and item.id in with_lines
+    ]
+    if not earlier:
+        return []
+    latest = max(earlier, key=lambda item: _version_number(item.version, "v"))
+    return [line for line in order.lines if line.document_id == latest.id and line.change != "removed"]
+
+
+def _version_number(value: str, prefix: str) -> int:
+    tail = (value or "").strip()
+    if tail.casefold().startswith(prefix.casefold()):
+        tail = tail[len(prefix):]
+    return int(tail) if tail.isdigit() else 0
+
+
+def _next_number(values: list[str], prefix: str) -> int:
+    return max((_version_number(value, prefix) for value in values), default=0) + 1
 
 
 def _compare(previous: list[ExternalOrderLine], rows: list[tuple[str, str, str]]) -> list[tuple[str, str, str, str]]:
@@ -464,15 +531,12 @@ def _material_change(db: Session, order: ExternalOrder, doc: ExternalOrderDocume
             detail=f"Повторное заключение по {doc.version}",
             hours=4,
         )
-    number = len(list(order.baselines)) + 1
-    db.add(
-        ExternalOrderBaseline(
-            id=_new_id(),
-            order_id=order.id,
-            code=f"БВ-{number}",
-            reason=f"новая спецификация {doc.version}",
-            created_by=fio or "система",
-        )
+    add_gap(
+        db,
+        order,
+        field="новая базовая версия",
+        owner_role="finance",
+        detail=f"Новая спецификация {doc.version}: базовую версию собрать заново с основанием",
     )
     _audit(db, order, fio=fio or "система", role="ks", action="change", detail=doc.version, after="повторные заключения")
 
@@ -559,3 +623,63 @@ def refresh_overdue(db: Session, order: ExternalOrder) -> None:
             continue
         item.status = "overdue"
         notify(db, order, kind="overdue", role=item.owner_role, title="Просрочен пункт чек-листа", body=item.text)
+
+
+def extract_document_excerpts(order: ExternalOrder) -> list[dict]:
+    """Извлекает текстовые фрагменты и таблицы из прикреплённых файлов дела (.docx, .xlsx)."""
+    excerpts: list[dict] = []
+    for doc in order.documents:
+        entry: dict = {
+            "id": doc.id,
+            "kind": doc.kind,
+            "title": doc.title,
+            "version": doc.version,
+            "file_name": doc.file_name,
+            "approved": bool(doc.approved),
+            "owner_role": doc.owner_role,
+            "paragraphs": [],
+            "rows": [],
+        }
+        path = Path(doc.stored_path) if doc.stored_path else None
+        if path and path.is_file():
+            try:
+                raw = path.read_bytes()
+                suffix = path.suffix.casefold()
+                if suffix == ".docx":
+                    entry["paragraphs"] = _docx_paragraphs(raw)[:25]
+                elif suffix == ".xlsx":
+                    entry["rows"] = [
+                        {"name": name, "qty": qty, "amount": amount}
+                        for name, qty, amount in _xlsx_rows(raw)[:40]
+                    ]
+            except Exception:  # noqa: BLE001
+                pass
+        excerpts.append(entry)
+    return excerpts
+
+
+def auto_prepare_order(
+    db: Session,
+    order: ExternalOrder,
+    *,
+    role: str = "ks",
+    fio: str = "",
+    step_id: str = "",
+) -> list[str]:
+    from app.services.external_orders import auto_prepare_order as _auto_prepare
+
+    return _auto_prepare(db, order, role=role, fio=fio, step_id=step_id)
+
+
+def build_stage_passports(order: ExternalOrder) -> list[dict]:
+    from app.services.external_orders import build_stage_passports as _build_passports
+
+    return _build_passports(order)
+
+
+def build_role_questions(order: ExternalOrder) -> dict[str, list[dict]]:
+    from app.services.external_orders import build_role_questions as _build_questions
+
+    return _build_questions(order)
+
+

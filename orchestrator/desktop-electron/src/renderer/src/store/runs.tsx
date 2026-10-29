@@ -14,6 +14,7 @@ import {
   type RunState
 } from '../components/agentfeed/runReducer'
 import { beginAgentPhase, closeTiming, EMPTY_TIMING } from '../workplace/runTiming'
+import { ALWAYS_ALLOW_EVENT, readAlwaysAllowActions } from '../workplace/alwaysAllowActions'
 import { windowFor } from '../utils/calendar'
 import {
   eventBackendRunId,
@@ -262,6 +263,7 @@ export function RunProvider({ children }: { children: React.ReactNode }): React.
       }
       const backendRunId = eventBackendRunId(event)
       let cancelBackground = false
+      let autoApproveId = ''
       setEntries((prev) => {
         const entry = prev[workflowId] ?? emptyLiveEntry(workflowId, '', backendRunId, runId)
         const outcome = applyAgentEvent(entry.state, event)
@@ -290,6 +292,15 @@ export function RunProvider({ children }: { children: React.ReactNode }): React.
             status: isHidden ? 'Расчёт прерван' : 'Оценка прервана',
             activeRunId: null
           }
+        } else if (event.type === 'hitl' && readAlwaysAllowActions() && state.pendingHitl?.requestId) {
+          autoApproveId = state.pendingHitl.requestId
+          state = {
+            ...state,
+            pendingHitl: null,
+            status: 'Выполняю действие…',
+            runningSinceMs: state.runningSinceMs || Date.now(),
+            timing: beginAgentPhase(state.timing || EMPTY_TIMING)
+          }
         }
         const next: RunEntry = {
           ...entry,
@@ -308,6 +319,7 @@ export function RunProvider({ children }: { children: React.ReactNode }): React.
         delete indexRef.current[runId]
         return
       }
+      if (autoApproveId) agentClient.hitl(autoApproveId, true)
       if (event.type === 'result' || event.type === 'error') {
         delete indexRef.current[runId]
       }
@@ -447,6 +459,20 @@ export function RunProvider({ children }: { children: React.ReactNode }): React.
       }
     })
   }, [])
+
+  useEffect(() => {
+    const approveOpen = (): void => {
+      if (!readAlwaysAllowActions()) return
+      for (const entry of Object.values(entriesRef.current)) {
+        if (entry.background || entry.hidden) continue
+        const requestId = entry.state.pendingHitl?.requestId
+        if (!requestId) continue
+        respondHitl(entry.workflowId, requestId, true)
+      }
+    }
+    window.addEventListener(ALWAYS_ALLOW_EVENT, approveOpen)
+    return () => window.removeEventListener(ALWAYS_ALLOW_EVENT, approveOpen)
+  }, [respondHitl])
 
   const respondDecision = useCallback(
     (workflowId: string, requestId: string, approved: boolean, tool?: string) => {

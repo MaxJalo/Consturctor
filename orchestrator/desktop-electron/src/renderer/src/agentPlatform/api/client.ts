@@ -12,7 +12,7 @@ export function platformUrl(): Promise<string> {
   if (base) return Promise.resolve(base)
   if (!resolving) {
     resolving = (async () => {
-      if (!window.platform?.ensure) throw new Error('Платформа агентов доступна только в приложении Оркестратора')
+      if (!window.platform?.ensure) throw new Error('Платформа агентов доступна только в приложении Orch_mx')
       const status = await window.platform.ensure()
       if (!status.ok || !status.url) throw new Error(status.error || 'Платформа агентов не запустилась')
       base = status.url.replace(/\/+$/, '')

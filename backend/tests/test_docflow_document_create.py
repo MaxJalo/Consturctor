@@ -578,3 +578,182 @@ def test_assignment_gets_default_event_row(fake: FakeClient) -> None:
     assert body["Руководитель_Key"] == USER
     assert body["Поручения"][0]["Мероприятие"] == "Подготовить отчёт"
     assert body["Основание_Type"] == "Edm.String"
+
+
+PERSON = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+DEPT = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
+ACCOUNT = "cccccccc-cccc-cccc-cccc-cccccccccccc"
+DDS = "77777777-7777-7777-7777-777777777777"
+CFO = "88888888-8888-8888-8888-888888888888"
+
+
+def _payment_catalogs(fake: FakeClient) -> None:
+    fake.catalogs.update(
+        {
+            "Catalog_Валюты": [{"Ref_Key": "66666666-6666-6666-6666-666666666666", "Description": "руб."}],
+            "Catalog_СтатьиДвиженияДенежныхСредств": [{"Ref_Key": DDS, "Description": "Выдана под авансовый отчет"}],
+            "Catalog_ТД_ЦФО": [{"Ref_Key": CFO, "Description": "Руководство"}],
+            dc.DEPARTMENTS: [{"Ref_Key": DEPT, "Description": "Управление делами"}],
+            "Catalog_ФизическиеЛица": [
+                {"Ref_Key": PERSON, "Description": "Ильченко Елена Викторовна", "ИНН": "27232154338"}
+            ],
+        }
+    )
+    fake.catalogs[dc.USERS].append(
+        {
+            "Ref_Key": "dddddddd-dddd-dddd-dddd-dddddddddddd",
+            "Description": "Ильченко Елена Викторовна",
+            "Подразделение_Key": DEPT,
+        }
+    )
+
+
+def _advance_values() -> dict[str, Any]:
+    return {
+        "Организация_Key": ORG,
+        "ХозяйственнаяОперация": "ВыдачаДенежныхСредствПодотчетнику",
+        "ПолучательВид": "employee",
+        "СуммаДокумента": "11000",
+        "ЖелательнаяДатаПлатежа": "2026-10-28",
+        "ПодотчетноеЛицо_Key": "Ильченко Елена Викторовна",
+        "ИННПолучателя": "27232154338",
+        "ДатаАвансовогоОтчета": "2026-11-30",
+        "ТД_ЦФО_Key": "Руководство",
+        "Подразделение_Key": "Управление делами",
+        "НазначениеПлатежа": "Подотчёт",
+        "КтоЗаявил_Key": "Ильченко Елена Викторовна",
+    }
+
+
+def test_advance_hides_contractor_and_keeps_report_date_only_if_base_has_it(fake: FakeClient) -> None:
+    _payment_catalogs(fake)
+    body = dc.build_body(
+        "payment",
+        _advance_values(),
+        client=fake,
+        actor_fio="Жалыбин Максим Дмитриевич",
+        sample={},
+        tables={
+            "РасшифровкаПлатежа": [
+                {"Сумма": "11000", "СтатьяДвиженияДенежныхСредств_Key": "Выдана под авансовый отчет"}
+            ]
+        },
+    )
+    assert "Контрагент_Key" not in body
+    assert "Партнер_Key" not in body
+    assert "ИННПолучателя" not in body
+    assert "ПолучательВид" not in body
+    assert body["ПодотчетноеЛицо_Key"] == PERSON
+    assert body["СтатьяДвиженияДенежныхСредств_Key"] == DDS
+    assert body["РасшифровкаПлатежа"][0]["СтатьяДвиженияДенежныхСредств_Key"] == DDS
+    assert body["ДатаАвансовогоОтчета"] == "2026-11-30T00:00:00"
+    dropped = dc.build_body(
+        "payment",
+        _advance_values(),
+        client=fake,
+        actor_fio="Жалыбин Максим Дмитриевич",
+        sample={"Number": "НП00-1"},
+        tables={
+            "РасшифровкаПлатежа": [
+                {"Сумма": "11000", "СтатьяДвиженияДенежныхСредств_Key": "Выдана под авансовый отчет"}
+            ]
+        },
+    )
+    assert "ДатаАвансовогоОтчета" not in dropped
+
+
+def test_payment_line_fills_empty_header_cash_flow(fake: FakeClient) -> None:
+    _payment_catalogs(fake)
+    values = _advance_values()
+    values.pop("ПодотчетноеЛицо_Key")
+    values["ХозяйственнаяОперация"] = "ОплатаПоставщику"
+    values["Контрагент_Key"] = "Ромашка"
+    body = dc.build_body(
+        "payment",
+        values,
+        client=fake,
+        actor_fio="Жалыбин Максим Дмитриевич",
+        sample={},
+        tables={"РасшифровкаПлатежа": [{"Сумма": "11000", "СтатьяДвиженияДенежныхСредств_Key": DDS}]},
+    )
+    assert body["СтатьяДвиженияДенежныхСредств_Key"] == DDS
+    assert body["РасшифровкаПлатежа"][0]["СтатьяДвиженияДенежныхСредств_Key"] == DDS
+
+
+def test_advance_employee_requires_person(fake: FakeClient) -> None:
+    _payment_catalogs(fake)
+    values = _advance_values()
+    values["ПодотчетноеЛицо_Key"] = ""
+    with pytest.raises(dc.DocumentCreateError, match="Сотрудник"):
+        dc.build_body("payment", values, client=fake, actor_fio="Жалыбин Максим Дмитриевич", sample={})
+
+
+def test_employee_card_fills_account_and_leaves_it_empty(fake: FakeClient) -> None:
+    _payment_catalogs(fake)
+    fake.catalogs["Catalog_БанковскиеСчетаКонтрагентов"] = [
+        {
+            "Ref_Key": "ffffffff-ffff-ffff-ffff-ffffffffffff",
+            "Description": "КБ Кубань Кредит ООО",
+            "НомерСчета": "40817000000000000001",
+            "НаименованиеБанка": "КБ КУБАНЬ КРЕДИТ ООО",
+            "БИКБанка": "040349722",
+        },
+        {
+            "Ref_Key": ACCOUNT,
+            "Description": 'ЗП в 1671 в ООО "ОЗОН Банк"',
+            "НомерСчета": "40914000000000001671",
+            "НаименованиеБанка": 'ООО "ОЗОН Банк"',
+            "БИКБанка": "044525068",
+            "Owner": PERSON,
+            "Owner_Type": "StandardODATA.Catalog_ФизическиеЛица",
+        },
+        {"Ref_Key": "eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee", "Description": "ЗП закрытый", "Закрыт": True},
+    ]
+    card = dc.employee_payment_card(fake, "Ильченко Елена Викторовна")
+    assert card["ok"] is True
+    assert card["inn"] == "27232154338"
+    assert card["department_key"] == DEPT
+    assert card["department_name"] == "Управление делами"
+    assert card["user_name"] == "Ильченко Елена Викторовна"
+    assert card["account_key"] == ACCOUNT
+    assert card["bank_name"] == 'ООО "ОЗОН Банк"'
+    assert card["bank_bik"] == "044525068"
+    assert card["account_number"] == "40914000000000001671"
+    fake.catalogs["Catalog_БанковскиеСчетаКонтрагентов"] = []
+    empty = dc.employee_payment_card(fake, "Ильченко Елена Викторовна")
+    assert empty["account_key"] == ""
+    assert empty["account_name"] == ""
+
+
+def test_order_file_without_path_says_volume_does_not_see_it(fake: FakeClient) -> None:
+    import base64
+
+    fake.catalogs[dc.GRIFS] = [{"Ref_Key": "eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee", "Description": "Общий"}]
+    files = [{"name": "приказ.pdf", "base64": base64.b64encode(b"%PDF").decode()}]
+    result = dc.create_document(
+        "order",
+        {
+            "values": {
+                "Организация_Key": "Турбулентность",
+                "ТемаСлужебнойЗаписки": "О командировке",
+                "ГрифДоступа_Key": "Общий",
+            },
+            "files": files,
+        },
+        actor_fio="Жалыбин Максим Дмитриевич",
+    )
+    assert result["attached"] == ["приказ.pdf"]
+    assert result["file_storage"][0]["path"] == ""
+    assert "Том на другом сервере его не видит" in result["summary"]
+    assert "Том" not in fake.files[-1]
+    assert "ПутьКФайлу" not in fake.files[-1]
+
+
+def test_payment_process_note_follows_the_send_template() -> None:
+    advance = dc.payment_process_note({"ХозяйственнаяОперация": "ВыдачаДенежныхСредствПодотчетнику"})
+    assert "ПОДОТЧЕТ (НЕ ком.расходы)" in advance
+    assert "непосредственный руководитель" in advance
+    assert "1 день 5 часов" in advance
+    other = dc.payment_process_note({"ХозяйственнаяОперация": "ОплатаПоставщику"})
+    assert "КОМ.РАСХОДЫ" in other
+    assert "1 день 5 часов" not in other

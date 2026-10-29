@@ -7,6 +7,7 @@ import { ATTACHED_FILES } from '../../workplace/docflowAttachments'
 import type { DocflowKindId } from '../../workplace/docflowDocumentCreate'
 import { DocflowAttachments } from './DocflowAttachments'
 import { DocflowOpenFormBar } from './DocflowOpenFormBar'
+import { DocflowProcessBlock } from './DocflowProcessBlock'
 import { DocflowSearch, SortTh, useDocflowTable } from './docflowTableTools'
 import {
   useRegisterGlobalSearch,
@@ -76,6 +77,7 @@ function MemoCardView({ card, user }: { card: MemoCard; user: UserProfile }): Re
       </header>
       {memo.subject ? <p className="docflow-side-subject">{memo.subject}</p> : null}
       <div className="docflow-side-scroll">
+        <DocflowProcessBlock />
         <DocflowAttachments user={user} entity={ATTACHED_FILES.memo} ownerId={memo.id} />
         <section className="docflow-card-block">
           <h4>

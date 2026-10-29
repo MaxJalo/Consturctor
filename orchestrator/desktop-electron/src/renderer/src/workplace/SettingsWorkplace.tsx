@@ -37,6 +37,7 @@ import { KpiPinSettings } from './KpiPinSettings'
 import { KpiProtectionSettings } from './KpiProtectionSettings'
 import { MyAgentsSection } from './MyAgentsSection'
 import { OneCSessionProfileSection } from './OneCSessionProfileSection'
+import { ALWAYS_ALLOW_EVENT, readAlwaysAllowActions, writeAlwaysAllowActions } from './alwaysAllowActions'
 
 type SettingsSection =
   | 'general'
@@ -81,6 +82,34 @@ const IDLE_UPDATE: UpdateStatus = {
   error: '',
   source: '',
   devMode: false
+}
+
+function AlwaysAllowSetting(): React.JSX.Element {
+  const [on, setOn] = useState(readAlwaysAllowActions)
+
+  useEffect(() => {
+    const sync = (): void => setOn(readAlwaysAllowActions())
+    window.addEventListener(ALWAYS_ALLOW_EVENT, sync)
+    return () => window.removeEventListener(ALWAYS_ALLOW_EVENT, sync)
+  }, [])
+
+  return (
+    <section className="set-card">
+      <h2>Разрешения агентов</h2>
+      <p className="set-muted">
+        Запрос «Разрешить» в чате можно подтверждать каждый раз или пропускать все такие действия, пока настройка
+        включена.
+      </p>
+      <button
+        type="button"
+        className={`set-widget-toggle${on ? ' is-on' : ''}`}
+        aria-pressed={on}
+        onClick={() => writeAlwaysAllowActions(!on)}
+      >
+        {on ? 'Всегда разрешать' : 'Спрашивать каждый раз'}
+      </button>
+    </section>
+  )
 }
 
 function SettingsUpdateBlock(): React.JSX.Element {
@@ -577,6 +606,7 @@ export function SettingsWorkplace({
               {user.isSupport ? 'Есть права технической поддержки' : 'Обычный сотрудник'}
             </p>
           </section>
+          <AlwaysAllowSetting />
           <section className="set-card">
             <h2>Обновления</h2>
             <SettingsUpdateBlock />

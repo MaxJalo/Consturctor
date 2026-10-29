@@ -128,6 +128,12 @@
   background: #0b2f63;
 }
 
+.agents-strip-always {
+  background: #fff;
+  color: #0b2f63;
+  border-color: #0b2f63 !important;
+}
+
 .agents-strip-deny {
   background: #fff;
   border-color: rgba(16, 20, 26, 0.18) !important;

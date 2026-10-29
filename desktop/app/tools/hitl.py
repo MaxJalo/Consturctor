@@ -85,6 +85,7 @@ _READ_EXACT = frozenset(
         "users.subordinates",
         "agent.schedule",
         "agent.schedule.cancel",
+        "external_order.case",
     }
 )
 _READ_PREFIXES = ("onec.search_", "onec.get_", "imap.", "turboproject.")

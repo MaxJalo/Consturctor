@@ -228,10 +228,17 @@ async def _log_http_requests(request: Request, call_next):
     try:
         response = await call_next(request)
     except Exception:
+        elapsed_ms = (time.perf_counter() - started) * 1000.0
+        from app.services.runtime_metrics import record_http
+
+        record_http(request.method, path, 500, elapsed_ms)
         _http_trace(f"API error {request.method} {path}{query}")
         http_logger.exception("API error %s %s%s", request.method, path, query)
         raise
     elapsed_ms = (time.perf_counter() - started) * 1000.0
+    from app.services.runtime_metrics import record_http
+
+    record_http(request.method, path, int(getattr(response, "status_code", 500) or 500), elapsed_ms)
     _http_trace(
         f"API response {request.method} {path}{query} -> {getattr(response, 'status_code', '-')}"
         f" in {elapsed_ms:.1f}ms"

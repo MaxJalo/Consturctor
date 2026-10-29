@@ -41,6 +41,33 @@ export type DocflowField = {
   options?: DocflowFieldOption[]
   /** Показывать поле, только если подпись вида заявки содержит одну из этих строк. */
   for_kinds?: string[]
+  /** Ветка формы заявки на ДС: advance, advance-employee, party, account. */
+  show?: string
+  /** Не писать в документ 1С: переключатель получателя и ИНН для показа. */
+  ui_only?: boolean
+  readonly?: boolean
+}
+
+const ADVANCE_OPERATION = 'ВыдачаДенежныхСредствПодотчетнику'
+
+/** Поля заявки на ДС, которые зависят от операции и от того, кто получатель. */
+export function paymentFieldVisible(field: DocflowField, values: Record<string, string>): boolean {
+  const show = field.show || ''
+  if (!show || show === 'account') return true
+  const operation = values['ХозяйственнаяОперация'] || ''
+  const recipient = values['ПолучательВид'] || 'employee'
+  const advance = operation === ADVANCE_OPERATION
+  if (show === 'advance') return advance
+  if (show === 'advance-employee') return advance && recipient === 'employee'
+  if (show === 'party') return !advance || recipient === 'contractor' || recipient === 'bank'
+  return true
+}
+
+export function paymentAccountLabel(field: DocflowField, values: Record<string, string>): string {
+  if (field.show !== 'account') return field.label
+  const advance = (values['ХозяйственнаяОперация'] || '') === ADVANCE_OPERATION
+  const recipient = values['ПолучательВид'] || 'employee'
+  return advance && recipient === 'employee' ? 'Счёт получателя' : 'Банковский счёт контрагента'
 }
 
 export type DocflowTable = {
@@ -136,6 +163,46 @@ export function loadDocflowCreateSchema(user: UserProfile | null): Promise<Docfl
     if (schemaLoad === load) schemaLoad = null
   })
   return load
+}
+
+export type EmployeePaymentCard = {
+  ok: boolean
+  person_name: string
+  inn: string
+  department_key: string
+  department_name: string
+  user_key: string
+  user_name: string
+  account_key: string
+  account_name: string
+  bank_name: string
+  bank_bik: string
+  account_number: string
+}
+
+export async function lookupEmployeeCard(user: UserProfile | null, query: string): Promise<EmployeePaymentCard | null> {
+  const response = await api.invokeServerTool(
+    TOOL,
+    onecGatewayInvokeArgs(user, { action: 'employee', kind: 'payment', query }),
+    30_000
+  )
+  if (!response.ok) return null
+  const payload = (response.result || {}) as Partial<EmployeePaymentCard>
+  if (!payload.ok) return null
+  return {
+    ok: true,
+    person_name: String(payload.person_name || ''),
+    inn: String(payload.inn || ''),
+    department_key: String(payload.department_key || ''),
+    department_name: String(payload.department_name || ''),
+    user_key: String(payload.user_key || ''),
+    user_name: String(payload.user_name || ''),
+    account_key: String(payload.account_key || ''),
+    account_name: String(payload.account_name || ''),
+    bank_name: String(payload.bank_name || ''),
+    bank_bik: String(payload.bank_bik || ''),
+    account_number: String(payload.account_number || '')
+  }
 }
 
 export async function lookupDocflowCatalog(

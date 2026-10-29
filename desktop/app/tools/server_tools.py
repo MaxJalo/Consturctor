@@ -702,6 +702,27 @@ _SERVER_TOOL_DEFS: list[tuple[str, str, dict[str, Any]]] = [
             ["text"],
         ),
     ),
+    (
+        "external_order.case",
+        (
+            "Дело внешнего заказа. action=read — короткая сводка дела. "
+            "action=plan — файл плана работ по заказу с условиями договора, без правки общего шаблона. "
+            "action=propose — черновики выводов, фактом они не становятся. "
+            "action=draft_1c — текст записки или поручения без записи в 1С. Сервер."
+        ),
+        _schema(
+            {
+                "action": _prop("string", "read | plan | propose | draft_1c", default="read"),
+                "order_id": _prop("string", "id карточки внешнего заказа"),
+                "findings": _prop("array", "Черновики: {field, value, source_ref, location, confidence, owner_role}"),
+                "diffs": _prop("array", "Черновики сверки: {code, left_value, right_value, note}"),
+                "kind": _prop("string", "Для draft_1c: memo или assignment"),
+                "title": _prop("string", "Заголовок черновика для 1С"),
+                "text": _prop("string", "Текст черновика для 1С"),
+            },
+            ["action", "order_id"],
+        ),
+    ),
 ]
 
 
@@ -724,6 +745,8 @@ SERVER_TOOL_TIMEOUTS: dict[str, int] = {
     "onec.download_artifact": 300,
     # Journal list + files: 1C OData, not a quick catalog ping.
     "onec.erp_assignments": 180,
+    # Карточка заказа ждёт свою очередь, если журналы 1С заняли потоки.
+    "external_order.case": 180,
     "onec.meeting_protocols": 300,
     # faster-whisper на CPU, beam 5: small ~7 минут на 25 минут аудио, large-v3-turbo — в разы дольше.
     "audio.transcribe": 7200,

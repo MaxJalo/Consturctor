@@ -493,6 +493,13 @@ def payload_attachments_for_workflow(db: Session, row: Workflow) -> list[dict[st
 def ensure_workflow_files_table(db: Session, *, user_id: str, workflow_id: str) -> Workflow:
     row = db.query(Workflow).filter(Workflow.id == workflow_id, Workflow.user_id == user_id).first()
     if row is None:
+        shared = db.query(Workflow).filter(Workflow.id == workflow_id).first()
+        if shared is not None:
+            from app.services.workflows.service import _tester_may_read_shared
+
+            if _tester_may_read_shared(db, user_id, shared):
+                row = shared
+    if row is None:
         raise WorkflowFileError("Workflow не найден", status_code=404)
     if workflow_is_deleted(row) or str(row.phase or "") == "deleted":
         raise WorkflowFileError("Агент удалён", status_code=404)

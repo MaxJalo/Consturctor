@@ -237,9 +237,17 @@ export class NotificationGuard {
   private readonly shownIds = new Set<string>()
 
   constructor(
-    private readonly backendUrl: string,
+    private backendUrl: string,
     private readonly onCommand?: (command: NotificationCommand) => void
   ) {}
+
+  setBackendUrl(url: string): void {
+    const next = url.trim().replace(/\/+$/, '')
+    if (!next || next === this.backendUrl) return
+    this.backendUrl = next
+    const token = this.token
+    if (token) this.start(token)
+  }
 
   start(token: string): void {
     this.detach()

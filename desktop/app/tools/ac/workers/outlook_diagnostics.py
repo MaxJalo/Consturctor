@@ -6,6 +6,7 @@ from typing import Any
 
 from app.tools.ac.workers import com_availability
 from app.tools.ac.workers.outlook_com_actions import (
+    _dispatch_outlook,
     _load_pywin32_modules,
     _log_progress,
 )
@@ -45,7 +46,7 @@ def run_outlook_diagnostics(input_data: dict) -> dict:
         _log_progress("step=co_initialize ok")
 
         _log_progress("step=dispatch_outlook start")
-        outlook = win32com_client.Dispatch("Outlook.Application")
+        outlook = _dispatch_outlook(win32com_client, cache=False)
         _add_ok_step(steps, "dispatch_outlook", "Outlook.Application получен")
         _log_progress("step=dispatch_outlook ok")
 

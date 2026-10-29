@@ -61,6 +61,7 @@ def test_write_tools_need_confirmation() -> None:
     assert needs_confirmation("outlook.send_mail")
     assert needs_confirmation("outlook.create_event")
     assert not needs_confirmation("outlook.read_calendar")
+    assert not needs_confirmation("external_order.case")
 
 
 def test_workflow_id_from_arguments() -> None:

@@ -70,7 +70,7 @@ def start_agent_run(
     trigger_id: str = "",
     evidence: str = "",
 ) -> AgentRun:
-    workflow = _get_owned(db, user_id=user_id, workflow_id=workflow_id)
+    workflow = _get_owned(db, user_id=user_id, workflow_id=workflow_id, allow_shared=True)
     kind = (source or "chat").strip() or "chat"
     if kind not in {"chat", "trigger"}:
         kind = "chat"
@@ -456,7 +456,7 @@ def finish_agent_run(
 
 def list_agent_runs(db: Session, *, user_id: str, workflow_id: str) -> list[AgentRunOut]:
     fail_stale_started_runs(db, user_id=user_id, notify=False)
-    _get_owned(db, user_id=user_id, workflow_id=workflow_id, allow_deleted=True)
+    _get_owned(db, user_id=user_id, workflow_id=workflow_id, allow_deleted=True, allow_shared=True)
     rows = (
         db.execute(
             select(AgentRun)
@@ -472,7 +472,7 @@ def list_agent_runs(db: Session, *, user_id: str, workflow_id: str) -> list[Agen
 
 def get_agent_run(db: Session, *, user_id: str, workflow_id: str, run_id: str) -> AgentRunOut:
     fail_stale_started_runs(db, user_id=user_id, notify=False)
-    _get_owned(db, user_id=user_id, workflow_id=workflow_id, allow_deleted=True)
+    _get_owned(db, user_id=user_id, workflow_id=workflow_id, allow_deleted=True, allow_shared=True)
     row = db.get(AgentRun, run_id)
     if row is None or row.workflow_id != workflow_id or row.user_id != user_id:
         raise WorkflowError("Запуск не найден", status_code=404)

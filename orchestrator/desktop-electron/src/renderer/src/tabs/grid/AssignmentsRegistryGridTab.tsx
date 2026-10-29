@@ -5,6 +5,7 @@ import type { UserProfile } from '../../api/types'
 import { StandardTabChrome, summaryTilesAsChrome } from './TabChromeGrid'
 import { DEFAULT_ASSIGNMENTS_REGISTRY_LAYOUT } from './useTabChromeLayout'
 import { KpiDayPicker } from '../../pages/KpiRangePicker'
+import { currentWorkWeek, filterRegistryWorkWeek } from '../../workplace/assignmentRegistryRange'
 import { useAssignmentRegistry } from '../../workplace/useAssignmentRegistry'
 import { isCompletedAssignment, isDueWithinDays, parseRegistryDay } from '../../workplace/assignmentRegistryMappers'
 import { selectRegistryReportRows } from '../../workplace/registryReportRows'
@@ -135,7 +136,8 @@ function formatClosureAt(iso: string): string {
 }
 
 function buildRegistryTiles(
-  rows: ReturnType<typeof useAssignmentRegistry>['rows']
+  rows: ReturnType<typeof useAssignmentRegistry>['rows'],
+  weekMode = false
 ): SpecSummaryTile[] {
   const open = rows.filter((row) => row.open)
   const done = rows.filter((row) => isCompletedAssignment(row))
@@ -150,7 +152,9 @@ function buildRegistryTiles(
       id: 'all',
       label: 'Все',
       value: String(rows.length),
-      tooltip: 'Все поручения за выбранный период',
+      tooltip: weekMode
+        ? 'Созданные на этой неделе, со сроком сдачи на этой неделе и просроченные'
+        : 'Все поручения за выбранный период',
       tone: 'blue'
     },
     {
@@ -207,7 +211,8 @@ export function AssignmentsRegistryGridTab({
       from: range.from,
       to: range.to,
       tile: 'all' as AssignmentRegistryTileId | 'all',
-      columns: emptyRegistryColumnFilters()
+      columns: emptyRegistryColumnFilters(),
+      week: false
     }
     try {
       const raw = sessionStorage.getItem(filtersKey)
@@ -217,17 +222,26 @@ export function AssignmentsRegistryGridTab({
         to?: string
         tile?: string
         columns?: unknown
+        week?: boolean
       }
+      const week = parsed.week === true
+      const workWeek = week ? currentWorkWeek() : null
       return {
-        from:
-          /^\d{4}-\d{2}-\d{2}$/.test(parsed.from || '') && !isLegacyPeriodStart(String(parsed.from))
+        from: workWeek
+          ? workWeek.from
+          : /^\d{4}-\d{2}-\d{2}$/.test(parsed.from || '') && !isLegacyPeriodStart(String(parsed.from))
             ? String(parsed.from)
             : fallback.from,
-        to: /^\d{4}-\d{2}-\d{2}$/.test(parsed.to || '') ? String(parsed.to) : fallback.to,
+        to: workWeek
+          ? workWeek.to
+          : /^\d{4}-\d{2}-\d{2}$/.test(parsed.to || '')
+            ? String(parsed.to)
+            : fallback.to,
         tile: TILE_FILTER_IDS.has(parsed.tile || '')
           ? (parsed.tile as AssignmentRegistryTileId)
           : ('all' as const),
-        columns: readRegistryColumnFilters(parsed.columns)
+        columns: readRegistryColumnFilters(parsed.columns),
+        week
       }
     } catch {
       return fallback
@@ -237,25 +251,29 @@ export function AssignmentsRegistryGridTab({
 
   const [dateFrom, setDateFrom] = useState(initialFilters.from)
   const [dateTo, setDateTo] = useState(initialFilters.to)
+  const [weekMode, setWeekMode] = useState(initialFilters.week)
   const [tileFilter, setTileFilter] = useState<AssignmentRegistryTileId | 'all'>(initialFilters.tile)
   const [columnFilters, setColumnFilters] = useState(initialFilters.columns)
+  const rangeBeforeWeek = useRef<{ from: string; to: string } | null>(null)
   const { query: pageQuery, setQuery: setPageQuery } = usePageSearch()
 
   const persistFilters = (
     from: string,
     to: string,
     tile: AssignmentRegistryTileId | 'all',
-    columns: Record<RegistryColumnFilterKey, string> = columnFilters
+    columns: Record<RegistryColumnFilterKey, string> = columnFilters,
+    week = weekMode
   ): void => {
     try {
-      sessionStorage.setItem(filtersKey, JSON.stringify({ from, to, tile, columns }))
+      sessionStorage.setItem(filtersKey, JSON.stringify({ from, to, tile, columns, week }))
     } catch {
       /* ignore */
     }
   }
   const changeDateFrom = (value: string): void => {
+    setWeekMode(false)
     setDateFrom(value)
-    persistFilters(value, dateTo, tileFilter)
+    persistFilters(value, dateTo, tileFilter, columnFilters, false)
   }
   useEffect(() => {
     if (!isLegacyPeriodStart(dateFrom)) return
@@ -264,8 +282,26 @@ export function AssignmentsRegistryGridTab({
     persistFilters(next, dateTo, tileFilter)
   }, [dateFrom, dateTo, tileFilter])
   const changeDateTo = (value: string): void => {
+    setWeekMode(false)
     setDateTo(value)
-    persistFilters(dateFrom, value, tileFilter)
+    persistFilters(dateFrom, value, tileFilter, columnFilters, false)
+  }
+  const toggleWorkWeek = (): void => {
+    if (weekMode) {
+      const next = rangeBeforeWeek.current || defaultRange()
+      rangeBeforeWeek.current = null
+      setWeekMode(false)
+      setDateFrom(next.from)
+      setDateTo(next.to)
+      persistFilters(next.from, next.to, tileFilter, columnFilters, false)
+      return
+    }
+    rangeBeforeWeek.current = { from: dateFrom, to: dateTo }
+    const next = currentWorkWeek()
+    setWeekMode(true)
+    setDateFrom(next.from)
+    setDateTo(next.to)
+    persistFilters(next.from, next.to, tileFilter, columnFilters, true)
   }
   const changeTileFilter = (next: AssignmentRegistryTileId | 'all'): void => {
     setTileFilter(next)
@@ -294,10 +330,14 @@ export function AssignmentsRegistryGridTab({
       return null
     }
   })
-  const { rows, loading, refreshing, loadingMore, firstRowReady, error, refresh } = useAssignmentRegistry(
-    user.id || '',
-    dateFrom,
-    dateTo
+  const todayIso = isoDate(new Date())
+  const queryFrom = weekMode ? startOfYear() : dateFrom
+  const queryTo = weekMode && dateTo > todayIso ? dateTo : weekMode ? todayIso : dateTo
+  const { rows: loadedRows, loading, refreshing, loadingMore, firstRowReady, error, refresh } =
+    useAssignmentRegistry(user.id || '', queryFrom, queryTo)
+  const rows = useMemo(
+    () => (weekMode ? filterRegistryWorkWeek(loadedRows, dateFrom, dateTo) : loadedRows),
+    [loadedRows, weekMode, dateFrom, dateTo]
   )
   const [lineOverlay, setLineOverlay] = useState<Record<string, AssignmentRegistryLine[]>>({})
   const [detailLinesLoading, setDetailLinesLoading] = useState(false)
@@ -371,7 +411,7 @@ export function AssignmentsRegistryGridTab({
   }
   const [closureDialogOpen, setClosureDialogOpen] = useState(false)
   const topicByNumber = useMemo(() => new Map(rowsHydrated.map((row) => [row.number, row.topic || ''])), [rowsHydrated])
-  const tiles = useMemo(() => buildRegistryTiles(rowsHydrated), [rowsHydrated])
+  const tiles = useMemo(() => buildRegistryTiles(rowsHydrated, weekMode), [rowsHydrated, weekMode])
 
   const columnFilterOptions = useMemo(
     () => ({
@@ -467,7 +507,7 @@ export function AssignmentsRegistryGridTab({
       setClosureAgentId(workflowId)
       if (runs.entries[workflowId]?.state?.running) return
       const numbers = rowsHydrated.filter((row) => checkedIds.has(row.id)).map((row) => row.number)
-      const message = buildClosureCheckMessage(dateFrom, dateTo, numbers)
+      const message = buildClosureCheckMessage(queryFrom, queryTo, numbers)
       setClosureNotice('')
       runs.startRun({
         workflowId,
@@ -495,6 +535,8 @@ export function AssignmentsRegistryGridTab({
 
   const resetRegistryFilters = (): void => {
     const next = defaultRange()
+    rangeBeforeWeek.current = null
+    setWeekMode(false)
     setDateFrom(next.from)
     setDateTo(next.to)
     setTileFilter('all')
@@ -743,6 +785,15 @@ export function AssignmentsRegistryGridTab({
                 onChange={changeDateTo}
                 ariaLabel="Дата окончания периода"
               />
+              <button
+                type="button"
+                className={`today-filter-layout-btn${weekMode ? ' is-active' : ''}`}
+                aria-pressed={weekMode}
+                title="Рабочая неделя: созданные на этой неделе, со сроком сдачи на этой неделе и просроченные"
+                onClick={toggleWorkWeek}
+              >
+                Неделя
+              </button>
               <button type="button" className="today-link-btn" onClick={() => refresh()}>
                 Обновить
               </button>

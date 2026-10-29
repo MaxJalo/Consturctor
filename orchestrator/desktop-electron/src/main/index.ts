@@ -17,9 +17,14 @@ import {
   LOCAL_BACKEND_DEFAULT,
   ensureDesktopBackend,
   ensureLocalBackend,
+  externalOrderAgentCatalog,
   isLoopback,
-  pingBackendHealth
+  pingBackendHealth,
+  restartDevBackend,
+  type ExternalOrderCatalogKind
 } from './ensureBackend'
+import { desktopEnvPaths, readBackendSetup, readDesktopSetup, writeBackendSetup, writeDesktopSetup } from './setupEnv'
+import { collectSetupMetrics, sampleAppResources } from './setupSeries'
 import { loadExternalOdataEnv } from './odataExternalEnv'
 import { getUpdateStatus, installAvailableUpdate, requestUpdateCheck, startUpdater, stopUpdater } from './updater'
 import {
@@ -112,7 +117,10 @@ function resolveBackendUrl(env: Record<string, string>): string {
   )
     .trim()
     .replace(/\/+$/, '')
-  if (explicit && !(app.isPackaged && isLoopbackUrl(explicit))) return explicit
+  // Packaged builds drop a leftover 127.0.0.1 from an old installer and use the LAN gateway.
+  // ORCH_PREFER_LOCAL=1 is an explicit choice: keep loopback even in the installed exe.
+  const dropStaleLoopback = app.isPackaged && isLoopbackUrl(explicit) && !preferLocalBackend(env)
+  if (explicit && !dropStaleLoopback) return explicit
 
   if (!app.isPackaged && preferLocalBackend({ ...env, ...cwdEnv })) {
     return LOCAL_BACKEND
@@ -195,7 +203,7 @@ function loadConfig(): {
   const updateOwner = (
     process.env.UPDATE_GITHUB_OWNER ||
     env.UPDATE_GITHUB_OWNER ||
-    'Turbulentnost'
+    'MaxJalo'
   ).trim()
   const updateRepo = (
     process.env.UPDATE_GITHUB_REPO ||
@@ -556,6 +564,18 @@ function extractDetail(status: number, data: unknown): string {
   return `Ошибка backend (${status})`
 }
 
+function externalOrderCatalogKind(path: string): ExternalOrderCatalogKind | null {
+  const bare = (path || '').split('?')[0].replace(/\/+$/, '')
+  if (bare.endsWith('/api/v1/external-orders/service-agents')) return 'service'
+  if (bare.endsWith('/api/v1/external-orders/purchase-agent')) return 'purchase'
+  if (bare.endsWith('/api/v1/external-orders/agent')) return 'agent'
+  return null
+}
+
+function gatewayMistookHelperForOrder(detail: string): boolean {
+  return detail === 'Заказ не найден' || detail === 'Not Found'
+}
+
 /** Routes that may exist on local backend before LAN gateway is redeployed. */
 function pathUsesLocalBackendFallback(path: string, opts?: RequestOptions): boolean {
   const p = path || ''
@@ -684,6 +704,19 @@ async function handleRequest(_evt: unknown, opts: RequestOptions) {
       lastError = {
         status: response.status,
         error: extractDetail(response.status, data)
+      }
+      const catalogKind =
+        (opts.method || 'GET').toUpperCase() === 'GET' ? externalOrderCatalogKind(opts.path) : null
+      if (
+        response.status === 404 &&
+        catalogKind &&
+        gatewayMistookHelperForOrder(lastError.error)
+      ) {
+        const catalogData = await externalOrderAgentCatalog(catalogKind)
+        if (catalogData) {
+          console.log(`External order agents read locally: ${opts.path}`)
+          return { ok: true, status: 200, data: catalogData }
+        }
       }
       const routeMissing = response.status === 404 || response.status === 405
       const authRejectedOnWrongHost =
@@ -1260,7 +1293,148 @@ function ipcHandle(channel: string, handler: IpcHandler): void {
   ipcMain.handle(channel, handler)
 }
 
+function applyUpdateSource(desktopRoot: string): void {
+  const path = desktopEnvPaths(desktopRoot)[0]
+  if (!path || !existsSync(path)) return
+  const env = parseEnvFile(path)
+  const owner = (env.UPDATE_GITHUB_OWNER || CONFIG.updateOwner || 'MaxJalo').trim()
+  const repo = (env.UPDATE_GITHUB_REPO || CONFIG.updateRepo || 'Consturctor').trim()
+  const token = (env.UPDATE_GITHUB_TOKEN || env.GH_TOKEN || env.GITHUB_TOKEN || '').trim()
+  CONFIG.updateOwner = owner
+  CONFIG.updateRepo = repo
+  CONFIG.updateToken = token
+  startUpdater({ owner, repo, token })
+}
+
+function applyBackendUrl(url: string): void {
+  const next = url.trim().replace(/\/+$/, '')
+  if (!next) return
+  CONFIG.backendUrl = next
+  agentSidecar.setBackendUrl(next)
+  agentPlatform.setBackendUrl(next)
+  notifyGuard.setBackendUrl(next)
+}
+
 function registerMainIpcHandlers(): void {
+  ipcHandle('setup:read', () => {
+    const desktopRoot = agentSidecar.status().desktopRoot
+    return {
+      desktop: readDesktopSetup(desktopRoot),
+      backend: readBackendSetup(desktopRoot),
+      canRestartBackend: !app.isPackaged && Boolean(readBackendSetup(desktopRoot))
+    }
+  })
+  ipcHandle('setup:write', (_evt, payload: { target?: string; values?: Record<string, string> }) => {
+    const target = payload?.target === 'backend' ? 'backend' : 'desktop'
+    const values = payload?.values && typeof payload.values === 'object' ? payload.values : {}
+    const desktopRoot = agentSidecar.status().desktopRoot
+    if (target === 'backend') {
+      const written = writeBackendSetup(desktopRoot, values)
+      return {
+        ok: written.ok,
+        paths: written.path ? [written.path] : [],
+        error: written.error,
+        note: written.ok ? 'Сервер на порту 7812 прочитает файл после перезапуска.' : ''
+      }
+    }
+    const written = writeDesktopSetup(desktopRoot, values)
+    if (!written.ok) return { ok: false, paths: [], error: written.error, note: '' }
+    const backendUrl = String(values.BACKEND_URL || '').trim()
+    if (backendUrl) applyBackendUrl(backendUrl)
+    applyUpdateSource(desktopRoot)
+    const restarted = agentSidecar.restart()
+    return {
+      ok: restarted.ok,
+      paths: written.paths,
+      error: restarted.error,
+      note: restarted.ok
+        ? 'Файл записан. Источник обновлений применён, локальный помощник перезапущен.'
+        : 'Файл записан, но помощник не перезапустился.'
+    }
+  })
+  ipcHandle('setup:probe', async () => {
+    const backendUrl = CONFIG.backendUrl.replace(/\/+$/, '')
+    const started = Date.now()
+    try {
+      const response = await fetch(`${backendUrl}/health`, { signal: AbortSignal.timeout(8000) })
+      const data = (await response.json().catch(() => ({}))) as Record<string, unknown>
+      return {
+        ok: response.ok,
+        backendUrl,
+        ms: Date.now() - started,
+        status: String(data.status || ''),
+        erpReachable: Boolean(data.erp_reachable ?? data.erpReachable),
+        erpServer: String(data.erp_server ?? data.erpServer ?? ''),
+        llmProvider: String(data.llm_provider ?? data.llmProvider ?? ''),
+        error: response.ok ? '' : `HTTP ${response.status}`
+      }
+    } catch (err) {
+      return {
+        ok: false,
+        backendUrl,
+        ms: Date.now() - started,
+        status: '',
+        erpReachable: false,
+        erpServer: '',
+        llmProvider: '',
+        error: err instanceof Error ? err.message : 'Сервер не ответил'
+      }
+    }
+  })
+  ipcHandle('setup:probeTools', async (_evt, token: string | null) => {
+    const auth = String(token || '').trim()
+    if (!auth) {
+      return {
+        needsLogin: true,
+        imap: null,
+        onec: null
+      }
+    }
+    const backendUrl = CONFIG.backendUrl.replace(/\/+$/, '')
+    const load = async (kind: 'imap' | 'onec') => {
+      const response = await fetch(`${backendUrl}/api/v1/tools/${kind}/status`, {
+        headers: { Authorization: `Bearer ${auth}` },
+        signal: AbortSignal.timeout(8000)
+      })
+      if (response.status === 401) return { needsLogin: true as const }
+      const data = (await response.json().catch(() => ({}))) as Record<string, unknown>
+      if (!response.ok) return { needsLogin: false as const, error: `HTTP ${response.status}` }
+      return {
+        needsLogin: false as const,
+        configured: Boolean(data.configured),
+        mode: String(data.mode || '')
+      }
+    }
+    try {
+      const [imap, onec] = await Promise.all([load('imap'), load('onec')])
+      const needsLogin = Boolean(imap && 'needsLogin' in imap && imap.needsLogin) ||
+        Boolean(onec && 'needsLogin' in onec && onec.needsLogin)
+      return { needsLogin, imap, onec }
+    } catch (err) {
+      return {
+        needsLogin: false,
+        imap: null,
+        onec: null,
+        error: err instanceof Error ? err.message : 'Статусы недоступны'
+      }
+    }
+  })
+  ipcHandle('setup:restartBackend', () => restartDevBackend())
+  ipcHandle('setup:metrics', () => {
+    const status = agentSidecar.status()
+    const detail = status.error
+      ? status.error
+      : status.ready
+        ? `готов · очередь ${status.queuedCommands}`
+        : status.starting
+          ? 'запускается'
+          : 'не запущен'
+    return collectSetupMetrics(CONFIG.backendUrl, {
+      ok: status.ready && !status.error,
+      detail,
+      logs: agentSidecar.recentLogs().map((item) => ({ ...item, module: 'helper' }))
+    })
+  })
   ipcHandle(
     'session:setComSecret',
     (
@@ -1367,7 +1541,9 @@ function registerMainIpcHandlers(): void {
     if (process.platform !== 'win32') {
       return { ok: false, error: 'Outlook открывается только в Windows' }
     }
-    const child = spawn('cmd.exe', ['/c', 'start', '', 'outlook'], {
+    // /recycle переключает уже открытое окно. Голый start outlook поднимает
+    // второй процесс на тот же профиль и обрывает Exchange.
+    const child = spawn('cmd.exe', ['/c', 'start', '', 'outlook.exe', '/recycle'], {
       detached: true,
       windowsHide: true,
       stdio: 'ignore'
@@ -1469,6 +1645,10 @@ function registerMainIpcHandlers(): void {
 
 // Register before app.whenReady and on every electron-vite main HMR reload (whenReady does not re-run).
 registerMainIpcHandlers()
+const metricsGlobal = globalThis as { __orchMetrics?: ReturnType<typeof setInterval> }
+if (!metricsGlobal.__orchMetrics) {
+  metricsGlobal.__orchMetrics = setInterval(() => sampleAppResources(), 5000)
+}
 
 function createWindow(): void {
   const mainWindow = new BrowserWindow({
@@ -1479,7 +1659,7 @@ function createWindow(): void {
     show: false,
     autoHideMenuBar: true,
     backgroundColor: '#0D3B73',
-    title: 'Оркестратор',
+    title: 'Orch_mx',
     icon: APP_ICON || undefined,
     webPreferences: {
       preload: join(__dirname, '../preload/index.js'),
@@ -1492,11 +1672,20 @@ function createWindow(): void {
     mainWindow.setAppDetails({
       appId: 'com.orchestrator.desktop',
       appIconPath: APP_ICON,
-      relaunchDisplayName: 'Оркестратор'
+      relaunchDisplayName: 'Orch_mx'
     })
   }
 
   mainWindow.on('ready-to-show', () => mainWindow.show())
+  mainWindow.webContents.on('before-input-event', (event, input) => {
+    if (input.type !== 'keyDown' || input.isAutoRepeat) return
+    const key = String(input.key || '').toLowerCase()
+    if (key !== 'j' && input.code !== 'KeyJ') return
+    if (!input.control || !input.alt || input.shift || input.meta) return
+    event.preventDefault()
+    console.log('[setup] toggle')
+    if (!mainWindow.isDestroyed()) mainWindow.webContents.send('app:toggle-setup')
+  })
   mainWindow.webContents.on('did-fail-load', (_event, code, desc, url) => {
     console.error(`Renderer failed to load: ${code} ${desc} ${url}`)
   })

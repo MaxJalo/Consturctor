@@ -6,7 +6,12 @@ export type DocflowAttachment = {
   id: string
   name: string
   extension: string
+  path: string
+  storage: string
 }
+
+export const FILE_VOLUME_NOTE =
+  'Файл записан в базу 1С. Том на другом сервере его не видит: путь к файлу пустой.'
 
 const GUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
@@ -65,7 +70,7 @@ export async function loadDocflowAttachments(
     onecGatewayInvokeArgs(user, {
       entity,
       filter: `ВладелецФайла_Key eq guid'${ownerId}' and DeletionMark eq false`,
-      select: 'Ref_Key,Description,Расширение,ДатаСоздания',
+      select: 'Ref_Key,Description,Расширение,ДатаСоздания,ПутьКФайлу,ТипХраненияФайла',
       orderby: 'ДатаСоздания desc',
       top: 50
     }),
@@ -76,7 +81,9 @@ export async function loadDocflowAttachments(
     .map((row) => ({
       id: String(row.Ref_Key || ''),
       name: String(row.Description || ''),
-      extension: String(row.Расширение || '')
+      extension: String(row.Расширение || ''),
+      path: String(row['ПутьКФайлу'] || ''),
+      storage: String(row['ТипХраненияФайла'] || '')
     }))
     .filter((file) => GUID_RE.test(file.id))
 }

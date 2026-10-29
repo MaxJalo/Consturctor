@@ -28,6 +28,7 @@ import {
 } from '../../workplace/fetchDocflowForwarding'
 import type { DocflowKindId } from '../../workplace/docflowDocumentCreate'
 import { DocflowOpenFormBar } from './DocflowOpenFormBar'
+import { DocflowProcessBlock } from './DocflowProcessBlock'
 import { DocflowSearch, SortTh, useDocflowTable } from './docflowTableTools'
 
 const FALLBACK_STATUSES: ForwardingOption[] = [
@@ -168,6 +169,7 @@ function ForwardingCardView({ card, user }: { card: ForwardingCard; user: UserPr
       </header>
       {row.address ? <p className="docflow-side-subject">{row.address}</p> : null}
       <div className="docflow-side-scroll">
+        <DocflowProcessBlock />
         <DocflowAttachments user={user} entity={ATTACHED_FILES.forwarding} ownerId={row.id} />
         <section className="docflow-card-block">
           <h4>Доставка</h4>

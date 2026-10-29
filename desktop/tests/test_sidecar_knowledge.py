@@ -532,6 +532,7 @@ def test_sandbox_python_tools_skip_sidecar_hitl() -> None:
     assert needs_confirmation("code.write_python") is False
     assert needs_confirmation("code.run_python") is False
     assert needs_confirmation("outlook.send_mail") is True
+    assert needs_confirmation("external_order.case") is False
 
 
 def test_run_demo_asks_for_file_before_sdk() -> None:

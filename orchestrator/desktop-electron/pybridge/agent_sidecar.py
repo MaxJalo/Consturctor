@@ -252,6 +252,7 @@ _READ_EXACT = frozenset(
         "audio.transcript_docx",
         "agent.schedule",
         "agent.schedule.cancel",
+        "external_order.case",
         "get_current_date",
         "kpi.read_methodology",
     }
@@ -281,8 +282,28 @@ def _is_read_tool(name: str) -> bool:
 _MAX_WORK_CONTINUES = 2
 
 
+_TESTS_MARK_RE = re.compile(r"(?im)^[ \t]*TESTS:\s*(?:PASS|FAIL)[ \t]*$|TESTS:\s*(?:PASS|FAIL)")
+_WORK_RESULT_MARK_RE = re.compile(r"WORK[ _]?RESULT", re.I)
+
+
+def _without_tests_label(text: str) -> str:
+    cleaned = _TESTS_MARK_RE.sub("", text or "")
+    return re.sub(r"\n{3,}", "\n\n", cleaned)
+
+
+def _is_external_order_helper_title(title: str) -> bool:
+    folded = (title or "").casefold().replace("ё", "е")
+    return folded.startswith("ии-агент внешнего заказа") or folded.startswith("ии-агент внешних закупок")
+
+
 def _text_has_finished_work_result(text: str) -> bool:
     return text_has_finished_work_result(text)
+
+
+def _run_answer_done(text: str, hide_tests: bool = False) -> bool:
+    if hide_tests:
+        return bool(_WORK_RESULT_MARK_RE.search(_without_tests_label(text)))
+    return _text_has_finished_work_result(text)
 
 
 def needs_confirmation(name: str) -> bool:
@@ -360,7 +381,7 @@ def log(message: str) -> None:
             buffer.flush()
         else:
             sys.stderr.write(line)
-            sys.stderr.flush()
+    sys.stderr.flush()
 
 
 def _log_ac_registry_once() -> None:
@@ -3507,6 +3528,11 @@ class Sidecar:
             if event_type == "error":
                 return
             if event_type in {"assistant", "thinking", "final", "status"}:
+                if getattr(active, "hide_tests", False):
+                    for key in ("text", "answer", "message"):
+                        value = payload.get(key)
+                        if isinstance(value, str) and value:
+                            payload[key] = _without_tests_label(value)
                 blob = " ".join(
                     str(payload.get(key) or "")
                     for key in ("text", "answer", "message")
@@ -3518,11 +3544,19 @@ class Sidecar:
                 if blob.strip() and event_type != "thinking":
                     active.answer_buf = f"{active.answer_buf}{blob}"
                 if event_type in {"assistant", "final"} and (
-                    _text_has_finished_work_result(blob)
+                    _run_answer_done(blob, getattr(active, "hide_tests", False))
+                    or _run_answer_done(active.answer_buf, getattr(active, "hide_tests", False))
+                    or _text_has_finished_work_result(blob)
                     or _text_has_finished_work_result(active.answer_buf)
                 ):
                     active.gate.mark_work_result_done()
                     active.stop.set()
+                if (
+                    getattr(active, "hide_tests", False)
+                    and event_type in {"assistant", "final"}
+                    and not blob.strip()
+                ):
+                    return
             if event_type not in {"ready", "done"}:
                 events.append(_with_at(payload))
             event_wf = (active.event_workflow_id or active.workflow_id or "").strip()
@@ -4433,8 +4467,13 @@ class Sidecar:
         bridge = active.bridge
         bridge.check_ready()
         workflow = self._api.get_workflow(workflow_id)
+        active.hide_tests = _is_external_order_helper_title(getattr(workflow, "title", ""))
         if not resume_agent_id:
             resume_agent_id = str((workflow.local_run or {}).get("sdk_agent_id") or "").strip()
+        # A resumed SDK agent keeps the tool list from its first launch.
+        # Helpers created before external_order.case existed would never see it.
+        if active.hide_tests:
+            resume_agent_id = ""
         self._fail_unbacked_started(workflow_id, except_run_id=active.run_id)
         run_record = self._api.start_local_agent_run(
             workflow_id,
@@ -4552,7 +4591,7 @@ class Sidecar:
                 status == "ok"
                 and agent_id
                 and not active.stop.is_set()
-                and not _text_has_finished_work_result(answer)
+                and not _run_answer_done(answer, getattr(active, "hide_tests", False))
                 and continues < _MAX_WORK_CONTINUES
             ):
                 continues += 1
@@ -4583,12 +4622,15 @@ class Sidecar:
                     answer = nxt
                 agent_id = str(result.get("agent_id") or agent_id).strip()
                 self._store_agent_id(workflow_id, agent_id)
-            if status == "ok" and not _text_has_finished_work_result(answer):
+            if getattr(active, "hide_tests", False):
+                answer = _without_tests_label(answer)
+            if status == "ok" and not _run_answer_done(answer, getattr(active, "hide_tests", False)):
                 status = "error"
                 tail = answer.strip()
                 answer = (
-                    "Запуск завершился без ## WORK_RESULT и TESTS: PASS — "
-                    "агент остановился после подготовительных шагов."
+                    "Запуск завершился без итога — агент остановился после подготовительных шагов."
+                    if getattr(active, "hide_tests", False)
+                    else "Запуск завершился без ## WORK_RESULT и TESTS: PASS — агент остановился после подготовительных шагов."
                 )
                 if tail:
                     answer = f"{answer}\n\n{tail}"
@@ -5551,7 +5593,7 @@ class Sidecar:
             if run_id or workflow_id:
                 if not by_run and not by_workflow and not by_dedup:
                     continue
-            active.stop.set()
+                active.stop.set()
             try:
                 active.bridge.close()
             except Exception:

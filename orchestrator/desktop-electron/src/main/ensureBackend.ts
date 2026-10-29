@@ -1,3 +1,4 @@
+import { execFile } from 'node:child_process'
 import { existsSync } from 'node:fs'
 import { networkInterfaces } from 'node:os'
 import { dirname, join } from 'node:path'
@@ -156,3 +157,89 @@ export async function ensureDesktopBackend(configuredUrl: string): Promise<boole
 
 /** @deprecated use pingHealth */
 export const pingBackendHealth = pingHealth
+
+export type ExternalOrderCatalogKind = 'agent' | 'purchase' | 'service'
+
+/**
+ * Gateway без маршрутов /agent, /purchase-agent, /service-agents отвечает
+ * «Заказ не найден». Каталог читается из той же базы локальным backend.
+ */
+export function externalOrderAgentCatalog(kind: ExternalOrderCatalogKind): Promise<unknown | null> {
+  const root = resolveBackendRoot()
+  if (!root) return Promise.resolve(null)
+  const python = bundledPython()
+  const script = [
+    'import json, sys',
+    'from app.services.external_service_agents import catalog',
+    'print(json.dumps(catalog(sys.argv[1]), ensure_ascii=False))'
+  ].join('\n')
+  return new Promise((resolve) => {
+    execFile(
+      python,
+      ['-c', script, kind],
+      {
+        cwd: root,
+        windowsHide: true,
+        timeout: 25_000,
+        maxBuffer: 1_000_000,
+        env: { ...process.env, PYTHONNOUSERSITE: '1', PYTHONIOENCODING: 'utf-8' }
+      },
+      (err, stdout) => {
+        if (err) {
+          console.warn(`External order agent catalog failed (${kind})`)
+          resolve(null)
+          return
+        }
+        try {
+          resolve(JSON.parse(String(stdout || '')))
+        } catch {
+          resolve(null)
+        }
+      }
+    )
+  })
+}
+
+function listeningPids(port: number): Promise<number[]> {
+  if (process.platform !== 'win32') return Promise.resolve([])
+  return new Promise((resolve) => {
+    execFile(
+      'powershell.exe',
+      [
+        '-NoProfile',
+        '-Command',
+        `Get-NetTCPConnection -LocalPort ${port} -State Listen -ErrorAction SilentlyContinue | Select-Object -ExpandProperty OwningProcess -Unique`
+      ],
+      { windowsHide: true, timeout: 8000 },
+      (_err, stdout) => {
+        const pids = String(stdout || '')
+          .split(/\s+/)
+          .map((item) => Number(item))
+          .filter((item) => Number.isInteger(item) && item > 0)
+        resolve([...new Set(pids)])
+      }
+    )
+  })
+}
+
+/** Dev only: stop whoever listens on 7812 and start orchestrator/backend again. */
+export async function restartDevBackend(): Promise<{ ok: boolean; error?: string }> {
+  if (app.isPackaged) {
+    return { ok: false, error: 'Перезапуск сервера доступен только в окне разработки' }
+  }
+  const root = resolveBackendRoot()
+  if (!root) return { ok: false, error: 'Папка backend не найдена на этом компьютере' }
+  const pids = await listeningPids(7812)
+  for (const pid of pids) {
+    await new Promise<void>((resolve) => {
+      execFile('taskkill', ['/F', '/PID', String(pid)], { windowsHide: true }, () => resolve())
+    })
+  }
+  await sleep(400)
+  spawnLocalBackend(root)
+  for (let attempt = 0; attempt < 30; attempt += 1) {
+    if (await pingHealth(LOCAL_BACKEND_DEFAULT, 1500)) return { ok: true }
+    await sleep(1000)
+  }
+  return { ok: false, error: 'Сервер не ответил после перезапуска' }
+}

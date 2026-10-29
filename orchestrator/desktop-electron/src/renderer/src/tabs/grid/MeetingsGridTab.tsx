@@ -21,6 +21,7 @@ import {
   decidePlatformApproval,
   lastPlatformResult,
   startPlatformProtocolRun,
+  transcriptMentioned,
   uploadRunAudio,
   usePlatformRun
 } from '../../workplace/platformProtocolRun'
@@ -157,6 +158,27 @@ function transcriptIdOf(result: Record<string, unknown> | null | undefined): str
   return String(result?.transcript_id || '').trim()
 }
 
+/** Текст уже готовой расшифровки: читаем файл прошлого запуска, новый агент не стартует. */
+function SavedTranscript({ path }: { path: string }): React.JSX.Element {
+  const [text, setText] = useState('')
+  const [error, setError] = useState('')
+  useEffect(() => {
+    let alive = true
+    void api.invokeServerTool('audio.transcript', { transcript_path: path }, 30_000).then((res) => {
+      if (!alive) return
+      const result = (res.result || {}) as { text?: string }
+      if (res.ok && result.text) setText(result.text)
+      else setError(res.error || 'Расшифровка не найдена')
+    })
+    return () => {
+      alive = false
+    }
+  }, [path])
+  if (error) return <p className="meeting-protocol-error">{error}</p>
+  if (!text) return <p className="spec-v04-muted">Загружаем расшифровку…</p>
+  return <pre className="docflow-audio-transcript">{text}</pre>
+}
+
 /** transcript_id из сохранённого запуска, если карточка уже закрылась и лента в памяти стёрта. */
 async function transcriptIdFromHistory(workflowId: string, runId: string, audioName: string): Promise<string> {
   const read = async (id: string): Promise<string> => {
@@ -288,18 +310,20 @@ function MeetingDetailCard({
       patchRecord({ status: platformStatus === 'finished' ? 'done' : 'error' })
       return
     }
-    if (platformStatus === 'finished' && platformTranscriptId) {
+    const mentionedId = transcriptMentioned(platformRun.prompt)?.id || ''
+    const transcriptId = platformTranscriptId || mentionedId
+    if (platformStatus === 'finished' && transcriptId) {
       patchRecord({
         stage: 'review',
         status: 'done',
-        transcriptId: platformTranscriptId,
+        transcriptId,
         protocolWorkflowId: record.protocolWorkflowId || record.workflowId
       })
       return
     }
     if (platformStatus === 'finished') setActionError('Агент закончил без расшифровки — подробности в «Ход работы»')
     patchRecord({ status: 'error' })
-  }, [onPlatform, patchRecord, platformRun.sessionId, platformStatus, platformTranscriptId, record])
+  }, [onPlatform, patchRecord, platformRun.prompt, platformRun.sessionId, platformStatus, platformTranscriptId, record])
 
   const decideApproval = async (allow: boolean): Promise<void> => {
     const sessionId = record?.platformSessionId || ''
@@ -486,7 +510,16 @@ function MeetingDetailCard({
     { speaker: string; fio: string; userId: string; source: string; said: string }[]
   >([])
   const [transcriptFile, setTranscriptFile] = useState<{ name: string; url: string } | null>(null)
+  const [transcriptOpen, setTranscriptOpen] = useState(false)
   const transcriptPathRef = useRef('')
+  const mentioned = transcriptMentioned(platformRun.prompt)
+  const transcribed = lastPlatformResult(platformRun.steps, 'audio.transcribe')
+  const toolPath = String(transcribed?.transcript_path || '').trim()
+  const savedTranscript = mentioned?.path
+    ? mentioned
+    : toolPath
+      ? { id: String(transcribed?.transcript_id || ''), path: toolPath, name: String(transcribed?.filename || 'расшифровка') }
+      : null
   const showReview =
     Boolean(record?.transcriptId) && record?.stage === 'review' && !isRunning && !hasProtocol
 
@@ -844,6 +877,14 @@ function MeetingDetailCard({
             <button type="button" className="cal-btn meeting-protocol-progress-open" onClick={() => setProgressOpen(true)}>
               Ход работы
             </button>
+          ) : null}
+          {savedTranscript?.path ? (
+            <>
+              <button type="button" className="cal-btn" onClick={() => setTranscriptOpen((open) => !open)}>
+                {transcriptOpen ? 'Скрыть расшифровку' : `Расшифровка · ${savedTranscript.name}`}
+              </button>
+              {transcriptOpen ? <SavedTranscript path={savedTranscript.path} /> : null}
+            </>
           ) : null}
           {state?.pendingHitl ? (
             <div className="meeting-protocol-hitl">

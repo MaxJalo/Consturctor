@@ -8,9 +8,9 @@ from app.models.trigger import AgentTrigger
 from app.models.user import AppUser
 from app.models.workflow import Workflow
 from app.models.agent_run import AgentRun
-from app.services.agent_runs import finish_agent_run, start_agent_run
+from app.services.agent_runs import finish_agent_run, get_agent_run, start_agent_run
 from app.services.workflows.board_live import push_board_updated, relay_board_message
-from app.services.workflows.service import stop_auto_run
+from app.services.workflows.service import WorkflowError, stop_auto_run
 
 
 def _session() -> Session:
@@ -137,3 +137,40 @@ def test_relay_board_message_pushes_hub(monkeypatch) -> None:
     )
     assert sent[0][0] == "user-1"
     assert sent[0][1]["type"] == "board_updated"
+
+
+def test_tester_starts_shared_external_order_agent(monkeypatch) -> None:
+    db = _session()
+    monkeypatch.setattr("app.services.workflows.board_live.hub.schedule_push", lambda *_a, **_k: True)
+    monkeypatch.setattr("app.services.workflows.board_live._publish_redis", lambda *_a, **_k: False)
+    owner = "owner-1"
+    tester = "tester-1"
+    workflow_id = "wf-ks"
+    db.add(AppUser(id=owner, fio="Жалыбин Максим Дмитриевич"))
+    db.add(
+        AppUser(
+            id=tester,
+            fio="Рамазанов Роман Джалилович",
+            position="Инженер-тестировщик 1 категории",
+        )
+    )
+    db.add(
+        Workflow(
+            id=workflow_id,
+            user_id=owner,
+            title="ИИ-агент внешнего заказа · Коммерческая служба",
+            phase="done",
+        )
+    )
+    db.add(Workflow(id="wf-other", user_id=owner, title="Чужой агент", phase="done"))
+    db.commit()
+    started = start_agent_run(db, user_id=tester, workflow_id=workflow_id, message="ВЗ-0014")
+    assert started.user_id == tester
+    loaded = get_agent_run(db, user_id=tester, workflow_id=workflow_id, run_id=started.id)
+    assert loaded.id == started.id
+    try:
+        start_agent_run(db, user_id=tester, workflow_id="wf-other", message="нет")
+    except WorkflowError as exc:
+        assert exc.status_code == 404
+    else:
+        raise AssertionError("чужой агент не должен открываться тестировщику")

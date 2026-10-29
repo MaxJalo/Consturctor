@@ -70,6 +70,7 @@ import {
 import type {
   ExternalOnecSearch,
   ExternalOrder,
+  ExternalOrderCopilotResponse,
   ExternalOrderMatrix,
   ExternalOrderReview,
   ExternalOrderBrief,
@@ -85,6 +86,47 @@ function optionalUrl(value: unknown): string | null {
   if (typeof value !== 'string') return null
   const text = value.trim()
   return text || null
+}
+
+const EXTERNAL_ORDER_AGENT_TITLE = 'ИИ-агент внешнего заказа'
+const EXTERNAL_PURCHASE_AGENT_TITLE = 'ИИ-агент внешних закупок'
+const EXTERNAL_SERVICE_AGENT_TITLES: Record<string, string> = {
+  ks: 'ИИ-агент внешнего заказа · Коммерческая служба',
+  development: 'ИИ-агент внешнего заказа · Служба развития',
+  rp: 'ИИ-агент внешнего заказа · Руководитель проекта',
+  committee: 'ИИ-агент внешнего заказа · Комитет',
+  kb: 'ИИ-агент внешнего заказа · КБ и ГСПП',
+  omto: 'ИИ-агент внешнего заказа · ОМТО',
+  finance: 'ИИ-агент внешнего заказа · ОЦОиЭП и финансы',
+  production: 'ИИ-агент внешнего заказа · Производство, качество и сервис',
+  legal: 'ИИ-агент внешнего заказа · Юридическая служба',
+  it: 'ИИ-агент внешнего заказа · ИТ и администраторы'
+}
+
+/** Старый gateway принимает /agent и /service-agents за номер заказа. */
+function helperRouteLooksLikeMissingOrder(err: unknown): boolean {
+  return (
+    err instanceof ApiError &&
+    err.status === 404 &&
+    (err.message === 'Заказ не найден' || err.message === 'Not Found')
+  )
+}
+
+function parseServiceAgents(data: Record<string, unknown>): {
+  role: string
+  workflow_id: string
+  title: string
+  active: boolean
+}[] {
+  const rows = Array.isArray(data.agents) ? data.agents : []
+  return rows
+    .filter((item): item is Record<string, unknown> => Boolean(item) && typeof item === 'object')
+    .map((item) => ({
+      role: String(item.role || ''),
+      workflow_id: String(item.workflow_id || ''),
+      title: String(item.title || ''),
+      active: item.active === true
+    }))
 }
 
 function parseWorkflowList(data: unknown): WorkflowListItem[] {
@@ -2489,7 +2531,7 @@ export class ApiClient {
   }
 
   async createExternalOrder(
-    body: { customer: string; product: string },
+    body: { customer: string; product: string; inn?: string; contact?: string; order_type?: string; priority?: string },
     asRole = ''
   ): Promise<ExternalOrder> {
     return this.request('POST', '/api/v1/external-orders', {
@@ -2543,6 +2585,14 @@ export class ApiClient {
     )
   }
 
+  async closeExternalGap(id: string, gapId: string, note: string, asRole = ''): Promise<ExternalOrder> {
+    return this.request(
+      'POST',
+      `/api/v1/external-orders/${encodeURIComponent(id)}/gaps/${encodeURIComponent(gapId)}/close`,
+      { body: { note }, params: asRole ? { as_role: asRole } : undefined, timeoutMs: 20_000 }
+    )
+  }
+
   async decideExternalOrder(
     id: string,
     body: {
@@ -2562,11 +2612,39 @@ export class ApiClient {
     })
   }
 
+  async runExternalCopilot(
+    id: string,
+    body: { step_id?: string; message?: string; answers?: Record<string, string>; auto_prepare?: boolean },
+    asRole = ''
+  ): Promise<ExternalOrderCopilotResponse> {
+    return this.request('POST', `/api/v1/external-orders/${encodeURIComponent(id)}/copilot`, {
+      body,
+      params: asRole ? { as_role: asRole } : undefined,
+      timeoutMs: 45_000
+    })
+  }
+
   async acceptExternalFinding(id: string, findingId: string, asRole = ''): Promise<ExternalOrder> {
     return this.request(
       'POST',
       `/api/v1/external-orders/${encodeURIComponent(id)}/findings/${encodeURIComponent(findingId)}/accept`,
       { params: asRole ? { as_role: asRole } : undefined, timeoutMs: 20_000 }
+    )
+  }
+
+  async rejectExternalFinding(id: string, findingId: string, asRole = ''): Promise<ExternalOrder> {
+    return this.request(
+      'POST',
+      `/api/v1/external-orders/${encodeURIComponent(id)}/findings/${encodeURIComponent(findingId)}/reject`,
+      { params: asRole ? { as_role: asRole } : undefined, timeoutMs: 20_000 }
+    )
+  }
+
+  async acceptAllExternalFindings(id: string, asRole = ''): Promise<ExternalOrder> {
+    return this.request(
+      'POST',
+      `/api/v1/external-orders/${encodeURIComponent(id)}/findings/accept-role`,
+      { params: asRole ? { as_role: asRole } : undefined, timeoutMs: 30_000 }
     )
   }
 
@@ -2702,10 +2780,50 @@ export class ApiClient {
   }
 
   async externalOrderAgent(): Promise<{ workflow_id: string; title: string }> {
-    const data = await this.request<Record<string, unknown>>('GET', '/api/v1/external-orders/agent', {
-      timeoutMs: 20_000
-    })
-    return { workflow_id: String(data.workflow_id || ''), title: String(data.title || '') }
+    try {
+      const data = await this.request<Record<string, unknown>>('GET', '/api/v1/external-orders/agent', {
+        timeoutMs: 20_000
+      })
+      return { workflow_id: String(data.workflow_id || ''), title: String(data.title || '') }
+    } catch (err) {
+      if (!helperRouteLooksLikeMissingOrder(err)) throw err
+      const row = (await this.listWorkflows()).find((item) => item.title === EXTERNAL_ORDER_AGENT_TITLE)
+      return { workflow_id: row?.id || '', title: row?.title || EXTERNAL_ORDER_AGENT_TITLE }
+    }
+  }
+
+  async externalPurchaseAgent(): Promise<{ workflow_id: string; title: string }> {
+    try {
+      const data = await this.request<Record<string, unknown>>('GET', '/api/v1/external-orders/purchase-agent', {
+        timeoutMs: 20_000
+      })
+      return { workflow_id: String(data.workflow_id || ''), title: String(data.title || '') }
+    } catch (err) {
+      if (!helperRouteLooksLikeMissingOrder(err)) throw err
+      const row = (await this.listWorkflows()).find((item) => item.title === EXTERNAL_PURCHASE_AGENT_TITLE)
+      return { workflow_id: row?.id || '', title: row?.title || EXTERNAL_PURCHASE_AGENT_TITLE }
+    }
+  }
+
+  async externalServiceAgents(): Promise<{ role: string; workflow_id: string; title: string; active: boolean }[]> {
+    try {
+      const data = await this.request<Record<string, unknown>>('GET', '/api/v1/external-orders/service-agents', {
+        timeoutMs: 30_000
+      })
+      return parseServiceAgents(data)
+    } catch (err) {
+      if (!helperRouteLooksLikeMissingOrder(err)) throw err
+      const rows = await this.listWorkflows()
+      return Object.entries(EXTERNAL_SERVICE_AGENT_TITLES).map(([role, title]) => {
+        const row = rows.find((item) => item.title === title)
+        return {
+          role,
+          workflow_id: row?.id || '',
+          title: row?.title || title,
+          active: Boolean(row && !row.paused)
+        }
+      })
+    }
   }
 
   async getAssignmentReview(refKey: string): Promise<Record<string, unknown> | null> {

@@ -1308,27 +1308,57 @@ def _desktop_ac_tools() -> list[dict[str, Any]]:
         }, ["trigger_id"]),
         (
             "external_order.case",
-            "Дело внешнего заказа. action=read — карточка, чек-листы, сверка и блокировки. "
-            "action=propose — записать черновики выводов и расхождений со ссылкой на документ и место в нём; "
-            "фактом они не становятся. action=draft_1c — подготовить текст записки или поручения, "
-            "без записи в 1С. Запись в 1С — только onec.docflow_document_create, человек подтверждает.",
+            "Дело внешнего заказа. action=read — сводка дела и паспорта этапа. "
+            "action=read_full — полная структурированная выжимка дела, разделов, текстов документов, сверки B01–B35 и вопросов по пробелам. "
+            "action=auto_prepare — детерминированная авто-подготовка дела (синхронизация 1С, черновики полей, чек-листов, базовой версии и 1С ДО). "
+            "action=propose — записать черновики выводов из документов (findings), полей разделов (section_proposals), "
+            "доказательств чек-листа (check_proposals), базовой версии (baseline_proposal), рисков (risk_proposals) и сверки (diffs); "
+            "фактом они становятся только после принятия владельцем. "
+            "action=draft_1c — подготовить структурированный черновик документа 1С ДО (memo, assignment, directive, order, protocol) с prefill для формы создания. "
+            "action=search_1c — поиск ТКП и Заказов клиента в 1С ERP. "
+            "action=plan — файл плана работ по заказу с условиями договора, без правки общего шаблона.",
             {
-                "action": _prop("string", "read | propose | draft_1c", default="read"),
-                "order_id": _prop("string", "id карточки внешнего заказа"),
+                "action": _prop(
+                    "string",
+                    "read | read_full | auto_prepare | propose | draft_1c | search_1c | plan",
+                    default="read",
+                ),
+                "order_id": _prop("string", "id или код карточки внешнего заказа"),
+                "role": _prop("string", "Роль службы (ks, development, rp, committee, kb, omto, finance, production, legal, it)"),
+                "step_id": _prop("string", "Код шага пути (zpr, tech, analysis, committee, passport, tkp, contract, linked, start, plan)"),
                 "findings": _prop(
                     "array",
-                    "Черновики: {field, value, source_ref, location, confidence, owner_role}. "
+                    "Черновики выводов из документов: {field, value, source_ref, location, confidence, owner_role}. "
                     "location — абзац, страница или ячейка; без него вывод не сохранится.",
+                ),
+                "section_proposals": _prop(
+                    "array",
+                    "Черновики значений полей разделов: {section, key, value, source_ref, location, owner_role}",
+                ),
+                "check_proposals": _prop(
+                    "array",
+                    "Черновики подтверждения пунктов чек-листа: {check_id, evidence, source_ref, location, owner_role}",
+                ),
+                "baseline_proposal": _prop(
+                    "object",
+                    "Черновик базовой версии расчёта: {composition, cost, mcr, margin, bdds, deadlines, reason}",
+                ),
+                "risk_proposals": _prop(
+                    "array",
+                    "Черновики рисков проекта: {title, impact, measure, source, owner_role}",
                 ),
                 "diffs": _prop(
                     "array",
-                    "Черновики сверки: {code, left_value, right_value, note}",
+                    "Черновики сверки B01–B35: {code, left_value, right_value, note}",
                 ),
-                "kind": _prop("string", "Для draft_1c: memo или assignment"),
-                "title": _prop("string", "Заголовок черновика для 1С"),
-                "text": _prop("string", "Текст черновика для 1С"),
+                "kind": _prop("string", "Для draft_1c: memo | assignment | directive | order | protocol"),
+                "title": _prop("string", "Заголовок черновика для 1С ДО"),
+                "text": _prop("string", "Текст черновика для 1С ДО"),
+                "prefill": _prop("object", "Предзаполненные реквизиты формы создания документа 1С ДО"),
+                "query": _prop("string", "Поисковый запрос для search_1c (номер ТКП, заказа клиента или контрагент)"),
+                "counterparty_key": _prop("string", "GUID контрагента в 1С для search_1c"),
             },
-            ["action", "order_id"],
+            ["action"],
         ),
     ]
     server_tools = {
@@ -1649,9 +1679,9 @@ _CONTRACTS: dict[str, tuple[str, str, str | tuple[str, ...], list[str], list[str
     "external_order.case": (
         "constructor",
         "external_order",
-        ("read", "create"),
+        ("read", "create", "update", "search"),
         ["action", "order_id"],
-        ["id", "code", "blocks", "note"],
+        ["id", "code", "blocks", "note", "summary", "proposals", "questions"],
         "none",
     ),
     "agent.schedule": ("constructor", "trigger", "create", [], ["trigger_id"], "none"),

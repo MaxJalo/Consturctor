@@ -25,6 +25,7 @@ import {
 import { AssignmentDocflowTasks, AssignmentFileList } from './AssignmentDocflowTasks'
 import type { DocflowKindId } from '../../workplace/docflowDocumentCreate'
 import { DocflowOpenFormBar } from './DocflowOpenFormBar'
+import { DocflowProcessBlock } from './DocflowProcessBlock'
 import { SortTh, useDocflowTable } from './docflowTableTools'
 import {
   useRegisterGlobalSearch,
@@ -180,6 +181,7 @@ function AssignmentCardView({
       </header>
       {row.topic ? <p className="docflow-side-subject">{row.topic}</p> : null}
       <div className="docflow-side-scroll">
+        <DocflowProcessBlock />
         <section className="docflow-card-block">
           <h4>Основное</h4>
           <dl className="docflow-detail-list">

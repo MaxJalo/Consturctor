@@ -294,6 +294,7 @@ export function MeetingEditorDialog({
   const [workWeek, setWorkWeek] = useState(false)
   const [body, setBody] = useState('')
   const [bodyTouched, setBodyTouched] = useState(false)
+  const [files, setFiles] = useState<{ path: string; name: string }[]>([])
   const [busy, setBusy] = useState(false)
   const [deleting, setDeleting] = useState(false)
   const [error, setError] = useState('')
@@ -314,6 +315,15 @@ export function MeetingEditorDialog({
     () => slotSuggestions(blocks, slotStart, slotEnd),
     [blocks, slotEnd, slotStart]
   )
+  const bestSlot = useMemo(() => {
+    if (!suggestions.length) return null
+    return suggestions.reduce((chosen, item) => {
+      const chosenDist = Math.abs(chosen.start - slotStart)
+      const itemDist = Math.abs(item.start - slotStart)
+      if (itemDist !== chosenDist) return itemDist < chosenDist ? item : chosen
+      return item.start >= slotStart ? item : chosen
+    })
+  }, [slotStart, suggestions])
   const people = useMemo(() => parseAttendees(attendees), [attendees])
   const fragment = attendeeFragment(attendees, attendeeCaret)
   const employeeMatches = useMemo(() => {
@@ -469,7 +479,8 @@ export function MeetingEditorDialog({
       attendees: people,
       send_invites: sendInvites,
       planner_fio: plannerFio,
-      planner_position: plannerPosition
+      planner_position: plannerPosition,
+      ...(files.length ? { attachments: files.map((file) => file.path) } : {})
     }
     const schedule = {
       body: body.trim(),
@@ -595,6 +606,56 @@ export function MeetingEditorDialog({
           <input type="checkbox" checked={sendInvites} onChange={(event) => setSendInvites(event.target.checked)} />
           <span>Отправить приглашения участникам</span>
         </label>
+        <div className="meeting-editor-row">
+          <span>Файлы для рассылки</span>
+          <div className="meeting-files">
+            <button
+              type="button"
+              className="meeting-editor-toggle"
+              disabled={busy}
+              onClick={() => {
+                void window.api.openFile({
+                  title: 'Файлы к приглашению Outlook',
+                  properties: ['openFile', 'multiSelections']
+                }).then((paths) => {
+                  if (!paths?.length) return
+                  setFiles((current) => {
+                    const known = new Set(current.map((file) => file.path.toLowerCase()))
+                    const next = [...current]
+                    for (const path of paths) {
+                      const key = path.toLowerCase()
+                      if (known.has(key)) continue
+                      known.add(key)
+                      const name = path.split(/[/\\]/).pop() || path
+                      next.push({ path, name })
+                    }
+                    return next
+                  })
+                })
+              }}
+            >
+              Добавить файлы
+            </button>
+            {files.length ? (
+              <ul className="meeting-file-list">
+                {files.map((file) => (
+                  <li key={file.path}>
+                    <span title={file.path}>{file.name}</span>
+                    <button
+                      type="button"
+                      disabled={busy}
+                      onClick={() => setFiles((current) => current.filter((item) => item.path !== file.path))}
+                    >
+                      Убрать
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            ) : (
+              <p className="meeting-files-note">Уйдут вложением в приглашение Outlook.</p>
+            )}
+          </div>
+        </div>
         <div className="meeting-editor-toggles">
             <button
               type="button"
@@ -721,6 +782,27 @@ export function MeetingEditorDialog({
                   </i>
                 </div>
               ))}
+              {bestSlot ? (
+                <button
+                  type="button"
+                  className="meeting-slot-hint"
+                  style={{ top: topPct(bestSlot.start), height: heightPct(bestSlot.start, bestSlot.end) }}
+                  title={`Поставить на ${clock(bestSlot.start)}–${clock(bestSlot.end)}`}
+                  onPointerDown={(event) => {
+                    event.stopPropagation()
+                    event.preventDefault()
+                  }}
+                  onClick={() => {
+                    setSlotStart(bestSlot.start)
+                    setSlotEnd(bestSlot.end)
+                  }}
+                >
+                  <b>лучше</b>
+                  <i>
+                    {clock(bestSlot.start)}–{clock(bestSlot.end)}
+                  </i>
+                </button>
+              ) : null}
               <div
                 data-role="selection"
                 className={`meeting-slot-pick${conflicts.length ? ' is-conflict' : ''}`}
@@ -735,33 +817,6 @@ export function MeetingEditorDialog({
             <p className="meeting-slot-note">
               Нажмите на свободное или занятое время. Нижний край выбранного слота меняет длительность.
             </p>
-            {conflicts.length ? (
-              <div className="meeting-slot-conflict">
-                <p>
-                  Пересекается с{' '}
-                  {conflicts
-                    .map((block) => `«${block.meeting.subject}» ${clock(block.from)}–${clock(block.to)}`)
-                    .join(', ')}
-                  . Сохранить можно и так: в Outlook попадёт выбранное время.
-                </p>
-                {suggestions.length ? (
-                  <div className="meeting-slot-options">
-                    {suggestions.map((item) => (
-                      <button
-                        key={`${item.start}-${item.end}`}
-                        type="button"
-                        onClick={() => {
-                          setSlotStart(item.start)
-                          setSlotEnd(item.end)
-                        }}
-                      >
-                        {item.label}
-                      </button>
-                    ))}
-                  </div>
-                ) : null}
-              </div>
-            ) : null}
           </div>
         </div>
       </form>

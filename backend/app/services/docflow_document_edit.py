@@ -173,16 +173,24 @@ def _files_of(client: _ODataClient, kind_id: str, ref_key: str) -> list[dict[str
         )
     except Exception:  # noqa: BLE001
         return []
-    return [
-        {
+    files = []
+    for row in rows:
+        if not _GUID_RE.match(str(row.get("Ref_Key") or "")):
+            continue
+        path = str(row.get("ПутьКФайлу") or "").strip()
+        storage = str(row.get("ТипХраненияФайла") or "").strip()
+        item = {
             "id": str(row.get("Ref_Key") or ""),
             "name": str(row.get("Description") or ""),
             "extension": str(row.get("Расширение") or ""),
             "size": str(row.get("Размер") or ""),
+            "path": path,
+            "storage": storage,
         }
-        for row in rows
-        if _GUID_RE.match(str(row.get("Ref_Key") or ""))
-    ]
+        if kind_id in {"order", "directive"} and not path:
+            item["storage_note"] = dc._VOLUME_NOTE
+        files.append(item)
+    return files
 
 
 def _basis_of(row: dict[str, Any], client: _ODataClient) -> str:
@@ -241,6 +249,29 @@ def read_document(kind_id: str, ref_key: str, args: dict[str, Any]) -> dict[str,
                     item["__keys"][column["key"]] = guid
             out_rows.append(item)
         tables[table["key"]] = out_rows
+    if kind_id == "payment" and values.get("ХозяйственнаяОперация") == dc._ADVANCE_OPERATION:
+        person = str(values.get("ПодотчетноеЛицо_Key") or "").strip()
+        party = str(values.get("Контрагент_Key") or "").strip()
+        values["ПолучательВид"] = "contractor" if party and not person else "employee"
+        person_key = str(keys.get("ПодотчетноеЛицо_Key") or "")
+        if values["ПолучательВид"] == "employee" and _GUID_RE.match(person_key):
+            try:
+                person_rows = client.get(dc._PERSONS, ref_key=person_key)
+            except Exception:  # noqa: BLE001
+                person_rows = []
+            if person_rows:
+                values["ИННПолучателя"] = str(person_rows[0].get("ИНН") or "").strip()
+        account_key = str(keys.get("БанковскийСчетКонтрагента_Key") or "")
+        if _GUID_RE.match(account_key):
+            try:
+                account_rows = client.get(dc._BANK_ACCOUNTS, ref_key=account_key)
+            except Exception:  # noqa: BLE001
+                account_rows = []
+            if account_rows:
+                bank = dc.bank_from_account(client, account_rows[0])
+                values["БанкПолучателя"] = bank["bank_name"]
+                values["БИКБанкаПолучателя"] = bank["bank_bik"]
+                values["НомерСчетаПолучателя"] = bank["account_number"]
     posted = bool(row.get("Posted"))
     deleted = bool(row.get("DeletionMark"))
     repost = posted and kind_id in REQUEST_KINDS and not deleted

@@ -60,6 +60,7 @@ CLASS_NOT_REGISTERED_HRESULTS = {
 }
 DISP_E_EXCEPTION = -2147352567  # 0x80020009
 MAPI_E_NOT_FOUND = -2147221233  # 0x8004010F
+MAPI_E_NETWORK_ERROR = -2147221227  # 0x80040115 — Exchange не ответил, обычно после ~5 минут
 TRUST_CENTER_HINT = (
     "Классический Outlook должен быть открыт, календарь — свой (не только чтение). "
     "Файл → Параметры → центр управления безопасностью → программный доступ: "
@@ -192,10 +193,25 @@ def _is_class_not_registered_error(exc: Exception) -> bool:
     )
 
 
+def _is_mapi_network_error(exc: Exception) -> bool:
+    """0x80040115: Outlook ждал Exchange и сдался. Повтор только увеличивает ожидание."""
+    if MAPI_E_NETWORK_ERROR in _com_hresults(exc):
+        return True
+    text = str(exc).casefold()
+    return "80040115" in text or "2147221227" in text
+
+
 def _outlook_access_message(prefix: str, exc: Exception) -> str:
     """Человекочитаемая причина COM-ошибки Outlook, без универсального Trust Center."""
     if _is_class_not_registered_error(exc):
         return f"{prefix}: {OUTLOOK_NOT_REGISTERED_MESSAGE} (детали COM: {exc})"
+    if _is_mapi_network_error(exc):
+        return (
+            f"{prefix}: Outlook не достучался до Exchange (80040115). "
+            "Сервер не отвечал, поэтому вызов висел около пяти минут. "
+            "Откройте Outlook, дождитесь ящика, закройте окно «сервер недоступен», если оно есть, "
+            f"и повторите. Повторный вход из программы это ожидание только растягивает. ({exc})"
+        )
     if _is_mapi_not_found(exc):
         return f"{prefix}: {MAPI_NOT_FOUND_HINT} ({exc})"
     return f"{prefix}: {exc}. {TRUST_CENTER_HINT}"
@@ -211,8 +227,14 @@ _session_queue: queue.Queue | None = None
 _session_thread: threading.Thread | None = None
 _session_ident = 0
 _cached_outlook: Any = None
+_logon_prompted = False
+# True, пока держим уже открытый пользователем Outlook. Logon и Dispatch
+# в этом состоянии поднимают второй процесс и обрывают Exchange.
+_attached_to_running_outlook = False
 _com_initialized = False
 _programmatic_access_applied = False
+_ATTACH_ATTEMPTS = 8
+_ATTACH_DELAY_SEC = 0.4
 
 
 def _allow_programmatic_access() -> None:
@@ -490,19 +512,134 @@ def _current_calendar_owner(namespace: Any) -> str:
         return ""
 
 
-def _ensure_mapi_logon(namespace: Any) -> None:
-    """Подключить профиль, если Dispatch поднял Outlook без сессии."""
+def _profile_open(namespace: Any) -> bool:
     try:
         current = getattr(namespace, "CurrentUser", None)
-        if current is not None and _safe_str(getattr(current, "Name", "")).strip():
-            return
+        return bool(current is not None and _safe_str(getattr(current, "Name", "")).strip())
     except Exception:
-        pass
+        return False
+
+
+def _outlook_exe_running() -> bool:
+    """Есть ли уже OUTLOOK.EXE. Новый Dispatch при живом процессе рвёт Exchange."""
+    if sys.platform != "win32":
+        return False
+    try:
+        import subprocess
+
+        completed = subprocess.run(
+            ["tasklist", "/FI", "IMAGENAME eq OUTLOOK.EXE", "/NH"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            check=False,
+        )
+    except Exception as exc:
+        _log_progress(f"step=outlook_process_check skipped: {exc}")
+        return False
+    return "outlook.exe" in (completed.stdout or "").casefold()
+
+
+def _outlook_com_ready(timeout_sec: float = 12) -> bool | None:
+    """Отвечает ли уже открытый Outlook на COM, не дожидаясь пяти минут Exchange.
+
+    None — пробу выполнить нельзя, вызывающий решает сам.
+    False — процесс есть, но GetActiveObject не вернулся: это и есть зависание 800401.
+    """
+    if sys.platform != "win32":
+        return None
+    script = (
+        "import sys\n"
+        "try:\n"
+        "    import pythoncom, win32com.client\n"
+        "    pythoncom.CoInitialize()\n"
+        "    win32com.client.GetActiveObject('Outlook.Application')\n"
+        "except Exception:\n"
+        "    sys.exit(2)\n"
+        "sys.exit(0)\n"
+    )
+    try:
+        import subprocess
+
+        completed = subprocess.run(
+            [sys.executable, "-c", script],
+            capture_output=True,
+            text=True,
+            timeout=timeout_sec,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            check=False,
+        )
+    except subprocess.TimeoutExpired:
+        _log_progress("step=outlook_com_probe timeout")
+        return False
+    except Exception as exc:
+        _log_progress(f"step=outlook_com_probe skipped: {exc}")
+        return None
+    if completed.returncode == 0:
+        _log_progress("step=outlook_com_probe ok")
+        return True
+    err = (completed.stderr or "").casefold()
+    if "modulenotfounderror" in err or "no module named" in err:
+        _log_progress("step=outlook_com_probe skipped: no pywin32")
+        return None
+    _log_progress(f"step=outlook_com_probe not_ready code={completed.returncode}")
+    return False
+
+
+def _launch_outlook_window() -> None:
+    """Открыть уже существующее окно Outlook, не создавая второй COM-сеанс."""
+    if sys.platform != "win32":
+        return
+    try:
+        import subprocess
+
+        subprocess.Popen(
+            ["cmd.exe", "/c", "start", "", "outlook.exe", "/recycle"],
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            close_fds=True,
+        )
+        _log_progress("step=launch_outlook recycle")
+    except Exception as exc:
+        _log_progress(f"step=launch_outlook skipped: {exc}")
+
+
+def _remember_outlook(outlook: Any, *, created: bool, cache: bool) -> Any:
+    global _cached_outlook, _attached_to_running_outlook
+    _attached_to_running_outlook = not created
+    if cache:
+        _cached_outlook = outlook
+    return outlook
+
+
+def _ensure_mapi_logon(namespace: Any) -> None:
+    """Подключить профиль. Если почта ещё не открыта — один раз показать окно входа Outlook.
+
+    На уже открытом Outlook Logon не вызывать: повторный вход обрывает Exchange
+    и показывает «невозможно открыть набор папок».
+    """
+    global _logon_prompted
+    if _profile_open(namespace):
+        return
+    if _attached_to_running_outlook:
+        _log_progress("step=mapi_logon skipped existing outlook")
+        return
     try:
         namespace.Logon("", "", False, False)
         _log_progress("step=mapi_logon ok")
     except Exception as exc:
-        _log_progress(f"step=mapi_logon skipped: {exc}")
+        _log_progress(f"step=mapi_logon silent skipped: {exc}")
+    if _profile_open(namespace) or _logon_prompted:
+        return
+    _logon_prompted = True
+    try:
+        namespace.Logon("", "", True, False)
+        _log_progress("step=mapi_logon dialog ok")
+    except Exception as exc:
+        _log_progress(f"step=mapi_logon dialog skipped: {exc}")
 
 
 def _mapi_namespace(outlook: Any) -> Any:
@@ -1066,6 +1203,13 @@ def _free_busy_events(
 
     None — Outlook не отдал сведения; [] — в периоде свободно.
     """
+    try:
+        mode = int(getattr(namespace, "ExchangeConnectionMode", 0) or 0)
+    except Exception:
+        mode = 0
+    if mode in _OUTLOOK_OFFLINE_MODES:
+        _log_progress(f"step=freebusy_skipped offline mode={mode} person={person}")
+        return None
     try:
         recipient = namespace.CreateRecipient(person)
         recipient.Resolve()
@@ -2254,6 +2398,9 @@ def create_event(input_data: dict) -> dict:
                     appt.Save()
                 except Exception:
                     _log_progress("step=category skipped")
+            attached = _add_appointment_files(appt, spec.get("attachments") or [])
+            if attached:
+                appt.Save()
             invites_sent = False
             if added and spec["send_invites"]:
                 try:
@@ -2272,6 +2419,7 @@ def create_event(input_data: dict) -> dict:
                     "organizer": organizer or own_name,
                     "organizer_status": organizer_status,
                     "attendees": added,
+                    "attachments": attached,
                     "invites_sent": invites_sent,
                     "ai_agent": True,
                 }
@@ -2361,6 +2509,7 @@ def update_event(input_data: dict) -> dict:
             )
         if notes or "body" in input_data:
             appt.Body = notes
+        attached = _add_appointment_files(appt, _attachment_paths(input_data))
         appt.Save()
         entry = _verify_saved_appointment(outlook, appt)
         send_invites = _truthy(input_data.get("send_invites", bool(attendees)))
@@ -2380,6 +2529,7 @@ def update_event(input_data: dict) -> dict:
             "end": span_end.isoformat(timespec="minutes") if span_end else "",
             "location": _safe_str(getattr(appt, "Location", "") or ""),
             "attendees": added,
+            "attachments": attached,
             "invites_sent": invites_sent,
         }
         return {
@@ -2604,10 +2754,16 @@ def _delete_same_slot(folder: Any, subject: str, start: datetime | None) -> None
             raise OutlookComError(f"Outlook не удалил совещание: {exc}") from exc
 
 
-def _dispatch_outlook(win32com_client: Any) -> Any:
-    """Держать один Outlook.Application на сессию, не поднимать новый процесс на запрос."""
-    global _cached_outlook
-    if _cached_outlook is not None:
+def _dispatch_outlook(win32com_client: Any, *, cache: bool = True) -> Any:
+    """Один Outlook.Application. Не запускать второй процесс, если Outlook уже открыт.
+
+    GetActiveObject иногда отвечает MK_E_UNAVAILABLE, пока Outlook занят.
+    Прежний код после трёх попыток вызывал Dispatch: тот поднимал второй
+    OUTLOOK.EXE на тот же профиль. Окно писало, что сервер Exchange недоступен
+    и набор папок открыть нельзя, и обрывало уже работающее подключение.
+    """
+    global _cached_outlook, _attached_to_running_outlook
+    if cache and _cached_outlook is not None:
         try:
             _ensure_mapi_logon(_cached_outlook.GetNamespace("MAPI"))
             _log_progress("step=dispatch_cached ok")
@@ -2615,38 +2771,52 @@ def _dispatch_outlook(win32com_client: Any) -> Any:
         except Exception as exc:
             _log_progress(f"step=dispatch_cached dropped: {exc}")
             _cached_outlook = None
-    _log_progress("step=dispatch_outlook start")
+    running = _outlook_exe_running()
+    _log_progress(f"step=dispatch_outlook start running={int(running)}")
+    if running:
+        ready = _outlook_com_ready()
+        if ready is False:
+            _attached_to_running_outlook = True
+            _log_progress("step=dispatch_new skipped outlook not answering")
+            raise OutlookAccessError(
+                "Outlook открыт, но не отвечает на подключение: так выглядит ошибка 800401, "
+                "когда программа пять минут ждёт Exchange. Больше не жду. "
+                "Закройте окно «сервер Exchange недоступен», оставьте одно окно Outlook, "
+                "дождитесь появления почты и повторите."
+            )
+    attempts = _ATTACH_ATTEMPTS if running else 3
     last_exc: Exception | None = None
-    for attempt in range(1, 4):
+    for attempt in range(1, attempts + 1):
         try:
             outlook = win32com_client.GetActiveObject("Outlook.Application")
+            if running:
+                _attached_to_running_outlook = True
             _ensure_mapi_logon(outlook.GetNamespace("MAPI"))
             _log_progress(f"step=dispatch_active ok attempt={attempt}")
-            _cached_outlook = outlook
-            return outlook
+            return _remember_outlook(outlook, created=not running, cache=cache)
         except Exception as exc:
             last_exc = exc
             _log_progress(f"step=dispatch_active failed attempt={attempt}: {exc}")
-            time.sleep(0.35 * attempt)
+            if attempt < attempts:
+                time.sleep(_ATTACH_DELAY_SEC)
+    if running or _outlook_exe_running():
+        _attached_to_running_outlook = True
+        _log_progress("step=dispatch_new skipped outlook already running")
+        raise OutlookAccessError(
+            "Outlook уже запущен, но не отдал сессию автоматизации. "
+            "Второй экземпляр не открываю: он обрывает подключение к Exchange "
+            "и показывает «невозможно открыть набор папок». "
+            "Закройте лишние OUTLOOK.EXE, оставьте одно окно Outlook и повторите. "
+            f"({last_exc})"
+        )
     outlook = win32com_client.Dispatch("Outlook.Application")
+    _attached_to_running_outlook = False
     try:
         _ensure_mapi_logon(outlook.GetNamespace("MAPI"))
     except Exception as exc:
         _log_progress(f"step=dispatch_new_logon skipped: {exc}")
-    if last_exc is not None:
-        _log_progress(f"step=dispatch_new after_active_fail: {last_exc}")
-    _cached_outlook = outlook
-    return outlook
-
-
-def _mapi_namespace(outlook: Any) -> Any:
-    """MAPI без диалога пароля — профиль уже открыт в Outlook (как read_calendar)."""
-    namespace = outlook.GetNamespace("MAPI")
-    try:
-        namespace.Logon("", "", False, False)
-    except Exception as exc:  # noqa: BLE001
-        _log_progress(f"step=mapi_logon noop: {exc}")
-    return namespace
+    _log_progress("step=dispatch_new outlook was not running")
+    return _remember_outlook(outlook, created=True, cache=cache)
 
 
 def _verify_saved_appointment(outlook: Any, appt: Any) -> str:
@@ -2747,6 +2917,68 @@ def _set_appointment_times(appt: Any, start: datetime, end: datetime) -> None:
     _assign_wall_times(appt, start + shift, end + shift)
 
 
+_MAX_MEETING_FILE_BYTES = 25 * 1024 * 1024
+
+
+def _attachment_paths(row: dict, fallback: dict | None = None) -> list[str]:
+    """Локальные файлы, которые уйдут вложением в приглашение Outlook."""
+    raw = row.get("attachments", row.get("files"))
+    if raw is None and fallback is not None:
+        raw = fallback.get("attachments", fallback.get("files"))
+    if raw is None:
+        return []
+    if isinstance(raw, str):
+        raw = [raw]
+    if not isinstance(raw, list):
+        raise OutlookComError("Файлы совещания нужно передать списком путей")
+    paths: list[str] = []
+    seen: set[str] = set()
+    for item in raw:
+        if isinstance(item, dict):
+            text = _safe_str(item.get("path") or item.get("file") or "").strip()
+        else:
+            text = _safe_str(item).strip()
+        if not text:
+            continue
+        path = Path(text).expanduser()
+        if not path.is_file():
+            raise OutlookComError(f"Файл для рассылки не найден: {path}")
+        try:
+            size = path.stat().st_size
+        except OSError as exc:
+            raise OutlookComError(f"Файл для рассылки не читается: {path.name}") from exc
+        if size > _MAX_MEETING_FILE_BYTES:
+            raise OutlookComError(
+                f"Файл «{path.name}» больше 25 МБ, Outlook его в приглашение не возьмёт"
+            )
+        resolved = str(path.resolve())
+        key = resolved.casefold()
+        if key in seen:
+            continue
+        seen.add(key)
+        paths.append(resolved)
+    return paths
+
+
+def _add_appointment_files(appt: Any, paths: list[str]) -> list[str]:
+    """Прикрепить файлы до Send: тогда они уходят в письме-приглашении."""
+    if not paths:
+        return []
+    attachments = getattr(appt, "Attachments", None)
+    if attachments is None:
+        raise OutlookComError("Outlook не принимает файлы к этой встрече")
+    added: list[str] = []
+    for path in paths:
+        name = Path(path).name
+        try:
+            attachments.Add(path)
+        except Exception as exc:
+            raise OutlookComError(f"Outlook не прикрепил «{name}»: {exc}") from exc
+        added.append(name)
+        _log_progress(f"step=attachment ok name={name}")
+    return added
+
+
 def _meeting_specs(input_data: dict) -> list[dict]:
     raw_events = input_data.get("events")
     rows: list[dict]
@@ -2804,6 +3036,7 @@ def _meeting_specs(input_data: dict) -> list[dict]:
                 "planner_position": _safe_str(
                     row.get("planner_position") or input_data.get("planner_position") or ""
                 ).strip(),
+                "attachments": _attachment_paths(row, input_data),
             }
         )
     return specs
@@ -3313,18 +3546,9 @@ def _collect_calendar_range(
             if chunk:
                 break
         if not tried_restrict:
-            _log_progress("step=restrict_window fallback_getfirst")
-            chunk, scanned = _collect_calendar_events(
-                items,
-                start_at,
-                end_at,
-                remaining_results,
-                remaining_scan,
-                include_body=include_body,
-                calendar_owner=calendar_owner,
-                own_calendar=own_calendar,
-            )
-            return chunk, scanned
+            # GetFirst по такой папке отвечает только 8004010F и встреч не даёт.
+            _log_progress("step=restrict_window unavailable")
+            continue
         checked_count += scanned
         events.extend(chunk)
         _log_progress(
@@ -3931,15 +4155,52 @@ def restrict_filter_strings(start_at: datetime, end_at: datetime) -> list[str]:
     return out
 
 
+def _restrict_rows(items: Any, start_at: datetime, end_at: datetime) -> list[tuple[str, Any]]:
+    """Фильтры, которые Outlook принял. Отказ не пишется сырым кортежем COM."""
+    found: list[tuple[str, Any]] = []
+    for restriction in restrict_filter_strings(start_at, end_at):
+        try:
+            found.append((restriction, items.Restrict(restriction)))
+        except Exception:
+            continue
+    return found
+
+
+def _without_recurrence_expansion(items: Any) -> None:
+    """Снять разворот серий: с ним общий календарь отклоняет фильтр по дате."""
+    try:
+        items.IncludeRecurrences = False
+    except Exception:
+        return
+    try:
+        items.Sort("[Start]", False)
+    except Exception:
+        pass
+
+
 def _iter_restricted_calendar_items(
     items: Any, start_at: datetime, end_at: datetime
 ):
-    """Yield (filter, restricted items) for each locale that Outlook accepts."""
-    for restriction in restrict_filter_strings(start_at, end_at):
-        try:
-            yield restriction, items.Restrict(restriction)
-        except Exception:
-            continue
+    """Yield (filter, restricted items) for each locale that Outlook accepts.
+
+    Общий ящик сразу после запуска Outlook отклоняет Restrict, а GetFirst по
+    той же папке отвечает MAPI_E_NOT_FOUND. Повтор без разворота серий читает
+    встречи, если папка уже доступна.
+    """
+    found = _restrict_rows(items, start_at, end_at)
+    if not found:
+        _without_recurrence_expansion(items)
+        _log_progress("step=restrict_without_recurrences")
+        found = _restrict_rows(items, start_at, end_at)
+    if not found:
+        time.sleep(1)
+        _without_recurrence_expansion(items)
+        found = _restrict_rows(items, start_at, end_at)
+        if found:
+            _log_progress("step=restrict_retry_ok")
+        else:
+            _log_progress("step=restrict_not_ready")
+    yield from found
 
 
 def _restrict_calendar_items(

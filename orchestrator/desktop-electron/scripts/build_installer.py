@@ -317,6 +317,7 @@ BACKEND_RUNTIME_PACKAGES = [
     "python-multipart>=0.0.9",
     "python-docx>=1.1.2",
     "openpyxl>=3.1.5",
+    "numpy>=2.0",
     "pdfplumber>=0.11.5",
     "pymupdf>=1.24.14",
     "imapclient>=3.0.1",

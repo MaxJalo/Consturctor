@@ -217,6 +217,48 @@ def test_people_names_from_string_and_list() -> None:
     ) == ["Сидоров", "a@turbo-don.ru"]
 
 
+def test_meeting_files_are_attached_before_the_invite(tmp_path) -> None:
+    from app.tools.ac.workers.outlook_com_actions import (
+        OutlookComError,
+        _add_appointment_files,
+        _attachment_paths,
+        _meeting_specs,
+    )
+
+    agenda = tmp_path / "повестка.txt"
+    agenda.write_text("повестка", encoding="utf-8")
+    specs = _meeting_specs(
+        {
+            "subject": "Планерка",
+            "start": "2026-09-07T10:00:00",
+            "stamp_ai_agent": False,
+            "attachments": [str(agenda), str(agenda)],
+        }
+    )
+    assert specs[0]["attachments"] == [str(agenda.resolve())]
+
+    class _Attachments:
+        def __init__(self) -> None:
+            self.added: list[str] = []
+
+        def Add(self, path: str) -> None:
+            self.added.append(path)
+
+    bag = _Attachments()
+
+    class _Appt:
+        Attachments = bag
+
+    assert _add_appointment_files(_Appt(), specs[0]["attachments"]) == ["повестка.txt"]
+    assert bag.added == [str(agenda.resolve())]
+    try:
+        _attachment_paths({"attachments": [str(tmp_path / "нет.txt")]})
+    except OutlookComError as exc:
+        assert "не найден" in str(exc)
+    else:
+        raise AssertionError("missing file must fail")
+
+
 def test_meeting_specs_keep_attendees_and_organizer() -> None:
     specs = _meeting_specs(
         {
@@ -912,6 +954,153 @@ def test_own_calendar_falls_back_to_store() -> None:
             raise _mapi_not_found()
 
     assert _own_calendar_folder(_Namespace()) is calendar
+
+
+def test_mapi_logon_prompts_once_when_profile_is_closed() -> None:
+    from app.tools.ac.workers import outlook_com_actions as actions
+
+    calls: list[bool] = []
+
+    class _Namespace:
+        def Logon(self, _profile, _password, show_dialog, _new_session):
+            calls.append(bool(show_dialog))
+
+    actions._logon_prompted = False
+    actions._attached_to_running_outlook = False
+    actions._ensure_mapi_logon(_Namespace())
+    actions._ensure_mapi_logon(_Namespace())
+    assert calls == [False, True, False]
+
+
+def test_mapi_logon_does_not_touch_an_already_open_outlook() -> None:
+    from app.tools.ac.workers import outlook_com_actions as actions
+
+    class _Namespace:
+        def Logon(self, *_args):
+            raise AssertionError("Logon must not run against a live Outlook")
+
+    actions._attached_to_running_outlook = True
+    try:
+        actions._ensure_mapi_logon(_Namespace())
+    finally:
+        actions._attached_to_running_outlook = False
+
+
+def test_network_error_does_not_ask_to_wait_five_minutes() -> None:
+    from app.tools.ac.workers.outlook_com_actions import _outlook_access_message
+
+    err = OSError("placeholder")
+    err.args = (-2147221227, "MAPI_E_NETWORK_ERROR", None, None)
+    text = _outlook_access_message("Календарь", err)
+    assert "80040115" in text
+    assert "минут" in text
+    assert "Повторный вход" in text
+
+
+def test_running_outlook_that_does_not_answer_fails_fast() -> None:
+    from app.tools.ac.workers import outlook_com_actions as actions
+    from app.tools.ac.workers.outlook_com_errors import OutlookAccessError
+
+    class _Client:
+        def GetActiveObject(self, _progid):
+            raise AssertionError("must not call GetActiveObject when the probe timed out")
+
+        def Dispatch(self, _progid):
+            raise AssertionError("Dispatch must not start a second Outlook")
+
+    actions._cached_outlook = None
+    actions._attached_to_running_outlook = False
+    original_running = actions._outlook_exe_running
+    original_ready = actions._outlook_com_ready
+    actions._outlook_exe_running = lambda: True
+    actions._outlook_com_ready = lambda: False
+    try:
+        try:
+            actions._dispatch_outlook(_Client())
+        except OutlookAccessError as exc:
+            assert "800401" in str(exc)
+        else:
+            raise AssertionError("expected OutlookAccessError")
+    finally:
+        actions._outlook_exe_running = original_running
+        actions._outlook_com_ready = original_ready
+        actions._cached_outlook = None
+        actions._attached_to_running_outlook = False
+
+
+def test_dispatch_does_not_start_second_outlook_when_process_is_running() -> None:
+    from app.tools.ac.workers import outlook_com_actions as actions
+    from app.tools.ac.workers.outlook_com_errors import OutlookAccessError
+
+    class _Client:
+        def GetActiveObject(self, _progid):
+            raise OSError("MK_E_UNAVAILABLE")
+
+        def Dispatch(self, _progid):
+            raise AssertionError("Dispatch must not start a second Outlook")
+
+    actions._cached_outlook = None
+    actions._attached_to_running_outlook = False
+    original_running = actions._outlook_exe_running
+    original_ready = actions._outlook_com_ready
+    original_sleep = actions.time.sleep
+    actions._outlook_exe_running = lambda: True
+    actions._outlook_com_ready = lambda: True
+    actions.time.sleep = lambda _seconds: None
+    try:
+        try:
+            actions._dispatch_outlook(_Client())
+        except OutlookAccessError as exc:
+            assert "Exchange" in str(exc)
+        else:
+            raise AssertionError("expected OutlookAccessError")
+        assert actions._attached_to_running_outlook is True
+    finally:
+        actions._outlook_exe_running = original_running
+        actions._outlook_com_ready = original_ready
+        actions.time.sleep = original_sleep
+        actions._cached_outlook = None
+        actions._attached_to_running_outlook = False
+
+
+def test_dispatch_creates_outlook_only_when_it_is_not_running() -> None:
+    from app.tools.ac.workers import outlook_com_actions as actions
+
+    created: list[str] = []
+
+    class _Namespace:
+        class CurrentUser:
+            Name = "Жалыбин"
+
+    class _Outlook:
+        def GetNamespace(self, name: str):
+            assert name == "MAPI"
+            return _Namespace()
+
+    class _Client:
+        def GetActiveObject(self, _progid):
+            raise OSError("not running")
+
+        def Dispatch(self, progid: str):
+            created.append(progid)
+            return _Outlook()
+
+    actions._cached_outlook = None
+    actions._attached_to_running_outlook = True
+    original_running = actions._outlook_exe_running
+    original_sleep = actions.time.sleep
+    actions._outlook_exe_running = lambda: False
+    actions.time.sleep = lambda _seconds: None
+    try:
+        outlook = actions._dispatch_outlook(_Client())
+        assert created == ["Outlook.Application"]
+        assert outlook is actions._cached_outlook
+        assert actions._attached_to_running_outlook is False
+    finally:
+        actions._outlook_exe_running = original_running
+        actions.time.sleep = original_sleep
+        actions._cached_outlook = None
+        actions._attached_to_running_outlook = False
 
 
 def test_own_calendar_logs_on_then_opens() -> None:

@@ -41,6 +41,7 @@ import { erpActorFio } from '../../workplace/userContext'
 import type { MeetingEvent } from '../../utils/outlookMeetings'
 import { DocflowCreateDialog } from './DocflowCreateDialog'
 import { DocflowOpenFormBar } from './DocflowOpenFormBar'
+import { DocflowProcessBlock } from './DocflowProcessBlock'
 import { MeetingProtocolForm } from './MeetingProtocolForm'
 import { useDocflowDock } from './DocflowDock'
 import { DOCFLOW_JOURNALS, type JournalId } from './docflowJournals'
@@ -193,6 +194,7 @@ function CorrespondenceCard({
       {letterError ? <p className="docflow-edit-notice is-error">{letterError}</p> : null}
       {row.comment ? <p className="docflow-side-subject">{row.comment}</p> : null}
       <div className="docflow-side-scroll">
+        <DocflowProcessBlock />
         <DocflowAttachments
           user={user}
           entity={kind === 'incoming' ? ATTACHED_FILES.incoming : ATTACHED_FILES.outgoing}

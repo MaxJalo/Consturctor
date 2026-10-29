@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
@@ -11,6 +12,7 @@ from app.services.external_orders import (
     ExternalOrderError,
     accept_finding,
     accept_plan,
+    accept_role_findings,
     add_baseline,
     add_decision,
     add_document,
@@ -18,6 +20,7 @@ from app.services.external_orders import (
     approve_order_file,
     close_conditions,
     close_diff,
+    close_gap,
     confirm_check,
     create_order,
     delete_order_file,
@@ -32,6 +35,8 @@ from app.services.external_orders import (
     publish_order_plan,
     recent_onec_orders,
     refresh_onec,
+    reject_finding,
+    run_copilot,
     search_onec,
     transition,
     upload_order_file,
@@ -114,15 +119,33 @@ class OnecLinkIn(BaseModel):
     ref_key: str = ""
 
 
-def _role(auth: AuthContext, as_role: str) -> str:
-    from app.services.external_orders import resolve_role
+class CopilotIn(BaseModel):
+    step_id: str = ""
+    message: str = ""
+    answers: dict[str, str] = Field(default_factory=dict)
+    auto_prepare: bool = True
 
-    return resolve_role(
+
+def _people(auth: AuthContext, db: Session) -> tuple[str, str, str]:
+    from app.models.user import AppUser
+    from app.services.external_orders import testing_profile
+
+    user = db.get(AppUser, auth.user_id)
+    return testing_profile(
         fio=auth.fio or "",
         position=auth.position or "",
         department=auth.department or "",
-        as_role=as_role,
+        stored_fio=(user.fio if user else "") or "",
+        stored_position=(user.position if user else "") or "",
+        stored_department=(user.department if user else "") or "",
     )
+
+
+def _role(auth: AuthContext, as_role: str, db: Session) -> str:
+    from app.services.external_orders import resolve_role
+
+    fio, position, department = _people(auth, db)
+    return resolve_role(fio=fio, position=position, department=department, as_role=as_role)
 
 
 def _call(action):
@@ -136,13 +159,10 @@ def _call(action):
 def get_meta(
     as_role: str = Query(default=""),
     auth: AuthContext = Depends(get_current_user),
+    db: Session = Depends(get_db),
 ) -> dict:
-    return meta_for(
-        fio=auth.fio or "",
-        position=auth.position or "",
-        department=auth.department or "",
-        as_role=as_role,
-    )
+    fio, position, department = _people(auth, db)
+    return meta_for(fio=fio, position=position, department=department, as_role=as_role)
 
 
 @router.get("")
@@ -165,7 +185,7 @@ def post_order(
     return _call(
         lambda: create_order(
             db,
-            role=_role(auth, as_role),
+            role=_role(auth, as_role, db),
             fio=auth.fio or "",
             fields=body.model_dump(),
         )
@@ -184,6 +204,43 @@ def get_agent(
     if row is None:
         return {"workflow_id": "", "title": TITLE}
     return {"workflow_id": row.id, "title": row.title}
+
+
+@router.get("/purchase-agent")
+def get_purchase_agent(
+    auth: AuthContext = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> dict:
+    _ = auth
+    from app.services.external_purchase_agent import TITLE, ensure_agent
+
+    row = ensure_agent(db)
+    if row is None:
+        return {"workflow_id": "", "title": TITLE}
+    return {"workflow_id": row.id, "title": row.title}
+
+
+@router.get("/service-agents")
+def get_service_agents(
+    auth: AuthContext = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> dict:
+    _ = auth
+    from app.services.external_service_agents import ensure_agents, is_active, service_roles, title_for
+
+    rows = {row.title: row for row in ensure_agents(db)}
+    agents = []
+    for role in service_roles():
+        row = rows.get(title_for(role))
+        agents.append(
+            {
+                "role": role,
+                "workflow_id": row.id if row is not None else "",
+                "title": row.title if row is not None else title_for(role),
+                "active": bool(row is not None and is_active(row)),
+            }
+        )
+    return {"agents": agents}
 
 
 @router.get("/matrix")
@@ -220,7 +277,7 @@ def post_onec_import_tkp(
     return _call(
         lambda: import_tkp_order(
             db,
-            role=_role(auth, as_role),
+            role=_role(auth, as_role, db),
             fio=auth.fio or "",
             ref_key=body.ref_key,
         )
@@ -237,7 +294,7 @@ def post_onec_import(
     return _call(
         lambda: import_onec_order(
             db,
-            role=_role(auth, as_role),
+            role=_role(auth, as_role, db),
             fio=auth.fio or "",
             ref_key=body.ref_key,
         )
@@ -264,7 +321,7 @@ def post_strategy(
     from app.services.external_order_strategy import link_strategy
 
     return _call(
-        lambda: link_strategy(db, order_id, role=_role(auth, as_role), fio=auth.fio or "")
+        lambda: link_strategy(db, order_id, role=_role(auth, as_role, db), fio=auth.fio or "")
     )
 
 
@@ -300,7 +357,7 @@ def patch_one(
 ) -> dict:
     fields = body.model_dump(exclude_none=True)
     return _call(
-        lambda: patch_order(db, order_id, role=_role(auth, as_role), fio=auth.fio or "", fields=fields)
+        lambda: patch_order(db, order_id, role=_role(auth, as_role, db), fio=auth.fio or "", fields=fields)
     )
 
 
@@ -314,7 +371,7 @@ def post_transition(
 ) -> dict:
     return _call(
         lambda: transition(
-            db, order_id, role=_role(auth, as_role), fio=auth.fio or "", target=body.target
+            db, order_id, role=_role(auth, as_role, db), fio=auth.fio or "", target=body.target
         )
     )
 
@@ -333,7 +390,7 @@ def post_confirm(
             db,
             order_id,
             check_id,
-            role=_role(auth, as_role),
+            role=_role(auth, as_role, db),
             fio=auth.fio or "",
             evidence=body.evidence,
         )
@@ -351,8 +408,22 @@ def post_close_diff(
 ) -> dict:
     return _call(
         lambda: close_diff(
-            db, order_id, diff_id, role=_role(auth, as_role), fio=auth.fio or "", note=body.note
+            db, order_id, diff_id, role=_role(auth, as_role, db), fio=auth.fio or "", note=body.note
         )
+    )
+
+
+@router.post("/{order_id}/gaps/{gap_id}/close")
+def post_close_gap(
+    order_id: str,
+    gap_id: str,
+    body: DiffCloseIn,
+    as_role: str = Query(default=""),
+    auth: AuthContext = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> dict:
+    return _call(
+        lambda: close_gap(db, order_id, gap_id, role=_role(auth, as_role, db), fio=auth.fio or "", note=body.note)
     )
 
 
@@ -366,7 +437,7 @@ def post_risk(
 ) -> dict:
     return _call(
         lambda: add_risk(
-            db, order_id, role=_role(auth, as_role), fio=auth.fio or "", fields=body.model_dump()
+            db, order_id, role=_role(auth, as_role, db), fio=auth.fio or "", fields=body.model_dump()
         )
     )
 
@@ -381,7 +452,7 @@ def post_decision(
 ) -> dict:
     return _call(
         lambda: add_decision(
-            db, order_id, role=_role(auth, as_role), fio=auth.fio or "", fields=body.model_dump()
+            db, order_id, role=_role(auth, as_role, db), fio=auth.fio or "", fields=body.model_dump()
         )
     )
 
@@ -400,7 +471,7 @@ def post_close_conditions(
             db,
             order_id,
             decision_id,
-            role=_role(auth, as_role),
+            role=_role(auth, as_role, db),
             fio=auth.fio or "",
             document_id=body.document_id,
         )
@@ -417,9 +488,27 @@ def post_document(
 ) -> dict:
     return _call(
         lambda: add_document(
-            db, order_id, role=_role(auth, as_role), fio=auth.fio or "", fields=body.model_dump()
+            db, order_id, role=_role(auth, as_role, db), fio=auth.fio or "", fields=body.model_dump()
         )
     )
+
+
+@router.get("/{order_id}/files/{document_id}")
+def get_order_file(
+    order_id: str,
+    document_id: str,
+    auth: AuthContext = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> FileResponse:
+    _ = auth
+    from app.services.external_order_plan import plan_file_path
+    from app.services.external_orders import _order
+
+    try:
+        path = plan_file_path(_order(db, order_id), document_id)
+    except ExternalOrderError as exc:
+        raise HTTPException(status_code=exc.status, detail=exc.detail) from exc
+    return FileResponse(path, media_type="application/xml", filename=path.name.split("_", 1)[-1])
 
 
 @router.post("/{order_id}/files")
@@ -432,7 +521,7 @@ def post_file(
 ) -> dict:
     return _call(
         lambda: upload_order_file(
-            db, order_id, role=_role(auth, as_role), fio=auth.fio or "", fields=body.model_dump()
+            db, order_id, role=_role(auth, as_role, db), fio=auth.fio or "", fields=body.model_dump()
         )
     )
 
@@ -447,7 +536,7 @@ def post_approve_file(
 ) -> dict:
     return _call(
         lambda: approve_order_file(
-            db, order_id, document_id, role=_role(auth, as_role), fio=auth.fio or ""
+            db, order_id, document_id, role=_role(auth, as_role, db), fio=auth.fio or ""
         )
     )
 
@@ -462,7 +551,7 @@ def delete_file(
 ) -> dict:
     return _call(
         lambda: delete_order_file(
-            db, order_id, document_id, role=_role(auth, as_role), fio=auth.fio or ""
+            db, order_id, document_id, role=_role(auth, as_role, db), fio=auth.fio or ""
         )
     )
 
@@ -477,7 +566,7 @@ def post_baseline(
 ) -> dict:
     return _call(
         lambda: add_baseline(
-            db, order_id, role=_role(auth, as_role), fio=auth.fio or "", fields=body.model_dump()
+            db, order_id, role=_role(auth, as_role, db), fio=auth.fio or "", fields=body.model_dump()
         )
     )
 
@@ -489,7 +578,7 @@ def post_plan(
     auth: AuthContext = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> dict:
-    return _call(lambda: make_plan(db, order_id, role=_role(auth, as_role), fio=auth.fio or ""))
+    return _call(lambda: make_plan(db, order_id, role=_role(auth, as_role, db), fio=auth.fio or ""))
 
 
 @router.post("/{order_id}/plan/approve")
@@ -499,7 +588,7 @@ def post_plan_approve(
     auth: AuthContext = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> dict:
-    return _call(lambda: accept_plan(db, order_id, role=_role(auth, as_role), fio=auth.fio or ""))
+    return _call(lambda: accept_plan(db, order_id, role=_role(auth, as_role, db), fio=auth.fio or ""))
 
 
 @router.post("/{order_id}/plan/publish")
@@ -510,7 +599,7 @@ def post_plan_publish(
     db: Session = Depends(get_db),
 ) -> dict:
     return _call(
-        lambda: publish_order_plan(db, order_id, role=_role(auth, as_role), fio=auth.fio or "")
+        lambda: publish_order_plan(db, order_id, role=_role(auth, as_role, db), fio=auth.fio or "")
     )
 
 
@@ -526,7 +615,7 @@ def post_onec(
         lambda: link_onec(
             db,
             order_id,
-            role=_role(auth, as_role),
+            role=_role(auth, as_role, db),
             fio=auth.fio or "",
             ref_key=body.ref_key,
         )
@@ -544,8 +633,45 @@ def post_onec_refresh(
         lambda: refresh_onec(
             db,
             order_id,
-            role=_role(auth, as_role),
+            role=_role(auth, as_role, db),
             fio=auth.fio or "",
+        )
+    )
+
+
+@router.post("/{order_id}/copilot")
+def post_copilot(
+    order_id: str,
+    body: CopilotIn | None = None,
+    as_role: str = Query(default=""),
+    auth: AuthContext = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> dict:
+    payload = body or CopilotIn()
+    return _call(
+        lambda: run_copilot(
+            db,
+            order_id,
+            role=_role(auth, as_role, db),
+            fio=auth.fio or "",
+            step_id=payload.step_id,
+            message=payload.message,
+            answers=payload.answers,
+            auto_prepare=payload.auto_prepare,
+        )
+    )
+
+
+@router.post("/{order_id}/findings/accept-role")
+def post_accept_role(
+    order_id: str,
+    as_role: str = Query(default=""),
+    auth: AuthContext = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> dict:
+    return _call(
+        lambda: accept_role_findings(
+            db, order_id, role=_role(auth, as_role, db), fio=auth.fio or ""
         )
     )
 
@@ -560,6 +686,22 @@ def post_accept(
 ) -> dict:
     return _call(
         lambda: accept_finding(
-            db, order_id, finding_id, role=_role(auth, as_role), fio=auth.fio or ""
+            db, order_id, finding_id, role=_role(auth, as_role, db), fio=auth.fio or ""
         )
     )
+
+
+@router.post("/{order_id}/findings/{finding_id}/reject")
+def post_reject(
+    order_id: str,
+    finding_id: str,
+    as_role: str = Query(default=""),
+    auth: AuthContext = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> dict:
+    return _call(
+        lambda: reject_finding(
+            db, order_id, finding_id, role=_role(auth, as_role, db), fio=auth.fio or ""
+        )
+    )
+

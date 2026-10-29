@@ -372,6 +372,11 @@ class OutlookCreateEventComTool(ComBackedTool):
                             "type": "boolean",
                             "description": "Отправить приглашения участникам. По умолчанию да, если есть attendees",
                         },
+                        "attachments": {
+                            "type": "array",
+                            "description": "Пути к файлам на этом компьютере. Они уйдут вложением в приглашение Outlook",
+                            "items": {"type": "string"},
+                        },
                         "events": {
                             "type": "array",
                             "description": (
@@ -417,6 +422,11 @@ class OutlookUpdateEventComTool(ComBackedTool):
                         "body": {"type": "string"},
                         "attendees": {"type": "array", "items": {"type": "string"}},
                         "send_invites": {"type": "boolean"},
+                        "attachments": {
+                            "type": "array",
+                            "description": "Пути к файлам. Добавляются к встрече и уходят в приглашении",
+                            "items": {"type": "string"},
+                        },
                     },
                     "required": ["entry_id"],
                 },

@@ -7,9 +7,84 @@ export interface ApiResponse<T = unknown> {
   error?: string
 }
 
+export type SetupField = {
+  key: string
+  label: string
+  group: string
+  value: string
+  secret: boolean
+  secretUrl: boolean
+  hasSecret: boolean
+}
+
+export type SetupFile = {
+  path: string
+  fields: SetupField[]
+}
+
+export type SetupSnapshot = {
+  desktop: SetupFile
+  backend: SetupFile | null
+  canRestartBackend: boolean
+}
+
+export type SetupWriteResult = {
+  ok: boolean
+  paths: string[]
+  error?: string
+  note?: string
+}
+
+export type SetupProbe = {
+  ok: boolean
+  backendUrl: string
+  ms: number
+  status: string
+  erpReachable: boolean
+  erpServer: string
+  llmProvider: string
+  error: string
+}
+
+export type SetupToolProbe = {
+  needsLogin: boolean
+  configured?: boolean
+  mode?: string
+  error?: string
+}
+
 const api = {
   getConfig: (): Promise<{ backendUrl: string; testUser: boolean }> =>
     ipcRenderer.invoke('app:getConfig'),
+  onToggleSetup: (callback: () => void): (() => void) => {
+    const listener = (): void => callback()
+    ipcRenderer.on('app:toggle-setup', listener)
+    return () => ipcRenderer.removeListener('app:toggle-setup', listener)
+  },
+  readSetup: (): Promise<SetupSnapshot> => ipcRenderer.invoke('setup:read'),
+  writeSetup: (target: 'desktop' | 'backend', values: Record<string, string>): Promise<SetupWriteResult> =>
+    ipcRenderer.invoke('setup:write', { target, values }),
+  probeSetup: (): Promise<SetupProbe> => ipcRenderer.invoke('setup:probe'),
+  probeSetupTools: (
+    token: string | null
+  ): Promise<{ needsLogin: boolean; imap: SetupToolProbe | null; onec: SetupToolProbe | null; error?: string }> =>
+    ipcRenderer.invoke('setup:probeTools', token),
+  restartSetupBackend: (): Promise<{ ok: boolean; error?: string }> => ipcRenderer.invoke('setup:restartBackend'),
+  setupMetrics: (): Promise<{
+    now: number
+    serverMetrics: boolean
+    modules: Record<
+      string,
+      { requests: { t: number; v: number }[]; latencyMs: { t: number; v: number }[]; ok: boolean | null; detail: string }
+    >
+    resources: {
+      appCpu: { t: number; v: number }[]
+      appMemoryMb: { t: number; v: number }[]
+      serverCpu: { t: number; v: number }[]
+      serverMemoryMb: { t: number; v: number }[]
+    }
+    logs: { t: number; level: string; module: string; text: string }[]
+  }> => ipcRenderer.invoke('setup:metrics'),
   setComSecret: (payload: {
     login?: string
     password?: string

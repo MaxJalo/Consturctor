@@ -29,6 +29,7 @@ import {
 } from '../../workplace/fetchDocflowPaymentRequests'
 import type { DocflowKindId } from '../../workplace/docflowDocumentCreate'
 import { DocflowOpenFormBar } from './DocflowOpenFormBar'
+import { DocflowProcessBlock } from './DocflowProcessBlock'
 import { DocflowSearch, SortTh, useDocflowTable } from './docflowTableTools'
 
 const FALLBACK_STATUSES: PaymentRequestOption[] = [
@@ -166,6 +167,7 @@ function PaymentRequestCardView({
         {row.operation ? ` · ${row.operation}` : ''}
       </p>
       <div className="docflow-side-scroll">
+        <DocflowProcessBlock operationCode={row.operationCode} operation={row.operation} />
         <DocflowAttachments user={user} entity={ATTACHED_FILES.payment} ownerId={row.id} />
         <section className="docflow-card-block">
           <h4>Основное</h4>

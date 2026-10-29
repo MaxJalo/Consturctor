@@ -1,3 +1,4 @@
+import { writeAlwaysAllowActions } from '../../workplace/alwaysAllowActions'
 import { agentWantsText, explainTool } from './explainTool'
 import type { PendingHitl } from './types'
 
@@ -27,6 +28,15 @@ export function HitlCard({ hitl, onRespond, onSkip }: HitlCardProps): React.JSX.
       <div className="feed-hitl-actions">
         <button className="btn-primary" onClick={() => onRespond(hitl.requestId, true)}>
           Разрешить
+        </button>
+        <button
+          className="btn-ghost"
+          onClick={() => {
+            onRespond(hitl.requestId, true)
+            writeAlwaysAllowActions(true)
+          }}
+        >
+          Всегда разрешать
         </button>
         <button className="btn-ghost" onClick={() => onRespond(hitl.requestId, false)}>
           Отклонить

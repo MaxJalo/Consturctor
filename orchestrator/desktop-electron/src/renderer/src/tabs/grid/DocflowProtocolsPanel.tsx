@@ -37,6 +37,7 @@ import { createProtocolOnBasis } from '../../workplace/meetingProtocolCreate'
 import { clearProtocolFocus, peekProtocolFocus } from '../../workplace/protocolFocus'
 import { DocflowFileOpenButton } from './DocflowAttachments'
 import { DocflowOpenFormBar } from './DocflowOpenFormBar'
+import { DocflowProcessBlock } from './DocflowProcessBlock'
 import { MeetingProtocolForm } from './MeetingProtocolForm'
 import { formatCorrespondenceDate } from '../../workplace/fetchDocflowCorrespondence'
 import {
@@ -601,6 +602,7 @@ function ProtocolCardView({ card, onSaved }: { card: ProtocolCard; onSaved: () =
         ))}
       </nav>
       <div className="docflow-side-scroll">
+        <DocflowProcessBlock />
         {tab === 'main' && editing ? (
           <ProtocolHeaderForm row={row} draft={header} accessOptions={edit.accessOptions} disabled={saving} onChange={setHeader} />
         ) : null}

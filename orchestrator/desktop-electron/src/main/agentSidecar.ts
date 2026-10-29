@@ -214,6 +214,7 @@ export class AgentSidecar {
   private pending: AgentSidecarMessage[] = []
   private lastStart: AgentSidecarMessage | null = null
   private lastStartError = ''
+  private logRing: { t: number; level: string; text: string }[] = []
   private lastPaths: { sidecar: string; desktopRoot: string; python: string; cwd: string } = {
     sidecar: '',
     desktopRoot: '',
@@ -223,9 +224,42 @@ export class AgentSidecar {
   private readonly runMeta = new Map<string, { workflowId: string; kind: string; source: string }>()
 
   constructor(
-    private readonly backendUrl: string,
+    private backendUrl: string,
     private readonly onEvent: EventSink
   ) {}
+
+  setBackendUrl(url: string): void {
+    const next = url.trim().replace(/\/+$/, '')
+    if (next) this.backendUrl = next
+  }
+
+  noteLog(text: string, level = 'info'): void {
+    for (const line of String(text).split(/\r?\n/)) {
+      const clean = line.trim()
+      if (!clean) continue
+      const lowered = clean.toLowerCase()
+      const rank = level === 'error' || lowered.includes('error') || lowered.includes('ошиб') ? 'error' : level
+      this.logRing.push({ t: Date.now(), level: rank, text: clean.slice(0, 400) })
+    }
+    if (this.logRing.length > 200) this.logRing.splice(0, this.logRing.length - 200)
+  }
+
+  recentLogs(): { t: number; level: string; text: string }[] {
+    return this.logRing.slice(-80)
+  }
+
+  /** Перечитать desktop/.env: новый процесс sidecar поднимается с этими значениями. */
+  restart(): { ok: boolean; error?: string } {
+    this.stopping = false
+    this.restarts = 0
+    this.hardRestartSidecar('setup panel')
+    this.pending = []
+    this.isReady = false
+    this.start()
+    if (this.lastStartError && !this.child) return { ok: false, error: this.lastStartError }
+    this.configure(this.lastToken)
+    return { ok: true }
+  }
 
   private resolvePaths(): { sidecar: string; desktopRoot: string } {
     const envSidecar = process.env.CONSTRUCTOR_SIDECAR
@@ -382,7 +416,9 @@ export class AgentSidecar {
     child.stderr.setEncoding('utf-8')
     child.stderr.on('data', (chunk: string) => {
       const text = String(chunk).trim()
-      if (text) console.error(`[agent-sidecar] ${text}`)
+      if (!text) return
+      this.noteLog(text)
+      console.error(`[agent-sidecar] ${text}`)
     })
     const ignorePipeError = (err: Error): void => {
       console.error(`[agent-sidecar] pipe: ${err.message}`)

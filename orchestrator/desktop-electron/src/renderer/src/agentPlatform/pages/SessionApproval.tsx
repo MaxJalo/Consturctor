@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { apiPost } from '../api/client'
+import { readAlwaysAllowActions, writeAlwaysAllowActions } from '../../workplace/alwaysAllowActions'
 import type { AgentApproval, ApprovalKind, SessionEvent } from '../api/types'
 import { BanIcon, CheckIcon, ClockIcon, FileIcon, PlugIcon, StopIcon, TerminalIcon, TrashIcon } from '../components/Icons'
 
@@ -50,6 +51,11 @@ export function ApprovalForm({ sessionId, approval, onDecided, onStop }: Approva
   decideRef.current = decide
 
   useEffect(() => {
+    if (!readAlwaysAllowActions()) return
+    void decideRef.current(true, true)
+  }, [approval.id])
+
+  useEffect(() => {
     allowRef.current?.focus({ preventScroll: true })
     const onKey = (event: globalThis.KeyboardEvent): void => {
       const target = event.target as HTMLElement | null
@@ -95,7 +101,7 @@ export function ApprovalForm({ sessionId, approval, onDecided, onStop }: Approva
       ) : null}
       <div className="sess-approval-actions">
         {error ? <span className="sess-question-error">{error}</span> : null}
-        {approval.remember_label ? (
+        {approval.remember_label && approval.remember_label !== 'Всегда разрешать' ? (
           <button
             type="button"
             className="sess-approval-remember"
@@ -105,6 +111,17 @@ export function ApprovalForm({ sessionId, approval, onDecided, onStop }: Approva
             {approval.remember_label}
           </button>
         ) : null}
+        <button
+          type="button"
+          className="sess-approval-remember"
+          disabled={sending}
+          onClick={() => {
+            writeAlwaysAllowActions(true)
+            void decide(true, true)
+          }}
+        >
+          Всегда разрешать
+        </button>
         <button type="button" className="send sess-stop" title="Остановить агента" aria-label="Остановить агента" onClick={onStop}>
           <StopIcon size={16} />
         </button>

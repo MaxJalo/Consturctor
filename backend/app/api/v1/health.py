@@ -46,6 +46,14 @@ async def health_live() -> dict[str, str]:
     return {"status": "ok"}
 
 
+@router.get("/health/metrics")
+async def health_metrics() -> dict:
+    """Кольцо запросов и ресурсов этого процесса. Без секретов и без строки запроса."""
+    from app.services.runtime_metrics import snapshot
+
+    return snapshot()
+
+
 @router.get("/health", response_model=HealthResponse)
 async def health() -> HealthResponse:
     erp_reachable = await _erp_reachable()

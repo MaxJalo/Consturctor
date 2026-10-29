@@ -53,13 +53,14 @@ def run_agent_task(
     run_id: str,
     history_id: str = "",
 ) -> dict[str, Any]:
-    workflow = (
-        db.query(Workflow)
-        .filter(Workflow.id == workflow_id, Workflow.user_id == user_id)
-        .first()
-    )
-    if workflow is None:
-        raise AgentRuntimeError("Workflow не найден")
+    from app.services.workflows.service import WorkflowError, _get_owned
+
+    try:
+        workflow = _get_owned(
+            db, user_id=user_id, workflow_id=workflow_id, allow_shared=True
+        )
+    except WorkflowError as exc:
+        raise AgentRuntimeError(exc.message) from exc
     task = message.strip()
     if not task:
         raise AgentRuntimeError("Пустая задача")

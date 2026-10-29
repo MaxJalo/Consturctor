@@ -41,6 +41,18 @@ export type PlatformRunView = {
   protocol: { number: string; refKey: string } | null
   /** Текст агента в последнем ходе — его итоговое пояснение. */
   answer: string
+  /** Исходное задание сеанса: в нём уже может лежать transcript_id прошлого запуска. */
+  prompt: string
+}
+
+/** transcript_id и путь из задания сеанса, если расшифровка уже была и audio.transcribe больше не вызывали. */
+export function transcriptMentioned(prompt: string): { id: string; path: string; name: string } | null {
+  const id = /transcript_id:\s*([0-9a-f-]{36})/i.exec(prompt)?.[1] || ''
+  const path = /transcript_path:\s*(\S+)/.exec(prompt)?.[1]?.trim() || ''
+  if (!id && !path) return null
+  const file = path.split(/[\\/]/).pop() || ''
+  const name = file.replace(/^[0-9a-f]+-/i, '') || file || 'расшифровка'
+  return { id, path, name }
 }
 
 export type RunAudio = { fileId: string; name: string }
@@ -230,7 +242,8 @@ export function usePlatformRun(sessionId: string): PlatformRunView {
       approval,
       question,
       protocol,
-      answer: answer.trim()
+      answer: answer.trim(),
+      prompt: session?.prompt ?? ''
     }
   }, [approval, events, loadError, question, session, sessionId])
 }

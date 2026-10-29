@@ -37,6 +37,32 @@ function installBrowserApi(): void {
 
   window.api = {
     getConfig: async () => ({ backendUrl: BACKEND, testUser: false }),
+    onToggleSetup: (_callback: () => void) => () => undefined,
+    readSetup: async () => ({
+      desktop: { path: '', fields: [] },
+      backend: null,
+      canRestartBackend: false
+    }),
+    writeSetup: async () => ({ ok: false, paths: [], error: 'Только в окне приложения' }),
+    probeSetup: async () => ({
+      ok: false,
+      backendUrl: BACKEND,
+      ms: 0,
+      status: '',
+      erpReachable: false,
+      erpServer: '',
+      llmProvider: '',
+      error: 'Только в окне приложения'
+    }),
+    probeSetupTools: async () => ({ needsLogin: true, imap: null, onec: null }),
+    restartSetupBackend: async () => ({ ok: false, error: 'Только в окне приложения' }),
+    setupMetrics: async () => ({
+      now: Date.now(),
+      serverMetrics: false,
+      modules: {},
+      resources: { appCpu: [], appMemoryMb: [], serverCpu: [], serverMemoryMb: [] },
+      logs: []
+    }),
     setComSecret: async (payload) => {
       if (!payload?.password) {
         sessionStorage.removeItem(COM_SECRET_KEY)

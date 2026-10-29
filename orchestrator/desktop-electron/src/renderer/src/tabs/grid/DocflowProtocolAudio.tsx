@@ -21,6 +21,7 @@ import {
   decidePlatformApproval,
   lastPlatformResult,
   startPlatformProtocolRun,
+  transcriptMentioned,
   uploadRunAudio,
   usePlatformRun,
   type PlatformRunView
@@ -126,8 +127,12 @@ function platformResult(run: PlatformRunView, mark?: ProtocolAudioMark): Protoco
     .filter((step) => step.tool === 'audio.transcribe')
     .map((step) => transcriptOf(step.result))
     .filter((item): item is NonNullable<typeof item> => Boolean(item))
+  const mentioned = transcriptMentioned(run.prompt)
+  const recovered = mentioned?.path
+    ? [{ name: mentioned.name, path: mentioned.path, durationSec: mark?.transcript?.durationSec || 0 }]
+    : []
   return {
-    transcripts: own.length ? own : mark?.transcript ? [mark.transcript] : [],
+    transcripts: own.length ? own : mark?.transcript ? [mark.transcript] : recovered,
     changes: done
       .filter((step) => step.tool === 'onec.meeting_protocol_write')
       .map((step) => ({
@@ -570,7 +575,8 @@ export function ProtocolAudioSupplement({
       void (async () => {
         if (run.status !== 'finished') throw new Error(run.error || 'Расшифровка остановлена')
         const result = lastPlatformResult(run.steps, 'audio.transcribe')
-        const transcriptId = String(result?.transcript_id || '').trim()
+        const mentioned = transcriptMentioned(run.prompt)
+        const transcriptId = String(result?.transcript_id || mentioned?.id || '').trim()
         if (!transcriptId) throw new Error('Агент закончил без расшифровки — подробности в «Ход работы»')
         const known = rows(result?.known_speakers)
           .map((item) => `${item.speaker} — ${item.fio}`)
@@ -584,7 +590,9 @@ export function ProtocolAudioSupplement({
           stage: 'speakers',
           platformSessionId: next,
           transcriptId,
-          transcript: transcriptOf(result)
+          transcript:
+            transcriptOf(result) ||
+            (mentioned?.path ? { name: mentioned.name, path: mentioned.path, durationSec: 0 } : undefined)
         })
       })().catch(fail)
       return

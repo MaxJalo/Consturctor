@@ -5,6 +5,7 @@ import { useRuns } from '../store/runs'
 import { isLiveRunState } from '../store/liveRun'
 import { PlatformRunDialog } from '../tabs/grid/PlatformRunDialog'
 import { decidePlatformApproval } from '../workplace/platformProtocolRun'
+import { readAlwaysAllowActions, writeAlwaysAllowActions, ALWAYS_ALLOW_EVENT } from '../workplace/alwaysAllowActions'
 import { agentWantsText } from './agentfeed/explainTool'
 import './activeAgentsStrip.css'
 
@@ -86,7 +87,9 @@ export function ActiveAgentsStrip({
   const [collapsed, setCollapsed] = useState(false)
   const [selectedKey, setSelectedKey] = useState('')
   const [deciding, setDeciding] = useState('')
+  const [alwaysAllow, setAlwaysAllow] = useState(readAlwaysAllowActions)
   const seenApprovals = useRef(new Set<string>())
+  const autoAllowed = useRef(new Set<string>())
 
   const items = useMemo<StripItem[]>(() => {
     const local: StripItem[] = Object.values(runs.entries)
@@ -133,6 +136,22 @@ export function ActiveAgentsStrip({
     for (const item of asking) seenApprovals.current.add(`${item.key}:${item.approval?.id}`)
     setSelectedKey(freshApproval.key)
   }, [asking, freshApproval])
+
+  useEffect(() => {
+    const sync = (): void => setAlwaysAllow(readAlwaysAllowActions())
+    window.addEventListener(ALWAYS_ALLOW_EVENT, sync)
+    return () => window.removeEventListener(ALWAYS_ALLOW_EVENT, sync)
+  }, [])
+
+  useEffect(() => {
+    if (!alwaysAllow) return
+    for (const item of asking) {
+      const id = item.approval?.id
+      if (!id || !item.decide || autoAllowed.current.has(id)) continue
+      autoAllowed.current.add(id)
+      void item.decide(true)
+    }
+  }, [alwaysAllow, asking])
 
   const dialog = dialogSession ? (
     <PlatformRunDialog sessionId={dialogSession} onClose={() => setDialogSession('')} />
@@ -207,6 +226,18 @@ export function ActiveAgentsStrip({
             <div className="agents-strip-actions">
               <button type="button" className="agents-strip-allow" disabled={busy} onClick={() => void decide(true)}>
                 Разрешить
+              </button>
+              <button
+                type="button"
+                className="agents-strip-always"
+                disabled={busy}
+                onClick={() => {
+                  if (current.approval) autoAllowed.current.add(current.approval.id)
+                  void decide(true)
+                  writeAlwaysAllowActions(true)
+                }}
+              >
+                Всегда разрешать
               </button>
               <button type="button" className="agents-strip-deny" disabled={busy} onClick={() => void decide(false)}>
                 Отклонить

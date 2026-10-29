@@ -83,7 +83,7 @@ export type UserPageKey =
 export type SharedPageKey = 'kpi' | 'history' | 'settings'
 export type PageKey = AdminPageKey | UserPageKey | SharedPageKey
 
-export const APP_TITLE = 'Оркестратор'
+export const APP_TITLE = 'Orch_mx'
 
 export const PAGE_LABELS: Record<PageKey, string> = {
   overview: 'Обзор',
@@ -831,7 +831,7 @@ export function Sidebar({
     if (openingConstructor) return
     const launch = window.api.launchConstructor
     if (!launch) {
-      window.alert('Открытие конструктора доступно в приложении Оркестратор')
+      window.alert('Открытие конструктора доступно в приложении Orch_mx')
       return
     }
     setOpeningConstructor(true)
@@ -861,7 +861,7 @@ export function Sidebar({
         ) : null}
         {!collapsed && (!showAdminNav || productAdmin) ? (
           <div className="sidebar-title">
-            <strong>Оркестратор</strong>
+            <strong>Orch_mx</strong>
             <span>должности</span>
           </div>
         ) : null}
@@ -915,7 +915,7 @@ export function Sidebar({
             </span>
             {!collapsed && <span className="nav-label">Конструктор</span>}
           </button>
-        </nav>
+      </nav>
       ) : null}
 
       {quickMode && quickPickerOpen ? (

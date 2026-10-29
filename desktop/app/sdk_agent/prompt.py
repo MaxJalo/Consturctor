@@ -276,11 +276,39 @@ def _is_meeting_run_agent(workflow: WorkflowRecord) -> bool:
     )
 
 
+def _is_external_order_helper(workflow: WorkflowRecord) -> bool:
+    title = (workflow.title or "").casefold().replace("ё", "е")
+    return title.startswith("ии-агент внешнего заказа") or title.startswith("ии-агент внешних закупок")
+
+
+def _is_production_order_helper(workflow: WorkflowRecord) -> bool:
+    title = (workflow.title or "").casefold().replace("ё", "е")
+    return title.startswith("ии-агент внешнего заказа") and "производство" in title
+
+
 def build_sdk_prompt(workflow: WorkflowRecord, user_message: str) -> str:
     title = (workflow.title or "").strip()
     task = (user_message or "").strip() or "Выполни задачу агента из materials/agent.md."
     prefix = f"Агент: {title}\n\n" if title else ""
-    if _is_meeting_run_agent(workflow):
+    if _is_production_order_helper(workflow):
+        read_hint = (
+            "Один раз открой materials/agent.md, если ещё не открывал. "
+            "Сразу вызови external_order.case action=read с order_id из задачи. "
+            "Затем один раз external_order.case action=plan с тем же order_id. "
+            "Действие plan уже есть в схеме этого инструмента, в файлах его не ищи. "
+            "В ответе назови имя файла из summary вызова plan. "
+            "Не пиши строку TESTS, TESTS: PASS и TESTS: FAIL — это не тесты и в ответ не входит. "
+            "После read не останавливайся: без plan файл плана не появляется."
+        )
+    elif _is_external_order_helper(workflow):
+        read_hint = (
+            "Один раз открой materials/agent.md, если ещё не открывал. "
+            "Сразу вызови external_order.case action=read с order_id из задачи. "
+            "Не ищи этот инструмент в файлах: он уже в сессии. "
+            "Не пиши строку TESTS, TESTS: PASS и TESTS: FAIL — это не тесты и в ответ не входит. "
+            "Короткий итог напиши один раз и остановись."
+        )
+    elif _is_meeting_run_agent(workflow):
         read_hint = (
             "Прочитай только materials/agent.md (один Read). "
             "Не делай Glob по materials/ и не читай manifest подряд — регламент уже в agent.md. "

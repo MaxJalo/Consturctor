@@ -2,7 +2,9 @@ import { useEffect, useState } from 'react'
 import { Paperclip } from 'lucide-react'
 import type { UserProfile } from '../../api/types'
 import {
+  ATTACHED_FILES,
   attachmentFileName,
+  FILE_VOLUME_NOTE,
   loadDocflowAttachments,
   openDocflowAttachment,
   type DocflowAttachment
@@ -83,6 +85,11 @@ export function DocflowAttachments({
     }
   }, [user, entity, ownerId])
 
+  const volumeFile =
+    entity === ATTACHED_FILES.order || entity === ATTACHED_FILES.directive
+      ? files.find((file) => !file.path.trim())
+      : undefined
+
   return (
     <section className="docflow-card-block">
       <h4>
@@ -92,6 +99,7 @@ export function DocflowAttachments({
       {loading ? <p className="docflow-muted">Загружаем вложения из 1С…</p> : null}
       {error ? <p className="docflow-edit-notice is-error">{error}</p> : null}
       {!loading && !error && !files.length ? <p className="docflow-muted">Вложений нет</p> : null}
+      {volumeFile ? <p className="docflow-edit-notice">{FILE_VOLUME_NOTE}</p> : null}
       {files.length ? (
         <ul className="docflow-files">
           {files.map((file) => (
@@ -100,6 +108,12 @@ export function DocflowAttachments({
                 <Paperclip size={12} aria-hidden />
                 {fileLabel(file)}
               </DocflowFileOpenButton>
+              {entity === ATTACHED_FILES.order || entity === ATTACHED_FILES.directive ? (
+                <span className="docflow-muted">
+                  {' '}
+                  {file.storage || 'тип хранения не прочитан'}, путь {file.path.trim() || 'пустой'}
+                </span>
+              ) : null}
             </li>
           ))}
         </ul>

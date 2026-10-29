@@ -11,6 +11,7 @@ import {
 } from '../../workplace/fetchDocflowServiceRequests'
 import type { DocflowKindId } from '../../workplace/docflowDocumentCreate'
 import { DocflowOpenFormBar } from './DocflowOpenFormBar'
+import { DocflowProcessBlock } from './DocflowProcessBlock'
 import { DocflowSearch, SortTh, useDocflowTable } from './docflowTableTools'
 
 const ICONS = {
@@ -341,6 +342,7 @@ export function DocflowServiceRequestsPanel({
               ) : null}
             </div>
           </div>
+          {selected ? <DocflowProcessBlock /> : null}
           <div className="docflow-order-filters">
             <DocflowSearch
               value={table.query}

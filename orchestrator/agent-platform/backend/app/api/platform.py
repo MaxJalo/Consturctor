@@ -1,4 +1,6 @@
+import json
 import mimetypes
+import urllib.request
 from pathlib import PurePosixPath
 from typing import Any, Literal
 
@@ -6,6 +8,7 @@ from fastapi import APIRouter, HTTPException
 from fastapi.responses import FileResponse, Response
 from pydantic import BaseModel, Field
 
+from app.config import settings
 from app.constructor.avatars import USER_ID_PATTERN
 from app.constructor.brief import BriefError, ConstructorBrief, build_brief
 from app.constructor.catalog import constructor_catalog
@@ -13,7 +16,7 @@ from app.constructor.db import fetch_agent_detail, fetch_agent_run
 from app.constructor.owners import agent_detail
 from app.platform import attachments, profile, shared
 from app.platform.approvals import WAIT_SECONDS as APPROVAL_WAIT_SECONDS
-from app.platform.approvals import ApprovalError, approvals, classify, hook_reply
+from app.platform.approvals import ApprovalError, approvals, classify, confirm_action, hook_reply
 from app.platform.attachments import Attachment, AttachmentError, AttachmentUpload, DecodedFile
 from app.platform.configs import PlatformConfig, configs_root, find_config, list_configs
 from app.platform.history import RemoteRun, machine, reader
@@ -125,15 +128,62 @@ def _constructor_instruction(agent_id: str) -> tuple[str, str]:
     return detail.title, detail.prompt.strip()
 
 
+def _workflow_row_from_api(workflow_id: str) -> dict[str, Any] | None:
+    """Тот же агент через API Constructor, если с этого компьютера база не открывается."""
+    token = (settings.constructor_api_token or "").strip()
+    base = (settings.constructor_api_url or "").strip().rstrip("/")
+    if not token or not base:
+        return None
+    request = urllib.request.Request(
+        f"{base}/api/v1/workflows/{workflow_id}",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=8) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+    except Exception:
+        return None
+    if not isinstance(payload, dict):
+        return None
+    local = payload.get("local_run") if isinstance(payload.get("local_run"), dict) else {}
+    playbook = local.get("playbook") if isinstance(local.get("playbook"), dict) else {}
+    plan = payload.get("plan_json") if isinstance(payload.get("plan_json"), dict) else {}
+    return {
+        "id": payload.get("id") or workflow_id,
+        "title": payload.get("title") or "",
+        "phase": payload.get("phase") or "",
+        "notes": payload.get("notes") or "",
+        "document_name": payload.get("document_name") or "",
+        "document_text": payload.get("document_text") or "",
+        "last_result": payload.get("last_result") or "",
+        "plan_json": plan,
+        "playbook": playbook,
+        "write_recipe": local.get("write_recipe"),
+        "published": local.get("published"),
+        "status": local.get("status"),
+        "deleted": local.get("deleted"),
+        "kind": local.get("kind"),
+        "unformed": local.get("unformed"),
+        "fio": "",
+        "position": "",
+        "department": "",
+    }
+
+
 def _constructor_brief(workflow_id: str) -> ConstructorBrief | None:
     """План агента Конструктора из public.workflows. None — такой записи нет."""
     if not USER_ID_PATTERN.fullmatch(workflow_id):
         return None
+    row = None
+    db_error = ""
     try:
         row = fetch_agent_run(workflow_id)
     except Exception as exc:
-        message = str(exc).splitlines()[0] or "база недоступна"
-        raise HTTPException(status_code=502, detail=f"База Constructor недоступна: {message}") from exc
+        db_error = str(exc).splitlines()[0] or "база недоступна"
+    if row is None:
+        row = _workflow_row_from_api(workflow_id)
+    if row is None and db_error:
+        raise HTTPException(status_code=502, detail=f"База Constructor недоступна: {db_error}")
     if row is None:
         return None
     try:
@@ -630,7 +680,7 @@ def post_answer(session_id: str, question_id: str, body: QuestionReply) -> dict[
     return {"ok": True}
 
 
-# Разрешения: хук preToolUse конфигурации спрашивает, можно ли выполнить действие, экран сессии отвечает.
+# Разрешения: хук preToolUse спрашивает платформу. confirm_action подтверждает запрос сразу.
 @router.post("/sessions/{session_id}/approvals")
 def post_approval(session_id: str, body: ToolUse) -> dict[str, object]:
     session = store.get(session_id)
@@ -643,6 +693,9 @@ def post_approval(session_id: str, body: ToolUse) -> dict[str, object]:
         return hook_reply("cancelled")
     if approvals.remembered(session_id, request):
         store.trace(session_id, "platform→runner", "разрешено ранее", text=request.subject)
+        return {"status": "allowed", "permission": "allow"}
+    if confirm_action(body.tool_name, body.tool_input):
+        store.trace(session_id, "platform→runner", "подтверждено автоматически", text=request.subject)
         return {"status": "allowed", "permission": "allow"}
     approvals.ask(session_id, request)
     store.note_approval(

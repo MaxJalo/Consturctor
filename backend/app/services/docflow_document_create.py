@@ -497,23 +497,33 @@ KINDS: dict[str, dict[str, Any]] = {
                 ("ПеречислениеВБюджет", "Перечисление в бюджет"),
                 ("ВыплатаЗарплаты", "Выплата зарплаты"),
             )},
+            {"key": "ПолучательВид", "label": "Получатель", "type": "enum", "default": "employee", "ui_only": True, "show": "advance", "options": _enum(
+                ("employee", "Сотрудник"),
+                ("contractor", "Контрагент"),
+                ("bank", "Банк"),
+            )},
             {"key": "СуммаДокумента", "label": "Сумма", "type": "number", "required": True},
             {"key": "Валюта_Key", "label": "Валюта", "type": "ref", "catalog": "Catalog_Валюты", "required": True, "default": "руб"},
             {"key": "ФормаОплатыЗаявки", "label": "Форма оплаты", "type": "enum", "required": True, "default": "Безналичная", "options": _enum(
                 ("Безналичная", "Безналичная"),
                 ("Наличная", "Наличная"),
             )},
-            {"key": "ЖелательнаяДатаПлатежа", "label": "Желательная дата платежа", "type": "date", "required": True},
-            {"key": "Контрагент_Key", "label": "Контрагент (получатель)", "type": "ref", "catalog": CONTRACTORS},
-            {"key": "Партнер_Key", "label": "Партнёр", "type": "ref", "catalog": PARTNERS},
+            {"key": "ЖелательнаяДатаПлатежа", "label": "Дата платежа", "type": "date", "required": True},
+            {"key": "Контрагент_Key", "label": "Контрагент (получатель)", "type": "ref", "catalog": CONTRACTORS, "show": "party"},
+            {"key": "Партнер_Key", "label": "Партнёр", "type": "ref", "catalog": PARTNERS, "show": "party"},
             {"key": "БанковскийСчет_Key", "label": "Банковский счёт организации", "type": "ref", "catalog": "Catalog_БанковскиеСчетаОрганизаций"},
-            {"key": "БанковскийСчетКонтрагента_Key", "label": "Банковский счёт контрагента", "type": "ref", "catalog": "Catalog_БанковскиеСчетаКонтрагентов"},
-            {"key": "ПодотчетноеЛицо_Key", "label": "Подотчётное лицо", "type": "ref", "catalog": "Catalog_ФизическиеЛица"},
+            {"key": "БанковскийСчетКонтрагента_Key", "label": "Счёт получателя", "type": "ref", "catalog": "Catalog_БанковскиеСчетаКонтрагентов", "show": "account"},
+            {"key": "ПодотчетноеЛицо_Key", "label": "Сотрудник", "type": "ref", "catalog": "Catalog_ФизическиеЛица", "required": True, "show": "advance-employee"},
+            {"key": "ИННПолучателя", "label": "ИНН", "type": "text", "readonly": True, "ui_only": True, "show": "advance-employee"},
+            {"key": "БанкПолучателя", "label": "Банк", "type": "text", "readonly": True, "ui_only": True, "show": "advance-employee"},
+            {"key": "БИКБанкаПолучателя", "label": "БИК", "type": "text", "readonly": True, "ui_only": True, "show": "advance-employee"},
+            {"key": "НомерСчетаПолучателя", "label": "Номер счёта", "type": "text", "readonly": True, "ui_only": True, "show": "advance-employee"},
+            {"key": "ДатаАвансовогоОтчета", "label": "Отчитался", "type": "date", "show": "advance"},
             {"key": "СтатьяДвиженияДенежныхСредств_Key", "label": "Статья ДДС", "type": "ref", "catalog": "Catalog_СтатьиДвиженияДенежныхСредств", "required": True},
             {"key": "ТД_ЦФО_Key", "label": "ЦФО", "type": "ref", "catalog": "Catalog_ТД_ЦФО", "required": True},
             {"key": "Подразделение_Key", "label": "Подразделение", "type": "ref", "catalog": DEPARTMENTS, "required": True},
             {"key": "НазначениеПлатежа", "label": "Назначение платежа", "type": "textarea", "required": True},
-            {"key": "КтоЗаявил_Key", "label": "Кто заявил", "type": "ref", "catalog": USERS, "required": True, "default": "me"},
+            {"key": "КтоЗаявил_Key", "label": "Заявитель", "type": "ref", "catalog": USERS, "required": True, "default": "me"},
             {"key": "Комментарий", "label": "Комментарий", "type": "textarea"},
         ],
         "tables": [
@@ -1007,6 +1017,95 @@ def _pick(rows: list[dict[str, Any]], query: str) -> dict[str, Any] | None:
     return scored[0][2] if scored else None
 
 
+_PERSONS = "Catalog_ФизическиеЛица"
+_BANK_ACCOUNTS = "Catalog_БанковскиеСчетаКонтрагентов"
+
+
+def _account_is_open(row: dict[str, Any]) -> bool:
+    if row.get("DeletionMark"):
+        return False
+    return row.get("Закрыт") not in (True, "true", "True")
+
+
+def _employee_accounts(client: _ODataClient, person_key: str) -> list[dict[str, Any]]:
+    """Счета физлица. В карточке 1С владелец — «Владелец», в OData это Owner."""
+    filters = (
+        f"Owner eq cast(guid'{person_key}', 'Catalog_ФизическиеЛица')",
+        f"Owner_Type eq 'StandardODATA.Catalog_ФизическиеЛица' and Owner eq guid'{person_key}'",
+    )
+    for expr in filters:
+        try:
+            rows = client.get(_BANK_ACCOUNTS, filt=expr, top=20)
+        except Exception:  # noqa: BLE001
+            rows = []
+        if rows:
+            return [row for row in rows if isinstance(row, dict)]
+    return []
+
+
+def _pick_employee_account(rows: list[dict[str, Any]]) -> dict[str, Any] | None:
+    open_rows = [row for row in rows if _account_is_open(row)]
+    pool = open_rows or [row for row in rows if not row.get("DeletionMark")]
+    salary = [row for row in pool if "зп" in str(row.get("Description") or "").casefold()]
+    return (salary or pool or [None])[0]
+
+
+def bank_from_account(client: _ODataClient, account: dict[str, Any]) -> dict[str, str]:
+    """ИНН сотрудника живёт на физлице. Банк и БИК — на самом счёте, иначе в справочнике банков."""
+    name = str(account.get("НаименованиеБанка") or "").strip()
+    bik = str(account.get("БИКБанка") or "").strip()
+    number = str(account.get("НомерСчета") or "").strip()
+    bank_key = str(account.get("Банк_Key") or "")
+    if (not name or not bik) and _GUID_RE.match(bank_key) and bank_key != EMPTY_GUID:
+        try:
+            banks = client.get("Catalog_Банки", ref_key=bank_key)
+        except Exception:  # noqa: BLE001
+            banks = []
+        if banks:
+            name = name or str(banks[0].get("Description") or "").strip()
+            bik = bik or str(banks[0].get("Code") or "").strip()
+    return {"bank_name": name, "bank_bik": bik, "account_number": number}
+
+
+def employee_payment_card(client: _ODataClient, query: str) -> dict[str, Any]:
+    """Подразделение, заявитель, счёт, ИНН и банк сотрудника для заявки подотчётнику.
+
+    Счёта в 1С нет — поля остаются пустыми, номер счёта не выдумываем.
+    """
+    person_key = _resolve_ref(client, _PERSONS, query, "Сотрудник")
+    if not person_key:
+        return {"ok": False, "summary": "Сотрудник в 1С не найден"}
+    person_rows = client.get(_PERSONS, ref_key=person_key)
+    person = person_rows[0] if person_rows else {}
+    name = str(person.get("Description") or query).strip()
+    inn = str(person.get("ИНН") or "").strip()
+    users = client.get(USERS, filt=f"substringof('{_quote(name)}', Description)", top=8)
+    user = _pick(users, name)
+    dept_key = str((user or {}).get("Подразделение_Key") or "")
+    dept_name = ""
+    if _GUID_RE.match(dept_key) and dept_key != EMPTY_GUID:
+        dept_rows = client.get(DEPARTMENTS, ref_key=dept_key)
+        dept_name = str(dept_rows[0].get("Description") or "").strip() if dept_rows else ""
+        if not dept_name:
+            dept_key = ""
+    account = _pick_employee_account(_employee_accounts(client, person_key)) or {}
+    bank = bank_from_account(client, account) if account else {"bank_name": "", "bank_bik": "", "account_number": ""}
+    return {
+        "ok": True,
+        "summary": name,
+        "person_key": person_key,
+        "person_name": name,
+        "inn": inn,
+        "department_key": dept_key,
+        "department_name": dept_name,
+        "user_key": str((user or {}).get("Ref_Key") or ""),
+        "user_name": str((user or {}).get("Description") or ""),
+        "account_key": str(account.get("Ref_Key") or ""),
+        "account_name": str(account.get("Description") or "").strip(),
+        **bank,
+    }
+
+
 def lookup_catalog(client: _ODataClient, catalog: str, query: str, *, limit: int = _LOOKUP_LIMIT) -> list[dict[str, str]]:
     text = " ".join(str(query or "").split())
     filt = "DeletionMark eq false"
@@ -1168,6 +1267,52 @@ def _field_applies(field: dict[str, Any], kind_label: str) -> bool:
     return any(str(needle) in kind_label for needle in needles)
 
 
+_ADVANCE_OPERATION = "ВыдачаДенежныхСредствПодотчетнику"
+
+
+def _payment_field_visible(field: dict[str, Any], values: dict[str, Any]) -> bool:
+    """Какие поля заявки на ДС видны при выбранной операции и виде получателя.
+
+    Остальные операции оставляют контрагента. Выдача подотчётнику показывает
+    сотрудника, его счёт и дату «Отчитался».
+    """
+    show = str(field.get("show") or "")
+    if show in {"", "account"}:
+        return True
+    operation = str(values.get("ХозяйственнаяОперация") or "")
+    recipient = str(values.get("ПолучательВид") or "employee")
+    advance = operation == _ADVANCE_OPERATION
+    if show == "advance":
+        return advance
+    if show == "advance-employee":
+        return advance and recipient == "employee"
+    if show == "party":
+        return (not advance) or recipient in {"contractor", "bank"}
+    return True
+
+
+def _share_payment_cash_flow(values: dict[str, Any], tables: dict[str, Any] | None) -> None:
+    """Статья ДДС из строки расшифровки пишется и в шапку, и наоборот.
+
+    Пустую шапку при заполненной строке в 1С не отправляем.
+    """
+    header_key = "СтатьяДвиженияДенежныхСредств_Key"
+    header = str(values.get(header_key) or "").strip()
+    raw_rows = (tables or {}).get("РасшифровкаПлатежа")
+    if not isinstance(raw_rows, list):
+        return
+    for row in raw_rows:
+        if not isinstance(row, dict):
+            continue
+        line = str(row.get(header_key) or "").strip()
+        if not header and line:
+            values[header_key] = line
+            header = line
+        elif header and not line:
+            row[header_key] = header
+        break
+
+
 def _missing(kind: dict[str, Any], values: dict[str, Any]) -> list[str]:
     kind_label = _selected_kind_label(kind, values)
     return [
@@ -1175,7 +1320,9 @@ def _missing(kind: dict[str, Any], values: dict[str, Any]) -> list[str]:
         for field in kind["fields"]
         if field.get("required")
         and not field.get("fill_from")
+        and not field.get("ui_only")
         and _field_applies(field, kind_label)
+        and _payment_field_visible(field, values)
         and not str(values.get(field["key"]) or "").strip()
     ]
 
@@ -1235,6 +1382,8 @@ def build_body(
 ) -> dict[str, Any]:
     kind = _kind(kind_id)
     merged = _values_with_defaults(kind, values, actor_fio)
+    if kind_id == "payment":
+        _share_payment_cash_flow(merged, tables)
     missing = _missing(kind, merged)
     if missing:
         raise DocumentCreateError("Заполните обязательные поля: " + ", ".join(missing))
@@ -1251,6 +1400,8 @@ def build_body(
             continue
         value = _convert(client, field, raw)
         if not _filled(value):
+            continue
+        if field.get("ui_only") or not _payment_field_visible(field, merged):
             continue
         if field.get("property"):
             properties.append((field["property"], value, field))
@@ -1273,6 +1424,9 @@ def build_body(
         body["ДатаПлатежа"] = body.get("ЖелательнаяДатаПлатежа", "")
         body["ФормаОплатыБезналичная"] = body.get("ФормаОплатыЗаявки") == "Безналичная"
         body["ФормаОплатыНаличная"] = body.get("ФормаОплатыЗаявки") == "Наличная"
+        # «Отчитался» есть не в каждой базе. Нет реквизита в образце — не отправляем.
+        if sample and "ДатаАвансовогоОтчета" not in sample:
+            body.pop("ДатаАвансовогоОтчета", None)
     for table in kind.get("tables") or []:
         rows = _table_rows(client, table, (tables or {}).get(table["key"]))
         if not rows and kind_id == "payment":
@@ -1589,6 +1743,22 @@ def _decode_files(raw: Any) -> list[tuple[str, bytes]]:
     return out
 
 
+_VOLUME_NOTE = "Файл записан в базу 1С. Том на другом сервере его не видит: путь к файлу пустой."
+
+
+def _file_storage(client: _ODataClient, entity: str, file_key: str) -> dict[str, str]:
+    """Тип хранения и путь после записи. Том сами не заполняем: его имени в коде нет."""
+    try:
+        rows = client.get(entity, ref_key=file_key)
+    except Exception:  # noqa: BLE001
+        rows = []
+    row = rows[0] if rows else {}
+    return {
+        "storage": str(row.get("ТипХраненияФайла") or "").strip(),
+        "path": str(row.get("ПутьКФайлу") or "").strip(),
+    }
+
+
 def attach_files(
     kind_id: str, ref_key: str, files: list[tuple[str, bytes]], *, args: dict[str, Any], actor_fio: str
 ) -> dict[str, Any]:
@@ -1604,13 +1774,19 @@ def attach_files(
         author_key = ""
     attached: list[str] = []
     failed: list[dict[str, str]] = []
+    stored: list[dict[str, str]] = []
     for name, content in files:
         try:
-            _post_file(client, entity, ref_key, name, content, author_key=author_key)
+            file_key = _post_file(client, entity, ref_key, name, content, author_key=author_key)
+            info = _file_storage(client, entity, file_key)
+            stored.append({"name": name, **info})
             attached.append(name)
         except Exception as exc:  # noqa: BLE001
             failed.append({"name": name, "error": str(exc)[:300]})
-    return {"attached": attached, "failed": failed}
+    note = ""
+    if kind_id in {"order", "directive"} and stored and any(not item["path"] for item in stored):
+        note = _VOLUME_NOTE
+    return {"attached": attached, "failed": failed, "file_storage": stored, "storage_note": note}
 
 
 # ---------------------------------------------------------------- create
@@ -1731,6 +1907,25 @@ def _basis_arg(raw: Any) -> dict[str, str] | None:
     return None
 
 
+def payment_process_note(values: dict[str, Any]) -> str:
+    """Следующий шаг после записи заявки: отправка комплексного процесса в документообороте."""
+    operation = str(values.get("ХозяйственнаяОперация") or "")
+    text = operation.lower()
+    if "билет" in text or (operation != "ВыдачаДенежныхСредствПодотчетнику" and "подотч" not in text):
+        return (
+            " Дальше отправьте на согласование: «Отправить» → рекомендованный шаблон вида "
+            "«Заявки на расходование ДС» («КОМ.РАСХОДЫ Согласование Заявка на ДС (комплексный процесс) по ЦФО» "
+            "или «ВОЗВРАТ БИЛЕТОВ») → «Перейти к отправке» → «Стартовать и закрыть»."
+        )
+    return (
+        " Дальше отправьте на согласование: «Отправить» → шаблон "
+        "«ПОДОТЧЕТ (НЕ ком.расходы) Согласование Заявка на ДС (комплексный процесс) по ЦФО» "
+        "→ «Перейти к отправке» → «Стартовать и закрыть». По очереди: согласование — "
+        "непосредственный руководитель (1 день 5 часов), затем ознакомление — "
+        "главный бухгалтер организации (1 час)."
+    )
+
+
 def create_document(kind_id: str, args: dict[str, Any], *, actor_fio: str) -> dict[str, Any]:
     kind = _kind(kind_id)
     post = _wants_post(args)
@@ -1774,6 +1969,8 @@ def create_document(kind_id: str, args: dict[str, Any], *, actor_fio: str) -> di
     number = created["number"]
     title = kind["title"]
     summary = f"{title} {'проведён' if post else 'записан черновиком'} в 1С" + (f": {number}" if number else "")
+    if kind_id == "request":
+        summary += payment_process_note(values)
     file_result: dict[str, Any] = {"attached": [], "failed": []}
     if files and ref_key:
         file_result = attach_files(kind_id, ref_key, files, args=args, actor_fio=actor_fio)
@@ -1797,6 +1994,20 @@ def files_summary(file_result: dict[str, Any]) -> str:
         out += f". Файлов прикреплено: {len(file_result['attached'])}"
     if file_result.get("failed"):
         out += ". Не прикрепились: " + ", ".join(item["name"] for item in file_result["failed"])
+    stored = file_result.get("file_storage") or []
+    if isinstance(stored, list) and stored:
+        bits = []
+        for item in stored:
+            if not isinstance(item, dict):
+                continue
+            storage = str(item.get("storage") or "не прочитан")
+            path = str(item.get("path") or "пустой")
+            bits.append(f"{item.get('name') or 'файл'}: тип «{storage}», путь {path}")
+        if bits:
+            out += ". Хранение: " + "; ".join(bits)
+    note = str(file_result.get("storage_note") or "").strip()
+    if note:
+        out += ". " + note
     return out
 
 
@@ -1921,6 +2132,10 @@ def handle_docflow_document_create(
             raise DocumentCreateError(f"Справочник {catalog or '—'} не используется в форме «{kind['title']}»")
         items = lookup_catalog(_client(kind, args), catalog, str(args.get("query") or ""))
         return {"summary": f"Найдено: {len(items)}", "items": items}
+    if action == "employee":
+        if kind_id != "payment":
+            raise DocumentCreateError("Карточка сотрудника нужна только заявке на расходование ДС")
+        return employee_payment_card(_client(_kind(kind_id), args), str(args.get("query") or ""))
     if action == "probe":
         return run_probe(kind_id, args, actor_fio=actor)
     if action == "create":

@@ -98,9 +98,14 @@ export class AgentPlatform {
   private stopping = false
 
   constructor(
-    private readonly backendUrl: string,
+    private backendUrl: string,
     private readonly desktopRoot: () => string
   ) {}
+
+  setBackendUrl(url: string): void {
+    const next = url.trim().replace(/\/+$/, '')
+    if (next) this.backendUrl = next
+  }
 
   private get url(): string {
     return this.port ? `http://${HOST}:${this.port}` : ''
@@ -225,7 +230,7 @@ export class AgentPlatform {
     if (this.starting) return this.starting
     if (this.child && this.url && (await healthy(this.url))) return this.status()
     if (!this.user.token || !this.user.fio) {
-      this.lastError = 'Войдите в Оркестратор: агенты запускаются под вашей учётной записью'
+      this.lastError = 'Войдите в Orch_mx: агенты запускаются под вашей учётной записью'
       return { ...this.status(), ok: false }
     }
     this.starting = this.launch().finally(() => {
