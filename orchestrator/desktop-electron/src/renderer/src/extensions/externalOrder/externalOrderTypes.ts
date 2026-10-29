@@ -271,6 +271,70 @@ export type ExternalOrder = ExternalOrderBrief & {
   copilot_summary?: string
 }
 
+export type PlanTask = {
+  uid: number
+  key: string
+  wbs: string
+  name: string
+  level: number
+  summary: boolean
+  milestone: boolean
+  duration_days: number
+  start: string
+  finish: string
+  predecessors: number[]
+  resource: string
+  resource_name: string
+  source: 'дело' | 'норматив' | 'вручную' | ''
+  group: 'root' | 'work' | 'conditions'
+  notes: string
+  editable: boolean
+}
+
+export type PlanWarning = { code: string; level: 'stop' | 'warn'; text: string; key?: string }
+
+export type PlanModel = {
+  ok: boolean
+  order_id: string
+  code: string
+  title: string
+  start: string
+  finish: string
+  contract_number: string
+  template_path: string
+  outline_source: 'template' | 'builtin'
+  calendar: { holidays: string[]; working_weekends: string[] }
+  resources: { key: string; name: string }[]
+  all_resources?: { key: string; name: string }[]
+  tasks: PlanTask[]
+  conditions: { key: string; label: string; value: string; missing: boolean }[]
+  warnings: PlanWarning[]
+  summary: string
+}
+
+export type PlanOverrides = Record<string, { duration_days?: number; resource?: string }>
+
+export type PlanRequest = { overrides: PlanOverrides; start?: string }
+
+export type PlanFileResult = {
+  ok: boolean
+  summary: string
+  file_name: string
+  document_id: string
+  missing: string[]
+  model: PlanModel
+}
+
+export type PlanOutlineTask = {
+  name: string
+  level: number
+  duration_days: number
+  milestone: boolean
+  summary: boolean
+  predecessors: number[]
+  resource: string
+}
+
 export type ExternalOrderCopilotResponse = ExternalOrder & {
   order?: ExternalOrder
   summary?: string

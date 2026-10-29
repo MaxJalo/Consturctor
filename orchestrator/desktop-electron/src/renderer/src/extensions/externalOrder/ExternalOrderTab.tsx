@@ -13,6 +13,7 @@ import {
 } from '../../workplace/docflowDocumentCreate'
 import { onecComInvokeArgs } from '../../workplace/userContext'
 import { useExternalOrderDock } from './externalOrderDock'
+import { PlanBuilder } from './externalOrderPlan'
 import {
   GATES,
   HelperPanel,
@@ -2103,9 +2104,17 @@ function Card({
               </ol>
             </section>
           ) : null}
+          <PlanBuilder
+            key={order.id}
+            order={order}
+            role={role}
+            asRole={asRole}
+            user={user}
+            onOrder={(next) => void onRun(async () => next)}
+          />
           <section className="eo-journal" aria-label="План">
             <div className="eo-journal-bar">
-              <h3>План работ</h3>
+              <h3>Задачи плана</h3>
               {role === 'ks' || role === 'rp' ? (
                 <div className="eo-journal-actions">
                   <button type="button" onClick={() => void onRun(() => api.buildExternalPlan(order.id, asRole))}>Собрать проект плана</button>
@@ -2241,7 +2250,7 @@ function Card({
                               onClick={() =>
                                 void api.download(
                                   `/api/v1/external-orders/${encodeURIComponent(order.id)}/files/${encodeURIComponent(item.id)}`,
-                                  item.file_name || 'План работ.xml'
+                                  item.file_name || `План работ ${order.code}.xml`
                                 )
                               }
                             >

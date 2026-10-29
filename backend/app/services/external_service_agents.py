@@ -107,13 +107,17 @@ def _read_step(role: str) -> str:
         return (
             "1. Сначала вызови `external_order.case(action=\"auto_prepare\", order_id=..., role=\"production\")` "
             "(или `action=read` / `action=read_full`).\n"
-            "2. Затем вызови `external_order.case(action=\"plan\", order_id=...)` (один раз external_order.case action=plan). "
-            "Это файл плана работ: этапы и обязательные условия договора "
-            "(предмет, состав, количество, цена, НДС, сроки, оплата, комплектность, приёмка, гарантия). "
-            "Общий шаблон на сетевом диске не меняй.\n"
-            "3. Запиши черновики полей производства (`technical.quality`, `technical.psi`, `execution.cycle`, "
+            "2. План работ: вызови `external_order.case(action=\"plan_preview\", order_id=...)`. План текстом не пиши: "
+            "задачи, даты по производственному календарю, службы и условия договора "
+            "(предмет, состав, количество, цена, НДС, сроки, оплата, комплектность, приёмка, гарантия) считает инструмент.\n"
+            "3. Задай сотруднику вопросы только из `questions` плана (сроки по нормативу, пустые условия договора, "
+            "задачи без службы, выход за срок договора). Ответы передай как `overrides` {key: {duration_days, resource}} "
+            "и один раз вызови external_order.case action=plan с теми же overrides. "
+            "Даты, цены, НДС и сроки не выдумывай: чего нет — «в деле нет». Общий шаблон на сетевом диске не меняй.\n"
+            "4. Запиши черновики полей производства (`technical.quality`, `technical.psi`, `execution.cycle`, "
             "`execution.capacity`, `execution.acceptance`, `execution.smr`) и доказательств чек-листа через `action=propose`.\n"
-            "4. В ответе назови имя файла плана из summary и проведи интерактивный опрос сотрудника по оставшимся вопросам."
+            "5. Итог в 3–5 строк: что взято из дела, чего в деле нет, имя файла из summary и что .mpp собирается кнопкой "
+            "«Собрать .mpp» на вкладке «Путь 1С и план»."
         )
     return (
         f"1. Сначала вызови `external_order.case(action=\"auto_prepare\", order_id=..., role=\"{role}\")` "
@@ -144,8 +148,8 @@ def _answer_step(role: str) -> str:
     if role == "production":
         return (
             f"Структура ответа для службы «{label}» (owner_role={role}): "
-            "имя собранного файла плана из summary, что заполнено по условиям договора, "
-            "какие черновики полей/чек-листов подготовлены и какие вопросы нужно уточнить у сотрудника."
+            "имя собранного файла плана из summary, сроки плана, что взято из дела и чего в деле нет, "
+            "какие черновики полей/чек-листов подготовлены и какие вопросы по предупреждениям плана остались."
         )
     return (
         f"Структура ответа для службы «{label}» (owner_role={role}): "
@@ -181,7 +185,8 @@ def playbook(role: str) -> dict:
                 "title": "Авто-подготовка и сборка плана работ" if role == "production" else "Авто-подготовка дела и черновиков службы",
                 "tool": "external_order.case",
                 "action": (
-                    "Вызвать action=auto_prepare, затем один action=plan и action=propose. В ответе имя файла из summary."
+                    "Вызвать action=auto_prepare и action=plan_preview, спросить только по questions плана, "
+                    "затем один action=plan с overrides и action=propose. В ответе имя файла из summary."
                     if role == "production"
                     else f"Вызвать action=auto_prepare (role={role}), сохранить черновики через action=propose и опросить сотрудника по пробелам."
                 ),

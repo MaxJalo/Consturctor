@@ -101,6 +101,15 @@ class FileIn(BaseModel):
     content_base64: str = ""
 
 
+class PlanIn(BaseModel):
+    overrides: dict = Field(default_factory=dict)
+    start: str = ""
+
+
+class PlanTemplateIn(BaseModel):
+    tasks: list[dict] = Field(default_factory=list)
+
+
 class BaselineIn(BaseModel):
     composition: str = ""
     cost: str = ""
@@ -501,14 +510,14 @@ def get_order_file(
     db: Session = Depends(get_db),
 ) -> FileResponse:
     _ = auth
-    from app.services.external_order_plan import plan_file_path
+    from app.services.external_order_plan import file_mime, plan_file_path
     from app.services.external_orders import _order
 
     try:
         path = plan_file_path(_order(db, order_id), document_id)
     except ExternalOrderError as exc:
         raise HTTPException(status_code=exc.status, detail=exc.detail) from exc
-    return FileResponse(path, media_type="application/xml", filename=path.name.split("_", 1)[-1])
+    return FileResponse(path, media_type=file_mime(path), filename=path.name.split("_", 1)[-1])
 
 
 @router.post("/{order_id}/files")
@@ -579,6 +588,88 @@ def post_plan(
     db: Session = Depends(get_db),
 ) -> dict:
     return _call(lambda: make_plan(db, order_id, role=_role(auth, as_role, db), fio=auth.fio or ""))
+
+
+@router.post("/plan/template-outline")
+def post_plan_template(
+    body: PlanTemplateIn,
+    as_role: str = Query(default=""),
+    auth: AuthContext = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> dict:
+    from app.services.external_order_plan import save_template_outline
+
+    role = _role(auth, as_role, db)
+    if role not in {"rp", "it", "production", "ks"}:
+        raise HTTPException(status_code=403, detail="Структуру шаблона обновляет руководитель проекта или ИТ")
+    return _call(lambda: save_template_outline(body.tasks, fio=auth.fio or ""))
+
+
+@router.post("/{order_id}/plan/preview")
+def post_plan_preview(
+    order_id: str,
+    body: PlanIn,
+    as_role: str = Query(default=""),
+    auth: AuthContext = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> dict:
+    from app.services.external_order_plan import preview_work_plan
+
+    _ = _role(auth, as_role, db)
+    return _call(lambda: preview_work_plan(db, order_id, overrides=body.overrides, start=body.start))
+
+
+@router.get("/{order_id}/plan/model")
+def get_plan_model(
+    order_id: str,
+    as_role: str = Query(default=""),
+    auth: AuthContext = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> dict:
+    from app.services.external_order_plan import preview_work_plan
+
+    _ = _role(auth, as_role, db)
+    return _call(lambda: preview_work_plan(db, order_id))
+
+
+@router.post("/{order_id}/plan/file")
+def post_plan_file(
+    order_id: str,
+    body: PlanIn,
+    as_role: str = Query(default=""),
+    auth: AuthContext = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> dict:
+    from app.services.external_order_plan import build_work_plan
+
+    role = _role(auth, as_role, db)
+    if role == "viewer":
+        raise HTTPException(status_code=403, detail="Просмотр не меняет дело")
+    return _call(
+        lambda: build_work_plan(db, order_id, fio=auth.fio or "", overrides=body.overrides, start=body.start)
+    )
+
+
+@router.post("/{order_id}/plan/upload-mpp")
+def post_plan_mpp(
+    order_id: str,
+    body: FileIn,
+    as_role: str = Query(default=""),
+    auth: AuthContext = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> dict:
+    from app.services.external_order_plan import store_mpp
+
+    role = _role(auth, as_role, db)
+
+    def action() -> dict:
+        store_mpp(
+            db, order_id, fio=auth.fio or "", role=role, filename=body.filename, content_b64=body.content_base64
+        )
+        db.commit()
+        return get_order(db, order_id)
+
+    return _call(action)
 
 
 @router.post("/{order_id}/plan/approve")

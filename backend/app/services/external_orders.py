@@ -200,9 +200,11 @@ SIMPLIFIED_PATH: list[dict[str, str]] = [
         "form": CRM_PROJECT_FORM,
         "file": PROJECT_PLAN_TEMPLATE,
         "prompt": (
-            "Собери отдельный файл плана работ по этому заказу. Внутри обязательно условия договора: "
-            "предмет, состав, количество, цена, НДС, сроки, оплата, комплектность, приёмка и гарантия. "
-            "Общий шаблон «Шаблон плана без РУКОВОДСТВА.mpp» на диске не перезаписывай."
+            "Проверь план работ инструментом: external_order.case action=plan_preview. План текстом не пиши. "
+            "Спроси только по вопросам плана: сроки по нормативу, пустые условия договора, задачи без службы, выход за срок. "
+            "Ответы передай как overrides и один раз вызови action=plan. Даты, цены, НДС и сроки не выдумывай: "
+            "чего нет — «в деле нет». Общий шаблон «Шаблон плана без РУКОВОДСТВА.mpp» на диске не перезаписывай. "
+            "Итог в 3–5 строк: что взято из дела, чего нет, имя файла; .mpp собирается кнопкой «Собрать .mpp»."
         ),
     },
 ]
@@ -2167,15 +2169,15 @@ def propose(
         added = _upsert_draft_finding(
             db,
             row,
-            field=field,
-            value=value,
-            source_ref=source,
-            location=location,
-            document_id=str(item.get("document_id") or ""),
-            confidence=str(item.get("confidence") or ""),
-            owner_role=str(item.get("owner_role") or "ks"),
-            proposed_by=fio or "агент",
-        )
+                field=field,
+                value=value,
+                source_ref=source,
+                location=location,
+                document_id=str(item.get("document_id") or ""),
+                confidence=str(item.get("confidence") or ""),
+                owner_role=str(item.get("owner_role") or "ks"),
+                proposed_by=fio or "агент",
+            )
         if added is not None:
             created += 1
     for item in section_proposals or []:
@@ -2491,13 +2493,13 @@ def draft_onec(db: Session, order_id: str, *, fio: str, fields: dict) -> dict:
     _upsert_draft_finding(
         db,
         row,
-        field=f"draft_1c_{kind}",
-        value=text,
-        source_ref=title,
+            field=f"draft_1c_{kind}",
+            value=text,
+            source_ref=title,
         location=_dump(prefill),
         confidence="черновик",
         owner_role=owner_role,
-        proposed_by=fio or "агент",
+            proposed_by=fio or "агент",
     )
     _audit(db, row, fio=fio or "агент", role="agent", action="draft_1c", detail=f"{kind}: {title}")
     db.commit()
@@ -3033,10 +3035,15 @@ def invoke_tool(arguments: dict, *, fio: str) -> dict:
                 return search_onec(query=query, counterparty_key=counterparty_key)
             except ExternalOrderError as exc:
                 return {"ok": False, "orders": [], "tkp": [], "note": exc.detail}
-        if action == "plan":
-            from app.services.external_order_plan import build_work_plan
+        if action in {"plan", "plan_preview"}:
+            from app.services.external_order_plan import build_work_plan, preview_work_plan
 
-            return build_work_plan(db, order_id, fio=fio)
+            overrides = args.get("overrides") if isinstance(args.get("overrides"), dict) else {}
+            start = str(args.get("start") or "").strip()
+            if action == "plan_preview":
+                return _plan_brief(preview_work_plan(db, order_id, overrides=overrides, start=start))
+            result = build_work_plan(db, order_id, fio=fio, overrides=overrides, start=start)
+            return {**{key: value for key, value in result.items() if key != "model"}, "plan": _plan_brief(result["model"])}
         raise ExternalOrderError("Неизвестное действие")
     except ExternalOrderError as exc:
         raise RuntimeError(exc.detail) from exc
@@ -3319,6 +3326,48 @@ def _trace_or_order(ref_key: str, read_order, tkp_key_for_order, trace_tkp) -> d
     return read_order(ref_key)
 
 
+def _plan_brief(model: dict) -> dict:
+    """План для агента: короткие строки задач, предупреждения и вопросы РП только по ним."""
+    tasks = [
+        {
+            "key": item["key"],
+            "wbs": item["wbs"],
+            "name": item["name"],
+            "days": item["duration_days"],
+            "start": item["start"][:10],
+            "finish": item["finish"][:10],
+            "service": item["resource_name"],
+            "source": item["source"],
+            "milestone": item["milestone"],
+        }
+        for item in model["tasks"]
+        if item["group"] == "work"
+    ]
+    questions = []
+    for item in model["warnings"]:
+        if item["code"] == "norm_duration":
+            questions.append(f"Сколько рабочих дней занимает «{item['text'].split('»')[0].lstrip('«')}»? В деле срока нет.")
+        elif item["code"] == "condition_missing":
+            questions.append(f"{item['text']}. Где это условие в договоре или кто его даст?")
+        elif item["code"] == "no_resource":
+            questions.append(f"Какая служба выполняет {item['text'].replace(' без службы', '')}?")
+        elif item["code"] == "over_term":
+            questions.append(f"{item['text']}. Какие сроки сократить?")
+    return {
+        "ok": True,
+        "summary": model["summary"],
+        "start": model["start"],
+        "finish": model["finish"],
+        "contract_number": model["contract_number"],
+        "outline_source": model["outline_source"],
+        "tasks": tasks,
+        "missing_conditions": [item["label"] for item in model["conditions"] if item["missing"]],
+        "warnings": model["warnings"],
+        "questions": questions[:12],
+        "agent_limits": "Даты, цены, НДС и сроки не выдумывай: чего нет — «в деле нет». Стадию не переводи. Черновик фактом не является.",
+    }
+
+
 def _case_summary(body: dict) -> str:
     """Короткий ответ агенту: полная карточка в инструмент не влезает и уходит в файл, который читать запрещено."""
     status = str(body.get("status") or "")
@@ -3438,7 +3487,7 @@ def read_case(db: Session, order_id: str, *, role: str = "", step_id: str = "") 
         "summary": _case_summary(body),
         "agent_limits": (
             "Ответь по summary и по своей строке в open_by_service. result_file не открывай. "
-            "Не утверждай цену, договор, бюджет, риск и стадию. "
+        "Не утверждай цену, договор, бюджет, риск и стадию. "
             "Не придумывай документы, которых нет в пути. Черновик фактом не является."
         ),
     }

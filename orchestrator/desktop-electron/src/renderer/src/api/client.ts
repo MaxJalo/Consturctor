@@ -74,7 +74,11 @@ import type {
   ExternalOrderMatrix,
   ExternalOrderReview,
   ExternalOrderBrief,
-  ExternalOrderMeta
+  ExternalOrderMeta,
+  PlanFileResult,
+  PlanModel,
+  PlanOutlineTask,
+  PlanRequest
 } from '../extensions/externalOrder/externalOrderTypes'
 import { decodeAgentMessage, previewText } from './chatCodec'
 import { loadSession } from '../store/session'
@@ -2755,6 +2759,58 @@ export class ApiClient {
       params: asRole ? { as_role: asRole } : undefined,
       timeoutMs: 20_000
     })
+  }
+
+  async previewExternalPlan(id: string, body: PlanRequest, asRole = ''): Promise<PlanModel> {
+    return this.request('POST', `/api/v1/external-orders/${encodeURIComponent(id)}/plan/preview`, {
+      body,
+      params: asRole ? { as_role: asRole } : undefined,
+      timeoutMs: 30_000
+    })
+  }
+
+  async externalPlanModel(id: string, asRole = ''): Promise<PlanModel> {
+    return this.request('GET', `/api/v1/external-orders/${encodeURIComponent(id)}/plan/model`, {
+      params: asRole ? { as_role: asRole } : undefined,
+      timeoutMs: 30_000
+    })
+  }
+
+  async buildExternalPlanFile(id: string, body: PlanRequest, asRole = ''): Promise<PlanFileResult> {
+    return this.request('POST', `/api/v1/external-orders/${encodeURIComponent(id)}/plan/file`, {
+      body,
+      params: asRole ? { as_role: asRole } : undefined,
+      timeoutMs: 60_000
+    })
+  }
+
+  async uploadExternalPlanMpp(
+    id: string,
+    body: { filename: string; content_base64: string },
+    asRole = ''
+  ): Promise<ExternalOrder> {
+    return this.request('POST', `/api/v1/external-orders/${encodeURIComponent(id)}/plan/upload-mpp`, {
+      body,
+      params: asRole ? { as_role: asRole } : undefined,
+      timeoutMs: 60_000
+    })
+  }
+
+  async saveExternalPlanTemplate(tasks: PlanOutlineTask[], asRole = ''): Promise<{ ok: boolean; count: number }> {
+    return this.request('POST', '/api/v1/external-orders/plan/template-outline', {
+      body: { tasks },
+      params: asRole ? { as_role: asRole } : undefined,
+      timeoutMs: 30_000
+    })
+  }
+
+  async externalFileBase64(orderId: string, documentId: string): Promise<string> {
+    const res = await window.api.fetchBinary({
+      url: `/api/v1/external-orders/${encodeURIComponent(orderId)}/files/${encodeURIComponent(documentId)}`,
+      token: this.resolveToken()
+    })
+    if (!res.ok || !res.base64) throw new ApiError(res.error || 'Не удалось загрузить файл')
+    return res.base64
   }
 
   async approveExternalPlan(id: string, asRole = ''): Promise<ExternalOrder> {

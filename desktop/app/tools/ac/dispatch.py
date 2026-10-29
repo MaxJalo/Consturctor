@@ -13,6 +13,7 @@ from app.tools.ac.document_tools import register_document_tools
 from app.tools.ac.office_tools import register_office_tools
 from app.tools.ac.com_backed_tools import register_outlook_com_tools
 from app.tools.ac.excel_tools import register_excel_tools
+from app.tools.ac.msproject_tools import register_msproject_tools
 from app.tools.ac.onec_tools import register_onec_readonly_tools
 from app.tools.ac.powershell_tools import register_powershell_tools
 from app.tools.ac.registry import ToolRegistry
@@ -82,6 +83,7 @@ def build_registry() -> ToolRegistry:
     register_schedule_tools(registry, skip_existing=True)
     register_calendar_tools(registry, skip_existing=True)
     register_turboproject_tools(registry, skip_existing=True)
+    register_msproject_tools(registry, skip_existing=True)
     return registry
 
 

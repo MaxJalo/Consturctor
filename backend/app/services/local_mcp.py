@@ -1316,13 +1316,21 @@ def _desktop_ac_tools() -> list[dict[str, Any]]:
             "фактом они становятся только после принятия владельцем. "
             "action=draft_1c — подготовить структурированный черновик документа 1С ДО (memo, assignment, directive, order, protocol) с prefill для формы создания. "
             "action=search_1c — поиск ТКП и Заказов клиента в 1С ERP. "
-            "action=plan — файл плана работ по заказу с условиями договора, без правки общего шаблона.",
+            "action=plan_preview — проверить план работ без записи: задачи, сроки по производственному календарю, "
+            "службы, условия договора и предупреждения (warnings). "
+            "action=plan — записать черновик плана работ в дело (XML для Project) с теми же overrides; общий шаблон не правится.",
             {
                 "action": _prop(
                     "string",
-                    "read | read_full | auto_prepare | propose | draft_1c | search_1c | plan",
+                    "read | read_full | auto_prepare | propose | draft_1c | search_1c | plan_preview | plan",
                     default="read",
                 ),
+                "overrides": _prop(
+                    "object",
+                    "Для plan_preview и plan: правки по ключу задачи {key: {duration_days, resource}}. "
+                    "Только значения, которые назвал человек; сроки и службы не выдумывай.",
+                ),
+                "start": _prop("string", "Для plan_preview и plan: дата начала плана YYYY-MM-DD, если её назвал человек"),
                 "order_id": _prop("string", "id или код карточки внешнего заказа"),
                 "role": _prop("string", "Роль службы (ks, development, rp, committee, kb, omto, finance, production, legal, it)"),
                 "step_id": _prop("string", "Код шага пути (zpr, tech, analysis, committee, passport, tkp, contract, linked, start, plan)"),

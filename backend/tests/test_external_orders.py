@@ -866,12 +866,175 @@ def test_production_plan_puts_contract_conditions_in_the_file(tmp_path, monkeypa
     assert "Изготовление" in text
     assert "в договоре дела нет" in text
     assert "Шаблон плана без РУКОВОДСТВА.mpp" in text
+    assert "ns0:" not in text
+    assert 'xmlns="http://schemas.microsoft.com/project"' in text
+    assert "<FinishDate>" in text
+    assert "<Finish>" in text
     for label in ("Предмет", "Состав", "Количество", "Цена", "НДС", "Сроки", "Оплата", "Комплектность", "Приёмка", "Гарантия"):
         assert label in text
     again = build_work_plan(db, created["id"], fio="Производство")
     db.refresh(row)
     assert len([item for item in row.documents if item.kind == "plan"]) == 1
     assert again["file_name"] == result["file_name"]
+
+
+def _plan_order(tmp_path, monkeypatch, sections: dict | None = None):
+    monkeypatch.setattr("app.services.external_order_plan.BACKEND_ROOT", tmp_path)
+    monkeypatch.setattr("app.services.external_order_plan._TEMPLATE_CACHE", tmp_path / "outline.json")
+    db = _db()
+    created = _create(db)
+    row = db.get(ExternalOrder, created["id"])
+    row.sections_json = json.dumps(sections or {}, ensure_ascii=False)
+    db.commit()
+    return db, row
+
+
+def test_russian_work_calendar_skips_weekends_and_holidays():
+    from datetime import date
+
+    from app.services import ru_work_calendar as cal
+
+    assert not cal.is_working(date(2026, 11, 4))
+    assert not cal.is_working(date(2026, 11, 7))
+    assert cal.is_working(date(2026, 11, 5))
+    assert cal.next_working(date(2026, 11, 7)) == date(2026, 11, 9)
+    assert cal.add_working_days(date(2026, 11, 2), 5) == date(2026, 11, 9)
+    assert not cal.is_working(date(2027, 5, 10))
+
+
+def test_plan_model_dates_summaries_milestones_and_conditions(tmp_path, monkeypatch):
+    from datetime import datetime
+
+    from app.services import ru_work_calendar as cal
+    from app.services.external_order_plan import plan_model
+
+    db, row = _plan_order(tmp_path, monkeypatch, {"commercial": {"price": "1000", "term": "60 рабочих дней"}})
+    model = plan_model(row, start="2026-10-31")
+    assert model["start"] == "2026-11-02"
+    tasks = {item["key"]: item for item in model["tasks"]}
+    for item in model["tasks"]:
+        for stamp in (item["start"], item["finish"]):
+            assert cal.is_working(datetime.fromisoformat(stamp).date()), item["name"]
+    for item in model["tasks"]:
+        if not item["summary"]:
+            continue
+        children = [
+            child for child in model["tasks"]
+            if child["wbs"].startswith(f"{item['wbs']}.") or (item["wbs"] == "0" and child is not item)
+        ]
+        assert item["start"] == min(child["start"] for child in children)
+        assert item["finish"] == max(child["finish"] for child in children)
+    milestones = {item["key"] for item in model["tasks"] if item["milestone"]}
+    assert milestones <= {"committee", "contract", "ship", "pay"}
+    assert not tasks["psi"]["milestone"] and tasks["psi"]["duration_days"] > 0
+    assert not tasks["accept"]["milestone"] and tasks["accept"]["duration_days"] > 0
+    run = sum(tasks[key]["duration_days"] for key in ("kd", "omto", "make", "psi", "accept"))
+    assert run == 60
+    assert tasks["kd"]["source"] == "дело"
+    assert tasks["request"]["source"] == "норматив"
+    conds = [item for item in model["tasks"] if item["key"].startswith("cond_")]
+    assert len(conds) == 10
+    assert all(item["duration_days"] == 0 and not item["milestone"] for item in conds)
+    assert all(item["start"] == tasks["contract"]["start"] for item in conds)
+    assert tasks["cond_price"]["notes"] == "1000"
+    assert tasks["cond_vat"]["notes"] == "в договоре дела нет"
+    codes = {(item["code"], item.get("key")) for item in model["warnings"]}
+    assert ("condition_missing", "cond_vat") in codes
+    assert ("norm_duration", "request") in codes
+    assert tasks["kd"]["resource"] == "kb" and tasks["kd"]["wbs"] == "2.1"
+
+
+def test_plan_overrides_and_preview_writes_nothing(tmp_path, monkeypatch):
+    from app.services.external_order_plan import preview_work_plan
+
+    db, row = _plan_order(tmp_path, monkeypatch)
+    before = preview_work_plan(db, row.id, start="2026-11-02")
+    after = preview_work_plan(
+        db,
+        row.id,
+        start="2026-11-02",
+        overrides={"kd": {"duration_days": 20, "resource": "production"}, "contract": {"duration_days": 5}},
+    )
+    kd = next(item for item in after["tasks"] if item["key"] == "kd")
+    assert kd["duration_days"] == 20 and kd["source"] == "вручную" and kd["resource"] == "production"
+    assert after["finish"] > before["finish"]
+    contract = next(item for item in after["tasks"] if item["key"] == "contract")
+    assert contract["milestone"] and contract["duration_days"] == 0
+    db.refresh(row)
+    assert not [item for item in row.documents if item.kind == "plan"]
+    assert not list(tmp_path.glob("storage/**/*.xml"))
+
+
+def test_plan_xml_is_valid_project_file(tmp_path, monkeypatch):
+    from xml.etree import ElementTree as ET
+
+    from app.services.external_order_plan import plan_model, plan_xml
+
+    db, row = _plan_order(tmp_path, monkeypatch, {"onec": {"contract_number": "МПГ1"}})
+    model = plan_model(row, start="2026-12-28")
+    root = ET.fromstring(plan_xml(model))
+    ns = {"p": "http://schemas.microsoft.com/project"}
+    assert root.find("p:Resources/p:Resource", ns) is not None
+    assert root.find("p:Assignments/p:Assignment", ns) is not None
+    exceptions = root.findall("p:Calendars/p:Calendar/p:Exceptions/p:Exception", ns)
+    assert any(item.find("p:TimePeriod/p:FromDate", ns).text.startswith("2026-12-31") for item in exceptions)
+    outline = [item.find("p:OutlineNumber", ns).text for item in root.findall("p:Tasks/p:Task", ns)]
+    assert "2.1" in outline and outline[0] == "0"
+
+
+def test_plan_uses_template_outline_cache(tmp_path, monkeypatch):
+    from app.services.external_order_plan import plan_model, save_template_outline
+
+    db, row = _plan_order(tmp_path, monkeypatch)
+    save_template_outline(
+        [
+            {"name": "Проект", "level": 1, "summary": True},
+            {"name": "Разработка КД", "level": 2, "duration_days": 7, "resource": "КБ и ГСПП"},
+            {"name": "Изготовление изделия", "level": 2, "duration_days": 12},
+            {"name": "Отгрузка", "level": 2, "milestone": True},
+        ],
+        fio="РП",
+    )
+    model = plan_model(row, start="2026-11-02")
+    assert model["outline_source"] == "template"
+    names = [item["name"] for item in model["tasks"] if item["group"] == "work"]
+    assert names[:4] == ["Проект", "Разработка КД", "Изготовление изделия", "Отгрузка"]
+    kd = next(item for item in model["tasks"] if item["name"] == "Разработка КД")
+    assert kd["duration_days"] == 7 and kd["resource"] == "kb"
+    assert not any(item["code"] == "template_missing" for item in model["warnings"])
+
+
+def test_plan_mpp_upload_replaces_xml_draft(tmp_path, monkeypatch):
+    import base64
+
+    from app.services.external_order_plan import build_work_plan, store_mpp
+
+    db, row = _plan_order(tmp_path, monkeypatch)
+    build_work_plan(db, row.id, fio="РП")
+    try:
+        store_mpp(db, row.id, fio="РП", role="rp", filename="x.mpp", content_b64=base64.b64encode(b"nope" * 200).decode())
+    except ExternalOrderError as exc:
+        assert "Project" in exc.detail
+    else:
+        raise AssertionError("не .mpp принят")
+    raw = b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1" + b"\0" * 1024
+    store_mpp(db, row.id, fio="РП", role="rp", filename="План работ ВЗ.mpp", content_b64=base64.b64encode(raw).decode())
+    db.commit()
+    db.refresh(row)
+    docs = [item for item in row.documents if item.kind == "plan"]
+    assert len(docs) == 1 and docs[0].file_name.endswith(".mpp")
+
+
+def test_invoke_tool_plan_preview_returns_questions(tmp_path, monkeypatch):
+    from app.services import external_orders as eo
+
+    db, row = _plan_order(tmp_path, monkeypatch)
+    monkeypatch.setattr("app.db.session.SessionLocal", lambda: db)
+    monkeypatch.setattr(db, "close", lambda: None)
+    body = eo.invoke_tool({"action": "plan_preview", "order_id": row.code}, fio="агент")
+    assert body["tasks"] and body["questions"]
+    assert "не выдумывай" in body["agent_limits"]
+    assert not [item for item in row.documents if item.kind == "plan"]
 
 
 def test_stage_passports_and_role_questions_in_order_detail():
