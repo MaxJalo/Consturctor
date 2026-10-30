@@ -1,7 +1,9 @@
 import { useEffect, useState } from 'react'
 import type {
+  CopilotAiResult,
   CopilotQuestion,
   ExternalOrder,
+  ExternalOrderCheck,
   ExternalOrderFinding,
   ExternalOrderReview,
   StagePassport
@@ -441,6 +443,161 @@ export function formatFindingValue(finding: ExternalOrderFinding): string {
   return raw
 }
 
+export type BasisAdvice = {
+  what: string
+  draft: string
+  source: string
+  template: boolean
+}
+
+function sectionValue(order: ExternalOrder, section: string, key: string): string {
+  return String(order.sections?.[section]?.[key] || '').trim()
+}
+
+function namedDoc(order: ExternalOrder, kinds: string[]): string {
+  const doc = (order.documents || []).find((item) => kinds.includes(item.kind) && (item.title || item.file_name))
+  if (!doc) return ''
+  const name = doc.file_name || doc.title
+  return doc.version ? `${name}, ${doc.version}` : name
+}
+
+function ready(what: string, draft: string, source: string): BasisAdvice {
+  return { what, draft, source, template: false }
+}
+
+function hint(what: string, draft = ''): BasisAdvice {
+  return { what, draft, source: '', template: true }
+}
+
+export function basisAdvice(order: ExternalOrder, check: ExternalOrderCheck): BasisAdvice {
+  const finding = (order.findings || []).find(
+    (item) => item.field === `check:${check.id}` && item.status !== 'rejected' && String(item.value || '').trim()
+  )
+  if (finding) {
+    return ready(
+      'По этому пункту помощник уже собрал основание из дела. Вставьте его в поле и подтвердите. Отдельный файл не нужен, если в тексте назван источник.',
+      formatFindingValue(finding),
+      finding.source_ref || 'Черновик помощника'
+    )
+  }
+
+  const cycle = sectionValue(order, 'execution', 'cycle')
+  const capacity = sectionValue(order, 'execution', 'capacity')
+  const acceptance = sectionValue(order, 'execution', 'acceptance')
+  const quality = sectionValue(order, 'technical', 'quality')
+  const psi = sectionValue(order, 'technical', 'psi')
+  const smr = sectionValue(order, 'execution', 'smr')
+  const text = check.text
+
+  if (text === 'Производство подтвердило цикл и мощности') {
+    if (cycle && capacity) {
+      return ready(
+        'Основание — не вложение, а ваши цифры из блока «Производство и сервис»: цикл и мощности.',
+        `Цикл: ${cycle}. Мощности: ${capacity}.`,
+        'Раздел «Производство и сервис»'
+      )
+    }
+    return hint(
+      'Сначала заполните поля «Цикл» и «Мощности» выше. В основание попадёт эта пара, например срок изготовления и подтверждение, что цех тянет объём. Скан сюда прикладывать не нужно.',
+      'Цикл: … рабочих дней. Мощности: цех подтвердил объём, кооперация не требуется.'
+    )
+  }
+  if (text === 'Ресурсы и мощности подтверждены') {
+    if (capacity) {
+      return ready('Берите формулировку из поля «Мощности».', capacity, 'Поле «Мощности»')
+    }
+    return hint(
+      'Напишите, кто и чем подтвердил ресурсы: цех, люди, оснастка. Если мощности уже введены выше, помощник подставит их сам.',
+      'Мощности подтверждены: … (цех / смена / кооперация).'
+    )
+  }
+  if (text === 'Маршрут и контроль качества определены') {
+    if (quality) {
+      return ready('В основание идут нормативы из поля «Нормативы».', `Контроль качества: ${quality}.`, 'Поле «Нормативы»')
+    }
+    return hint(
+      'Укажите маршрут изготовления и чем принимаете качество: ГОСТ, ТУ или программа ПСИ. Это же значение введите в поле «Нормативы».',
+      'Маршрут: …. Контроль: ГОСТ / ТУ …, программа ПСИ ….'
+    )
+  }
+  if (text === 'Программа и методика утверждены') {
+    const doc = namedDoc(order, ['acceptance', 'protocol', 'condition'])
+    if (psi) return ready('В основание — текст поля «ПСИ».', psi, 'Поле «ПСИ»')
+    if (doc) return ready('В деле уже есть документ, на который можно сослаться номером и названием.', `ПМИ: ${doc}.`, doc)
+    return hint(
+      'Нужно название утверждённой программы и методики, кем и когда утверждена. Файл прикрепите во вкладке «Сделка и дело», в основание — его имя, а не слово «утверждено».',
+      'ПМИ «…» утверждена …, дата ….'
+    )
+  }
+  if (text === 'Готовность изделия подтверждена') {
+    const doc = namedDoc(order, ['acceptance', 'protocol'])
+    if (doc) return ready('Сошлитесь на документ приёмки, который уже лежит в деле.', `Готовность: ${doc}.`, doc)
+    return hint('Номер и дата акта готовности или записи ОТК. Пересказ без номера не считается основанием.', 'Акт готовности № … от ….')
+  }
+  if (text === 'Средства измерений действительны') {
+    return hint(
+      'Номер свидетельства о поверке и до какой даты оно действует. Скан можно прикрепить в дело, в основание — номер и срок.',
+      'СИ поверены, свидетельство № …, действительно до ….'
+    )
+  }
+  if (text === 'Замечания предыдущих проверок закрыты') {
+    return hint(
+      'Номера закрытых замечаний или явная фраза, что замечаний не было, со ссылкой на протокол ПСИ.',
+      'Замечания ПСИ … закрыты / замечаний нет, протокол ….'
+    )
+  }
+  if (text === 'Приёмка завершена') {
+    if (acceptance) return ready('В основание идёт поле «Приёмка».', acceptance, 'Поле «Приёмка»')
+    const doc = namedDoc(order, ['acceptance'])
+    if (doc) return ready('В деле есть документ приёмки.', `Приёмка: ${doc}.`, doc)
+    return hint('Дата и документ: акт, УПД или запись. То же кратко впишите в поле «Приёмка» выше.', 'Приёмка завершена актом № … от ….')
+  }
+  if (text === 'Гарантийная передача выполнена') {
+    return hint('Номер и дата акта гарантийной передачи. Без номера пункт не закрывается.', 'Акт гарантийной передачи № … от ….')
+  }
+  if (text === 'Запрос и ТЗ зарегистрированы') {
+    const doc = namedDoc(order, ['tz'])
+    if (doc) return ready('В деле есть файл ТЗ — его имя и есть основание.', `Запрос ${order.code}, ТЗ «${doc}».`, doc)
+    return hint(`Карточка ${order.code} уже есть. Если ТЗ прикреплено, укажите имя файла. Если нет — так и напишите, что зарегистрирован только запрос.`, `Запрос ${order.code} зарегистрирован, файл ТЗ: ….`)
+  }
+  if (text === 'Есть разрешающий протокол и базовая версия') {
+    const doc = namedDoc(order, ['protocol'])
+    const base = order.baselines?.[order.baselines.length - 1]
+    if (doc || base) {
+      return ready(
+        'Сошлитесь на протокол Комитета и код базовой версии.',
+        `Протокол ${doc || '…'}, базовая версия ${base?.code || '…'}.`,
+        doc || base?.code || ''
+      )
+    }
+    return hint('Нужны номер протокола Комитета и код базовой версии. Пока их нет в деле, пункт подтвердить нечем.', 'Протокол № …, базовая версия ….')
+  }
+  if (smr && /смр|пнр|монтаж/i.test(text)) {
+    return ready('Для этого пункта подходит поле «СМР и ПНР».', smr, 'Поле «СМР и ПНР»')
+  }
+
+  const gate = GATES[check.gate] || check.gate
+  return hint(
+    `В основание нужна короткая ссылка, по которой пункт можно проверить: документ, номер и дата. Гейт «${gate}». Одной фразы «подтверждено» недостаточно.`
+  )
+}
+
+export function formAdvice(
+  title: string,
+  fields: { key: string; label: string }[],
+  bucket: Record<string, string>
+): string {
+  const empty = fields.filter((field) => !String(bucket[field.key] || '').trim()).map((field) => field.label)
+  const pending = empty.length ? ` Сейчас пусто: ${empty.join(', ')}.` : ' Все поля уже заполнены — их можно подставить в основание пунктов ниже.'
+  if (title === 'Качество') {
+    return `«Нормативы» — ГОСТ, ТУ или стандарт приёмки. «ПСИ» — название утверждённой программы и методики. Эти строки и есть основание пунктов про качество и ПСИ, отдельный файл не обязателен.${pending}`
+  }
+  if (title === 'Производство и сервис') {
+    return `«Цикл» и «Мощности» закрывают пункт «Производство подтвердило цикл и мощности». «Приёмка» — документ и дата. «СМР и ПНР» — входят ли монтаж и пуск в объём.${pending}`
+  }
+  return `Значения этих полей помощник подставляет в основание чек-листа.${pending}`
+}
+
 /**
  * Детерминированный клиентский расчёт паспортов 8 этапов (использует серверный `order.stage_passports` при наличии).
  */
@@ -601,6 +758,55 @@ export function buildRoleQuestions(order: ExternalOrder, role: string): CopilotQ
   return questions
 }
 
+const BUSY_STEPS = [
+  'Обновляю цепочку 1С и черновики авто-проверки',
+  'ИИ читает документы дела и 1С',
+  'ИИ заполняет пустые поля с источниками',
+  'ИИ готовит вопросы и проверяет ответы'
+]
+const BUSY_STEP_MS = [2500, 15000, 30000]
+
+function useBusySteps(busy: boolean): number {
+  const [step, setStep] = useState(0)
+  useEffect(() => {
+    if (!busy) {
+      setStep(0)
+      return
+    }
+    const timers: number[] = []
+    let at = 0
+    BUSY_STEP_MS.forEach((ms, index) => {
+      at += ms
+      timers.push(window.setTimeout(() => setStep(index + 1), at))
+    })
+    return () => timers.forEach((id) => window.clearTimeout(id))
+  }, [busy])
+  return step
+}
+
+function aiConfidenceLabel(confidence?: string): string {
+  if (confidence === 'ai:high') return ' · уверенно'
+  if (confidence === 'ai:low') return ' · проверьте'
+  return ''
+}
+
+function questionLabel(order: ExternalOrder | null | undefined, field: string): string {
+  if (field.startsWith('section:')) {
+    const [section, key] = field.slice(8).split('.')
+    for (const forms of Object.values(ROLE_FIELDS)) {
+      for (const form of forms) {
+        if (form.section !== section) continue
+        const hit = form.fields.find((item) => item.key === key)
+        if (hit) return `${form.title} · ${hit.label}`
+      }
+    }
+  }
+  if (field.startsWith('check:') && order) {
+    return order.checks.find((item) => `check:${item.id}` === field)?.text || field
+  }
+  return field
+}
+
 export type HelperPanelProps = {
   order?: ExternalOrder | null
   role?: string
@@ -610,16 +816,18 @@ export type HelperPanelProps = {
   log?: string[]
   summary?: string
   questions?: CopilotQuestion[]
+  ai?: CopilotAiResult | null
   busy?: boolean
   onRunCopilot?: (opts?: {
     step_id?: string
     message?: string
     answers?: Record<string, string>
     auto_prepare?: boolean
+    use_ai?: boolean
   }) => void
-  onAcceptFinding?: (findingId: string) => void
-  onRejectFinding?: (findingId: string) => void
-  onAcceptAllFindings?: () => void
+  onAcceptFinding?: (findingId: string) => void | Promise<unknown>
+  onRejectFinding?: (findingId: string) => void | Promise<unknown>
+  onAcceptAllFindings?: () => void | Promise<unknown>
   onOpenDocflow?: (
     kind: 'memo' | 'assignment' | 'directive' | 'order',
     prefill?: { title?: string; text?: string; values?: Record<string, string> }
@@ -636,6 +844,7 @@ export function HelperPanel({
   log = [],
   summary = '',
   questions: propQuestions,
+  ai = null,
   busy = false,
   onRunCopilot,
   onAcceptFinding,
@@ -647,9 +856,26 @@ export function HelperPanel({
   const [findingFilter, setFindingFilter] = useState<'role' | 'all' | 'accepted'>('role')
   const [answers, setAnswers] = useState<Record<string, string>>({})
   const [message, setMessage] = useState('')
+  const [sentAnswers, setSentAnswers] = useState<Record<string, string>>({})
+  const [acceptError, setAcceptError] = useState<{ id: string; text: string } | null>(null)
+  const progress = useBusySteps(busy)
+
+  function runAccept(id: string, action: () => void | Promise<unknown>): void {
+    const result = action()
+    if (!result || typeof (result as Promise<unknown>).then !== 'function') return
+    void (result as Promise<unknown>).then(
+      () => setAcceptError((prev) => (prev?.id === id ? null : prev)),
+      (err: unknown) =>
+        setAcceptError({
+          id,
+          text: err instanceof Error ? err.message : 'Не удалось принять'
+        })
+    )
+  }
 
   useEffect(() => {
     setAnswers({})
+    setSentAnswers({})
     setMessage('')
   }, [order?.id, role])
 
@@ -696,11 +922,15 @@ export function HelperPanel({
     onRunCopilot({
       answers: Object.keys(nonEmpty).length ? nonEmpty : undefined,
       message: message.trim() || undefined,
-      auto_prepare: true
+      auto_prepare: true,
+      use_ai: true
     })
+    setSentAnswers(nonEmpty)
     setAnswers({})
     setMessage('')
   }
+
+  const answerChecks = Object.entries(ai?.answer_checks || {}).filter(([field]) => field in sentAnswers || !Object.keys(sentAnswers).length)
 
   return (
     <section className="eo-window eo-window-work eo-copilot" aria-label="ИИ-помощник и авто-проверка">
@@ -717,9 +947,9 @@ export function HelperPanel({
               type="button"
               className="eo-btn is-primary"
               disabled={busy}
-              onClick={() => onRunCopilot({ auto_prepare: true })}
+              onClick={() => onRunCopilot({ auto_prepare: true, use_ai: true })}
             >
-              {busy ? 'Проверка…' : 'Авто-подготовка и проверка'}
+              {busy ? 'ИИ готовит карточку…' : 'Авто-подготовка с ИИ'}
             </button>
           ) : null}
           {onAcceptAllFindings && rolePendingFindings.length > 0 ? (
@@ -727,7 +957,7 @@ export function HelperPanel({
               type="button"
               className="eo-btn is-accent"
               disabled={busy}
-              onClick={onAcceptAllFindings}
+              onClick={() => runAccept('', () => onAcceptAllFindings?.())}
             >
               Принять всё по моей службе ({rolePendingFindings.length})
             </button>
@@ -744,6 +974,25 @@ export function HelperPanel({
           ) : null}
         </div>
       </div>
+      {acceptError?.id === '' ? <p className="eo-error">{acceptError.text}</p> : null}
+
+      {busy ? (
+        <ol className="eo-ai-steps" aria-live="polite">
+          {BUSY_STEPS.map((step, index) => (
+            <li key={step} className={index < progress ? 'is-done' : index === progress ? 'is-active' : ''}>
+              {step}
+            </li>
+          ))}
+        </ol>
+      ) : ai?.used ? (
+        <p className={ai.ok ? 'eo-ai-note' : 'eo-error'}>
+          {ai.ok
+            ? ai.filled.length
+              ? `ИИ заполнил черновиками ${ai.filled.length} полей. Они отмечены цветом ИИ во вкладке «Поля моей службы» и ниже в предложениях.`
+              : 'ИИ прочитал дело, но значений для пустых полей не нашёл. Вопросы по ним — в опросе ниже.'
+            : `ИИ не ответил: ${ai.error}. Показаны черновики авто-проверки без ИИ.`}
+        </p>
+      ) : null}
 
       {/* Блок 1: Авто-диагностика этапа */}
       <div className="eo-copilot-block">
@@ -826,42 +1075,50 @@ export function HelperPanel({
           <div className="eo-hitl-grid">
             {displayedFindings.map((finding) => {
               const draft1c = parseDraft1cFinding(finding)
+              const byAi = finding.filled_by === 'ai'
               const canAct =
                 finding.status !== 'accepted' &&
-                (!role ||
-                  finding.owner_role === role ||
-                  role === 'ks' ||
-                  role === 'rp' ||
-                  role === 'committee' ||
-                  role === 'it')
+                (byAi
+                  ? finding.owner_role === role
+                  : !role ||
+                    finding.owner_role === role ||
+                    role === 'ks' ||
+                    role === 'rp' ||
+                    role === 'committee' ||
+                    role === 'it')
               return (
                 <article
                   key={finding.id}
-                  className={`eo-hitl-card ${finding.status === 'accepted' ? 'is-accepted' : ''}`}
+                  className={`eo-hitl-card${finding.status === 'accepted' ? ' is-accepted' : ''}${byAi ? ' is-ai' : ''}`}
                 >
                   <div className="eo-hitl-card-top">
                     <span className="eo-tag">{findingCategoryLabel(finding)}</span>
                     <span className="eo-muted">
                       {finding.owner_label || ROLE_NAME[finding.owner_role] || finding.owner_role}
                     </span>
+                    {byAi ? <span className="eo-ai-badge">ИИ{aiConfidenceLabel(finding.confidence)}</span> : null}
                     <span className={`eo-status ${finding.status === 'accepted' ? 'is-ok' : ''}`}>
-                      {finding.status === 'accepted' ? 'принято' : 'черновик ИИ'}
+                      {finding.status === 'accepted' ? 'принято' : byAi ? 'черновик ИИ' : 'черновик авто-проверки'}
                     </span>
                   </div>
                   <strong className="eo-hitl-title">{humanFindingLabel(finding)}</strong>
                   <div className="eo-hitl-value">{formatFindingValue(finding)}</div>
                   <small className="eo-muted">
                     Источник: {finding.source_ref || 'авто-проверка'}
-                    {finding.location ? ` (${finding.location})` : ''}
+                    {finding.location ? (byAi ? ` · «${finding.location}»` : ` (${finding.location})`) : ''}
                     {finding.proposed_by ? ` · ${finding.proposed_by}` : ''}
                   </small>
+                  {byAi && finding.status !== 'accepted' && !canAct ? (
+                    <small className="eo-muted">Принимает {finding.owner_label || ROLE_NAME[finding.owner_role] || 'владелец раздела'}</small>
+                  ) : null}
+                  {acceptError?.id === finding.id ? <p className="eo-error">{acceptError.text}</p> : null}
                   <div className="eo-actions eo-hitl-actions">
                     {finding.status !== 'accepted' && onAcceptFinding && canAct ? (
                       <button
                         type="button"
                         className="eo-btn is-primary"
                         disabled={busy}
-                        onClick={() => onAcceptFinding(finding.id)}
+                        onClick={() => runAccept(finding.id, () => onAcceptFinding?.(finding.id))}
                       >
                         Принять
                       </button>
@@ -947,19 +1204,45 @@ export function HelperPanel({
           <strong>3. Интерактивный опрос по недостающим данным ({activeQuestions.length})</strong>
           <span className="eo-muted">Ответы сразу записываются в поля раздела, чек-листы или закрывают пробелы</span>
         </div>
+        {answerChecks.length ? (
+          <div className="eo-answer-checks">
+            <span className="eo-now-kicker">ИИ проверил ответы</span>
+            {answerChecks.map(([field, check]) => (
+              <div key={field} className={`eo-answer-check${check.ok ? ' is-ok' : ' is-warn'}`}>
+                <b>{questionLabel(order, field)}</b>
+                <span>{check.ok ? 'Сходится с делом' : 'Нужно уточнить'}{check.note ? ` · ${check.note}` : ''}</span>
+                {check.followup ? <span className="eo-answer-followup">Уточнение: {check.followup}</span> : null}
+              </div>
+            ))}
+          </div>
+        ) : null}
         {activeQuestions.length > 0 ? (
           <div className="eo-qa-list">
             {activeQuestions.map((q) => (
-              <div key={q.id} className="eo-qa-item">
+              <div key={q.id} className={`eo-qa-item${q.ai_question || q.ai_suggestion ? ' has-ai' : ''}`}>
                 <div className="eo-qa-label">
-                  <span>{q.prompt}</span>
+                  <span>{q.ai_question || q.prompt}</span>
+                  {q.ai_why ? <small className="eo-qa-why">Зачем: {q.ai_why}</small> : null}
                   <small className="eo-muted">{q.owner_label}</small>
                 </div>
-                <input
-                  value={answers[q.id] ?? ''}
-                  placeholder={q.placeholder || 'Введите значение…'}
-                  onChange={(event) => setAnswers((prev) => ({ ...prev, [q.id]: event.target.value }))}
-                />
+                <div className="eo-qa-answer">
+                  <input
+                    value={answers[q.id] ?? ''}
+                    placeholder={q.placeholder || 'Введите значение…'}
+                    onChange={(event) => setAnswers((prev) => ({ ...prev, [q.id]: event.target.value }))}
+                  />
+                  {q.ai_suggestion ? (
+                    <button
+                      type="button"
+                      className="eo-ai-suggest"
+                      title={q.ai_suggestion_source ? `Источник: ${q.ai_suggestion_source}` : undefined}
+                      onClick={() => setAnswers((prev) => ({ ...prev, [q.id]: q.ai_suggestion || '' }))}
+                    >
+                      <span className="eo-ai-badge">ИИ</span> {q.ai_suggestion}
+                      {q.ai_suggestion_source ? <small> · {q.ai_suggestion_source}</small> : null}
+                    </button>
+                  ) : null}
+                </div>
               </div>
             ))}
           </div>

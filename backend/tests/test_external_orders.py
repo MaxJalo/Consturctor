@@ -1232,6 +1232,53 @@ def test_accept_finding_side_effects_accept_role_and_reject():
     assert next(c for c in after_batch["checks"] if c["id"] == fin_check["id"])["status"] == "done"
 
 
+def test_accept_baseline_draft_stays_until_every_field_is_present():
+    from app.services.external_orders import accept_finding
+
+    db = _db()
+    order = _create(db)
+    draft = ExternalOrderFinding(
+        id="f-base-1",
+        order_id=order["id"],
+        field="baseline:draft",
+        value=json.dumps({"composition": "расходомер", "cost": "100"}, ensure_ascii=False),
+        source_ref="дело",
+        owner_role="finance",
+        status="draft",
+        proposed_by="авто-проверка",
+    )
+    db.add(draft)
+    db.commit()
+
+    try:
+        accept_finding(db, order["id"], "f-base-1", role="finance", fio="Финансы")
+    except ExternalOrderError as exc:
+        assert exc.status == 400
+        assert "МЦР" in exc.detail and "маржа" in exc.detail and "БДДС" in exc.detail and "сроки" in exc.detail
+    else:
+        raise AssertionError("неполный черновик базовой версии принят")
+
+    left = db.get(ExternalOrderFinding, "f-base-1")
+    assert left is not None and left.status == "draft"
+    assert db.query(ExternalOrderBaseline).count() == 0
+
+    left.value = json.dumps(
+        {
+            "composition": "расходомер",
+            "cost": "100",
+            "mcr": "80",
+            "margin": "20%",
+            "bdds": "аванс 50%",
+            "deadlines": "90 дней",
+        },
+        ensure_ascii=False,
+    )
+    db.commit()
+    accepted = accept_finding(db, order["id"], "f-base-1", role="finance", fio="Финансы")
+    assert accepted["baselines"][-1]["code"].startswith("БВ-")
+    assert next(item for item in accepted["findings"] if item["id"] == "f-base-1")["status"] == "accepted"
+
+
 def test_invoke_tool_read_full_auto_prepare_propose_and_draft_1c(monkeypatch, tmp_path):
     from app.services.external_orders import get_order, invoke_tool
 

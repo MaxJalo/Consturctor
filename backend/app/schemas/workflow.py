@@ -231,6 +231,7 @@ class AgentRunCreate(BaseModel):
     source: str = "chat"
     trigger_id: str = ""
     evidence: str = ""
+    conversation_key: str = ""
 
 
 class AgentRunEventsUpdate(BaseModel):
@@ -252,6 +253,7 @@ class AgentRunFinish(BaseModel):
     message: str = ""
     metrics: list[dict[str, Any]] | None = None
     context: dict[str, Any] | None = None
+    sdk_agent_id: str = ""
 
 
 class AgentRunCancelSlot(BaseModel):
@@ -280,6 +282,8 @@ class AgentRunOut(BaseModel):
     human_wait_ms: int = 0
     open_segment: str = ""
     open_segment_at: str = ""
+    conversation_key: str = ""
+    sdk_agent_id: str = ""
     events: list[dict[str, Any]] = Field(default_factory=list)
     metrics: list[dict[str, Any]] = Field(default_factory=list)
     calendar_meetings: list[dict[str, Any]] = Field(default_factory=list)

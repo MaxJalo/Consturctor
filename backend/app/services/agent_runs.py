@@ -69,6 +69,7 @@ def start_agent_run(
     source: str = "chat",
     trigger_id: str = "",
     evidence: str = "",
+    conversation_key: str = "",
 ) -> AgentRun:
     workflow = _get_owned(db, user_id=user_id, workflow_id=workflow_id, allow_shared=True)
     kind = (source or "chat").strip() or "chat"
@@ -94,6 +95,9 @@ def start_agent_run(
         trigger_reason=trigger_reason[:2000],
     )
     db.add(row)
+    db.flush()
+    if conversation_key.strip():
+        _write_conversation(db, row.id, key=conversation_key)
     db.commit()
     db.refresh(row)
     _notify_board(db, user_id=user_id, workflow_id=workflow_id, run_id=row.id, status=row.status)
@@ -146,6 +150,55 @@ def _write_context(db: Session, run_id: str, context: dict[str, Any]) -> None:
         text("UPDATE agent_runs SET context_json = CAST(:body AS json) WHERE id = :id"),
         {"id": run_id, "body": json.dumps(slim_run_context(context), ensure_ascii=False)},
     )
+
+
+def _conversation_ready(db: Session) -> bool:
+    return _run_column_ready(db, "conversation_key") and _run_column_ready(db, "sdk_agent_id")
+
+
+def _write_conversation(db: Session, run_id: str, *, key: str | None = None, agent_id: str | None = None) -> None:
+    if not _conversation_ready(db):
+        return
+    if key is not None:
+        db.execute(
+            text("UPDATE agent_runs SET conversation_key = :key WHERE id = :id"),
+            {"id": run_id, "key": key.strip()[:200]},
+        )
+    if agent_id:
+        db.execute(
+            text("UPDATE agent_runs SET sdk_agent_id = :agent WHERE id = :id"),
+            {"id": run_id, "agent": agent_id.strip()[:128]},
+        )
+
+
+def _conversation_of(db: Session, run_ids: list[str]) -> dict[str, tuple[str, str]]:
+    if not run_ids or not _conversation_ready(db):
+        return {}
+    rows = db.execute(
+        text("SELECT id, conversation_key, sdk_agent_id FROM agent_runs WHERE id = ANY(:ids)"),
+        {"ids": run_ids},
+    ).all()
+    return {str(row[0]): (str(row[1] or ""), str(row[2] or "")) for row in rows}
+
+
+def conversation_agent_id(db: Session, *, user_id: str, workflow_id: str, key: str) -> str:
+    """Память Cursor-агента последнего запуска этого разговора. Пусто — разговор новый."""
+    key = (key or "").strip()
+    if not key or not _conversation_ready(db):
+        return ""
+    row = db.execute(
+        text(
+            """
+            SELECT sdk_agent_id FROM agent_runs
+            WHERE user_id = :user AND workflow_id = :workflow
+              AND conversation_key = :key AND sdk_agent_id <> ''
+            ORDER BY started_at DESC
+            LIMIT 1
+            """
+        ),
+        {"user": user_id, "workflow": workflow_id, "key": key},
+    ).first()
+    return str(row[0]) if row else ""
 
 
 def save_run_context(db: Session, *, run_id: str, context: dict[str, Any]) -> None:
@@ -406,10 +459,13 @@ def finish_agent_run(
     metrics: list[dict[str, Any]] | None = None,
     context: dict[str, Any] | None = None,
     notify: bool = True,
+    sdk_agent_id: str = "",
 ) -> None:
     row = db.get(AgentRun, run_id)
     if row is None:
         return
+    if sdk_agent_id.strip():
+        _write_conversation(db, row.id, agent_id=sdk_agent_id)
     was_open = _row_in_flight(row)
     row.answer = clip_answer(answer)
     row.status = effective_run_status(_normalize_run_status(status), row.answer, in_flight=False)
@@ -454,20 +510,36 @@ def finish_agent_run(
             )
 
 
-def list_agent_runs(db: Session, *, user_id: str, workflow_id: str) -> list[AgentRunOut]:
+def list_agent_runs(
+    db: Session,
+    *,
+    user_id: str,
+    workflow_id: str,
+    conversation_key: str = "",
+    conversation_prefix: str = "",
+) -> list[AgentRunOut]:
     fail_stale_started_runs(db, user_id=user_id, notify=False)
     _get_owned(db, user_id=user_id, workflow_id=workflow_id, allow_deleted=True, allow_shared=True)
-    rows = (
-        db.execute(
-            select(AgentRun)
-            .where(AgentRun.workflow_id == workflow_id, AgentRun.user_id == user_id)
-            .order_by(AgentRun.started_at.desc())
-            .limit(50)
-        )
-        .scalars()
-        .all()
-    )
-    return [_to_out(row) for row in rows]
+    query = select(AgentRun).where(AgentRun.workflow_id == workflow_id, AgentRun.user_id == user_id)
+    key = (conversation_key or "").strip()
+    prefix = (conversation_prefix or "").strip()
+    if (key or prefix) and _conversation_ready(db):
+        if key:
+            query = query.where(text("agent_runs.conversation_key = :conv_key").bindparams(conv_key=key))
+        else:
+            query = query.where(
+                text("agent_runs.conversation_key LIKE :conv_prefix").bindparams(conv_prefix=prefix + "%")
+            )
+    elif key or prefix:
+        return []
+    rows = db.execute(query.order_by(AgentRun.started_at.desc()).limit(50)).scalars().all()
+    tags = _conversation_of(db, [row.id for row in rows])
+    out = []
+    for row in rows:
+        item = _to_out(row)
+        item.conversation_key, item.sdk_agent_id = tags.get(row.id, ("", ""))
+        out.append(item)
+    return out
 
 
 def get_agent_run(db: Session, *, user_id: str, workflow_id: str, run_id: str) -> AgentRunOut:
@@ -477,6 +549,7 @@ def get_agent_run(db: Session, *, user_id: str, workflow_id: str, run_id: str) -
     if row is None or row.workflow_id != workflow_id or row.user_id != user_id:
         raise WorkflowError("Запуск не найден", status_code=404)
     out = _to_out(row, include_events=True)
+    out.conversation_key, out.sdk_agent_id = _conversation_of(db, [row.id]).get(row.id, ("", ""))
     out.metrics = read_run_metrics(db, row.id)
     out.calendar_meetings = _calendar_meetings_for(
         db, user_id=user_id, workflow_id=workflow_id

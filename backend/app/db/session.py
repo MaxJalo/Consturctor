@@ -266,6 +266,20 @@ def _ensure_columns() -> None:
             except SQLAlchemyError:
                 conn.execute(text("ROLLBACK TO SAVEPOINT context_json_col"))
                 logger.warning("agent_runs.context_json was not added, will retry on next start", exc_info=True)
+        for column, ddl in (
+            ("conversation_key", "VARCHAR(200) NOT NULL DEFAULT ''"),
+            ("sdk_agent_id", "VARCHAR(128) NOT NULL DEFAULT ''"),
+        ):
+            if not run_cols or column in run_cols:
+                continue
+            try:
+                conn.execute(text(f"SAVEPOINT {column}_col"))
+                conn.execute(text("SET LOCAL lock_timeout = '3s'"))
+                conn.execute(text(f"ALTER TABLE agent_runs ADD COLUMN {column} {ddl}"))
+                conn.execute(text(f"RELEASE SAVEPOINT {column}_col"))
+            except SQLAlchemyError:
+                conn.execute(text(f"ROLLBACK TO SAVEPOINT {column}_col"))
+                logger.warning("agent_runs.%s was not added, will retry on next start", column, exc_info=True)
         creation_rows = conn.execute(
             text(
                 """

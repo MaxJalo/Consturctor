@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import json
 import re
+import time
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
 from app.services.docflow_document_create import DocumentCreateError, _ODataClient, _quote
@@ -64,9 +66,19 @@ def _rows(
     top: int = 20,
     ref_key: str = "",
     orderby: str = "",
+    skip: int = 0,
+    select: str = "",
 ) -> list[dict]:
     try:
-        return client.get(entity, filt=filt, top=top, ref_key=ref_key, orderby=orderby)
+        return client.get(
+            entity,
+            filt=filt,
+            top=top,
+            ref_key=ref_key,
+            orderby=orderby,
+            skip=skip,
+            select=select,
+        )
     except DocumentCreateError as exc:
         raise OnecLinkError(str(exc), 502) from exc
 
@@ -191,6 +203,8 @@ def read_order(ref_key: str) -> dict[str, str]:
         "inn": party.get("inn") or "",
         "contract_key": contract_key if contract_key != _EMPTY else "",
         "contract": contract.get("name") or "",
+        "comment": _plain(row.get("Комментарий"), 180),
+        "product": _order_product(client, row),
     }
 
 
@@ -207,6 +221,7 @@ _DEAL_STATUS = {"ВРаботе": "В работе", "Выиграна": "Выи
 _TKP = "Document_КоммерческоеПредложениеКлиенту"
 _SALE = "Document_РеализацияТоваровУслуг"
 _PROD = "Document_ЗаказНаПроизводство2_2"
+_NOMEN = "Catalog_Номенклатура"
 _STATUS_LABELS = {
     "НеСогласовано": "Не согласовано",
     "Согласовано": "Согласовано",
@@ -290,46 +305,228 @@ def _yes(value: Any) -> str:
 def _titles(client: _ODataClient, entity: str, keys: set[str], *, number: bool = False) -> dict[str, str]:
     clean = [key for key in keys if _optional_guid(key)]
     found: dict[str, str] = {}
-    for start in range(0, len(clean), 12):
-        chunk = clean[start : start + 12]
+    select = "Ref_Key,Number" if number else "Ref_Key,Description"
+    for start in range(0, len(clean), 40):
+        chunk = clean[start : start + 40]
         filt = " or ".join(f"Ref_Key eq guid'{key}'" for key in chunk)
         try:
-            rows = _rows(client, entity, filt=f"({filt})", top=len(chunk))
+            rows = _rows(client, entity, filt=f"({filt})", top=len(chunk), select=select)
         except OnecLinkError:
-            continue
+            try:
+                rows = _rows(client, entity, filt=f"({filt})", top=len(chunk))
+            except OnecLinkError:
+                continue
         for row in rows:
             ref = str(row.get("Ref_Key") or "")
             found[ref] = str(row.get("Number") or "").strip() if number else _name(row)
     return found
 
 
-def recent_tkp(top: int = 20) -> dict:
-    """Проведённые коммерческие предложения. Колонки — как в списке документа 1С."""
+_TKP_PAGE = 200
+_TKP_SELECT = (
+    "Ref_Key,Number,Date,Партнер_Key,ПартнерКонечногоЗаказчика_Key,"
+    "Контрагент_Key,КонтрагентКонечныйЗаказчик_Key,Сделка_Key,"
+    "ДоговорКонтрагента_Key,ЗаказКлиента_Key,Организация_Key,Менеджер_Key,"
+    "Соглашение_Key,Валюта_Key,СуммаДокументаТКП,СуммаДокумента,Статус,"
+    "СрокДействия,СрокПоставки,ФормаОплаты,СпособДоставки,НалогообложениеНДС,"
+    "Согласован,СогласованоСКлиентом,ХозяйственнаяОперация,Комментарий"
+)
+
+
+def _tkp_documents(client: _ODataClient, filt: str, limit: int) -> list[dict]:
+    """Все строки фильтра, страницами. limit > 0 обрезает список."""
+    found: list[dict] = []
+    seen: set[str] = set()
+    skip = 0
+    select = _TKP_SELECT
+    while True:
+        room = _TKP_PAGE if limit <= 0 else min(_TKP_PAGE, limit - len(found))
+        if room <= 0:
+            break
+        try:
+            batch = _rows(
+                client,
+                _TKP,
+                filt=filt,
+                top=room,
+                orderby="Date desc",
+                skip=skip,
+                select=select,
+            )
+        except OnecLinkError:
+            if not select:
+                raise
+            select = ""
+            skip = 0
+            found = []
+            seen = set()
+            continue
+        if not batch:
+            break
+        fresh = 0
+        for row in batch:
+            key = str(row.get("Ref_Key") or "").strip()
+            if key and key in seen:
+                continue
+            if key:
+                seen.add(key)
+            found.append(row)
+            fresh += 1
+        if fresh == 0 or len(batch) < room:
+            break
+        skip += len(batch)
+    return found
+
+
+def recent_tkp(top: int = 0) -> dict:
+    """Проведённые коммерческие предложения, все страницы. top > 0 ограничивает число строк."""
     client = _client()
     try:
-        rows = _rows(
-            client,
-            _TKP,
-            filt="DeletionMark eq false and Posted eq true",
-            top=top,
-            orderby="Date desc",
-        )
+        rows = _tkp_documents(client, "DeletionMark eq false and Posted eq true", top)
     except OnecLinkError:
-        rows = _rows(client, _TKP, filt="DeletionMark eq false", top=top, orderby="Date desc")
+        rows = _tkp_documents(client, "DeletionMark eq false", top)
     rows = [row for row in rows if str(row.get("Ref_Key") or "").strip()]
+    return {"configured": True, "counterparties": [], "orders": _tkp_rows(client, rows)}
 
+
+def tkp_card(ref_key: str) -> dict[str, str]:
+    """Одно ТКП теми же полями, что и строка импорта: условия для черновиков карточки."""
+    key = _optional_guid(ref_key or "")
+    if not key:
+        return {}
+    for _at, page in list(_tkp_pages.values()):
+        for item in page.get("orders") or []:
+            if item.get("key") == key:
+                return dict(item)
+    client = _client()
+    rows = [row for row in _rows(client, _TKP, ref_key=key) if not row.get("DeletionMark")]
+    found = _tkp_rows(client, rows)
+    return found[0] if found else {}
+
+
+def _plain(value: Any, limit: int = 180) -> str:
+    return " ".join(str(value or "").split())[:limit]
+
+
+def _text_query(
+    client: _ODataClient,
+    query: str,
+    text_fields: list[str],
+    party_fields: list[tuple[str, str]],
+) -> str:
+    """Фраза целиком или каждое слово в номере и комментарии, плюс контрагент по всей фразе."""
+    phrase = " ".join((query or "").split())[:80]
+    if not phrase:
+        return ""
+    words = [word for word in phrase.split() if len(word) >= 2][:4]
+    options = [f"substringof('{_quote(phrase)}', {field})" for field in text_fields]
+    for entity, field in party_fields:
+        for key in _matching_keys(client, entity, phrase):
+            options.append(f"{field} eq guid'{key}'")
+    if len(words) > 1:
+        groups = [
+            "(" + " or ".join(f"substringof('{_quote(word)}', {field})" for field in text_fields) + ")"
+            for word in words
+        ]
+        options.insert(0, " and ".join(groups))
+    return "(" + " or ".join(options) + ")"
+
+
+def _tkp_products(client: _ODataClient, keys: list[str]) -> dict[str, str]:
+    """Предмет ТКП: текстовое описание строк, до трёх позиций."""
+    found: dict[str, str] = {}
+    for start in range(0, len(keys), 15):
+        chunk = keys[start : start + 15]
+        filt = " or ".join(f"Ref_Key eq guid'{key}'" for key in chunk)
+        try:
+            rows = _rows(client, _TKP, filt=f"({filt})", top=len(chunk), select="Ref_Key,Товары")
+        except OnecLinkError:
+            continue
+        for row in rows:
+            names: list[str] = []
+            lines = [line for line in (row.get("Товары") or []) if isinstance(line, dict)]
+            for line in lines:
+                if line.get("CRM_ЭтоРазделитель"):
+                    continue
+                text = _plain(line.get("ТекстовоеОписание") or line.get("КомментарийДляПокупателя"), 120)
+                if text and text not in names:
+                    names.append(text)
+                if len(names) == 3:
+                    break
+            rest = len(lines) - len(names)
+            if rest > 0 and names:
+                names.append(f"ещё {rest}")
+            found[str(row.get("Ref_Key") or "")] = "; ".join(names)
+    return found
+
+
+def _order_subjects(client: _ODataClient, keys: list[str]) -> dict[str, str]:
+    """Комментарий заказа клиента: в нём обычно предмет несерийки и тендер."""
+    found: dict[str, str] = {}
+    clean = [key for key in keys if _optional_guid(key)]
+    for start in range(0, len(clean), 20):
+        chunk = clean[start : start + 20]
+        filt = " or ".join(f"Ref_Key eq guid'{key}'" for key in chunk)
+        try:
+            rows = _rows(client, _ORDER, filt=f"({filt})", top=len(chunk), select="Ref_Key,Комментарий")
+        except OnecLinkError:
+            continue
+        for row in rows:
+            text = _plain(row.get("Комментарий"), 180)
+            if text:
+                found[str(row.get("Ref_Key") or "")] = text
+    return found
+
+
+def _order_product(client: _ODataClient, row: dict) -> str:
+    lines = [line for line in (row.get("Товары") or []) if isinstance(line, dict) and not line.get("Отменено")]
+    keys = {_optional_guid(str(line.get("Номенклатура_Key") or "")) for line in lines}
+    keys.discard("")
+    try:
+        names = _titles(client, _NOMEN, keys) if keys else {}
+    except OnecLinkError:
+        names = {}
+    shown: list[str] = []
+    for line in lines:
+        title = names.get(_optional_guid(str(line.get("Номенклатура_Key") or ""))) or _plain(line.get("Содержание"), 120)
+        if title and title not in shown:
+            shown.append(title)
+        if len(shown) == 3:
+            break
+    rest = len(lines) - len(shown)
+    if rest > 0 and shown:
+        shown.append(f"ещё {rest}")
+    return "; ".join(shown)
+
+
+def _tkp_rows(client: _ODataClient, rows: list[dict]) -> list[dict]:
     def keys_of(*fields: str) -> set[str]:
         return {str(row.get(field) or "") for row in rows for field in fields}
 
-    partners = _titles(client, _PARTNER, keys_of("Партнер_Key", "ПартнерКонечногоЗаказчика_Key"))
-    parties = _titles(client, _CONTRACTOR, keys_of("Контрагент_Key", "КонтрагентКонечныйЗаказчик_Key"))
-    deals = _titles(client, _DEAL, keys_of("Сделка_Key"))
-    contracts = _titles(client, _CONTRACT, keys_of("ДоговорКонтрагента_Key"))
-    orgs = _titles(client, _ORG, keys_of("Организация_Key"))
-    users = _titles(client, _USER, keys_of("Менеджер_Key"))
-    currencies = _titles(client, _CURRENCY, keys_of("Валюта_Key"))
-    agreements = _titles(client, _AGREEMENT, keys_of("Соглашение_Key"))
-    sale_orders = _titles(client, _ORDER, keys_of("ЗаказКлиента_Key"), number=True)
+    lookups = {
+        "partners": (_PARTNER, keys_of("Партнер_Key", "ПартнерКонечногоЗаказчика_Key"), False),
+        "parties": (_CONTRACTOR, keys_of("Контрагент_Key", "КонтрагентКонечныйЗаказчик_Key"), False),
+        "deals": (_DEAL, keys_of("Сделка_Key"), False),
+        "contracts": (_CONTRACT, keys_of("ДоговорКонтрагента_Key"), False),
+        "orgs": (_ORG, keys_of("Организация_Key"), False),
+        "users": (_USER, keys_of("Менеджер_Key"), False),
+        "currencies": (_CURRENCY, keys_of("Валюта_Key"), False),
+        "agreements": (_AGREEMENT, keys_of("Соглашение_Key"), False),
+        "sale_orders": (_ORDER, keys_of("ЗаказКлиента_Key"), True),
+    }
+    # Каждый запрос OData открывает свой HTTP-клиент, поэтому справочники читаются параллельно.
+    with ThreadPoolExecutor(max_workers=len(lookups) + 2) as pool:
+        futures = {
+            name: pool.submit(_titles, client, entity, keys, number=number)
+            for name, (entity, keys, number) in lookups.items()
+        }
+        futures["products"] = pool.submit(_tkp_products, client, [str(row.get("Ref_Key") or "") for row in rows])
+        futures["subjects"] = pool.submit(_order_subjects, client, list(keys_of("ЗаказКлиента_Key")))
+        titles = {name: future.result() for name, future in futures.items()}
+    partners, parties, deals = titles["partners"], titles["parties"], titles["deals"]
+    contracts, orgs, users = titles["contracts"], titles["orgs"], titles["users"]
+    currencies, agreements, sale_orders = titles["currencies"], titles["agreements"], titles["sale_orders"]
+    products, subjects = titles["products"], titles["subjects"]
 
     orders = []
     for row in rows:
@@ -371,9 +568,302 @@ def recent_tkp(top: int = 20) -> dict:
                 "agreed": _yes(row.get("СогласованоСКлиентом")),
                 "operation": _enum_label(str(row.get("ХозяйственнаяОперация") or "")),
                 "has_order": "1" if order_key else "",
+                "kind": "tkp",
+                "comment": _plain(row.get("Комментарий")),
+                "product": products.get(str(row.get("Ref_Key") or ""), ""),
+                "order_subject": subjects.get(order_key, ""),
             }
         )
-    return {"configured": True, "counterparties": [], "orders": orders}
+    return orders
+
+
+TKP_PAGE_CACHE_SECONDS = 120
+_TKP_PAGE_CACHE_SIZE = 40
+_tkp_pages: dict[tuple, tuple[float, dict]] = {}
+_tkp_seen: dict[str, dict[str, str]] = {"status": {}, "manager": {}}
+_DAY = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+_POSTED = "DeletionMark eq false and Posted eq true"
+# Каждое совпадение — условие в адресе запроса; больше 1С не принимает (HTTP 414).
+_TKP_QUERY_KEYS = 6
+
+
+def _matching_keys(client: _ODataClient, entity: str, query: str) -> list[str]:
+    try:
+        rows = _rows(
+            client,
+            entity,
+            filt=f"DeletionMark eq false and substringof('{_quote(query)}', Description)",
+            top=_TKP_QUERY_KEYS,
+            select="Ref_Key",
+        )
+    except OnecLinkError:
+        return []
+    return [key for key in (str(row.get("Ref_Key") or "") for row in rows) if _optional_guid(key)]
+
+
+def _tkp_filter(client: _ODataClient, filters: dict[str, str]) -> str | None:
+    """Фильтры импорта в $filter OData: страница считается в 1С, а не в памяти сервера.
+
+    None — под фильтр заведомо ничего не попадёт (менеджер не найден).
+    """
+    parts: list[str] = []
+    date_from = (filters.get("date_from") or "").strip()
+    date_to = (filters.get("date_to") or "").strip()
+    if _DAY.match(date_from):
+        parts.append(f"Date ge datetime'{date_from}T00:00:00'")
+    if _DAY.match(date_to):
+        parts.append(f"Date le datetime'{date_to}T23:59:59'")
+    status = (filters.get("status") or "").strip()
+    if status:
+        raw = _tkp_seen["status"].get(status) or status
+        parts.append(f"Статус eq '{_quote(raw)}'")
+    manager = (filters.get("manager") or "").strip()
+    if manager:
+        key = _tkp_seen["manager"].get(manager, "")
+        keys = [key] if key else _matching_keys(client, _USER, manager)
+        if not keys:
+            return None
+        parts.append("(" + " or ".join(f"Менеджер_Key eq guid'{item}'" for item in keys) + ")")
+    linked = (filters.get("has_order") or "").strip()
+    if linked == "yes":
+        parts.append(f"ЗаказКлиента_Key ne guid'{_EMPTY}'")
+    elif linked == "no":
+        parts.append(f"ЗаказКлиента_Key eq guid'{_EMPTY}'")
+    query = _text_query(
+        client,
+        filters.get("q") or "",
+        ["Number", "Комментарий"],
+        [
+            (_CONTRACTOR, "Контрагент_Key"),
+            (_CONTRACTOR, "КонтрагентКонечныйЗаказчик_Key"),
+            (_PARTNER, "Партнер_Key"),
+        ],
+    )
+    if query:
+        parts.append(query)
+    return " and ".join(parts)
+
+
+def _tkp_page_rows(client: _ODataClient, extra: str, skip: int, top: int) -> list[dict]:
+    """Одна страница документов ТКП: top + 1 строка, чтобы знать, есть ли следующая."""
+    attempts = [(_POSTED, _TKP_SELECT), ("DeletionMark eq false", _TKP_SELECT), ("DeletionMark eq false", "")]
+    last: OnecLinkError | None = None
+    for base, select in attempts:
+        filt = f"{base} and {extra}" if extra else base
+        try:
+            return _rows(client, _TKP, filt=filt, top=top + 1, orderby="Date desc", skip=skip, select=select)
+        except OnecLinkError as exc:
+            last = exc
+    raise last or OnecLinkError("1С не вернула коммерческие предложения", 502)
+
+
+def _remember_tkp(rows: list[dict], orders: list[dict]) -> None:
+    for row, item in zip(rows, orders, strict=False):
+        raw = str(row.get("Статус") or "").strip()
+        if raw and item.get("status"):
+            _tkp_seen["status"][item["status"]] = raw
+        manager = str(row.get("Менеджер_Key") or "").strip()
+        if _optional_guid(manager) and item.get("manager"):
+            _tkp_seen["manager"][item["manager"]] = manager
+
+
+def recent_tkp_page(
+    *,
+    skip: int = 0,
+    top: int = 50,
+    filters: dict[str, str] | None = None,
+    refresh: bool = False,
+) -> dict:
+    """Страница проведённых ТКП из 1С с фильтрами. Справочники читаются только для строк страницы."""
+    skip = max(0, int(skip or 0))
+    top = max(1, min(500, int(top or 50)))
+    clean = {key: str(value or "").strip() for key, value in (filters or {}).items() if str(value or "").strip()}
+    cache_key = (skip, top, tuple(sorted(clean.items())))
+    now = time.monotonic()
+    hit = _tkp_pages.get(cache_key)
+    if hit and not refresh and now - hit[0] < TKP_PAGE_CACHE_SECONDS:
+        return hit[1]
+    client = _client()
+    extra = _tkp_filter(client, clean)
+    rows = [] if extra is None else _tkp_page_rows(client, extra, skip, top)
+    rows = [row for row in rows if str(row.get("Ref_Key") or "").strip()]
+    has_more = len(rows) > top
+    rows = rows[:top]
+    orders = _tkp_rows(client, rows)
+    _remember_tkp(rows, orders)
+    page = {
+        "configured": True,
+        "counterparties": [],
+        "orders": orders,
+        "skip": skip,
+        "top": top,
+        "has_more": has_more,
+        "statuses": sorted(_tkp_seen["status"]),
+        "managers": sorted(_tkp_seen["manager"]),
+    }
+    if len(_tkp_pages) >= _TKP_PAGE_CACHE_SIZE:
+        _tkp_pages.pop(min(_tkp_pages, key=lambda item: _tkp_pages[item][0]))
+    _tkp_pages[cache_key] = (now, page)
+    return page
+
+
+_sale_pages: dict[tuple, tuple[float, dict]] = {}
+_sale_seen: dict[str, dict[str, str]] = {"status": {}, "manager": {}}
+_ORDER_SELECT = "Ref_Key,Number,Date,Контрагент_Key,СуммаДокумента,Комментарий,Статус,Менеджер_Key,Валюта_Key"
+
+
+def _sale_page_rows(client: _ODataClient, extra: str, skip: int, top: int) -> list[dict]:
+    attempts = [(_POSTED, _ORDER_SELECT), ("DeletionMark eq false", _ORDER_SELECT), ("DeletionMark eq false", "")]
+    last: OnecLinkError | None = None
+    for base, select in attempts:
+        filt = f"{base} and {extra}" if extra else base
+        try:
+            return _rows(client, _ORDER, filt=filt, top=top + 1, orderby="Date desc", skip=skip, select=select)
+        except OnecLinkError as exc:
+            last = exc
+    raise last or OnecLinkError("1С не вернула заказы клиента", 502)
+
+
+def _sale_filter(client: _ODataClient, filters: dict[str, str]) -> str | None:
+    parts: list[str] = []
+    date_from = (filters.get("date_from") or "").strip()
+    date_to = (filters.get("date_to") or "").strip()
+    if _DAY.match(date_from):
+        parts.append(f"Date ge datetime'{date_from}T00:00:00'")
+    if _DAY.match(date_to):
+        parts.append(f"Date le datetime'{date_to}T23:59:59'")
+    status = (filters.get("status") or "").strip()
+    if status:
+        raw = _sale_seen["status"].get(status) or status
+        parts.append(f"Статус eq '{_quote(raw)}'")
+    manager = (filters.get("manager") or "").strip()
+    if manager:
+        key = _sale_seen["manager"].get(manager, "")
+        keys = [key] if key else _matching_keys(client, _USER, manager)
+        if not keys:
+            return None
+        parts.append("(" + " or ".join(f"Менеджер_Key eq guid'{item}'" for item in keys) + ")")
+    query = _text_query(
+        client,
+        filters.get("q") or "",
+        ["Number", "Комментарий"],
+        [(_CONTRACTOR, "Контрагент_Key")],
+    )
+    if query:
+        parts.append(query)
+    return " and ".join(parts)
+
+
+def _sale_products(client: _ODataClient, keys: list[str]) -> dict[str, str]:
+    """Номенклатура строк заказа клиента — состав несерийки."""
+    lines_of: dict[str, list[dict]] = {}
+    nomen: set[str] = set()
+    clean = [key for key in keys if _optional_guid(key)]
+    for start in range(0, len(clean), 15):
+        chunk = clean[start : start + 15]
+        filt = " or ".join(f"Ref_Key eq guid'{key}'" for key in chunk)
+        try:
+            rows = _rows(client, _ORDER, filt=f"({filt})", top=len(chunk), select="Ref_Key,Товары")
+        except OnecLinkError:
+            continue
+        for row in rows:
+            lines = [line for line in (row.get("Товары") or []) if isinstance(line, dict) and not line.get("Отменено")]
+            lines_of[str(row.get("Ref_Key") or "")] = lines
+            nomen.update(_optional_guid(str(line.get("Номенклатура_Key") or "")) for line in lines)
+    nomen.discard("")
+    try:
+        names = _titles(client, _NOMEN, nomen) if nomen else {}
+    except OnecLinkError:
+        names = {}
+    found: dict[str, str] = {}
+    for key, lines in lines_of.items():
+        shown: list[str] = []
+        for line in lines:
+            title = names.get(_optional_guid(str(line.get("Номенклатура_Key") or ""))) or _plain(line.get("Содержание"), 120)
+            if title and title not in shown:
+                shown.append(title)
+            if len(shown) == 3:
+                break
+        rest = len(lines) - len(shown)
+        if rest > 0 and shown:
+            shown.append(f"ещё {rest}")
+        found[key] = "; ".join(shown)
+    return found
+
+
+def recent_sale_orders_page(
+    *,
+    skip: int = 0,
+    top: int = 50,
+    filters: dict[str, str] | None = None,
+    refresh: bool = False,
+) -> dict:
+    """Страница проведённых заказов клиента: комментарий и состав, не только номер."""
+    skip = max(0, int(skip or 0))
+    top = max(1, min(500, int(top or 50)))
+    clean = {key: str(value or "").strip() for key, value in (filters or {}).items() if str(value or "").strip()}
+    clean.pop("has_order", None)
+    cache_key = (skip, top, tuple(sorted(clean.items())))
+    now = time.monotonic()
+    hit = _sale_pages.get(cache_key)
+    if hit and not refresh and now - hit[0] < TKP_PAGE_CACHE_SECONDS:
+        return hit[1]
+    client = _client()
+    extra = _sale_filter(client, clean)
+    rows = [] if extra is None else _sale_page_rows(client, extra, skip, top)
+    rows = [row for row in rows if str(row.get("Ref_Key") or "").strip()]
+    has_more = len(rows) > top
+    rows = rows[:top]
+    party_keys = {str(row.get("Контрагент_Key") or "") for row in rows}
+    user_keys = {str(row.get("Менеджер_Key") or "") for row in rows}
+    currency_keys = {str(row.get("Валюта_Key") or "") for row in rows}
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        parties_f = pool.submit(_titles, client, _CONTRACTOR, party_keys)
+        users_f = pool.submit(_titles, client, _USER, user_keys)
+        currencies_f = pool.submit(_titles, client, _CURRENCY, currency_keys)
+        products_f = pool.submit(_sale_products, client, [str(row.get("Ref_Key") or "") for row in rows])
+        parties, users, currencies, products = parties_f.result(), users_f.result(), currencies_f.result(), products_f.result()
+    orders = []
+    for row in rows:
+        ref = str(row.get("Ref_Key") or "").strip()
+        status = status_label(str(row.get("Статус") or ""))
+        manager = users.get(str(row.get("Менеджер_Key") or ""), "")
+        raw_status = str(row.get("Статус") or "").strip()
+        if raw_status and status:
+            _sale_seen["status"][status] = raw_status
+        raw_manager = str(row.get("Менеджер_Key") or "").strip()
+        if _optional_guid(raw_manager) and manager:
+            _sale_seen["manager"][manager] = raw_manager
+        orders.append(
+            {
+                "key": ref,
+                "kind": "order",
+                "number": str(row.get("Number") or "").strip(),
+                "date": _stamp(str(row.get("Date") or ""), with_time=True),
+                "counterparty": parties.get(str(row.get("Контрагент_Key") or ""), ""),
+                "amount": _money_text(row.get("СуммаДокумента")),
+                "currency": currencies.get(str(row.get("Валюта_Key") or ""), ""),
+                "manager": manager,
+                "status": status,
+                "comment": _plain(row.get("Комментарий")),
+                "product": products.get(ref, ""),
+                "order_subject": _plain(row.get("Комментарий")),
+            }
+        )
+    page = {
+        "configured": True,
+        "counterparties": [],
+        "orders": orders,
+        "skip": skip,
+        "top": top,
+        "has_more": has_more,
+        "statuses": sorted(_sale_seen["status"]),
+        "managers": sorted(_sale_seen["manager"]),
+    }
+    if len(_sale_pages) >= _TKP_PAGE_CACHE_SIZE:
+        _sale_pages.pop(min(_sale_pages, key=lambda item: _sale_pages[item][0]))
+    _sale_pages[cache_key] = (now, page)
+    return page
 
 
 def trace_tkp(ref_key: str) -> dict[str, str]:

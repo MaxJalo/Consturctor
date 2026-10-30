@@ -53,9 +53,11 @@
 
 .eo-windows {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+  grid-template-columns: minmax(0, 1fr);
   gap: 12px;
   align-items: start;
+  width: 100%;
+  min-width: 0;
 }
 
 .eo-window {
@@ -668,9 +670,50 @@
   font-weight: 600;
 }
 
+.eo-table-scroll,
 .eo-tkp-scroll {
   overflow: auto;
   max-width: 100%;
+  width: 100%;
+}
+
+.eo-tkp-scroll {
+  max-height: 440px;
+}
+
+.eo-orders-table {
+  table-layout: fixed;
+  width: 100%;
+  min-width: 920px;
+}
+
+.eo-orders-table:has(.eo-col-route) {
+  min-width: 1240px;
+}
+
+.eo-col-code { width: 84px; white-space: nowrap; }
+.eo-col-customer { width: 16%; }
+.eo-col-product { width: 14%; }
+.eo-col-stage { width: 72px; white-space: nowrap; }
+.eo-col-status { width: 15%; }
+.eo-col-route { width: 9%; }
+.eo-col-path { width: 16%; }
+.eo-col-num { width: 92px; text-align: right; font-variant-numeric: tabular-nums; }
+.eo-col-wait { width: 13%; }
+.eo-col-open { width: 108px; }
+
+.eo-orders-table .eo-clip {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
+  overflow-wrap: break-word;
+  word-break: normal;
+}
+
+.eo-orders-table .eo-clip small {
+  display: block;
+  margin-top: 2px;
 }
 
 .eo-table.eo-tkp {
@@ -684,12 +727,24 @@
   white-space: nowrap;
 }
 
+.eo-table.eo-tkp thead th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: #fff;
+}
+
 .eo-table.eo-tkp th:last-child,
 .eo-table.eo-tkp td:last-child {
   position: sticky;
   right: 0;
+  z-index: 2;
   background: #fff;
   box-shadow: -1px 0 0 rgba(16, 20, 26, 0.08);
+}
+
+.eo-table.eo-tkp thead th:last-child {
+  z-index: 3;
 }
 
 .eo-table.eo-tkp td.eo-num {
@@ -1077,9 +1132,11 @@
 .eo-stepper li small + small {
   font-weight: 500;
   opacity: 0.85;
-  white-space: nowrap;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
   overflow: hidden;
-  text-overflow: ellipsis;
+  white-space: normal;
 }
 
 .eo-passport {
@@ -1114,10 +1171,102 @@
 }
 
 .eo-rolework {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  grid-column: 1 / -1;
+  min-width: 0;
+}
+
+.eo-rolework-forms {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
   gap: 12px;
-  grid-column: 1 / -1;
+  align-items: start;
+}
+
+.eo-rolework-forms .eo-form > button {
+  align-self: flex-start;
+  margin-top: 4px;
+}
+
+.eo-rolework-list .eo-check {
+  grid-template-columns: minmax(0, 1fr) minmax(260px, 420px);
+  align-items: center;
+  gap: 8px 16px;
+}
+
+.eo-rolework-list .eo-check .eo-actions {
+  width: 100%;
+}
+
+.eo-rolework-list .eo-check .eo-actions input {
+  flex: 1 1 140px;
+  min-width: 0;
+}
+
+.eo-rolework-forms .eo-form,
+.eo-rolework-list .eo-check {
+  position: relative;
+}
+
+.eo-rolework-forms .eo-form.is-copilot,
+.eo-rolework-list .eo-check.is-copilot {
+  z-index: 4;
+  border-radius: 12px;
+  background:
+    linear-gradient(#fff, #fff) padding-box,
+    linear-gradient(120deg, #6d5efc, #2f80ed 46%, #2ec5ff) border-box;
+  border: 1.5px solid transparent;
+  box-shadow: 0 0 0 3px rgba(47, 128, 237, 0.16);
+}
+
+.eo-rolework-list .eo-check.is-copilot {
+  padding: 8px 10px;
+  margin: 0 -10px;
+  border-bottom-color: transparent;
+}
+
+.eo-basis-pop {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 100%;
+  z-index: 6;
+  padding-top: 8px;
+}
+
+.eo-basis-card {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px 14px;
+  border-radius: 12px;
+  background: #fff;
+  border: 1px solid #d7e4f5;
+  box-shadow: 0 12px 32px rgba(16, 32, 51, 0.14);
+}
+
+.eo-basis-card p,
+.eo-basis-draft {
+  margin: 0;
+}
+
+.eo-basis-draft {
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: #f4f8fd;
+  color: #1d3b64;
+}
+
+.eo-basis-card small {
+  color: #5d7290;
+}
+
+@media (max-width: 860px) {
+  .eo-rolework-list .eo-check {
+    grid-template-columns: minmax(0, 1fr);
+  }
 }
 
 .eo-chip-btn:disabled {
@@ -1157,6 +1306,28 @@
 
 .eo-audit-scroll {
   max-height: 60vh;
+  max-width: 100%;
+}
+
+.eo-audit-scroll .eo-journal-table {
+  table-layout: fixed;
+  min-width: 920px;
+}
+
+.eo-audit-scroll .eo-journal-table th:nth-child(1),
+.eo-audit-scroll .eo-journal-table td:nth-child(1) { width: 132px; white-space: nowrap; }
+.eo-audit-scroll .eo-journal-table th:nth-child(2),
+.eo-audit-scroll .eo-journal-table td:nth-child(2) { width: 88px; }
+.eo-audit-scroll .eo-journal-table th:nth-child(3),
+.eo-audit-scroll .eo-journal-table td:nth-child(3) { width: 168px; }
+.eo-audit-scroll .eo-journal-table th:nth-child(4),
+.eo-audit-scroll .eo-journal-table td:nth-child(4) { width: 148px; }
+.eo-audit-scroll .eo-journal-table th:nth-child(5),
+.eo-audit-scroll .eo-journal-table td:nth-child(5) { width: 160px; overflow-wrap: anywhere; }
+.eo-audit-scroll .eo-journal-table td:nth-child(6) { overflow-wrap: anywhere; }
+
+.eo-window > p.eo-muted {
+  overflow-wrap: anywhere;
 }
 
 .eo-btn.is-accent {
@@ -1171,10 +1342,9 @@
 
 .eo-copilot-head {
   display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 12px;
-  flex-wrap: wrap;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 8px;
 }
 
 .eo-copilot-block {
@@ -1238,10 +1408,23 @@
   display: flex;
   flex-direction: column;
   gap: 6px;
+  height: 100%;
   padding: 10px 12px;
   border: 1px solid #d5e2f2;
   border-radius: 12px;
   background: #fff;
+  box-sizing: border-box;
+}
+
+.eo-hitl-card > small {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+  overflow: hidden;
+}
+
+.eo-hitl-actions {
+  margin-top: auto;
 }
 
 .eo-hitl-card.is-accepted {
@@ -1350,8 +1533,10 @@
   display: flex;
   flex-direction: column;
   gap: 4px;
+  max-height: 132px;
   margin: 0;
   padding: 0;
+  overflow: auto;
   list-style: none;
 }
 
@@ -1388,24 +1573,29 @@
 .eo-plan-body {
   display: flex;
   max-height: 560px;
-  overflow-y: auto;
+  overflow: auto;
   border: 1px solid rgba(16, 20, 26, 0.08);
   border-radius: 10px;
 }
 
 .eo-plan-grid {
-  flex: 0 1 auto;
-  min-width: 0;
-  max-width: 62%;
-  overflow-x: auto;
+  flex: 0 0 760px;
+  overflow: hidden;
   border-right: 1px solid rgba(16, 20, 26, 0.12);
 }
 
 .eo-plan-table {
+  width: 100%;
+  table-layout: fixed;
   border-collapse: collapse;
   font-size: 12px;
-  white-space: nowrap;
 }
+
+.eo-plan-table col.wbs { width: 52px; }
+.eo-plan-table col.service { width: 148px; }
+.eo-plan-table col.days { width: 64px; }
+.eo-plan-table col.date { width: 86px; }
+.eo-plan-table col.source { width: 78px; }
 
 .eo-plan-table th,
 .eo-plan-table td {
@@ -1413,14 +1603,20 @@
   box-sizing: border-box;
   text-align: left;
   vertical-align: middle;
+  overflow: hidden;
   box-shadow: inset 0 -1px 0 rgba(16, 20, 26, 0.06);
 }
 
 .eo-plan-table thead th {
+  height: 40px;
   background: #fff;
   color: #5d7290;
   font-weight: 600;
   box-shadow: inset 0 -1px 0 rgba(16, 20, 26, 0.12);
+}
+
+.eo-plan-table tbody td {
+  height: 32px;
 }
 
 .eo-plan-table tr.is-summary td {
@@ -1446,10 +1642,11 @@
   font-variant-numeric: tabular-nums;
 }
 
-.eo-plan-name {
-  max-width: 320px;
+.eo-plan-name span {
+  display: block;
   overflow: hidden;
   text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .eo-plan-cond {
@@ -1665,4 +1862,447 @@
   .eo-qa-item {
     grid-template-columns: 1fr;
   }
+}
+
+/* Цвет «заполнил ИИ»: держится, пока значение не переписали вручную. */
+.eo-card {
+  --eo-ai: #5b4bd6;
+  --eo-ai-bg: #f3f1ff;
+  --eo-ai-border: #c9c1f7;
+}
+
+.eo-ai-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 1px 8px;
+  border-radius: 99px;
+  background: var(--eo-ai-bg, #f3f1ff);
+  border: 1px solid var(--eo-ai-border, #c9c1f7);
+  color: var(--eo-ai, #5b4bd6);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+}
+
+.eo-ai-note {
+  margin: 0;
+  padding: 8px 12px;
+  border-radius: 10px;
+  background: var(--eo-ai-bg, #f3f1ff);
+  color: var(--eo-ai, #5b4bd6);
+  border-left: 3px solid var(--eo-ai, #5b4bd6);
+  font-size: 13px;
+}
+
+.eo-ai-steps {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 0;
+  padding: 10px 12px 10px 30px;
+  border-radius: 12px;
+  background: var(--eo-ai-bg, #f3f1ff);
+  color: #5d7290;
+  font-size: 13px;
+}
+
+.eo-ai-steps li.is-done {
+  color: #2e7d32;
+}
+
+.eo-ai-steps li.is-active {
+  color: var(--eo-ai, #5b4bd6);
+  font-weight: 700;
+}
+
+.eo-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.eo-field-label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: #5d7290;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.eo-card .eo-form input.is-ai,
+.eo-form input.is-ai {
+  background: var(--eo-ai-bg, #f3f1ff);
+  border-color: var(--eo-ai-border, #c9c1f7);
+  color: #2e2470;
+}
+
+.eo-ai-draft {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 8px 10px;
+  border-radius: 10px;
+  background: var(--eo-ai-bg, #f3f1ff);
+  border: 1px dashed var(--eo-ai-border, #c9c1f7);
+  font-size: 13px;
+}
+
+.eo-ai-draft b {
+  color: #2e2470;
+  overflow-wrap: anywhere;
+}
+
+.eo-ai-draft small {
+  color: #5d7290;
+  overflow-wrap: anywhere;
+}
+
+.eo-ai-draft .eo-actions {
+  gap: 6px;
+}
+
+.eo-hitl-card.is-ai {
+  background: var(--eo-ai-bg, #f3f1ff);
+  border-color: var(--eo-ai-border, #c9c1f7);
+}
+
+.eo-hitl-title {
+  font-size: 14px;
+  line-height: 1.3;
+}
+
+.eo-tile.is-ai {
+  background: var(--eo-ai-bg, #f3f1ff);
+  border-color: var(--eo-ai-border, #c9c1f7);
+}
+
+.eo-tile.is-ai b {
+  color: var(--eo-ai, #5b4bd6);
+}
+
+button.eo-tile {
+  font: inherit;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: border-color 0.15s, box-shadow 0.15s;
+}
+
+button.eo-tile:hover {
+  border-color: #9fbbe0;
+  box-shadow: 0 2px 8px rgba(16, 32, 51, 0.08);
+}
+
+.eo-other-fields {
+  grid-column: 1 / -1;
+}
+
+.eo-other-fields > summary {
+  cursor: pointer;
+  list-style-position: inside;
+}
+
+.eo-other-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+  gap: 10px;
+  margin-top: 10px;
+}
+
+.eo-other-form {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 8px 10px;
+  border: 1px solid #e3ebf5;
+  border-radius: 10px;
+  background: #fbfcfe;
+}
+
+.eo-other-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 13px;
+}
+
+.eo-other-row span {
+  color: #5d7290;
+}
+
+.eo-other-row b {
+  text-align: right;
+  overflow-wrap: anywhere;
+}
+
+.eo-other-row b.is-ai,
+.eo-other-row b.is-ai-draft {
+  padding: 0 6px;
+  border-radius: 6px;
+  background: var(--eo-ai-bg, #f3f1ff);
+  color: var(--eo-ai, #5b4bd6);
+}
+
+.eo-other-row b.is-ai-draft {
+  font-weight: 600;
+  border: 1px dashed var(--eo-ai-border, #c9c1f7);
+}
+
+/* Опрос: подсказка из дела, зачем спрашиваем, проверка ответа. */
+.eo-qa-item {
+  padding: 8px 0;
+  border-bottom: 1px solid #edf2f8;
+}
+
+.eo-qa-item:last-child {
+  border-bottom: 0;
+}
+
+.eo-qa-why {
+  color: #5d7290;
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 1.35;
+}
+
+.eo-qa-answer {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.eo-ai-suggest {
+  align-self: flex-start;
+  max-width: 100%;
+  padding: 3px 8px;
+  border-radius: 8px;
+  border: 1px dashed var(--eo-ai-border, #c9c1f7);
+  background: var(--eo-ai-bg, #f3f1ff);
+  color: var(--eo-ai, #5b4bd6);
+  font: inherit;
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+  overflow-wrap: anywhere;
+}
+
+.eo-answer-checks {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.eo-answer-check {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 6px 10px;
+  border-radius: 10px;
+  border-left: 3px solid #b9d3f2;
+  background: #f4f8fd;
+  font-size: 13px;
+}
+
+.eo-answer-check.is-ok {
+  border-left-color: #2e7d32;
+  background: #f1f8f3;
+}
+
+.eo-answer-check.is-warn {
+  border-left-color: #e2b15a;
+  background: #fff8e8;
+}
+
+.eo-answer-followup {
+  color: #8a5a00;
+  font-weight: 600;
+}
+
+/* Паспорт этапа шапкой: одна строка, подробности по раскрытию. */
+.eo-passport-head {
+  border: 1px solid #e3ebf5;
+  border-radius: 14px;
+  background: #fff;
+  box-shadow: 0 1px 3px rgba(16, 32, 51, 0.05);
+}
+
+.eo-passport-head > summary {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px 14px;
+  padding: 10px 14px;
+  cursor: pointer;
+  list-style: none;
+}
+
+.eo-passport-head > summary::-webkit-details-marker {
+  display: none;
+}
+
+.eo-passport-head > summary b {
+  font-size: 16px;
+  color: #102033;
+}
+
+.eo-passport-head > summary > span:not(.eo-now-kicker) {
+  color: #5d7290;
+  font-size: 13px;
+}
+
+.eo-passport-head.is-current {
+  border-left: 4px solid #0d3b73;
+}
+
+.eo-passport-head.is-done {
+  border-left: 4px solid #2e7d32;
+}
+
+.eo-passport-head.is-blocked {
+  border-left: 4px solid #d64550;
+  background: #fffafa;
+}
+
+.eo-card .eo-passport-head > summary .eo-passport-head-stop {
+  padding: 2px 8px;
+  border-radius: 8px;
+  background: #fff4f4;
+  color: #9b2335;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.eo-card .eo-passport-head > summary .eo-passport-head-toggle {
+  margin-left: auto;
+  color: #1565c0;
+  font-weight: 600;
+}
+
+.eo-passport-head[open] > summary {
+  border-bottom: 1px solid #edf2f8;
+}
+
+.eo-passport-head > .eo-passport {
+  padding: 12px 14px 14px;
+}
+
+/* Сводка: что нужно от службы. */
+.eo-summary {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.eo-summary .eo-tiles {
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+}
+
+.eo-summary .eo-tile b {
+  font-size: 22px;
+}
+
+.eo-summary-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 0;
+  padding: 0 0 0 20px;
+  font-size: 13px;
+  line-height: 1.4;
+}
+
+.eo-summary-list li::marker {
+  color: #9b2335;
+  font-weight: 700;
+}
+
+/* Импорт ТКП: компактная таблица, раскрытие строки, страницы. */
+.eo-tkp-scroll:has(.is-compact) {
+  max-height: 62vh;
+}
+
+.eo-table.eo-tkp.is-compact {
+  width: 100%;
+  min-width: 860px;
+  font-size: 13px;
+}
+
+.eo-table.eo-tkp.is-compact th,
+.eo-table.eo-tkp.is-compact td {
+  white-space: normal;
+  vertical-align: top;
+}
+
+.eo-table.eo-tkp.is-compact td:first-child {
+  white-space: nowrap;
+}
+
+.eo-table.eo-tkp.is-compact .eo-tkp-more > td:last-child {
+  position: static;
+  box-shadow: none;
+}
+
+.eo-table.eo-tkp.is-compact td small {
+  display: block;
+  color: #5d7290;
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+.eo-table.eo-tkp.is-compact tbody tr:not(.eo-tkp-more) {
+  cursor: pointer;
+}
+
+.eo-table.eo-tkp.is-compact tbody tr.is-open > td {
+  background: #f4f8fd;
+}
+
+.eo-tkp-more > td {
+  background: #fbfcfe;
+}
+
+.eo-tkp-more dl {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+  gap: 6px 16px;
+  margin: 0;
+}
+
+.eo-tkp-more dt {
+  color: #5d7290;
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
+}
+
+.eo-tkp-more dd {
+  margin: 0;
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
+
+.eo-filter-date {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: #5d7290;
+  font-size: 13px;
+}
+
+.eo-pager {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  color: #1d3b64;
+  font-size: 13px;
+}
+
+.eo-pager select {
+  margin-left: auto;
 }

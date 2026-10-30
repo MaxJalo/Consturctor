@@ -2,6 +2,7 @@ import type { ReactNode } from 'react'
 import type { UserProfile } from '../api/types'
 import type { PageKey } from '../components/Sidebar'
 import type { PassportTab } from '../pages/AgentPassportPage'
+import type { RunAgentHandler } from '../pages/agentChat'
 import { InDevelopmentTab } from './inDevelopment/InDevelopmentTab'
 import { ExternalOrderTab } from './externalOrder/ExternalOrderTab'
 import { AssignmentsRegistryGridTab } from '../tabs/grid/AssignmentsRegistryGridTab'
@@ -24,7 +25,7 @@ export type ExtensionTabContext = {
   user: UserProfile
   onAskOrchestrator: (message: string, appContext: string) => void
   /** Open the agent run page and send the task message to that agent. */
-  onRunAgent: (workflowId: string, title: string, message: string) => void
+  onRunAgent: RunAgentHandler
   /** Open one finished run (feed, answer, files) without starting the agent. */
   onOpenRun: (workflowId: string, title: string, runId: string) => void
   onNavigate: (pageKey: PageKey) => void

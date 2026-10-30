@@ -26,6 +26,7 @@ import { formatGatewayToolError, shouldForceReLogin } from './workplace/onecSess
 import { fetchMyErpTasksOData } from './workplace/fetchMyErpTasksOData'
 import { erpActorFio } from './workplace/userContext'
 import { AgentRunRouter } from './pages/AgentRunRouter'
+import type { AgentChatContext } from './pages/agentChat'
 import { AgentHistoryPage } from './pages/AgentHistoryPage'
 import { AgentSchedulePage } from './pages/AgentSchedulePage'
 import { AgentPassportPage, type PassportTab } from './pages/AgentPassportPage'
@@ -119,7 +120,7 @@ type View =
   | { kind: 'diagnostics' }
   | { kind: 'files'; workflowId?: string; title?: string }
   | { kind: 'passport'; workflowId: string; title: string; tab?: PassportTab }
-  | { kind: 'agentrun'; workflowId: string; title: string; autoStart?: boolean; initialMessage?: string; appContext?: string; launch?: number }
+  | { kind: 'agentrun'; workflowId: string; title: string; autoStart?: boolean; initialMessage?: string; appContext?: string; launch?: number; chat?: AgentChatContext }
   | { kind: 'history'; workflowId: string; title: string; runId?: string }
   | { kind: 'schedule'; workflowId: string; title: string; published?: boolean }
 
@@ -840,7 +841,7 @@ function AppShell(): React.JSX.Element {
       return <FilesPage ownerName={activeUser.fio || ''} initialWorkflowId={view.workflowId || ''} initialAgentTitle={view.title || ''} onOpenRun={(workflowId, runId) => void openAgentRun(workflowId, runId)} />
     }
     if (view.kind === 'agentrun') {
-      return <AgentRunRouter key={`${view.workflowId}:${view.launch ?? ''}`} workflowId={view.workflowId} title={view.title} autoStart={view.autoStart} initialMessage={view.initialMessage} appContext={view.appContext} onBack={() => setView({ kind: 'tab', key: lastTab })} onOpenHistory={(workflowId, title) => setView({ kind: 'history', workflowId, title })} />
+      return <AgentRunRouter key={`${view.workflowId}:${view.chat?.conversationKey ?? ''}:${view.launch ?? ''}`} workflowId={view.workflowId} title={view.title} autoStart={view.autoStart} initialMessage={view.initialMessage} appContext={view.appContext} chat={view.chat} onBack={() => setView({ kind: 'tab', key: lastTab })} onOpenHistory={(workflowId, title) => setView({ kind: 'history', workflowId, title })} />
     }
     if (view.kind === 'passport') {
       return <AgentPassportPage workflowId={view.workflowId} title={view.title} initialTab={view.tab || 'info'} onBack={() => setView({ kind: 'tab', key: 'overview' })} onRun={(workflowId, title) => void openAgentRun(workflowId, '', true, title)} onOpenRun={(workflowId, title, runId) => void openAgentRun(workflowId, runId || '', false, title)} />
@@ -944,8 +945,10 @@ function AppShell(): React.JSX.Element {
               {extensionTab.renderTab({
                 user: activeUser,
                 onAskOrchestrator: askOrchestratorFromTab,
-                onRunAgent: (workflowId, title, message) =>
-                  setView({ kind: 'agentrun', workflowId, title, autoStart: false, initialMessage: message }),
+                onRunAgent: (workflowId, title, message, chat) => {
+                  setLastTab(key)
+                  setView({ kind: 'agentrun', workflowId, title, autoStart: false, initialMessage: message, chat })
+                },
                 onOpenRun: (workflowId, title, runId) => void openAgentRun(workflowId, runId, false, title),
                 onNavigate: (pageKey) => {
                   setLastTab(pageKey)
@@ -996,7 +999,7 @@ function AppShell(): React.JSX.Element {
       return <FilesPage ownerName={activeUser.fio || ''} initialWorkflowId={view.workflowId || ''} initialAgentTitle={view.title || ''} onOpenRun={(workflowId, runId) => void openAgentRun(workflowId, runId)} />
     }
     if (view.kind === 'agentrun') {
-      return <AgentRunRouter key={`${view.workflowId}:${view.launch ?? ''}`} workflowId={view.workflowId} title={view.title} autoStart={view.autoStart} initialMessage={view.initialMessage} appContext={view.appContext} onBack={() => setView({ kind: 'tab', key: lastTab })} onOpenHistory={(workflowId, title) => setView({ kind: 'history', workflowId, title })} />
+      return <AgentRunRouter key={`${view.workflowId}:${view.chat?.conversationKey ?? ''}:${view.launch ?? ''}`} workflowId={view.workflowId} title={view.title} autoStart={view.autoStart} initialMessage={view.initialMessage} appContext={view.appContext} chat={view.chat} onBack={() => setView({ kind: 'tab', key: lastTab })} onOpenHistory={(workflowId, title) => setView({ kind: 'history', workflowId, title })} />
     }
     if (view.kind === 'passport') {
       return <AgentPassportPage workflowId={view.workflowId} title={view.title} initialTab={view.tab || 'info'} onBack={() => setView({ kind: 'tab', key: 'today' })} onRun={(workflowId, title) => void openAgentRun(workflowId, '', true, title)} onOpenRun={(workflowId, title, runId) => void openAgentRun(workflowId, runId || '', false, title)} />

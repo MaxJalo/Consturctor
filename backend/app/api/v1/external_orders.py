@@ -133,6 +133,7 @@ class CopilotIn(BaseModel):
     message: str = ""
     answers: dict[str, str] = Field(default_factory=dict)
     auto_prepare: bool = True
+    use_ai: bool = False
 
 
 def _people(auth: AuthContext, db: Session) -> tuple[str, str, str]:
@@ -270,10 +271,29 @@ def get_matrix(
 
 @router.get("/onec/recent")
 def get_onec_recent(
+    skip: int = Query(default=0, ge=0),
+    top: int = Query(default=50, ge=1, le=500),
+    q: str = Query(default=""),
+    status: str = Query(default=""),
+    manager: str = Query(default=""),
+    date_from: str = Query(default=""),
+    date_to: str = Query(default=""),
+    has_order: str = Query(default=""),
+    source: str = Query(default="tkp"),
+    refresh: bool = Query(default=False),
     auth: AuthContext = Depends(get_current_user),
 ) -> dict:
     _ = auth
-    return _call(lambda: recent_onec_orders())
+    filters = {
+        "q": q,
+        "status": status,
+        "manager": manager,
+        "date_from": date_from,
+        "date_to": date_to,
+        "has_order": has_order,
+    }
+    kind = "orders" if source == "orders" else "tkp"
+    return _call(lambda: recent_onec_orders(skip=skip, top=top, filters=filters, refresh=refresh, source=kind))
 
 
 @router.post("/onec/import-tkp")
@@ -749,6 +769,7 @@ def post_copilot(
             message=payload.message,
             answers=payload.answers,
             auto_prepare=payload.auto_prepare,
+            use_ai=payload.use_ai,
         )
     )
 

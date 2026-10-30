@@ -81,9 +81,30 @@ export type ExternalOrderFinding = {
   owner_role: string
   owner_label?: string
   proposed_by?: string
+  /** 'ai' — черновик подготовила модель Cursor. */
+  filled_by?: string
+  confidence?: string
   kind?: string
   label?: string
   prefill?: Record<string, unknown>
+}
+
+/** Поле, заполненное ИИ: черновик ждёт владельца или принятое значение не переписано вручную. */
+export type ExternalOrderAiMark = {
+  status: 'draft' | 'accepted'
+  finding_id: string
+  value: string
+  source: string
+  quote: string
+  confidence: string
+}
+
+export type CopilotAiResult = {
+  used: boolean
+  ok: boolean
+  error: string
+  filled: string[]
+  answer_checks: Record<string, { ok: boolean; note: string; followup: string }>
 }
 
 export type ExternalOrderDecision = {
@@ -141,6 +162,11 @@ export type CopilotQuestion = {
   current_value?: string
   owner_role: string
   owner_label: string
+  /** Подсказки ИИ к вопросу: формулировка, зачем спрашиваем, догадка из дела и её источник. */
+  ai_question?: string
+  ai_why?: string
+  ai_suggestion?: string
+  ai_suggestion_source?: string
 }
 
 export type ExternalOrderMatrix = {
@@ -190,12 +216,30 @@ export type ExternalOnecTkp = {
   agreed?: string
   operation?: string
   has_order?: string
+  kind?: 'tkp' | 'order'
+  comment?: string
+  product?: string
+  order_subject?: string
 }
 
 export type ExternalOnecSearch = {
   configured: boolean
   counterparties: { key: string; name: string; inn: string }[]
   orders: ExternalOnecTkp[]
+  skip?: number
+  top?: number
+  has_more?: boolean
+  statuses?: string[]
+  managers?: string[]
+}
+
+export type ExternalOnecFilters = {
+  q?: string
+  status?: string
+  manager?: string
+  date_from?: string
+  date_to?: string
+  has_order?: '' | 'yes' | 'no'
 }
 
 export type ExternalOrder = ExternalOrderBrief & {
@@ -207,6 +251,8 @@ export type ExternalOrder = ExternalOrderBrief & {
   project_note: string
   owners: Record<string, string>
   sections: Record<string, Record<string, string>>
+  /** Ключ section.key. */
+  ai_fields?: Record<string, ExternalOrderAiMark>
   checks: ExternalOrderCheck[]
   diffs: ExternalOrderDiff[]
   risks: { id: string; title: string; impact: string; measure?: string; status: string; source?: string }[]
@@ -343,4 +389,5 @@ export type ExternalOrderCopilotResponse = ExternalOrder & {
   questions?: CopilotQuestion[]
   stage_passport?: StagePassport
   review?: ExternalOrderReview
+  ai?: CopilotAiResult
 }

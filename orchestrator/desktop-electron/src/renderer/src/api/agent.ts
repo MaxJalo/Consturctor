@@ -26,6 +26,10 @@ export interface RunCommand {
   source?: string
   triggerId?: string
   resumeAgentId?: string
+  /** Order conversation: sidecar resumes the SDK agent of this key only. */
+  conversationKey?: string
+  /** Order brief: sidecar prepends it when the conversation starts a fresh SDK agent. */
+  conversationBrief?: string
   filePaths?: string[]
   /** Snapshot of workplace UI state for the personal orchestrator agent. */
   appContext?: string

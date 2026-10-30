@@ -932,16 +932,22 @@ class _ODataClient:
         top: int = 20,
         ref_key: str = "",
         orderby: str = "",
+        skip: int = 0,
+        select: str = "",
     ) -> list[dict[str, Any]]:
         entity = self._entity(entity)
         if ref_key:
             path = f"{entity}(guid'{ref_key}')?$format=json"
         else:
             path = f"{entity}?$format=json&$top={top}"
+            if skip > 0:
+                path += f"&$skip={int(skip)}"
             if filt:
                 path += "&$filter=" + quote(filt, safe="=,'()")
             if orderby:
                 path += "&$orderby=" + quote(orderby, safe=", ")
+            if select:
+                path += "&$select=" + quote(select, safe=",")
         response = self._send("GET", path)
         self._check(response)
         data = response.json()

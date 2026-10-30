@@ -17,6 +17,7 @@ from app.models.external_order import (
     ExternalOrderFinding,
     ExternalOrderRisk,
 )
+from app.services.external_order_ai import is_ai_finding
 
 ROLES: dict[str, str] = {
     "ks": "Коммерческая служба",
@@ -1456,6 +1457,34 @@ def _brief(order: ExternalOrder) -> dict:
     }
 
 
+def _ai_fields(order: ExternalOrder) -> dict[str, dict]:
+    """Поля, заполненные ИИ: черновик ждёт владельца или принятое значение ещё не переписано вручную."""
+    sections = _load(order.sections_json)
+    marks: dict[str, dict] = {}
+    for item in order.findings:
+        field = str(item.field or "")
+        if not field.startswith("section:") or not is_ai_finding(item.proposed_by, item.confidence):
+            continue
+        target = field[len("section:"):]
+        if "." not in target or item.status not in {"draft", "accepted"}:
+            continue
+        sec, key = target.split(".", 1)
+        current = str((sections.get(sec) or {}).get(key) or "").strip()
+        if item.status == "accepted" and current != str(item.value or "").strip():
+            continue
+        if item.status == "draft" and marks.get(target, {}).get("status") == "accepted":
+            continue
+        marks[target] = {
+            "status": item.status,
+            "finding_id": item.id,
+            "value": item.value,
+            "source": item.source_ref,
+            "quote": item.location,
+            "confidence": item.confidence,
+        }
+    return marks
+
+
 def _detail(order: ExternalOrder) -> dict:
     body = _brief(order)
     body.update(
@@ -1466,6 +1495,7 @@ def _detail(order: ExternalOrder) -> dict:
             "priority": order.priority,
             "owners": _load(order.owners_json),
             "sections": _load(order.sections_json),
+            "ai_fields": _ai_fields(order),
             "project_note": "Публикация плана в TurboProject не подключена",
             "stage_passports": build_stage_passports(order),
             "role_questions": build_role_questions(order),
@@ -1538,6 +1568,7 @@ def _detail(order: ExternalOrder) -> dict:
                     "owner_role": item.owner_role,
                     "owner_label": ROLES.get(item.owner_role, item.owner_role),
                     "proposed_by": item.proposed_by,
+                    "filled_by": "ai" if is_ai_finding(item.proposed_by, item.confidence) else "",
                     "kind": _finding_kind(item.field),
                     "label": _finding_label(order, item),
                     **(
@@ -1747,6 +1778,16 @@ def patch_order(db: Session, order_id: str, *, role: str, fio: str, fields: dict
         bucket = dict(current.get(name) or {})
         bucket.update({str(key): value for key, value in values.items()})
         current[name] = bucket
+        for key, value in values.items():
+            field = f"section:{name}.{key}"
+            typed = str(value or "").strip()
+            for item in row.findings:
+                if item.field != field or item.status != "draft" or not is_ai_finding(item.proposed_by, item.confidence):
+                    continue
+                if not typed:
+                    continue
+                # Владелец сохранил поле сам: черновик ИИ закрыт его решением.
+                item.status = "accepted" if typed == str(item.value or "").strip() else "rejected"
     if sections:
         row.sections_json = _dump(current)
     if "route" in fields:
@@ -2371,12 +2412,24 @@ def _apply_finding_effect(db: Session, row: ExternalOrder, item: ExternalOrderFi
             ),
             "reason": kv.get("reason") or kv.get("основание") or item.source_ref or "Принято из черновика ИИ",
         }
-        if all(str(baseline_fields.get(k) or "").strip() for k in ("composition", "cost", "mcr", "margin", "bdds", "deadlines")):
-            effective_role = role if role in {"ks", "finance", "rp", "committee"} else "finance"
-            try:
-                create_baseline(db, row, role=effective_role, fio=fio, fields=baseline_fields)
-            except ExternalOrderError:
-                pass
+        labels = {
+            "composition": "состав",
+            "cost": "стоимость",
+            "mcr": "МЦР",
+            "margin": "маржа",
+            "bdds": "БДДС",
+            "deadlines": "сроки",
+        }
+        missing = [label for key, label in labels.items() if not str(baseline_fields.get(key) or "").strip()]
+        if missing:
+            raise ExternalOrderError(
+                "Базовая версия не собрана: нет "
+                + ", ".join(missing)
+                + ". Заполните их на вкладке «Комитет и БВ» и нажмите «Собрать базовую версию».",
+                400,
+            )
+        effective_role = role if role in {"ks", "finance", "rp", "committee"} else "finance"
+        create_baseline(db, row, role=effective_role, fio=fio, fields=baseline_fields)
         return
     if field.startswith("risk:"):
         kv = _parse_kv_or_json(val)
@@ -2421,7 +2474,9 @@ def accept_role_findings(db: Session, order_id: str, *, role: str, fio: str) -> 
         for item in drafts
         if item.owner_role == role or (not item.owner_role and role in {"ks", "rp"})
     ]
-    targets = owned if owned else (drafts if role in {"ks", "rp"} else [])
+    # Черновики ИИ принимает только владелец раздела, без подстановки КС или РП.
+    fallback = [item for item in drafts if not is_ai_finding(item.proposed_by, item.confidence)]
+    targets = owned if owned else (fallback if role in {"ks", "rp"} else [])
     accepted_count = 0
     for item in targets:
         _apply_finding_effect(db, row, item, role=item.owner_role or role, fio=fio)
@@ -2716,13 +2771,14 @@ def auto_prepare_order(
     if not list(row.baselines) and (
         calc.get("cost") or comm.get("price") or onec.get("amount") or role in {"finance", "committee"} or step_id == "committee"
     ):
+        # Чего нет в деле, остаётся пустым: МЦР, маржу и сроки заполняют службы.
         base_draft = {
-            "composition": str(tech.get("composition") or row.product or "Комплект поставки"),
-            "cost": str(calc.get("cost") or comm.get("price") or onec.get("amount") or "1 000 000 руб."),
-            "mcr": str(calc.get("mcr") or comm.get("price") or onec.get("amount") or "900 000 руб."),
-            "margin": str(calc.get("margin") or "20%"),
-            "bdds": str(calc.get("bdds") or fin.get("schedule") or "Аванс 50%, расчёт 50% по отгрузке"),
-            "deadlines": str(proj.get("plan_note") or exec_sec.get("cycle") or "90 календарных дней"),
+            "composition": str(tech.get("composition") or row.product or ""),
+            "cost": str(calc.get("cost") or comm.get("price") or onec.get("amount") or ""),
+            "mcr": str(calc.get("mcr") or ""),
+            "margin": str(calc.get("margin") or ""),
+            "bdds": str(calc.get("bdds") or fin.get("schedule") or ""),
+            "deadlines": str(proj.get("plan_note") or exec_sec.get("cycle") or ""),
             "reason": f"Первичная сборка базовой версии по заказу {row.code}",
         }
         _upsert_draft_finding(
@@ -2800,8 +2856,14 @@ def run_copilot(
     message: str = "",
     answers: dict[str, str] | None = None,
     auto_prepare: bool = True,
+    use_ai: bool = False,
+    ai_runner=None,
 ) -> dict:
-    """Единый обработчик встроенного ИИ-помощника: применяет ответы сотрудника и запускает auto_prepare."""
+    """Единый обработчик встроенного ИИ-помощника: применяет ответы сотрудника и запускает auto_prepare.
+
+    use_ai — после детерминированной подготовки дело читает модель Cursor: черновики всех
+    пустых полей с источником, подсказки к вопросам и проверка ответов сотрудника.
+    """
     from app.services.external_order_case import resolve_gaps
 
     row = _order(db, order_id)
@@ -2910,6 +2972,15 @@ def run_copilot(
         prep_log = auto_prepare_order(db, row, role=role, fio=fio, step_id=step_id)
         log.extend(prep_log)
 
+    ai: dict = {"ok": False, "error": "", "hints": {}, "answer_checks": {}}
+    if use_ai:
+        from app.services.external_order_ai import ai_prepare
+
+        db.flush()
+        ai = ai_prepare(db, row, role=role, answers=answers, runner=ai_runner)
+        log.extend(ai.get("log") or [])
+        row = _order(db, order_id)
+
     db.commit()
     db.refresh(row)
 
@@ -2945,6 +3016,9 @@ def run_copilot(
     if not questions and role in {"it", "committee", "development"}:
         for q_list in role_questions_map.values():
             questions.extend(q_list[:2])
+    hints = ai.get("hints") or {}
+    if hints:
+        questions = [{**item, **{f"ai_{k}": v for k, v in hints.get(item.get("id"), {}).items()}} for item in questions]
     role_proposals_count = sum(1 for item in proposals if item.get("owner_role") == role)
     blocker_note = stage_passport.get("blocker") or "блокировок этапа нет"
     step_info = next((item["title"] for item in SIMPLIFIED_PATH if item["id"] == step_id), "")
@@ -2967,6 +3041,13 @@ def run_copilot(
         "proposals": proposals,
         "questions": questions,
         "log": log,
+        "ai": {
+            "used": bool(use_ai),
+            "ok": bool(ai.get("ok")),
+            "error": str(ai.get("error") or ""),
+            "filled": list(ai.get("filled") or []),
+            "answer_checks": ai.get("answer_checks") or {},
+        },
     }
 
 
@@ -3051,6 +3132,15 @@ def invoke_tool(arguments: dict, *, fio: str) -> dict:
         db.close()
 
 
+def _release_db(db: Session) -> None:
+    """Отдать соединение в пул перед долгим чтением 1С или запросом к Cursor.
+
+    commit() закрывает транзакцию и возвращает соединение. close() здесь не нужен:
+    он отсоединил бы заказ, с которым запрос продолжает работать.
+    """
+    db.commit()
+
+
 def _order_by_onec(db: Session, ref_key: str) -> ExternalOrder | None:
     key = (ref_key or "").strip()
     if not key:
@@ -3061,11 +3151,19 @@ def _order_by_onec(db: Session, ref_key: str) -> ExternalOrder | None:
     return None
 
 
-def recent_onec_orders() -> dict:
-    from app.services.external_order_onec import OnecLinkError, recent_tkp
+def recent_onec_orders(
+    *,
+    skip: int = 0,
+    top: int = 50,
+    filters: dict[str, str] | None = None,
+    refresh: bool = False,
+    source: str = "tkp",
+) -> dict:
+    from app.services.external_order_onec import OnecLinkError, recent_sale_orders_page, recent_tkp_page
 
     try:
-        return recent_tkp()
+        page = recent_sale_orders_page if source == "orders" else recent_tkp_page
+        return page(skip=skip, top=top, filters=filters, refresh=refresh)
     except OnecLinkError as exc:
         raise ExternalOrderError(exc.detail, exc.status) from exc
 
@@ -3094,6 +3192,7 @@ def import_tkp_order(db: Session, *, role: str, fio: str, ref_key: str) -> dict:
         return _detail(found)
     from app.services.external_order_onec import OnecLinkError, trace_tkp
 
+    _release_db(db)
     try:
         traced = trace_tkp(key)
     except OnecLinkError as exc:
@@ -3137,19 +3236,21 @@ def import_onec_order(db: Session, *, role: str, fio: str, ref_key: str) -> dict
         return _detail(found)
     from app.services.external_order_onec import OnecLinkError, read_order
 
+    _release_db(db)
     try:
         preview = read_order(key)
     except OnecLinkError as exc:
         raise ExternalOrderError(exc.detail, exc.status) from exc
     number = str(preview.get("order_number") or "").strip() or "без номера"
     customer = str(preview.get("counterparty") or "").strip() or "Контрагент из 1С"
+    product = str(preview.get("product") or preview.get("comment") or "").strip() or f"Заказ клиента {number}"
     created = create_order(
         db,
         role=role,
         fio=fio,
         fields={
             "customer": customer,
-            "product": f"Заказ клиента {number}",
+            "product": product,
             "inn": str(preview.get("inn") or ""),
         },
         allow_import=True,
@@ -3196,11 +3297,13 @@ def link_onec(db: Session, order_id: str, *, role: str, fio: str, ref_key: str) 
         )
     from app.services.external_order_onec import OnecLinkError, read_order, tkp_key_for_order, trace_tkp
 
-    row = _order(db, order_id)
+    _order(db, order_id)
+    _release_db(db)
     try:
         traced = _trace_or_order(ref_key, read_order, tkp_key_for_order, trace_tkp)
     except OnecLinkError as exc:
         raise ExternalOrderError(exc.detail, exc.status) from exc
+    row = _order(db, order_id)
     _apply_onec(row, traced)
     _audit(
         db,
@@ -3227,6 +3330,7 @@ def refresh_onec(db: Session, order_id: str, *, role: str, fio: str) -> dict:
     ref_key = str(saved.get("order_key") or "")
     if not tkp_key and not ref_key:
         raise ExternalOrderError("Сначала загрузите ТКП или заказ клиента из 1С", 400)
+    _release_db(db)
     try:
         if tkp_key:
             traced = trace_tkp(tkp_key)
@@ -3234,6 +3338,7 @@ def refresh_onec(db: Session, order_id: str, *, role: str, fio: str) -> dict:
             traced = _trace_or_order(ref_key, read_order, tkp_key_for_order, trace_tkp)
     except OnecLinkError as exc:
         raise ExternalOrderError(exc.detail, exc.status) from exc
+    row = _order(db, order_id)
     _apply_onec(row, traced)
     _audit(db, row, fio=fio, role=role, action="onec_refresh", detail=_path_label(row) or f"{traced.get('payment_percent')}%")
     db.commit()

@@ -167,6 +167,7 @@ from app.sdk_agent.prompt import (  # noqa: E402
     build_continue_run_prompt,
     build_demo_sdk_prompt,
     build_design_sdk_prompt,
+    build_order_followup_prompt,
     build_sdk_prompt,
     text_has_finished_work_result,
 )
@@ -304,6 +305,31 @@ def _run_answer_done(text: str, hide_tests: bool = False) -> bool:
     if hide_tests:
         return bool(_WORK_RESULT_MARK_RE.search(_without_tests_label(text)))
     return _text_has_finished_work_result(text)
+
+
+_ORDER_TURN_MIN_CHARS = 40
+
+
+def _turn_answer_done(text: str, hide_tests: bool = False) -> bool:
+    """A finished SDK turn of an external-order helper is a reply to the employee.
+
+    Its instructions end with questions, not ## WORK_RESULT; asking the agent to
+    "continue" such a turn makes it repeat the same reads and questions.
+    """
+    if _run_answer_done(text, hide_tests):
+        return True
+    return hide_tests and len(_without_tests_label(text).strip()) >= _ORDER_TURN_MIN_CHARS
+
+
+def _with_order_brief(message: str, brief: str) -> str:
+    """A fresh SDK agent of an order conversation must know the order, not only the reply."""
+    text = (message or "").strip()
+    order = (brief or "").strip()
+    if not order or order in text:
+        return text
+    if not text:
+        return order
+    return f"{order}\n\nСотрудник пишет: {text}"
 
 
 def needs_confirmation(name: str) -> bool:
@@ -4468,12 +4494,14 @@ class Sidecar:
         bridge.check_ready()
         workflow = self._api.get_workflow(workflow_id)
         active.hide_tests = _is_external_order_helper_title(getattr(workflow, "title", ""))
-        if not resume_agent_id:
-            resume_agent_id = str((workflow.local_run or {}).get("sdk_agent_id") or "").strip()
-        # A resumed SDK agent keeps the tool list from its first launch.
-        # Helpers created before external_order.case existed would never see it.
+        conversation_key = str(command.get("conversationKey") or "").strip()
         if active.hide_tests:
-            resume_agent_id = ""
+            # Один агент службы ведёт много заказов: память берётся только из этого
+            # разговора (заказ, служба, этап), а не общая на службу.
+            resume_agent_id = self._conversation_agent_id(workflow_id, conversation_key)
+        elif not resume_agent_id:
+            resume_agent_id = str((workflow.local_run or {}).get("sdk_agent_id") or "").strip()
+        active.conversation_key = conversation_key
         self._fail_unbacked_started(workflow_id, except_run_id=active.run_id)
         run_record = self._api.start_local_agent_run(
             workflow_id,
@@ -4481,6 +4509,7 @@ class Sidecar:
             source=source,
             trigger_id=trigger_id,
             evidence=evidence,
+            conversation_key=conversation_key,
         )
         run_ref = getattr(run_record, "id", "") or getattr(run_record, "run_id", "")
         active.history_run_id = str(run_ref or "")
@@ -4532,14 +4561,23 @@ class Sidecar:
         # Always include current workflow materials in the prompt. If a saved
         # SDK agent id belongs to another machine/account and resume falls back
         # to a fresh agent, the run still has the full playbook context.
-        prompt = build_sdk_prompt(workflow, message)
+        fresh_message = (
+            _with_order_brief(message, str(command.get("conversationBrief") or ""))
+            if active.hide_tests
+            else message
+        )
+        if active.hide_tests and resume_agent_id:
+            prompt = build_order_followup_prompt(message)
+        else:
+            prompt = build_sdk_prompt(workflow, fresh_message)
         note = _attachments_note(attachment_paths)
         if note:
             prompt = prompt + "\n\n" + note
         for extra_note in run_input_notes:
             if extra_note:
                 prompt = prompt + "\n\n" + extra_note
-        prompt = _with_run_journal_prompt(prompt, run_cwd, workflow_id)
+        if not active.hide_tests:
+            prompt = _with_run_journal_prompt(prompt, run_cwd, workflow_id)
         status = "ok"
         answer = ""
         agent_id = resume_agent_id
@@ -4566,7 +4604,10 @@ class Sidecar:
             except Exception as exc:  # noqa: BLE001
                 if resume_agent_id and self._is_missing_resume_agent_error(exc) and not active.stop.is_set():
                     log(f"resume agent missing for {workflow_id}, retry fresh run")
-                    self._clear_stored_agent_id(workflow_id)
+                    if not conversation_key:
+                        self._clear_stored_agent_id(workflow_id)
+                    if active.hide_tests:
+                        prompt = build_sdk_prompt(workflow, fresh_message)
                     result = self._bridge_run_with_retry(
                         active,
                         bridge,
@@ -4585,13 +4626,13 @@ class Sidecar:
                     raise
             answer = str(result.get("answer") or "").strip()
             agent_id = str(result.get("agent_id") or resume_agent_id).strip()
-            self._store_agent_id(workflow_id, agent_id)
+            self._store_agent_id(workflow_id, agent_id, conversation=bool(conversation_key))
             continues = 0
             while (
                 status == "ok"
                 and agent_id
                 and not active.stop.is_set()
-                and not _run_answer_done(answer, getattr(active, "hide_tests", False))
+                and not _turn_answer_done(answer, getattr(active, "hide_tests", False))
                 and continues < _MAX_WORK_CONTINUES
             ):
                 continues += 1
@@ -4621,10 +4662,10 @@ class Sidecar:
                 if nxt:
                     answer = nxt
                 agent_id = str(result.get("agent_id") or agent_id).strip()
-                self._store_agent_id(workflow_id, agent_id)
+                self._store_agent_id(workflow_id, agent_id, conversation=bool(conversation_key))
             if getattr(active, "hide_tests", False):
                 answer = _without_tests_label(answer)
-            if status == "ok" and not _run_answer_done(answer, getattr(active, "hide_tests", False)):
+            if status == "ok" and not _turn_answer_done(answer, getattr(active, "hide_tests", False)):
                 status = "error"
                 tail = answer.strip()
                 answer = (
@@ -4646,6 +4687,7 @@ class Sidecar:
                     events=events, message=message,
                     metrics=self._stop_run_metrics(active),
                     context=self._stop_run_context(active),
+                    sdk_agent_id=agent_id if conversation_key else "",
                 )
                 active.history_finished = True
             except ApiError:
@@ -4670,6 +4712,7 @@ class Sidecar:
             events=events, message=message,
             metrics=self._stop_run_metrics(active),
             context=self._stop_run_context(active),
+            sdk_agent_id=agent_id if conversation_key else "",
         )
         active.history_finished = True
         try:
@@ -5103,8 +5146,22 @@ class Sidecar:
         except ApiError:
             return
 
-    def _store_agent_id(self, workflow_id: str, agent_id: str) -> None:
-        if not agent_id:
+    def _conversation_agent_id(self, workflow_id: str, conversation_key: str) -> str:
+        key = (conversation_key or "").strip()
+        if not key:
+            return ""
+        try:
+            runs = self._api.list_agent_runs(workflow_id, conversation_key=key)
+        except ApiError:
+            return ""
+        for run in runs:
+            agent = str(getattr(run, "sdk_agent_id", "") or "").strip()
+            if agent and str(getattr(run, "conversation_key", "") or "") == key:
+                return agent
+        return ""
+
+    def _store_agent_id(self, workflow_id: str, agent_id: str, *, conversation: bool = False) -> None:
+        if not agent_id or conversation:
             return
         try:
             record = self._api.get_workflow(workflow_id)
@@ -5643,6 +5700,7 @@ class ActiveRun:
         self.dedup_key: str = ""
         self.history_run_id: str = ""
         self.history_finished: bool = False
+        self.conversation_key: str = ""
         self.answer_buf: str = ""
         self.event_workflow_id: str = ""
         self.events: list[dict[str, Any]] = []

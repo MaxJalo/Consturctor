@@ -178,6 +178,8 @@ export interface AgentRunHistoryItem {
   humanWaitMs: number
   openSegment: string
   openSegmentAt: string
+  /** eo:{order}:{role}:{stage} — разговор помощника внешнего заказа. */
+  conversationKey?: string
   calendarMeetings: Array<{
     title: string
     start: string

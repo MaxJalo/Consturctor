@@ -68,6 +68,7 @@ import {
   type SupportTicketItem
 } from './types'
 import type {
+  ExternalOnecFilters,
   ExternalOnecSearch,
   ExternalOrder,
   ExternalOrderCopilotResponse,
@@ -1122,7 +1123,8 @@ function parseAgentRunItem(item: Record<string, unknown>, workflowId: string): A
     humanWaitMs: Math.max(0, Number(item.human_wait_ms ?? item.humanWaitMs ?? 0) || 0),
     openSegment: String(item.open_segment ?? item.openSegment ?? ''),
     openSegmentAt: String(item.open_segment_at ?? item.openSegmentAt ?? ''),
-    calendarMeetings: parseCalendarMeetings(item.calendar_meetings ?? item.calendarMeetings)
+    calendarMeetings: parseCalendarMeetings(item.calendar_meetings ?? item.calendarMeetings),
+    conversationKey: String(item.conversation_key ?? item.conversationKey ?? '')
   }
 }
 
@@ -1690,10 +1692,17 @@ export class ApiClient {
     return parseScheduleDraft(data ?? {})
   }
 
-  async listAgentRuns(workflowId: string): Promise<AgentRunHistoryItem[]> {
+  async listAgentRuns(
+    workflowId: string,
+    conversation: { key?: string; prefix?: string } = {}
+  ): Promise<AgentRunHistoryItem[]> {
+    const params = new URLSearchParams()
+    if (conversation.key) params.set('conversation_key', conversation.key)
+    if (conversation.prefix) params.set('conversation_prefix', conversation.prefix)
+    const query = params.toString()
     const data = await this.request<Record<string, unknown>[] | { items?: Record<string, unknown>[] }>(
       'GET',
-      `/api/v1/workflows/${workflowId}/runs`,
+      `/api/v1/workflows/${workflowId}/runs${query ? `?${query}` : ''}`,
       { timeoutMs: 60_000 }
     )
     const items = Array.isArray(data) ? data : (data.items ?? [])
@@ -2618,13 +2627,13 @@ export class ApiClient {
 
   async runExternalCopilot(
     id: string,
-    body: { step_id?: string; message?: string; answers?: Record<string, string>; auto_prepare?: boolean },
+    body: { step_id?: string; message?: string; answers?: Record<string, string>; auto_prepare?: boolean; use_ai?: boolean },
     asRole = ''
   ): Promise<ExternalOrderCopilotResponse> {
     return this.request('POST', `/api/v1/external-orders/${encodeURIComponent(id)}/copilot`, {
       body,
       params: asRole ? { as_role: asRole } : undefined,
-      timeoutMs: 45_000
+      timeoutMs: body.use_ai ? 240_000 : 45_000
     })
   }
 
@@ -2673,8 +2682,21 @@ export class ApiClient {
     })
   }
 
-  async recentExternalOnec(): Promise<ExternalOnecSearch> {
-    return this.request('GET', '/api/v1/external-orders/onec/recent', { timeoutMs: 90_000 })
+  async recentExternalOnec(
+    page: { skip?: number; top?: number; refresh?: boolean } = {},
+    filters: ExternalOnecFilters = {},
+    source: 'tkp' | 'orders' = 'tkp'
+  ): Promise<ExternalOnecSearch> {
+    const params: Record<string, string> = {
+      skip: String(page.skip || 0),
+      top: String(page.top || 50),
+      source
+    }
+    if (page.refresh) params.refresh = 'true'
+    for (const [key, value] of Object.entries(filters)) {
+      if (value) params[key] = String(value)
+    }
+    return this.request('GET', '/api/v1/external-orders/onec/recent', { params, timeoutMs: 300_000 })
   }
 
   async importExternalTkp(refKey: string, asRole = ''): Promise<ExternalOrder> {

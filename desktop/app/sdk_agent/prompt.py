@@ -330,6 +330,21 @@ def build_sdk_prompt(workflow: WorkflowRecord, user_message: str) -> str:
     )
 
 
+def build_order_followup_prompt(user_message: str) -> str:
+    """Next employee message in the same order conversation (resumed SDK agent)."""
+    reply = (user_message or "").strip() or "Продолжай."
+    return (
+        "Это продолжение того же разговора по тому же заказу. "
+        "Дело, materials/agent.md и результаты прошлых вызовов у тебя уже есть: "
+        "не вызывай снова auto_prepare и read, не повторяй уже заданные вопросы "
+        "и уже сохранённые черновики. Перечитай дело только если сотрудник об этом просит "
+        "или его ответ меняет данные. Учти ответ, запиши новые черновики через propose, "
+        "задай только оставшиеся вопросы и остановись. "
+        "Не пиши строку TESTS. Думай и пиши только на русском.\n\n"
+        f"Сообщение сотрудника:\n{reply}"
+    )
+
+
 def build_continue_run_prompt() -> str:
     """Resume the same SDK agent after a turn that stopped without WORK_RESULT."""
     return (

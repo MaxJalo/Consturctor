@@ -487,6 +487,8 @@ class AgentRunHistoryItem:
     started_at: str = ""
     finished_at: str = ""
     events: list[dict] = field(default_factory=list)
+    conversation_key: str = ""
+    sdk_agent_id: str = ""
 
 
 @dataclass
@@ -605,6 +607,8 @@ def _parse_agent_run(data: dict, workflow_id: str = "") -> AgentRunHistoryItem:
         started_at=str(data.get("started_at") or ""),
         finished_at=str(data.get("finished_at") or ""),
         events=events,
+        conversation_key=str(data.get("conversation_key") or ""),
+        sdk_agent_id=str(data.get("sdk_agent_id") or ""),
     )
 
 
@@ -2352,8 +2356,9 @@ class ApiClient:
             return [item for item in items if isinstance(item, dict)]
         return []
 
-    def list_agent_runs(self, workflow_id: str) -> list[AgentRunHistoryItem]:
-        data = self._request("GET", f"/api/v1/workflows/{workflow_id}/runs", timeout=60.0)
+    def list_agent_runs(self, workflow_id: str, *, conversation_key: str = "") -> list[AgentRunHistoryItem]:
+        params = {"conversation_key": conversation_key} if conversation_key else None
+        data = self._request("GET", f"/api/v1/workflows/{workflow_id}/runs", params=params, timeout=60.0)
         items = data if isinstance(data, list) else []
         return [
             _parse_agent_run(item, workflow_id)
@@ -2369,6 +2374,7 @@ class ApiClient:
         source: str = "chat",
         trigger_id: str = "",
         evidence: str = "",
+        conversation_key: str = "",
     ) -> AgentRunHistoryItem:
         data = self._request(
             "POST",
@@ -2378,6 +2384,7 @@ class ApiClient:
                 "source": source or "chat",
                 "trigger_id": trigger_id or "",
                 "evidence": evidence or "",
+                "conversation_key": conversation_key or "",
             },
             timeout=30.0,
         )
@@ -2452,6 +2459,7 @@ class ApiClient:
         message: str = "",
         metrics: list[dict] | None = None,
         context: dict | None = None,
+        sdk_agent_id: str = "",
     ) -> AgentRunHistoryItem:
         payload: dict = {
             "status": status,
@@ -2459,6 +2467,8 @@ class ApiClient:
             "events": events or [],
             "message": message,
         }
+        if sdk_agent_id:
+            payload["sdk_agent_id"] = sdk_agent_id
         if metrics is not None:
             payload["metrics"] = metrics
         if context is not None:

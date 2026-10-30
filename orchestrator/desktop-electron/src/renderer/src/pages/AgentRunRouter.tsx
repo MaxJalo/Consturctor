@@ -85,7 +85,8 @@ export function AgentRunRouter(props: AgentRunRouterProps): React.JSX.Element {
   if (route === undefined) {
     return <div className="agent-run-resolving" aria-busy="true" />
   }
-  const legacy = route?.kind === 'constructor' && (legacyRunning || Boolean(props.initialMessage?.trim()))
+  const legacy =
+    route?.kind === 'constructor' && (legacyRunning || Boolean(props.chat) || Boolean(props.initialMessage?.trim()))
   if (route && !legacy) {
     return (
       <PlatformAgentPage

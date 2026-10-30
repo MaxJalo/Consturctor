@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Paperclip } from 'lucide-react'
 import type { UserProfile } from '../../api/types'
 import { ApiError } from '../../api/types'
@@ -17,6 +17,8 @@ import { PlanBuilder } from './externalOrderPlan'
 import {
   GATES,
   HelperPanel,
+  basisAdvice,
+  formAdvice,
   LINE,
   ROLE_FIELDS,
   ROLE_NAME,
@@ -28,7 +30,9 @@ import {
   type HelperPanelProps
 } from './externalOrderReview'
 import type {
+  CopilotAiResult,
   CopilotQuestion,
+  ExternalOnecFilters,
   ExternalOnecSearch,
   ExternalOnecTkp,
   ExternalOrder,
@@ -38,6 +42,12 @@ import type {
   ExternalOrderSimplifiedStep,
   StagePassport
 } from './externalOrderTypes'
+import {
+  type AgentChatContext,
+  type RunAgentHandler,
+  orderConversationKey,
+  orderConversationPrefix
+} from '../../pages/agentChat'
 import './externalOrder.css'
 
 const ROLE_KEY = 'orch.external-order.role'
@@ -170,7 +180,27 @@ function kindLabel(id: string): string {
 type Order = ExternalOrder
 type Brief = ExternalOrderBrief
 type SimplifiedStep = ExternalOrderSimplifiedStep
-type CardPage = 'now' | 'path' | 'diff' | 'committee' | 'deal'
+type CardPage = 'summary' | 'fields' | 'checks' | 'diff' | 'committee' | 'path' | 'files' | 'ai' | 'history'
+
+const CARD_PAGES: CardPage[] = ['summary', 'fields', 'checks', 'diff', 'committee', 'path', 'files', 'ai', 'history']
+const PAGE_KEY = 'orch.external-order.page'
+
+function savedPage(): CardPage {
+  try {
+    const value = localStorage.getItem(PAGE_KEY) as CardPage | null
+    return value && CARD_PAGES.includes(value) ? value : 'summary'
+  } catch {
+    return 'summary'
+  }
+}
+
+function savePage(page: CardPage): void {
+  try {
+    localStorage.setItem(PAGE_KEY, page)
+  } catch {
+    /* вкладка останется на этот сеанс */
+  }
+}
 type RunAction = (action: () => Promise<Order | void>) => Promise<void>
 type DocKind = 'memo' | 'assignment' | 'directive' | 'order'
 type DocDraft = { title?: string; text?: string; values?: Record<string, string> }
@@ -181,9 +211,10 @@ type CopilotState = {
   log: string[]
   questions: CopilotQuestion[]
   passport: StagePassport | null
+  ai: CopilotAiResult | null
 }
 
-const NO_COPILOT: CopilotState = { orderId: '', summary: '', log: [], questions: [], passport: null }
+const NO_COPILOT: CopilotState = { orderId: '', summary: '', log: [], questions: [], passport: null, ai: null }
 
 function pathSteps(raw: unknown): { id: string; title: string; state: string; detail: string }[] {
   if (typeof raw !== 'string' || !raw.trim()) return []
@@ -243,19 +274,92 @@ function activePassport(passports: StagePassport[]): StagePassport | null {
 /** Выжимка для агента: код заказа, служба, этап и сценарий шага вместо однострочной подсказки. */
 function agentBrief(order: Order, role: string, step?: SimplifiedStep, extra = ''): string {
   const passport = activePassport(buildStagePassports(order))
+  const fields = (ROLE_FIELDS[role] || []).flatMap((form) =>
+    form.fields.map((field) => {
+      const value = String(order.sections?.[form.section]?.[field.key] || '').trim()
+      return `- ${form.section}.${field.key} (${field.label}): ${value ? `«${value.slice(0, 80)}»` : 'пусто'}`
+    })
+  )
+  const checks = (order.checks || [])
+    .filter((item) => item.owner_role === role && item.status !== 'done' && item.status !== 'not_applicable')
+    .slice(0, 12)
+    .map((item) => `- ${item.id}: ${item.text}`)
+  const gaps = (order.gaps || [])
+    .filter((item) => item.status === 'open' && (!item.owner_role || item.owner_role === role))
+    .slice(0, 12)
+    .map((item) => `- ${item.field}: ${item.detail}`)
+  const stepArg = step ? `, step_id="${step.id}"` : ''
   return [
-    `order_id=${order.id}`,
-    `Заказ ${order.code}: ${order.customer}, ${order.product}. Статус: ${order.status_label}.`,
+    `Работаем по заказу ${order.code} (order_id=${order.id}).`,
+    `Заказчик: ${order.customer}. Продукт: ${order.product}. Статус: ${order.status_label}.`,
     `Служба: ${ROLE_NAME[role] || role} (role=${role}).`,
     step ? `Шаг пути: ${step.title} (step_id=${step.id}).` : '',
     passport
       ? `Этап «${passport.label}»: чек-лист ${passport.checks_done}/${passport.checks_total}${passport.blocker ? `, блокер: ${passport.blocker}` : ''}.`
       : '',
     (order.blocks || []).length ? `Блокировки: ${order.blocks.join('; ')}.` : '',
-    'Сначала вызови external_order.case(action="auto_prepare"), запиши найденное черновиками через propose или draft_1c, затем задай вопросы по недостающим данным.',
+    fields.length ? `Поля службы в карточке:\n${fields.join('\n')}` : '',
+    checks.length ? `Открытые пункты чек-листа службы:\n${checks.join('\n')}` : '',
+    gaps.length ? `Пробелы в данных:\n${gaps.join('\n')}` : '',
+    [
+      'Порядок работы:',
+      `1. Первым действием вызови external_order.case(action="auto_prepare", order_id="${order.id}", role="${role}"${stepArg}). Всё дело приходит этим инструментом: файлы на диске через read/grep не ищи.`,
+      '2. Что нашлось в деле, сразу запиши черновиками через external_order.case(action="propose") с источником. Факт без источника не пиши.',
+      '3. По пустым полям и открытым пунктам задай сотруднику нумерованные вопросы, по одному на поле: что нужно, зачем, где это обычно указано.',
+      '4. Когда сотрудник ответит, проверь ответ на противоречия с делом, запиши его черновиком через propose и скажи, что принять его можно кнопкой «Принять» в карточке. Уточни, если ответ неполный.'
+    ].join('\n'),
     step?.prompt || '',
-    extra
-  ].filter(Boolean).join('\n')
+    extra ? `Сотрудник пишет: ${extra}` : ''
+  ].filter(Boolean).join('\n\n')
+}
+
+const RETURN_KEY = 'orch.external-order.return'
+
+type ReturnIntent = { orderId: string; page: CardPage }
+
+/** Чат помощника: разговор на заказ, службу и текущий этап; правая панель показывает этот заказ. */
+function chatContext(order: Order, role: string): AgentChatContext {
+  const passport = activePassport(buildStagePassports(order))
+  const stage = passport?.id || order.status || 'none'
+  return {
+    conversationKey: orderConversationKey(order.id, role, stage),
+    conversationPrefix: orderConversationPrefix(order.id, role),
+    stageLabels: Object.fromEntries(LINE.map((step) => [step.id, step.label])),
+    order: {
+      id: order.id,
+      code: order.code,
+      customer: order.customer,
+      product: order.product,
+      stage,
+      stageLabel: passport?.label || order.status_label,
+      role,
+      roleLabel: ROLE_NAME[role] || role,
+      blockers: [...(passport?.blocker ? [passport.blocker] : []), ...(order.blocks || [])].filter(
+        (item, index, all) => item && all.indexOf(item) === index
+      )
+    }
+  }
+}
+
+function rememberReturn(intent: ReturnIntent): void {
+  try {
+    sessionStorage.setItem(RETURN_KEY, JSON.stringify(intent))
+  } catch {
+    /* без возврата откроется список */
+  }
+}
+
+function takeReturn(): ReturnIntent | null {
+  try {
+    const raw = sessionStorage.getItem(RETURN_KEY)
+    sessionStorage.removeItem(RETURN_KEY)
+    const data = raw ? (JSON.parse(raw) as Partial<ReturnIntent>) : null
+    if (!data?.orderId) return null
+    const page = CARD_PAGES.includes(data.page as CardPage) ? (data.page as CardPage) : 'summary'
+    return { orderId: String(data.orderId), page }
+  } catch {
+    return null
+  }
 }
 
 function docflowValues(schema: DocflowKindSchema, draft: DocDraft): Record<string, string> {
@@ -317,9 +421,11 @@ export function ExternalOrderTab({
   onRunAgent
 }: {
   user: UserProfile
-  onRunAgent: (workflowId: string, title: string, message: string) => void
+  onRunAgent: RunAgentHandler
 }): React.JSX.Element {
   const view = useExternalOrderDock()
+  const cardPageRef = useRef<CardPage>(savedPage())
+  const [returnPage, setReturnPage] = useState<CardPage | null>(null)
   const [asRole, setAsRole] = useState(savedRole)
   const [meta, setMeta] = useState<ExternalOrderMeta | null>(null)
   const [orders, setOrders] = useState<Brief[]>([])
@@ -329,9 +435,6 @@ export function ExternalOrderTab({
   const [customer, setCustomer] = useState('')
   const [product, setProduct] = useState('')
   const [evidence, setEvidence] = useState<Record<string, string>>({})
-  const [onecRows, setOnecRows] = useState<ExternalOnecTkp[]>([])
-  const [onecTried, setOnecTried] = useState(false)
-  const [onecLoading, setOnecLoading] = useState(false)
   const [deskOrder, setDeskOrder] = useState<Order | null>(null)
   const [deskAll, setDeskAll] = useState(false)
   const [helper, setHelper] = useState<ExternalOrderReview | null>(null)
@@ -343,6 +446,10 @@ export function ExternalOrderTab({
   const [stageFilter, setStageFilter] = useState('')
   const [routeFilter, setRouteFilter] = useState('')
   const [blockedOnly, setBlockedOnly] = useState(false)
+  const [waitingFilter, setWaitingFilter] = useState('')
+  const [draftsOnly, setDraftsOnly] = useState(false)
+  const [registryTop, setRegistryTop] = useState(50)
+  const [registrySkip, setRegistrySkip] = useState(0)
   const [auditOrders, setAuditOrders] = useState<Order[]>([])
   const [auditLoading, setAuditLoading] = useState(false)
   const [auditAction, setAuditAction] = useState('')
@@ -406,14 +513,6 @@ export function ExternalOrderTab({
   }, [])
 
   useEffect(() => {
-    if (view !== 'registry' || !listReady || onecTried) return
-    const roleName = meta?.role || asRole
-    if (!['ks', 'development', 'finance', 'it'].includes(roleName)) return
-    setOnecTried(true)
-    void loadFromOnec()
-  }, [view, listReady, meta?.role, asRole, onecTried])
-
-  useEffect(() => {
     if (!meta?.can_switch && !sameExternalOrderDesk(user)) return
     // Пустой выбор открывает ИТ. Уже выбранная служба, в том числе производство, остаётся.
     if (savedRole()) return
@@ -427,6 +526,15 @@ export function ExternalOrderTab({
     setHelperFor('')
     setCopilot(NO_COPILOT)
   }, [view, asRole])
+
+  // «Назад» из чата помощника: та же карточка и та же вкладка, а не список.
+  useEffect(() => {
+    const back = takeReturn()
+    if (!back) return
+    setReturnPage(back.page)
+    void openOrder(back.orderId)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
 
   useEffect(() => {
     if ((view !== 'reconcile' && view !== 'committee') || deskOrder || !listReady) return
@@ -496,23 +604,15 @@ export function ExternalOrderTab({
     }
   }
 
-  async function loadFromOnec(): Promise<void> {
-    setOnecLoading(true)
-    setError('')
-    try {
-      const data = await api.recentExternalOnec()
-      setOnecRows(data.orders || [])
-      if (!(data.orders || []).length) setError('В 1С нет проведённых коммерческих предложений.')
-    } catch (err) {
-      fail(err)
-    } finally {
-      setOnecLoading(false)
-    }
-  }
-
   async function runCopilot(
     order: Order,
-    opts: { step_id?: string; message?: string; answers?: Record<string, string>; auto_prepare?: boolean } = { auto_prepare: true }
+    opts: {
+      step_id?: string
+      message?: string
+      answers?: Record<string, string>
+      auto_prepare?: boolean
+      use_ai?: boolean
+    } = { auto_prepare: true, use_ai: true }
   ): Promise<void> {
     setCopilotBusy(true)
     setError('')
@@ -527,7 +627,8 @@ export function ExternalOrderTab({
         summary: res.summary || res.copilot_summary || '',
         log: res.log || [],
         questions: res.questions || [],
-        passport: res.stage_passport || null
+        passport: res.stage_passport || null,
+        ai: res.ai || null
       })
       setHelper(review)
       setHelperFor(order.id)
@@ -547,6 +648,7 @@ export function ExternalOrderTab({
       await reload(asRole)
     } catch (err) {
       fail(err)
+      throw err
     } finally {
       setCopilotBusy(false)
     }
@@ -603,10 +705,12 @@ export function ExternalOrderTab({
         setError('Агент службы остановлен.')
         return
       }
+      rememberReturn({ orderId: order.id, page: cardPageRef.current })
       onRunAgent(
         agent.workflow_id,
         agent.title || `ИИ-агент внешнего заказа · ${ROLE_NAME[role] || role}`,
-        agentBrief(order, role, undefined, extra)
+        agentBrief(order, role, undefined, extra),
+        chatContext(order, role)
       )
     } catch (err) {
       setError(helperFailure(err, 'Помощник службы не запустился'))
@@ -626,11 +730,12 @@ export function ExternalOrderTab({
       log: own ? copilot.log : [],
       summary: own ? copilot.summary : '',
       questions: own && copilot.questions.length ? copilot.questions : buildRoleQuestions(order, role),
+      ai: own ? copilot.ai : null,
       busy: copilotBusy,
       onRunCopilot: role === 'viewer' ? undefined : (opts) => void runCopilot(order, opts),
-      onAcceptFinding: (id) => void findingAction(() => api.acceptExternalFinding(order.id, id, asRole)),
-      onRejectFinding: (id) => void findingAction(() => api.rejectExternalFinding(order.id, id, asRole)),
-      onAcceptAllFindings: () => void findingAction(() => api.acceptAllExternalFindings(order.id, asRole)),
+      onAcceptFinding: (id) => findingAction(() => api.acceptExternalFinding(order.id, id, asRole)),
+      onRejectFinding: (id) => void findingAction(() => api.rejectExternalFinding(order.id, id, asRole)).catch(() => undefined),
+      onAcceptAllFindings: () => findingAction(() => api.acceptAllExternalFindings(order.id, asRole)),
       onOpenDocflow: (kind, prefill) => openDocflow(order, kind, prefill),
       onOpenFullAgent: role === 'viewer' ? undefined : (prompt) => void openServiceAgent(order, prompt || '')
     }
@@ -650,8 +755,12 @@ export function ExternalOrderTab({
     if (stageFilter && !LINE.find((step) => step.id === stageFilter)?.statuses.includes(item.status)) return false
     if (routeFilter && item.route !== routeFilter) return false
     if (blockedOnly && !(item.blocks || []).length) return false
+    if (waitingFilter && !(item.waiting_roles || []).includes(waitingFilter)) return false
+    if (draftsOnly && !(item.draft_findings_count || 0)) return false
     return true
   })
+  const registryStart = registrySkip < registry.length ? registrySkip : 0
+  const registryPage = registry.slice(registryStart, registryStart + registryTop)
   const reconcileOrders = [...orders].sort((a, b) => (b.open_diffs_count || 0) - (a.open_diffs_count || 0))
 
   const auditRows = useMemo(
@@ -704,12 +813,19 @@ export function ExternalOrderTab({
           onRun={run}
           path={meta?.simplified_path || []}
           user={user}
-          onRunAgent={onRunAgent}
+          initialPage={returnPage || savedPage()}
+          onPageChange={(next) => {
+            cardPageRef.current = next
+          }}
+          onRunAgent={(workflowId, title, message, chat) => {
+            rememberReturn({ orderId: current.id, page: cardPageRef.current })
+            onRunAgent(workflowId, title, message, chat)
+          }}
           onServiceAgent={(extra) => void openServiceAgent(current, extra)}
           agentBusy={agentBusy}
           copilotBusy={copilotBusy}
           panel={(passport) => panelProps(current, passport)}
-          onCopilot={(stepId) => void runCopilot(current, { auto_prepare: true, step_id: stepId })}
+          onCopilot={(stepId) => void runCopilot(current, { auto_prepare: true, use_ai: true, step_id: stepId })}
           onDocflow={(kind, draft) => openDocflow(current, kind, draft)}
         />
       ) : view === 'desk' ? (
@@ -860,103 +976,72 @@ export function ExternalOrderTab({
                 <input type="checkbox" checked={blockedOnly} onChange={(event) => setBlockedOnly(event.target.checked)} />
                 Только с блокировками
               </label>
+              <select value={waitingFilter} aria-label="Ждёт службу" onChange={(event) => setWaitingFilter(event.target.value)}>
+                <option value="">Ждёт любую службу</option>
+                {Object.entries(ROLE_NAME).map(([id, label]) => (
+                  <option key={id} value={id}>Ждёт: {label}</option>
+                ))}
+              </select>
+              <label className="eo-filter-check">
+                <input type="checkbox" checked={draftsOnly} onChange={(event) => setDraftsOnly(event.target.checked)} />
+                Есть черновики ИИ
+              </label>
             </div>
             {!listReady && !orders.length ? <p>Загружаю заказы…</p> : null}
             {listReady && !registry.length ? <p className="eo-muted">Под фильтр заказы не попали.</p> : null}
             {registry.length ? (
-              <OrderTable full rows={registry} selectedId="" onSelect={(id) => void openOrder(id)} onOpen={(id) => void openOrder(id)} />
+              <OrderTable full rows={registryPage} selectedId="" onSelect={(id) => void openOrder(id)} onOpen={(id) => void openOrder(id)} />
+            ) : null}
+            {registry.length > ONEC_PAGE_SIZES[0] ? (
+              <div className="eo-pager">
+                <button
+                  type="button"
+                  className="eo-btn"
+                  disabled={registryStart <= 0}
+                  onClick={() => setRegistrySkip(Math.max(0, registryStart - registryTop))}
+                >
+                  ← Назад
+                </button>
+                <span>
+                  {registryStart + 1}–{Math.min(registry.length, registryStart + registryTop)} из {registry.length}
+                </span>
+                <button
+                  type="button"
+                  className="eo-btn"
+                  disabled={registryStart + registryTop >= registry.length}
+                  onClick={() => setRegistrySkip(registryStart + registryTop)}
+                >
+                  Дальше →
+                </button>
+                <select
+                  value={registryTop}
+                  aria-label="Строк на странице"
+                  onChange={(event) => {
+                    setRegistrySkip(0)
+                    setRegistryTop(Number(event.target.value))
+                  }}
+                >
+                  {ONEC_PAGE_SIZES.map((size) => (
+                    <option key={size} value={size}>по {size}</option>
+                  ))}
+                </select>
+              </div>
             ) : null}
           </section>
           {canLoad ? (
-            <section className="eo-window eo-window-main">
-              <div className="eo-window-head">
-                <h3>Импорт и привязка ТКП из 1С ERP</h3>
-                <button className="eo-btn" type="button" disabled={onecLoading} onClick={() => void loadFromOnec()}>
-                  {onecLoading ? 'Загрузка…' : 'Обновить'}
-                </button>
-              </div>
-              {onecLoading && !onecRows.length ? <p>Читаю проведённые ТКП из 1С…</p> : null}
-              {onecRows.length ? (
-                <div className="eo-tkp-scroll">
-                  <table className="eo-table eo-tkp">
-                    <thead>
-                      <tr>
-                        <th>Номер</th>
-                        <th>Дата</th>
-                        <th>Клиент</th>
-                        <th>Контрагент</th>
-                        <th>Конечный заказчик</th>
-                        <th>Сделка</th>
-                        <th>Договор</th>
-                        <th>Заказ клиента</th>
-                        <th>Организация</th>
-                        <th>Менеджер</th>
-                        <th>Соглашение</th>
-                        <th>Валюта</th>
-                        <th>Сумма</th>
-                        <th>Статус</th>
-                        <th>Срок действия</th>
-                        <th>Срок поставки</th>
-                        <th>Форма оплаты</th>
-                        <th>Доставка</th>
-                        <th>НДС</th>
-                        <th>Согласован</th>
-                        <th>С клиентом</th>
-                        <th>Операция</th>
-                        <th></th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {onecRows.map((item) => {
-                        const taken = orders.some((order) => order.onec_tkp_key === item.key)
-                        const text = (value?: string) => (value || '').trim() || '—'
-                        return (
-                          <tr key={item.key}>
-                            <td>{item.number || 'без номера'}</td>
-                            <td>{text(item.date)}</td>
-                            <td>{text(item.client)}</td>
-                            <td>{text(item.counterparty)}</td>
-                            <td>{text(item.end_customer)}</td>
-                            <td>{text(item.deal)}</td>
-                            <td>{text(item.contract)}</td>
-                            <td>{text(item.order_number)}</td>
-                            <td>{text(item.organization)}</td>
-                            <td>{text(item.manager)}</td>
-                            <td>{text(item.agreement)}</td>
-                            <td>{text(item.currency)}</td>
-                            <td className="eo-num">{text(item.amount)}</td>
-                            <td>{text(item.status)}</td>
-                            <td>{text(item.valid_until)}</td>
-                            <td>{text(item.delivery_days)}</td>
-                            <td>{text(item.payment_form)}</td>
-                            <td>{text(item.delivery)}</td>
-                            <td>{text(item.vat)}</td>
-                            <td>{text(item.approved)}</td>
-                            <td>{text(item.agreed)}</td>
-                            <td>{text(item.operation)}</td>
-                            <td>
-                              {taken ? 'в деле' : (
-                                <button
-                                  className="eo-btn is-primary"
-                                  type="button"
-                                  onClick={() => void run(async () => {
-                                    const created = await api.importExternalTkp(item.key, asRole)
-                                    setCurrent(created)
-                                    return created
-                                  })}
-                                >
-                                  Открыть путь
-                                </button>
-                              )}
-                            </td>
-                          </tr>
-                        )
-                      })}
-                    </tbody>
-                  </table>
-                </div>
-              ) : null}
-            </section>
+            <OnecImport
+              orders={orders}
+              onError={fail}
+              onImport={(key, kind) =>
+                void run(async () => {
+                  const created = kind === 'order'
+                    ? await api.importExternalOnec(key, asRole)
+                    : await api.importExternalTkp(key, asRole)
+                  setCurrent(created)
+                  return created
+                })
+              }
+            />
           ) : null}
         </div>
       ) : view === 'reconcile' ? (
@@ -1120,22 +1205,22 @@ function OrderTable({
   onOpen: (id: string) => void
 }): React.JSX.Element {
   return (
-    <div className="eo-tkp-scroll">
-      <table className="eo-table">
+    <div className="eo-table-scroll">
+      <table className="eo-table eo-orders-table">
         <thead>
           <tr>
-            <th>Заказ</th>
-            <th>Заказчик</th>
-            <th>Продукт</th>
-            <th>Этап</th>
-            <th>Статус</th>
-            {full ? <th>Маршрут</th> : null}
-            <th>Путь в 1С</th>
-            {full ? <th>Пункты</th> : null}
-            {full ? <th>Расхождения</th> : null}
-            {full ? <th>Черновики ИИ</th> : null}
-            <th>Ждут</th>
-            <th></th>
+            <th className="eo-col-code">Заказ</th>
+            <th className="eo-col-customer">Заказчик</th>
+            <th className="eo-col-product">Продукт</th>
+            <th className="eo-col-stage">Этап</th>
+            <th className="eo-col-status">Статус</th>
+            {full ? <th className="eo-col-route">Маршрут</th> : null}
+            <th className="eo-col-path">Путь в 1С</th>
+            {full ? <th className="eo-col-num">Пункты</th> : null}
+            {full ? <th className="eo-col-num">Расхождения</th> : null}
+            {full ? <th className="eo-col-num">Черновики ИИ</th> : null}
+            <th className="eo-col-wait">Ждут</th>
+            <th className="eo-col-open"></th>
           </tr>
         </thead>
         <tbody>
@@ -1145,21 +1230,35 @@ function OrderTable({
               className={selectedId === item.id ? 'eo-table-row is-selected' : 'eo-table-row'}
               onClick={() => onSelect(item.id)}
             >
-              <td>{item.code}</td>
-              <td>{item.customer}</td>
-              <td>{item.product}</td>
-              <td>{item.stage_label}</td>
-              <td>
-                {item.status_label}
-                {(item.blocks || []).length ? <><br /><small className="eo-danger">{item.blocks[0]}</small></> : null}
+              <td className="eo-col-code">{item.code}</td>
+              <td className="eo-col-customer">
+                <span className="eo-clip" title={item.customer}>{item.customer}</span>
               </td>
-              {full ? <td>{item.route_label || ROUTES.find((route) => route.id === item.route)?.label || '—'}</td> : null}
-              <td>{item.path_label || item.onec_number || '—'}</td>
-              {full ? <td>{item.open_checks_count ?? '—'}</td> : null}
-              {full ? <td>{item.open_diffs_count ?? '—'}</td> : null}
-              {full ? <td>{item.draft_findings_count ?? '—'}</td> : null}
-              <td>{roleNames(item.waiting_roles) || '—'}</td>
-              <td>
+              <td className="eo-col-product">
+                <span className="eo-clip" title={item.product}>{item.product}</span>
+              </td>
+              <td className="eo-col-stage">{item.stage_label}</td>
+              <td className="eo-col-status">
+                <span className="eo-clip" title={[item.status_label, ...(item.blocks || [])].filter(Boolean).join('. ')}>
+                  {item.status_label}
+                  {(item.blocks || []).length ? <small className="eo-danger">{item.blocks[0]}</small> : null}
+                </span>
+              </td>
+              {full ? <td className="eo-col-route">{item.route_label || ROUTES.find((route) => route.id === item.route)?.label || '—'}</td> : null}
+              <td className="eo-col-path">
+                <span className="eo-clip" title={item.path_label || item.onec_number || ''}>
+                  {item.path_label || item.onec_number || '—'}
+                </span>
+              </td>
+              {full ? <td className="eo-col-num">{item.open_checks_count ?? '—'}</td> : null}
+              {full ? <td className="eo-col-num">{item.open_diffs_count ?? '—'}</td> : null}
+              {full ? <td className="eo-col-num">{item.draft_findings_count ?? '—'}</td> : null}
+              <td className="eo-col-wait">
+                <span className="eo-clip" title={roleNames(item.waiting_roles)}>
+                  {roleNames(item.waiting_roles) || '—'}
+                </span>
+              </td>
+              <td className="eo-col-open">
                 <button className="eo-btn" type="button" onClick={(event) => { event.stopPropagation(); onOpen(item.id) }}>
                   Карточка
                 </button>
@@ -1291,7 +1390,326 @@ function PassportView({
   )
 }
 
+const ONEC_PAGE_SIZES = [50, 100, 200]
+
+const ONEC_DETAILS: { key: keyof ExternalOnecTkp; label: string }[] = [
+  { key: 'client', label: 'Клиент' },
+  { key: 'contract', label: 'Договор' },
+  { key: 'organization', label: 'Организация' },
+  { key: 'agreement', label: 'Соглашение' },
+  { key: 'valid_until', label: 'Срок действия' },
+  { key: 'delivery_days', label: 'Срок поставки' },
+  { key: 'payment_form', label: 'Форма оплаты' },
+  { key: 'delivery', label: 'Доставка' },
+  { key: 'vat', label: 'НДС' },
+  { key: 'agreed', label: 'Согласовано с клиентом' },
+  { key: 'operation', label: 'Операция' },
+  { key: 'product', label: 'Состав' },
+  { key: 'comment', label: 'Комментарий' },
+  { key: 'order_subject', label: 'Заказ клиента' }
+]
+
+function OnecImport({
+  orders,
+  onError,
+  onImport
+}: {
+  orders: ExternalOrderBrief[]
+  onError: (err: unknown) => void
+  onImport: (key: string, kind: 'tkp' | 'order') => void
+}): React.JSX.Element {
+  const [data, setData] = useState<ExternalOnecSearch | null>(null)
+  const [loading, setLoading] = useState(false)
+  const [skip, setSkip] = useState(0)
+  const [top, setTop] = useState(50)
+  const [query, setQuery] = useState('')
+  const [filters, setFilters] = useState<ExternalOnecFilters>({})
+  const [open, setOpen] = useState('')
+  const [source, setSource] = useState<'tkp' | 'orders'>('tkp')
+
+  const requestRef = useRef(0)
+  const loadedKey = useRef('')
+
+  async function load(refresh = false): Promise<void> {
+    const request = ++requestRef.current
+    setLoading(true)
+    try {
+      const page = await api.recentExternalOnec({ skip, top, refresh }, filters, source)
+      if (request === requestRef.current) setData(page)
+    } catch (err) {
+      if (request === requestRef.current) onError(err)
+    } finally {
+      if (request === requestRef.current) setLoading(false)
+    }
+  }
+
+  useEffect(() => {
+    const text = query.trim()
+    if ((filters.q || '') === text) return
+    const timer = window.setTimeout(() => {
+      setSkip(0)
+      setFilters((prev) => ({ ...prev, q: text }))
+    }, 450)
+    return () => window.clearTimeout(timer)
+  }, [query, filters.q])
+
+  useEffect(() => {
+    const key = JSON.stringify({ skip, top, source, filters })
+    if (loadedKey.current === key) return
+    loadedKey.current = key
+    void load()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [skip, top, filters, source])
+
+  function switchSource(next: 'tkp' | 'orders'): void {
+    if (next === source) return
+    setSkip(0)
+    setOpen('')
+    setData(null)
+    setFilters((prev) => ({ ...prev, status: '', manager: '' }))
+    setSource(next)
+  }
+
+  function setFilter(patch: ExternalOnecFilters): void {
+    setSkip(0)
+    setFilters((prev) => ({ ...prev, ...patch }))
+  }
+
+  const rows = data?.orders || []
+  const text = (value?: string): string => (value || '').trim() || '—'
+  const shownTo = skip + rows.length
+
+  return (
+    <section className="eo-window eo-window-main">
+      <div className="eo-window-head">
+        <h3>{source === 'orders' ? 'Заказы клиентов из 1С' : 'ТКП из 1С ERP'}</h3>
+        <div className="eo-actions">
+          <button type="button" className={source === 'tkp' ? 'eo-btn is-primary' : 'eo-btn'} onClick={() => switchSource('tkp')}>
+            ТКП
+          </button>
+          <button type="button" className={source === 'orders' ? 'eo-btn is-primary' : 'eo-btn'} onClick={() => switchSource('orders')}>
+            Заказы клиентов
+          </button>
+        </div>
+        <span className="eo-status">
+          {loading ? 'Читаю 1С…' : rows.length ? `строки ${skip + 1}–${shownTo}${data?.has_more ? ', есть ещё' : ''}` : ''}
+        </span>
+        {data?.has_more ? (
+          <button type="button" className="eo-btn" disabled={loading} onClick={() => setSkip(skip + top)}>
+            Следующие {top}
+          </button>
+        ) : null}
+        <button className="eo-btn" type="button" disabled={loading} onClick={() => void load(true)}>
+          {loading ? 'Загрузка…' : 'Обновить из 1С'}
+        </button>
+      </div>
+      <div className="eo-filters">
+        <input
+          value={query}
+          placeholder="Номер, контрагент, комментарий, предмет"
+          onChange={(event) => setQuery(event.target.value)}
+        />
+        <select value={filters.status || ''} aria-label="Статус" onChange={(event) => setFilter({ status: event.target.value })}>
+          <option value="">Все статусы</option>
+          {(data?.statuses || []).map((item) => (
+            <option key={item} value={item}>{item}</option>
+          ))}
+        </select>
+        <select value={filters.manager || ''} aria-label="Менеджер" onChange={(event) => setFilter({ manager: event.target.value })}>
+          <option value="">Все менеджеры</option>
+          {(data?.managers || []).map((item) => (
+            <option key={item} value={item}>{item}</option>
+          ))}
+        </select>
+        <select
+          value={filters.has_order || ''}
+          aria-label="Заказ клиента"
+          onChange={(event) => setFilter({ has_order: event.target.value as ExternalOnecFilters['has_order'] })}
+        >
+          <option value="">С заказом и без</option>
+          <option value="yes">Есть заказ клиента</option>
+          <option value="no">Без заказа клиента</option>
+        </select>
+        <label className="eo-filter-date">
+          с
+          <input type="date" value={filters.date_from || ''} onChange={(event) => setFilter({ date_from: event.target.value })} />
+        </label>
+        <label className="eo-filter-date">
+          по
+          <input type="date" value={filters.date_to || ''} onChange={(event) => setFilter({ date_to: event.target.value })} />
+        </label>
+      </div>
+      {loading && !data ? <p>Читаю проведённые ТКП из 1С…</p> : null}
+      {data && !rows.length ? (
+        <p className="eo-muted">{source === 'orders' ? 'Под фильтр заказы клиента не попали.' : 'Под фильтр ТКП не попали.'}</p>
+      ) : null}
+      {rows.length ? (
+        <div className="eo-tkp-scroll">
+          <table className="eo-table eo-tkp is-compact">
+            <thead>
+              <tr>
+                <th>Номер · дата</th>
+                <th>Контрагент · конечный заказчик</th>
+                <th>Сумма</th>
+                <th>Менеджер</th>
+                <th>Статус</th>
+                <th>Заказ · сделка</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((item) => {
+                const taken = item.kind === 'order'
+                  ? orders.some((order) => order.onec_key === item.key)
+                  : orders.some((order) => order.onec_tkp_key === item.key)
+                const expanded = open === item.key
+                return (
+                  <Fragment key={item.key}>
+                    <tr className={expanded ? 'is-open' : ''} onClick={() => setOpen(expanded ? '' : item.key)}>
+                      <td>
+                        <b>{item.number || 'без номера'}</b>
+                        <small>{text(item.date)}</small>
+                      </td>
+                      <td>
+                        {text(item.counterparty)}
+                        {item.end_customer && item.end_customer !== item.counterparty ? (
+                          <small>для {item.end_customer}</small>
+                        ) : null}
+                        {item.product ? <small>{item.product}</small> : null}
+                        {item.comment ? <small>{item.comment}</small> : null}
+                        {item.order_subject && item.order_subject !== item.comment ? (
+                          <small>заказ: {item.order_subject}</small>
+                        ) : null}
+                      </td>
+                      <td className="eo-num">
+                        {text(item.amount)}
+                        <small>{item.currency || ''}</small>
+                      </td>
+                      <td>{text(item.manager)}</td>
+                      <td>
+                        {text(item.status)}
+                        <small>{item.approved === 'да' ? 'согласован' : 'не согласован'}</small>
+                      </td>
+                      <td>
+                        {text(item.order_number)}
+                        {item.deal ? <small>{item.deal}</small> : null}
+                      </td>
+                      <td onClick={(event) => event.stopPropagation()}>
+                        {taken ? (
+                          <span className="eo-muted">в деле</span>
+                        ) : (
+                          <button
+                            className="eo-btn is-primary"
+                            type="button"
+                            onClick={() => onImport(item.key, item.kind === 'order' ? 'order' : 'tkp')}
+                          >
+                            Открыть путь
+                          </button>
+                        )}
+                      </td>
+                    </tr>
+                    {expanded ? (
+                      <tr className="eo-tkp-more">
+                        <td colSpan={7}>
+                          <dl>
+                            {ONEC_DETAILS.map((field) => (
+                              <div key={field.key}>
+                                <dt>{field.label}</dt>
+                                <dd>{text(item[field.key])}</dd>
+                              </div>
+                            ))}
+                          </dl>
+                        </td>
+                      </tr>
+                    ) : null}
+                  </Fragment>
+                )
+              })}
+            </tbody>
+          </table>
+        </div>
+      ) : null}
+      {data && (rows.length || skip > 0) ? (
+        <div className="eo-pager">
+          <button type="button" className="eo-btn" disabled={loading || skip <= 0} onClick={() => setSkip(Math.max(0, skip - top))}>
+            ← Назад
+          </button>
+          <span>
+            Страница {Math.floor(skip / top) + 1} · строки {rows.length ? `${skip + 1}–${shownTo}` : '—'}
+          </span>
+          <button
+            type="button"
+            className="eo-btn"
+            disabled={loading || !data.has_more}
+            onClick={() => setSkip(skip + top)}
+          >
+            Дальше →
+          </button>
+          <select
+            value={top}
+            aria-label="Строк на странице"
+            onChange={(event) => {
+              setSkip(0)
+              setTop(Number(event.target.value))
+            }}
+          >
+            {ONEC_PAGE_SIZES.map((size) => (
+              <option key={size} value={size}>по {size}</option>
+            ))}
+          </select>
+        </div>
+      ) : null}
+    </section>
+  )
+}
+
+/** Карточка целиком: поля других служб с черновиками ИИ. Принимает только владелец раздела. */
+function OtherServiceFields({ order, role }: { order: Order; role: string }): React.JSX.Element | null {
+  const others = Object.entries(ROLE_FIELDS).filter(([owner]) => owner !== role)
+  if (!others.length) return null
+  return (
+    <details className="eo-form eo-other-fields">
+      <summary>
+        <b>Поля других служб</b>
+        <span className="eo-muted"> · только просмотр, черновики ИИ принимает владелец раздела</span>
+      </summary>
+      <div className="eo-other-grid">
+        {others.map(([owner, forms]) =>
+          forms.map((form) => (
+            <div key={`${owner}.${form.section}`} className="eo-other-form">
+              <p className="eo-now-kicker">
+                {ROLE_NAME[owner] || owner} · {form.title}
+              </p>
+              {form.fields.map((field) => {
+                const id = `${form.section}.${field.key}`
+                const value = String(order.sections?.[form.section]?.[field.key] || '')
+                const mark = order.ai_fields?.[id]
+                const aiValue = mark?.status === 'accepted' && value.trim() === mark.value.trim()
+                return (
+                  <div key={field.key} className="eo-other-row">
+                    <span>{field.label}</span>
+                    {value ? (
+                      <b className={aiValue ? 'is-ai' : ''}>{value}</b>
+                    ) : mark?.status === 'draft' ? (
+                      <b className="is-ai-draft" title={mark.source}>
+                        {mark.value} <small>· черновик ИИ</small>
+                      </b>
+                    ) : (
+                      <b className="eo-muted">—</b>
+                    )}
+                  </div>
+                )
+              })}
+            </div>
+          ))
+        )}
+      </div>
+    </details>
+  )
+}
+
 function RoleWork({
+  part = 'all',
   order,
   role,
   asRole,
@@ -1299,6 +1717,7 @@ function RoleWork({
   onEvidence,
   onRun
 }: {
+  part?: 'fields' | 'checks' | 'all'
   order: Order
   role: string
   asRole: string
@@ -1320,20 +1739,64 @@ function RoleWork({
     (item) => item.owner_role === role && item.status !== 'done' && item.status !== 'not_applicable'
   )
   const gaps = (order.gaps || []).filter((item) => item.status === 'open')
+  const [hint, setHint] = useState('')
   return (
-    <div className="eo-rolework">
+    <div className={`eo-rolework is-${part}`}>
+      {part !== 'checks' ? (
+      <div className="eo-rolework-forms">
+      {forms.length ? null : <p className="eo-muted">У этой службы нет своих полей в карточке.</p>}
       {forms.map((form) => (
-        <div key={form.section} className="eo-form">
+        <div
+          key={form.section}
+          className={hint === form.section ? 'eo-form is-copilot' : 'eo-form'}
+          onMouseEnter={() => setHint(form.section)}
+          onMouseLeave={() => setHint((current) => (current === form.section ? '' : current))}
+        >
           <h3>{form.title}</h3>
-          {form.fields.map((field) => (
-            <input
-              key={field.key}
-              value={draft[`${form.section}.${field.key}`] || ''}
-              placeholder={field.label}
-              aria-label={field.label}
-              onChange={(event) => setDraft({ ...draft, [`${form.section}.${field.key}`]: event.target.value })}
-            />
-          ))}
+          {form.fields.map((field) => {
+            const id = `${form.section}.${field.key}`
+            const mark = order.ai_fields?.[id]
+            const typed = draft[id] || ''
+            const aiValue = mark?.status === 'accepted' && typed.trim() === mark.value.trim()
+            return (
+              <div key={field.key} className="eo-field">
+                <label className="eo-field-label">
+                  {field.label}
+                  {aiValue ? <span className="eo-ai-badge">Заполнил ИИ</span> : null}
+                </label>
+                <input
+                  className={aiValue ? 'is-ai' : ''}
+                  value={typed}
+                  placeholder={field.label}
+                  aria-label={field.label}
+                  title={aiValue && mark?.source ? `Источник: ${mark.source}` : undefined}
+                  onChange={(event) => setDraft({ ...draft, [id]: event.target.value })}
+                />
+                {mark?.status === 'draft' ? (
+                  <div className="eo-ai-draft">
+                    <span className="eo-ai-badge">Черновик ИИ</span>
+                    <b>{mark.value}</b>
+                    <small>
+                      {mark.source}
+                      {mark.quote ? ` · «${mark.quote}»` : ''}
+                    </small>
+                    <div className="eo-actions">
+                      <button
+                        type="button"
+                        className="is-primary"
+                        onClick={() => void onRun(() => api.acceptExternalFinding(order.id, mark.finding_id, asRole))}
+                      >
+                        Принять
+                      </button>
+                      <button type="button" onClick={() => setDraft({ ...draft, [id]: mark.value })}>
+                        Взять в правку
+                      </button>
+                    </div>
+                  </div>
+                ) : null}
+              </div>
+            )
+          })}
           <button
             className="eo-btn is-primary"
             type="button"
@@ -1345,12 +1808,34 @@ function RoleWork({
           >
             Сохранить
           </button>
+          {hint === form.section ? (
+            <div className="eo-basis-pop" role="note">
+              <div className="eo-basis-card">
+                <span className="eo-now-kicker">Помощник по этому блоку</span>
+                <p>{formAdvice(form.title, form.fields, order.sections?.[form.section] || {})}</p>
+              </div>
+            </div>
+          ) : null}
         </div>
       ))}
-      <div className="eo-form">
+      </div>
+      ) : null}
+      {part === 'fields' ? <OtherServiceFields order={order} role={role} /> : null}
+      {part !== 'fields' ? (
+      <>
+      <div className="eo-form eo-rolework-list">
         <h3>Мои открытые пункты · {ownChecks.length}</h3>
-        {ownChecks.length ? ownChecks.map((item) => (
-          <div key={item.id} className="eo-check">
+        {ownChecks.length ? ownChecks.map((item) => {
+          const advice = basisAdvice(order, item)
+          const open = hint === item.id
+          const typed = (evidence[item.id] || '').trim()
+          return (
+          <div
+            key={item.id}
+            className={open ? 'eo-check is-copilot' : 'eo-check'}
+            onMouseEnter={() => setHint(item.id)}
+            onMouseLeave={() => setHint((current) => (current === item.id ? '' : current))}
+          >
             <span>{item.text}<br /><small className="eo-muted">{GATES[item.gate] || item.gate}{item.due_at ? ` · до ${item.due_at.slice(0, 10)}` : ''}</small></span>
             <div className="eo-actions">
               <input
@@ -1362,10 +1847,49 @@ function RoleWork({
                 Подтвердить
               </button>
             </div>
+            {open ? (
+              <div className="eo-basis-pop" role="note">
+                <div className="eo-basis-card">
+                <span className="eo-now-kicker">Помощник по этому блоку</span>
+                <p>{advice.what}</p>
+                {advice.draft ? <p className="eo-basis-draft">{advice.draft}</p> : null}
+                {advice.source ? <small>Источник: {advice.source}</small> : null}
+                <div className="eo-actions">
+                  {advice.draft ? (
+                    <button type="button" onClick={() => onEvidence(item.id, advice.draft)}>
+                      {advice.template ? 'Вставить шаблон' : 'Вставить в основание'}
+                    </button>
+                  ) : null}
+                  {!advice.template && advice.draft ? (
+                    <button
+                      type="button"
+                      className="is-primary"
+                      onClick={() => {
+                        onEvidence(item.id, advice.draft)
+                        void onRun(() => api.confirmExternalCheck(order.id, item.id, advice.draft, asRole))
+                      }}
+                    >
+                      Подтвердить этим
+                    </button>
+                  ) : null}
+                  {advice.template && typed ? (
+                    <button
+                      type="button"
+                      className="is-primary"
+                      onClick={() => void onRun(() => api.confirmExternalCheck(order.id, item.id, typed, asRole))}
+                    >
+                      Подтвердить как есть
+                    </button>
+                  ) : null}
+                </div>
+                </div>
+              </div>
+            ) : null}
           </div>
-        )) : <p className="eo-muted">На вас открытых пунктов нет.</p>}
+          )
+        }) : <p className="eo-muted">На вас открытых пунктов нет.</p>}
       </div>
-      <div className="eo-form">
+      <div className="eo-form eo-rolework-list">
         <h3>Пробелы в данных · {gaps.length}</h3>
         {gaps.length ? gaps.map((item) => (
           <div key={item.id} className="eo-check">
@@ -1394,6 +1918,8 @@ function RoleWork({
           </div>
         )) : <p className="eo-muted">Открытых пробелов нет.</p>}
       </div>
+      </>
+      ) : null}
     </div>
   )
 }
@@ -1696,9 +2222,11 @@ function CommitteeBlock({
           <p className="eo-now-kicker">Проекты документов 1С ДО от помощника</p>
           {drafts.map((item) => {
             const draft = parseDraft1cFinding(item)
+            const label = humanFindingLabel(item)
+            const extra = draft?.title && draft.title !== label ? draft.title : ''
             return draft ? (
               <div key={item.id} className="eo-check">
-                <span>{humanFindingLabel(item)}<br /><small className="eo-muted">{draft.title}</small></span>
+                <span>{label}{extra ? <><br /><small className="eo-muted">{extra}</small></> : null}</span>
                 <button type="button" className="eo-btn" onClick={() => onDocflow(draft.kind, draft)}>Открыть в 1С ДО</button>
               </div>
             ) : null
@@ -1731,6 +2259,8 @@ function Card({
   onRun,
   path,
   user,
+  initialPage,
+  onPageChange,
   onRunAgent,
   onServiceAgent,
   agentBusy,
@@ -1747,7 +2277,9 @@ function Card({
   onRun: RunAction
   path: SimplifiedStep[]
   user: UserProfile
-  onRunAgent: (workflowId: string, title: string, message: string) => void
+  initialPage: CardPage
+  onPageChange: (page: CardPage) => void
+  onRunAgent: RunAgentHandler
   onServiceAgent: (extra?: string) => void
   agentBusy: boolean
   copilotBusy: boolean
@@ -1769,8 +2301,9 @@ function Card({
   const fileRef = useRef<HTMLInputElement>(null)
   const [rpName, setRpName] = useState(order.owners?.rp || '')
   const [risk, setRisk] = useState({ title: '', impact: '', measure: '' })
-  const [page, setPage] = useState<CardPage>('now')
+  const [page, setPage] = useState<CardPage>(initialPage)
   const [stageId, setStageId] = useState('')
+  const shownOrderRef = useRef(order.id)
   const [pathNote, setPathNote] = useState('')
   const [pathBusy, setPathBusy] = useState('')
   const passports = useMemo(() => buildStagePassports(order), [order])
@@ -1789,10 +2322,17 @@ function Card({
   useEffect(() => {
     setRpName(order.owners?.rp || '')
   }, [order.id, order.owners])
+  const [passportOpen, setPassportOpen] = useState(false)
   useEffect(() => {
-    setPage('now')
+    if (shownOrderRef.current === order.id) return
+    shownOrderRef.current = order.id
     setStageId('')
+    setPassportOpen(false)
   }, [order.id])
+  useEffect(() => {
+    onPageChange(page)
+    savePage(page)
+  }, [page, onPageChange])
 
   async function lookup(counterparty = ''): Promise<void> {
     setLookupError('')
@@ -1842,7 +2382,8 @@ function Card({
       onRunAgent(
         agent.workflow_id,
         agent.title || 'ИИ-агент внешних закупок',
-        agentBrief(order, 'omto')
+        agentBrief(order, 'omto'),
+        chatContext(order, 'omto')
       )
     } catch (err) {
       setPathNote(helperFailure(err, 'Помощник по закупке не запустился'))
@@ -1863,7 +2404,8 @@ function Card({
       onRunAgent(
         agent.workflow_id,
         agent.title || 'ИИ-агент внешнего заказа',
-        agentBrief(order, role, step)
+        agentBrief(order, role, step),
+        chatContext(order, role)
       )
     } catch (err) {
       setPathNote(helperFailure(err, 'Помощник не запустился'))
@@ -1872,13 +2414,30 @@ function Card({
     }
   }
 
-  const pages: { id: CardPage; label: string; note: string }[] = [
-    { id: 'now', label: 'Сейчас', note: inspected ? `${inspected.label} · ${inspected.checks_done}/${inspected.checks_total}` : order.status_label },
-    { id: 'path', label: 'Путь 1С и план', note: order.onec_number || `${(order.tasks || []).length} задач` },
+  const ownForms = ROLE_FIELDS[role] || []
+  const ownFieldsTotal = ownForms.reduce((total, form) => total + form.fields.length, 0)
+  const ownFieldsFilled = ownForms.reduce(
+    (total, form) =>
+      total + form.fields.filter((field) => String(order.sections?.[form.section]?.[field.key] || '').trim()).length,
+    0
+  )
+  const pages: { id: CardPage; label: string; note: string; hidden?: boolean }[] = [
+    { id: 'summary', label: 'Сводка', note: order.status_label },
+    {
+      id: 'fields',
+      label: 'Поля моей службы',
+      note: ownFieldsTotal ? `${ownFieldsFilled}/${ownFieldsTotal} заполнено` : 'полей нет',
+      hidden: role === 'viewer'
+    },
+    { id: 'checks', label: 'Чек-лист и пробелы', note: `${myOpen.length} моих · ${openGaps.length} пробелов` },
     { id: 'diff', label: 'Сверка B01–B35', note: `${(order.diffs || []).filter((item) => item.status !== 'closed').length} открыто` },
     { id: 'committee', label: 'Комитет и БВ', note: order.decisions?.slice(-1)[0]?.decision || `${(order.baselines || []).length} БВ` },
-    { id: 'deal', label: 'Сделка и дело', note: `${(order.documents || []).length} файлов` }
+    { id: 'path', label: 'Путь 1С и план', note: order.onec_number || `${(order.tasks || []).length} задач` },
+    { id: 'files', label: 'Файлы', note: `${(order.documents || []).length} в деле` },
+    { id: 'ai', label: 'ИИ-помощник', note: pendingFindings.length ? `${pendingFindings.length} черновиков` : 'черновиков нет' },
+    { id: 'history', label: 'История', note: `${(order.audit || []).length} записей` }
   ]
+  const shownPage: CardPage = pages.some((item) => item.id === page && !item.hidden) ? page : 'summary'
 
   return (
     <article className="eo-card">
@@ -1898,8 +2457,16 @@ function Card({
             </button>
           ) : null}
           {role !== 'viewer' ? (
-            <button type="button" className="is-primary" disabled={copilotBusy} onClick={() => onCopilot()}>
-              {copilotBusy ? 'Проверка…' : 'Авто-подготовка'}
+            <button
+              type="button"
+              className="is-primary"
+              disabled={copilotBusy}
+              onClick={() => {
+                setPage('ai')
+                onCopilot()
+              }}
+            >
+              {copilotBusy ? 'ИИ готовит карточку…' : 'Авто-подготовка с ИИ'}
             </button>
           ) : null}
         </div>
@@ -1910,16 +2477,42 @@ function Card({
         activeId={inspected?.id || ''}
         onSelect={(id) => {
           setStageId(id)
-          setPage('now')
+          setPassportOpen(true)
         }}
       />
+      {inspected ? (
+        <details
+          className={`eo-passport-head is-${inspected.state}`}
+          open={passportOpen}
+          onToggle={(event) => setPassportOpen((event.target as HTMLDetailsElement).open)}
+        >
+          <summary>
+            <span className="eo-now-kicker">Паспорт этапа · {STAGE_STATE[inspected.state]}</span>
+            <b>{inspected.label}</b>
+            <span>Чек-лист {inspected.checks_done}/{inspected.checks_total}</span>
+            {inspected.blocker ? <span className="eo-passport-head-stop">Блокирует: {inspected.blocker}</span> : null}
+            <span className="eo-passport-head-toggle">{passportOpen ? 'Свернуть' : 'Подробнее'}</span>
+          </summary>
+          <PassportView
+            order={order}
+            passport={inspected}
+            next={passports[inspectedIndex + 1] || null}
+            role={role}
+            asRole={asRole}
+            evidence={evidence}
+            onEvidence={onEvidence}
+            onRun={onRun}
+          />
+        </details>
+      ) : null}
       <div className="eo-pages" role="tablist" aria-label="Страницы заказа">
-        {pages.map((item) => (
+        {pages.filter((item) => !item.hidden).map((item) => (
           <button
             key={item.id}
             type="button"
-            className={page === item.id ? 'is-active' : ''}
-            aria-pressed={page === item.id}
+            role="tab"
+            className={shownPage === item.id ? 'is-active' : ''}
+            aria-selected={shownPage === item.id}
             onClick={() => setPage(item.id)}
           >
             {item.label}
@@ -1927,22 +2520,45 @@ function Card({
           </button>
         ))}
       </div>
-      {page === 'now' ? (
+      {shownPage === 'summary' ? (
         <>
           <div className="eo-now">
-            <section className="eo-now-main">
-              {inspected ? (
-                <PassportView
-                  order={order}
-                  passport={inspected}
-                  next={passports[inspectedIndex + 1] || null}
-                  role={role}
-                  asRole={asRole}
-                  evidence={evidence}
-                  onEvidence={onEvidence}
-                  onRun={onRun}
-                />
-              ) : null}
+            <section className="eo-now-main eo-summary">
+              <p className="eo-now-kicker">Что сейчас нужно от {ROLE_NAME[role] || 'вас'}</p>
+              <div className="eo-tiles">
+                <button type="button" className={myOpen.length ? 'eo-tile is-stop' : 'eo-tile'} onClick={() => setPage('checks')}>
+                  <small>Мои открытые пункты</small>
+                  <b>{myOpen.length}</b>
+                </button>
+                <button type="button" className={openGaps.length ? 'eo-tile is-stop' : 'eo-tile'} onClick={() => setPage('checks')}>
+                  <small>Пробелы в данных</small>
+                  <b>{openGaps.length}</b>
+                </button>
+                <button type="button" className="eo-tile" onClick={() => setPage(role === 'viewer' ? 'summary' : 'fields')}>
+                  <small>Поля моей службы</small>
+                  <b>{ownFieldsTotal ? `${ownFieldsFilled}/${ownFieldsTotal}` : '—'}</b>
+                </button>
+                <button type="button" className={pendingFindings.length ? 'eo-tile is-ai' : 'eo-tile'} onClick={() => setPage('ai')}>
+                  <small>Черновики ИИ ждут решения</small>
+                  <b>{pendingFindings.length}</b>
+                </button>
+              </div>
+              {myOpen.length ? (
+                <ol className="eo-summary-list">
+                  {myOpen.slice(0, 5).map((item) => (
+                    <li key={item.id}>
+                      {item.text}
+                      <small className="eo-muted"> · {GATES[item.gate] || item.gate}{item.due_at ? ` · до ${item.due_at.slice(0, 10)}` : ''}</small>
+                    </li>
+                  ))}
+                </ol>
+              ) : (
+                <p className="eo-muted">На вас открытых пунктов нет.</p>
+              )}
+              <p className="eo-muted">
+                {order.customer} · {order.product}
+                {order.onec_number ? ` · 1С ${order.onec_number}` : ''}
+              </p>
             </section>
             <section className="eo-now-side">
               <p className="eo-now-kicker">{ROLE_NAME[role] || 'Сотрудник'} · сейчас</p>
@@ -1982,13 +2598,12 @@ function Card({
               </div>
             </section>
           </div>
-          {role !== 'viewer' ? (
-            <RoleWork order={order} role={role} asRole={asRole} evidence={evidence} onEvidence={onEvidence} onRun={onRun} />
-          ) : null}
-          <HelperPanel {...panel(inspected)} />
         </>
       ) : null}
-      {page === 'path' ? (
+      {shownPage === 'fields' ? (
+        <RoleWork part="fields" order={order} role={role} asRole={asRole} evidence={evidence} onEvidence={onEvidence} onRun={onRun} />
+      ) : null}
+      {shownPage === 'path' ? (
         <>
           <section className="eo-form eo-wide">
             <h3>Цепочка документов 1С</h3>
@@ -2091,7 +2706,14 @@ function Card({
                         Создать в 1С ДО
                       </button>
                       {role !== 'viewer' ? (
-                        <button type="button" disabled={copilotBusy} onClick={() => onCopilot(step.id)}>
+                        <button
+                          type="button"
+                          disabled={copilotBusy}
+                          onClick={() => {
+                            setPage('ai')
+                            onCopilot(step.id)
+                          }}
+                        >
                           Проверить шаг
                         </button>
                       ) : null}
@@ -2164,11 +2786,11 @@ function Card({
           </section>
         </>
       ) : null}
-      {page === 'diff' ? <DiffBlock order={order} role={role} asRole={asRole} onRun={onRun} /> : null}
-      {page === 'committee' ? (
+      {shownPage === 'diff' ? <DiffBlock order={order} role={role} asRole={asRole} onRun={onRun} /> : null}
+      {shownPage === 'committee' ? (
         <CommitteeBlock order={order} role={role} asRole={asRole} onRun={onRun} onDocflow={onDocflow} />
       ) : null}
-      {page === 'deal' ? (
+      {shownPage === 'files' ? (
         <>
           <section className="eo-journal" aria-label="Файлы дела">
             <div className="eo-journal-bar">
@@ -2275,6 +2897,11 @@ function Card({
               </table>
             </div>
           </section>
+        </>
+      ) : null}
+      {shownPage === 'checks' ? (
+        <>
+          <RoleWork part="checks" order={order} role={role} asRole={asRole} evidence={evidence} onEvidence={onEvidence} onRun={onRun} />
           <section className="eo-wide">
             <h3>Все пункты по гейтам</h3>
             <div className="eo-checks">
@@ -2344,6 +2971,11 @@ function Card({
               </div>
             ) : null}
           </section>
+        </>
+      ) : null}
+      {shownPage === 'ai' ? (
+        <>
+          <HelperPanel {...panel(inspected)} />
           <section className="eo-journal" aria-label="Выводы агента">
             <div className="eo-journal-bar">
               <h3>Выводы и черновики агента</h3>
@@ -2396,6 +3028,10 @@ function Card({
               <p key={item.id} className="eo-journal-note">{item.title}. {item.body} {item.mail_status}</p>
             ))}
           </section>
+        </>
+      ) : null}
+      {shownPage === 'history' ? (
+        <>
           <section className="eo-journal" aria-label="История">
             <div className="eo-journal-bar">
               <h3>История</h3>

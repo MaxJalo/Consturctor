@@ -40,6 +40,8 @@ export interface RunEntry {
   background?: boolean
   /** Full tool run nobody watches (KPI for other positions): no banner, no feed. */
   hidden?: boolean
+  /** Order conversation this entry belongs to (entry key is conversationEntryKey). */
+  conversationKey?: string
 }
 
 interface StartRunOptions {
@@ -60,11 +62,23 @@ interface StartRunOptions {
   /** One-shot KPI/eval run: sidecar must not resume the live agent. */
   source?: string
   fresh?: boolean
+  /** One service agent serves many orders: the feed and SDK memory follow this key. */
+  conversationKey?: string
+  /** Order brief for a fresh SDK agent in this conversation. */
+  conversationBrief?: string
 }
 
 function backgroundEntryKey(workflowId: string): string {
   return `__bg_explain__${workflowId}`
 }
+
+const CONVERSATION_PREFIX = '__conv__'
+
+export function conversationEntryKey(workflowId: string, conversationKey: string): string {
+  return `${CONVERSATION_PREFIX}${workflowId}::${conversationKey}`
+}
+
+const CONVERSATION_HISTORY_RUNS = 12
 
 function isEmptyTriggerCheckRun(item: AgentRunHistoryItem): boolean {
   if (isInFlightRunStatus(item.status)) return false
@@ -106,6 +120,8 @@ export interface RunStore {
   noteRunning: (workflowId: string, title: string, backendRunId?: string) => void
   /** Load persisted events for a started run so the feed is not empty. */
   attachHistoryFeed: (workflowId: string) => Promise<void>
+  /** Restore every turn of an order conversation; resolves to the number of saved turns. */
+  attachConversation: (workflowId: string, conversationKey: string, title: string) => Promise<number>
   /** Refresh banners from the board (running calendar events / lastRunStatus). */
   hydrateLive: () => Promise<void>
 }
@@ -340,13 +356,18 @@ export function RunProvider({ children }: { children: React.ReactNode }): React.
       hidden,
       appContext,
       source,
-      fresh
+      fresh,
+      conversationKey,
+      conversationBrief
     } = opts
+    const conversation = !background && !hidden ? (conversationKey || '').trim() : ''
     const entryKey = background
       ? backgroundEntryKey(workflowId)
       : hidden
         ? hiddenEntryKey(workflowId)
-        : workflowId
+        : conversation
+          ? conversationEntryKey(workflowId, conversation)
+          : workflowId
     const existing = entriesRef.current[entryKey]
     if (existing && existing.state.running) {
       if (!forceRestart && !background) {
@@ -369,11 +390,13 @@ export function RunProvider({ children }: { children: React.ReactNode }): React.
       })
       .catch(() => undefined)
     // Background evaluations always start a fresh thread (no resume / no chat).
-    const resume = background || hidden ? '' : resumeAgentId || existing?.resumeAgentId || ''
+    const resume = background || hidden || conversation ? '' : resumeAgentId || existing?.resumeAgentId || ''
     const evalRun = !hidden && Boolean(background || fresh || source === 'eval' || source === 'explain')
     const runId = agentClient.start({
       kind: 'run',
       workflowId,
+      conversationKey: conversation || undefined,
+      conversationBrief: conversation ? conversationBrief || undefined : undefined,
       message,
       // Trigger source: the sidecar runs it autonomously, without the per-run file prompts.
       source: evalRun ? 'eval' : hidden ? 'trigger' : source,
@@ -409,6 +432,7 @@ export function RunProvider({ children }: { children: React.ReactNode }): React.
           backendRunId: prevEntry?.backendRunId || '',
           background: Boolean(background),
           hidden: Boolean(hidden),
+          conversationKey: conversation || undefined,
           state
         }
       }
@@ -685,6 +709,58 @@ export function RunProvider({ children }: { children: React.ReactNode }): React.
     }
   }, [])
 
+  const attachConversation = useCallback(
+    async (workflowId: string, conversationKey: string, title: string): Promise<number> => {
+      const wid = workflowId.trim()
+      const key = conversationKey.trim()
+      if (!wid || !key) return 0
+      const entryKey = conversationEntryKey(wid, key)
+      const current = entriesRef.current[entryKey]
+      if (current && (current.state.running || (current.state.items?.length ?? 0) > 0)) return 1
+      const list = (await api.listAgentRuns(wid, { key })).filter(
+        (item) => (item.conversationKey || key) === key && !isEmptyTriggerCheckRun(item)
+      )
+      if (!list.length) return 0
+      const turns = list.slice(0, CONVERSATION_HISTORY_RUNS).reverse()
+      const details = await Promise.all(
+        turns.map((item) => api.getAgentRunDetail(wid, item.runId).catch(() => ({ item, events: [] })))
+      )
+      let items: RunState['items'] = []
+      for (const detail of details) {
+        const turn = omitTriggerCheckNoise(buildFeedItems(detail.events, { live: false }))
+        if (!turn.some((item) => item.kind === 'message' && item.role === 'user')) {
+          items = reducerPushUser(items, detail.item.message)
+        }
+        items = [...items, ...settleOpenFeedTools(turn)]
+        const answer = (detail.item.answer || detail.item.summary || '').trim()
+        if (answer && !isTriggerCheckNoise(answer) && !turn.some((item) => item.kind === 'result')) {
+          items =
+            String(detail.item.status || '').toLowerCase() === 'error'
+              ? pushSystem(items, answer, 'error')
+              : [...items, { kind: 'result', id: `hist-res-${detail.item.runId}`, text: answer }]
+        }
+      }
+      const lastRunId = details[details.length - 1]?.item.runId || ''
+      setEntries((prev) => {
+        const entry = prev[entryKey]
+        if (entry && (entry.state.running || (entry.state.items?.length ?? 0) > 0)) return prev
+        return {
+          ...prev,
+          [entryKey]: {
+            workflowId: wid,
+            title: title || entry?.title || 'ИИ-агент',
+            resumeAgentId: '',
+            backendRunId: lastRunId,
+            conversationKey: key,
+            state: { ...createRunState(), items }
+          }
+        }
+      })
+      return list.length
+    },
+    []
+  )
+
   const noteRunning = useCallback((workflowId: string, title: string, backendRunId = '') => {
     const wid = workflowId.trim()
     if (!wid) return
@@ -745,6 +821,9 @@ export function RunProvider({ children }: { children: React.ReactNode }): React.
         const next = { ...prev }
         for (const [wid, info] of running) {
           if (next[hiddenEntryKey(wid)]?.state.running) continue
+          if (Object.values(next).some((item) => item.conversationKey && item.workflowId === wid && item.state.running)) {
+            continue
+          }
           const existing = next[wid]
           if (!existing) {
             next[wid] = emptyLiveEntry(wid, info.title, info.backendRunId)
@@ -827,6 +906,7 @@ export function RunProvider({ children }: { children: React.ReactNode }): React.
       clearAll,
       noteRunning,
       attachHistoryFeed,
+      attachConversation,
       hydrateLive
     }),
     [
@@ -843,6 +923,7 @@ export function RunProvider({ children }: { children: React.ReactNode }): React.
       clearAll,
       noteRunning,
       attachHistoryFeed,
+      attachConversation,
       hydrateLive
     ]
   )

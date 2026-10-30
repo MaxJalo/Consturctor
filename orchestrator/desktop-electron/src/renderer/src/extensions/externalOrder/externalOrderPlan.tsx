@@ -20,7 +20,12 @@ function dayIndex(value: string, origin: number): number {
 
 function ruDate(value: string): string {
   const [y, m, d] = value.slice(0, 10).split('-')
-  return y && m && d ? `${d}.${m}.${y}` : '—'
+  if (!y || !m || !d) return '—'
+  return Number(y) < 1900 ? `${d}.${m}` : `${d}.${m}.${y}`
+}
+
+function showSummary(text: string): string {
+  return text.replace(/\b(\d{2}\.\d{2})\.0001\b/g, '$1')
 }
 
 function errText(err: unknown, fallback: string): string {
@@ -282,13 +287,17 @@ export function PlanBuilder({
           ) : (
             <p className="eo-muted">{loading ? 'Считаем план…' : 'План ещё не рассчитан.'}</p>
           )}
-          {model?.summary ? <p className="eo-muted">{model.summary}</p> : null}
+          {model?.summary ? <p className="eo-muted">{showSummary(model.summary)}</p> : null}
         </div>
         <div className="eo-actions">
           {canEdit ? (
             <label className="eo-plan-start">
               Старт
-              <input type="date" value={start || model?.start?.slice(0, 10) || ''} onChange={(event) => setStart(event.target.value)} />
+              <input
+                type="date"
+                value={start || (Number((model?.start || '').slice(0, 4)) >= 1900 ? model?.start?.slice(0, 10) : '') || ''}
+                onChange={(event) => setStart(event.target.value)}
+              />
             </label>
           ) : null}
           <button type="button" disabled={loading} onClick={() => setTick((value) => value + 1)}>
@@ -321,12 +330,21 @@ export function PlanBuilder({
         <div className="eo-plan-body">
           <div className="eo-plan-grid">
             <table className="eo-plan-table">
+              <colgroup>
+                <col className="wbs" />
+                <col />
+                <col className="service" />
+                <col className="days" />
+                <col className="date" />
+                <col className="date" />
+                <col className="source" />
+              </colgroup>
               <thead>
                 <tr style={{ height: HEAD_H }}>
                   <th>WBS</th>
                   <th>Задача</th>
                   <th>Служба</th>
-                  <th>Длит., дн.</th>
+                  <th title="Длительность, дни">Дни</th>
                   <th>Старт</th>
                   <th>Финиш</th>
                   <th>Источник срока</th>

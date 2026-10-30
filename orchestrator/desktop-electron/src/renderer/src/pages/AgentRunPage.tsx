@@ -1,14 +1,15 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { agentClient } from '../api/agent'
 import { api } from '../api/client'
-import type { WorkflowFileItem } from '../api/types'
+import type { AgentRunHistoryItem, WorkflowFileItem } from '../api/types'
 import { AgentFeed } from '../components/agentfeed'
 import type { FeedItem } from '../components/agentfeed/types'
-import { useRuns } from '../store/runs'
+import { conversationEntryKey, useRuns } from '../store/runs'
 import { fileTypeIconSrc } from '../utils/fileTypeIcon'
 import { categoryOf, FILE_CATEGORY_LABELS, formatFileWhen, formatSize } from './filesGrouping'
 import { isPersonalAgentWorkflowId } from '../workplace/personalAgent'
 import { parseIso, sameDay } from '../utils/calendar'
+import { type AgentChatContext, stageOfConversation } from './agentChat'
 
 interface AgentRunPageProps {
   workflowId: string
@@ -16,8 +17,47 @@ interface AgentRunPageProps {
   autoStart?: boolean
   initialMessage?: string
   appContext?: string
+  /** Order conversation of an external-order service helper. */
+  chat?: AgentChatContext
   onBack: () => void
   onOpenHistory?: (workflowId: string, title: string) => void
+}
+
+type RightTab = 'order' | 'done' | 'past' | 'files'
+
+const CASE_ACTIONS: Record<string, string> = {
+  auto_prepare: 'Авто-подготовка дела',
+  read: 'Прочитал дело',
+  read_full: 'Прочитал документы дела',
+  propose: 'Записал черновики в карточку',
+  plan_preview: 'Посчитал план работ',
+  plan: 'Собрал файл плана работ',
+  draft_1c: 'Подготовил черновик 1С'
+}
+
+function doneInConversation(items: FeedItem[]): { id: string; text: string; detail: string; error: boolean }[] {
+  const rows: { id: string; text: string; detail: string; error: boolean }[] = []
+  for (const item of items) {
+    if (item.kind !== 'tool' || !item.done) continue
+    const action = String(item.arguments?.action || '')
+    const text =
+      (item.tool === 'external_order.case' && CASE_ACTIONS[action]) || item.title || item.tool || 'Инструмент'
+    const sections = item.arguments?.section_proposals
+    const count = Array.isArray(sections) ? sections.length : 0
+    const detail = [count ? `полей: ${count}` : '', item.summary || ''].filter(Boolean).join(' · ')
+    rows.push({ id: item.id, text, detail, error: item.error })
+  }
+  return rows
+}
+
+function briefLabel(chat: AgentChatContext): string {
+  const order = chat.order
+  return `Разбор заказа ${order.code} · ${order.roleLabel} · этап «${order.stageLabel}»`
+}
+
+function firstLine(text: string, limit = 140): string {
+  const line = (text || '').trim().split('\n').find((part) => part.trim()) || ''
+  return line.length > limit ? `${line.slice(0, limit - 1)}…` : line
 }
 
 const MAX_COMPOSER_LINES = 10
@@ -81,15 +121,23 @@ export function AgentRunPage({
   autoStart = false,
   initialMessage = '',
   appContext = '',
+  chat,
   onBack,
   onOpenHistory
 }: AgentRunPageProps): React.JSX.Element {
   const runs = useRuns()
   const personalAgent = isPersonalAgentWorkflowId(workflowId)
-  const entry = runs.entries[workflowId]
+  const conversationKey = chat?.conversationKey || ''
+  const entryKey = conversationKey ? conversationEntryKey(workflowId, conversationKey) : workflowId
+  const readOnly = Boolean(chat?.readOnly)
+  const entry = runs.entries[entryKey]
   const state = entry?.state
   const running = Boolean(state?.running)
   const awaiting = Boolean(state?.pendingQuestion || state?.pendingHitl)
+  const [rightTab, setRightTab] = useState<RightTab>(chat ? 'order' : 'files')
+  const [pastRuns, setPastRuns] = useState<AgentRunHistoryItem[]>([])
+  const [historyNote, setHistoryNote] = useState('')
+  const conversationOpenedRef = useRef(false)
 
   const [input, setInput] = useState('')
   const [attachments, setAttachments] = useState<string[]>([])
@@ -143,12 +191,55 @@ export function AgentRunPage({
       }
     }
     // personal agent (Оркестратор) не хранится как workflow в БД — getWorkflow пропускаем
-    if (!personalAgent) void loadResumeAgent()
+    if (!personalAgent && !conversationKey) void loadResumeAgent()
     void refreshFiles()
     return () => {
       cancelled = true
     }
-  }, [workflowId, refreshFiles, personalAgent])
+  }, [workflowId, refreshFiles, personalAgent, conversationKey])
+
+  // Разговор по заказу: сначала сохранённые ходы. Новый запрос уходит только
+  // в первый раз, когда у этого заказа, службы и этапа ещё нет ни одного хода.
+  useEffect(() => {
+    if (!chat || conversationOpenedRef.current) return
+    // Без отмены в cleanup: в StrictMode эффект отрабатывает дважды, а второй
+    // проход сюда уже не заходит — отмена первого потеряла бы бриф по заказу.
+    conversationOpenedRef.current = true
+    void runs
+      .attachConversation(workflowId, chat.conversationKey, title)
+      .then((turns) => {
+        if (turns > 0 || chat.readOnly) return
+        const task = initialMessage.trim()
+        if (!task) return
+        runs.startRun({
+          workflowId,
+          title,
+          message: task,
+          shownMessage: briefLabel(chat),
+          conversationKey: chat.conversationKey
+        })
+      })
+      .catch(() => {
+        setHistoryNote('История разговора не загрузилась. Напишите сообщение, чтобы продолжить.')
+      })
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [chat?.conversationKey, workflowId])
+
+  useEffect(() => {
+    if (!chat?.conversationPrefix) return
+    let cancelled = false
+    void api
+      .listAgentRuns(workflowId, { prefix: chat.conversationPrefix })
+      .then((rows) => {
+        if (!cancelled) setPastRuns(rows.filter((item) => item.conversationKey && item.conversationKey !== chat.conversationKey))
+      })
+      .catch(() => {
+        if (!cancelled) setPastRuns([])
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [workflowId, chat?.conversationPrefix, chat?.conversationKey])
 
   // Refresh the files panel whenever a run finishes.
   useEffect(() => {
@@ -159,23 +250,25 @@ export function AgentRunPage({
   // Scheduled runs mark the agent "working" from the board before any sidecar
   // events reach this page. Pull persisted steps so the feed is not empty.
   useEffect(() => {
+    if (conversationKey) return
     if (!running) return
     if ((state?.items?.length ?? 0) > 0) return
     void runs.attachHistoryFeed(workflowId)
-  }, [running, workflowId, state?.items?.length, runs])
+  }, [running, workflowId, state?.items?.length, runs, conversationKey])
 
   // On open, restore the latest known conversation for this exact agent.
   // Play (autoStart) must start a new run, not reopen the last feed.
   useEffect(() => {
+    if (conversationKey) return
     if (autoStart || initialMessage.trim()) return
     if ((state?.items?.length ?? 0) > 0) return
     void runs.attachHistoryFeed(workflowId)
-  }, [workflowId, runs, state?.items?.length, autoStart, initialMessage])
+  }, [workflowId, runs, state?.items?.length, autoStart, initialMessage, conversationKey])
 
   // The "Запустить" play button opens this page with autoStart, so the agent
   // starts immediately on its own playbook instead of waiting for a message.
   useEffect(() => {
-    if (personalAgent) return
+    if (personalAgent || conversationKey) return
     if (!autoStart || autoStartedRef.current) return
     if (running) return
     autoStartedRef.current = true
@@ -194,7 +287,7 @@ export function AgentRunPage({
   // Поле «Задать вопрос оркестратору» на Сегодня: сразу отправляем вопрос.
   useEffect(() => {
     const message = initialMessage.trim()
-    if (autoStart || !message || initialSentRef.current) return
+    if (conversationKey || autoStart || !message || initialSentRef.current) return
     initialSentRef.current = true
     runs.startRun({
       workflowId,
@@ -238,11 +331,11 @@ export function AgentRunPage({
 
   const stop = useCallback((): void => {
     if (!running) return
-    runs.cancel(workflowId)
-  }, [running, runs, workflowId])
+    runs.cancel(entryKey)
+  }, [running, runs, entryKey])
 
   const submit = (): void => {
-    if (running) return
+    if (running || readOnly) return
     const message = input.trim()
     if (!message && attachments.length === 0) return
     const names = attachments.map((path) => path.split(/[\\/]/).pop()).filter(Boolean)
@@ -257,11 +350,13 @@ export function AgentRunPage({
       workflowId,
       title,
       message: message || shownMessage,
+      conversationBrief: conversationKey ? initialMessage.trim() || undefined : undefined,
       shownMessage: shownMessage || message,
       filePaths: filePaths.length ? filePaths : undefined,
-      resumeAgentId: resumeAgentRef.current || undefined,
+      resumeAgentId: conversationKey ? undefined : resumeAgentRef.current || undefined,
       forceRestart: running,
-      appContext: personalAgent ? appContext || undefined : undefined
+      appContext: personalAgent ? appContext || undefined : undefined,
+      conversationKey: conversationKey || undefined
     })
   }
 
@@ -351,6 +446,8 @@ export function AgentRunPage({
     ]
   }, [state?.items, personalAgent])
 
+  const doneRows = useMemo(() => doneInConversation(state?.items ?? []), [state?.items])
+
   const statusText = running
     ? state?.status || 'Агент работает…'
     : awaiting
@@ -361,14 +458,20 @@ export function AgentRunPage({
     <div className={`wf-page${personalAgent ? ' wf-page--orchestrator' : ''}`}>
       <div className="wf-topbar">
         <button className="wf-back" onClick={onBack}>
-          Назад
+          {chat ? `Назад к ${chat.order.code || 'заказу'}` : 'Назад'}
         </button>
         <div className="wf-title-block">
           <h1 className="wf-title">{title || (personalAgent ? 'Оркестратор' : 'Запуск агента')}</h1>
           {personalAgent ? <span className="wf-title-sub">Базовый агент</span> : null}
+          {chat ? (
+            <span className="wf-title-sub">
+              {chat.order.code} · {chat.order.stageLabel}
+              {readOnly ? ' · только просмотр' : ''}
+            </span>
+          ) : null}
         </div>
         <div className="wf-topbar-spacer" />
-        {onOpenHistory && !personalAgent && (
+        {onOpenHistory && !personalAgent && !chat && (
           <button className="wf-back" onClick={() => onOpenHistory(workflowId, title)}>
             История
           </button>
@@ -387,7 +490,7 @@ export function AgentRunPage({
               emptyHint="Опишите задачу для агента и нажмите отправить. Записи требуют подтверждения."
               allowQuestionFiles
               onAnswer={(requestId, value, filePaths) => {
-                runs.answer(workflowId, requestId, value, filePaths)
+                runs.answer(entryKey, requestId, value, filePaths)
                 if (filePaths && filePaths.length > 0) {
                   recordSentAttachments(filePaths)
                   window.setTimeout(() => {
@@ -395,11 +498,12 @@ export function AgentRunPage({
                   }, 400)
                 }
               }}
-              onHitl={(requestId, approved) => runs.respondHitl(workflowId, requestId, approved)}
-              onSkip={() => runs.skip(workflowId)}
+              onHitl={(requestId, approved) => runs.respondHitl(entryKey, requestId, approved)}
+              onSkip={() => runs.skip(entryKey)}
             />
+            {historyNote ? <div className="wf-files-empty">{historyNote}</div> : null}
           </div>
-          <div className="wf-dock" ref={dockRef}>
+          <div className="wf-dock" ref={dockRef} hidden={readOnly}>
             {attachments.length > 0 && (
               <div className="wf-attachments">
                 {attachments.map((path) => (
@@ -470,10 +574,90 @@ export function AgentRunPage({
 
         <div className="wf-right">
           <div className="wf-tabs">
-            <button className="wf-tab active">Файлы за сегодня {files.length + sentAttachments.length}</button>
+            {chat ? (
+              <>
+                <button className={`wf-tab${rightTab === 'order' ? ' active' : ''}`} onClick={() => setRightTab('order')}>
+                  Заказ
+                </button>
+                <button className={`wf-tab${rightTab === 'done' ? ' active' : ''}`} onClick={() => setRightTab('done')}>
+                  Сделано {doneRows.length}
+                </button>
+                <button className={`wf-tab${rightTab === 'past' ? ' active' : ''}`} onClick={() => setRightTab('past')}>
+                  Прошлые этапы {pastRuns.length}
+                </button>
+              </>
+            ) : null}
+            <button className={`wf-tab${rightTab === 'files' ? ' active' : ''}`} onClick={() => setRightTab('files')}>
+              Файлы за сегодня {files.length + sentAttachments.length}
+            </button>
           </div>
           <div className="wf-right-body">
-            {files.length === 0 && sentAttachments.length === 0 ? (
+            {chat && rightTab === 'order' ? (
+              <div className="wf-order">
+                <dl className="wf-order-facts">
+                  <dt>Заказ</dt>
+                  <dd>{chat.order.code}</dd>
+                  <dt>Заказчик</dt>
+                  <dd>{chat.order.customer || '—'}</dd>
+                  <dt>Изделие</dt>
+                  <dd>{chat.order.product || '—'}</dd>
+                  <dt>Этап</dt>
+                  <dd>{chat.order.stageLabel || '—'}</dd>
+                  <dt>Служба</dt>
+                  <dd>{chat.order.roleLabel || chat.order.role}</dd>
+                </dl>
+                {chat.order.blockers.length ? (
+                  <div className="wf-order-blockers">
+                    <h4>Что держит заказ</h4>
+                    <ul>
+                      {chat.order.blockers.map((item) => (
+                        <li key={item}>{item}</li>
+                      ))}
+                    </ul>
+                  </div>
+                ) : (
+                  <p className="wf-files-empty">Блокеров нет</p>
+                )}
+                <button type="button" className="wf-order-open" onClick={onBack}>
+                  Открыть карточку
+                </button>
+              </div>
+            ) : null}
+            {chat && rightTab === 'done' ? (
+              doneRows.length ? (
+                <ol className="wf-done">
+                  {doneRows.map((row) => (
+                    <li key={row.id} className={row.error ? 'is-error' : ''}>
+                      <b>{row.text}</b>
+                      {row.detail ? <span>{firstLine(row.detail, 200)}</span> : null}
+                    </li>
+                  ))}
+                </ol>
+              ) : (
+                <div className="wf-files-empty">В этом разговоре агент ещё ничего не сделал</div>
+              )
+            ) : null}
+            {chat && rightTab === 'past' ? (
+              pastRuns.length ? (
+                <ul className="wf-past">
+                  {pastRuns.map((item) => (
+                    <li key={item.runId}>
+                      <details>
+                        <summary>
+                          <b>{chat.stageLabels?.[stageOfConversation(item.conversationKey || '')] || stageOfConversation(item.conversationKey || '')}</b>
+                          <span>{formatFileWhen(item.startedAt)}</span>
+                          <span>{firstLine(item.message)}</span>
+                        </summary>
+                        <div className="wf-past-answer">{(item.answer || item.summary || 'Ответа нет').trim()}</div>
+                      </details>
+                    </li>
+                  ))}
+                </ul>
+              ) : (
+                <div className="wf-files-empty">На прошлых этапах разговоров не было</div>
+              )
+            ) : null}
+            {rightTab !== 'files' ? null : files.length === 0 && sentAttachments.length === 0 ? (
               <div className="wf-files-empty">Сегодня файлов пока нет</div>
             ) : (
               <div className="wf-file-groups">
@@ -507,7 +691,7 @@ export function AgentRunPage({
             )}
           </div>
           {running && (
-            <button className="wf-stop" onClick={() => runs.cancel(workflowId)}>
+            <button className="wf-stop" onClick={() => runs.cancel(entryKey)}>
               Остановить
             </button>
           )}

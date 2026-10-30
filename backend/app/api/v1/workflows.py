@@ -471,11 +471,19 @@ def create_schedule_draft(
 @router.get("/{workflow_id}/runs", response_model=list[AgentRunOut])
 def read_agent_runs(
     workflow_id: str,
+    conversation_key: str = "",
+    conversation_prefix: str = "",
     auth: AuthContext = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> list[AgentRunOut]:
     try:
-        return list_agent_runs(db, user_id=auth.user_id, workflow_id=workflow_id)
+        return list_agent_runs(
+            db,
+            user_id=auth.user_id,
+            workflow_id=workflow_id,
+            conversation_key=conversation_key,
+            conversation_prefix=conversation_prefix,
+        )
     except WorkflowError as exc:
         _raise(exc)
         raise
@@ -523,6 +531,7 @@ def create_local_agent_run(
             source=body.source,
             trigger_id=body.trigger_id,
             evidence=body.evidence,
+            conversation_key=body.conversation_key,
         )
         return get_agent_run(db, user_id=auth.user_id, workflow_id=workflow_id, run_id=row.id)
     except WorkflowError as exc:
@@ -600,6 +609,7 @@ def finish_local_agent_run(
             message=body.message,
             metrics=body.metrics,
             context=body.context,
+            sdk_agent_id=body.sdk_agent_id,
         )
         return get_agent_run(db, user_id=auth.user_id, workflow_id=workflow_id, run_id=run_id)
     except WorkflowError as exc:
