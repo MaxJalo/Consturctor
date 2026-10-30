@@ -167,6 +167,7 @@ from app.sdk_agent.prompt import (  # noqa: E402
     build_continue_run_prompt,
     build_demo_sdk_prompt,
     build_design_sdk_prompt,
+    build_order_continue_prompt,
     build_order_followup_prompt,
     build_sdk_prompt,
     text_has_finished_work_result,
@@ -292,6 +293,36 @@ def _without_tests_label(text: str) -> str:
     return re.sub(r"\n{3,}", "\n\n", cleaned)
 
 
+# Status lines the runner emits before the reply. They are not the answer.
+_RUN_CHROME_RE = re.compile(
+    r"Запускаю локальный Cursor SDK агент(?:\s*\([^)]*\))?\s*\.{0,3}\s*"
+    r"|Инструменты Constructor пустые\.\s*Не ищи проектные MCP-серверы\.?\s*"
+    r"|Инструменты Constructor:\s*(?:[A-Za-z0-9_.]+(?:,\s*)?)+(?:\s*\(\+\d+\))?\s*"
+    r"|Агент работает на этом компьютере\s*\.{0,3}\s*"
+    r"|Cursor SDK tools:\s*(?:[A-Za-z0-9_.]+(?:,\s*)?)*\s*"
+    r"|Дописываю ответ по заказу[^.\n]*\s*"
+    r"|Продолжаю запуск до WORK_RESULT[^.\n]*\s*",
+    re.IGNORECASE,
+)
+
+
+def _strip_run_chrome(text: str) -> str:
+    cleaned = _RUN_CHROME_RE.sub(" ", text or "")
+    cleaned = re.sub(r"[ \t]{2,}", " ", cleaned)
+    return re.sub(r"\n{3,}", "\n\n", cleaned).strip()
+
+
+def _order_turn_answer(runner_answer: str, seen: str) -> str:
+    """Итог хода — ответ сотруднику, а не склейка статуса и уже показанных фраз."""
+    answer = _strip_run_chrome(_without_tests_label(runner_answer))
+    if _turn_answer_done(answer, True):
+        return answer
+    longer = _strip_run_chrome(_without_tests_label(seen))
+    if _turn_answer_done(longer, True) and len(longer) > len(answer):
+        return longer
+    return answer
+
+
 def _is_external_order_helper_title(title: str) -> bool:
     folded = (title or "").casefold().replace("ё", "е")
     return folded.startswith("ии-агент внешнего заказа") or folded.startswith("ии-агент внешних закупок")
@@ -308,6 +339,32 @@ def _run_answer_done(text: str, hide_tests: bool = False) -> bool:
 
 
 _ORDER_TURN_MIN_CHARS = 40
+
+
+_ORDER_RESTART_RE = re.compile(r"откро(?:ю|ваю) регламент|запускаю автоподготов", re.I)
+
+
+def _order_reply_ready(text: str) -> bool:
+    """A survey already written to the employee. Another pass would only repeat it."""
+    clean = _without_tests_label(text).strip()
+    if len(clean) < 280:
+        return False
+    folded = clean.casefold()
+    return "?" in clean or "нужны ответы" in folded or "вопрос" in folded
+
+
+def _order_restart_after_reply(prior: str, chunk: str) -> bool:
+    return _order_reply_ready(prior) and bool(_ORDER_RESTART_RE.search(chunk or ""))
+
+
+def _order_reread_tool(payload: dict) -> bool:
+    """Read/grep/auto_prepare after the employee already has an answer."""
+    tool = str(payload.get("tool") or "").casefold().rsplit(".", 1)[-1]
+    if tool in {"read", "grep", "glob", "read_file"}:
+        return True
+    args = payload.get("arguments") if isinstance(payload.get("arguments"), dict) else {}
+    action = str((args or {}).get("action") or "").casefold()
+    return action in {"auto_prepare", "read", "read_full"}
 
 
 def _turn_answer_done(text: str, hide_tests: bool = False) -> bool:
@@ -3553,6 +3610,16 @@ class Sidecar:
             # text. Streaming it paints a second red banner ("Network request failed").
             if event_type == "error":
                 return
+            if getattr(active, "hide_tests", False) and event_type == "thinking":
+                return
+            if (
+                getattr(active, "hide_tests", False)
+                and event_type == "tool_call"
+                and _order_reply_ready(active.answer_buf)
+                and _order_reread_tool(payload)
+            ):
+                active.stop.set()
+                return
             if event_type in {"assistant", "thinking", "final", "status"}:
                 if getattr(active, "hide_tests", False):
                     for key in ("text", "answer", "message"):
@@ -3563,11 +3630,19 @@ class Sidecar:
                     str(payload.get(key) or "")
                     for key in ("text", "answer", "message")
                 )
+                if (
+                    getattr(active, "hide_tests", False)
+                    and event_type == "assistant"
+                    and _order_restart_after_reply(active.answer_buf, blob)
+                ):
+                    active.stop.set()
+                    return
                 if event_type == "assistant":
                     sampler = getattr(active, "metrics", None)
                     if sampler is not None:
                         sampler.note_chars(len(str(payload.get("text") or "")))
-                if blob.strip() and event_type != "thinking":
+                # Status and the runner's final copy are not a second answer.
+                if blob.strip() and event_type == "assistant":
                     active.answer_buf = f"{active.answer_buf}{blob}"
                 if event_type in {"assistant", "final"} and (
                     _run_answer_done(blob, getattr(active, "hide_tests", False))
@@ -4597,7 +4672,7 @@ class Sidecar:
                     tools=_tool_specs_for_workflow(workflow),
                     model_params=_workflow_model_params(workflow),
                     on_event=self._forward_events(active, events),
-                    on_question=active.gate.ask_question,
+                    on_question=self._order_question(active),
                     should_stop=active.stop.is_set,
                     confirm_writes=True,
                 )
@@ -4618,7 +4693,7 @@ class Sidecar:
                         tools=_tool_specs_for_workflow(workflow),
                         model_params=_workflow_model_params(workflow),
                         on_event=self._forward_events(active, events),
-                        on_question=active.gate.ask_question,
+                        on_question=self._order_question(active),
                         should_stop=active.stop.is_set,
                         confirm_writes=True,
                     )
@@ -4628,11 +4703,14 @@ class Sidecar:
             agent_id = str(result.get("agent_id") or resume_agent_id).strip()
             self._store_agent_id(workflow_id, agent_id, conversation=bool(conversation_key))
             continues = 0
-            while (
+            hide_tests = getattr(active, "hide_tests", False)
+            # A short reply is the end of an order turn. Do not send another
+            # "continue until WORK_RESULT" pass: that reopens the case.
+            while not hide_tests and (
                 status == "ok"
                 and agent_id
                 and not active.stop.is_set()
-                and not _turn_answer_done(answer, getattr(active, "hide_tests", False))
+                and not _turn_answer_done(self._order_seen_text(active, answer), hide_tests)
                 and continues < _MAX_WORK_CONTINUES
             ):
                 continues += 1
@@ -4641,20 +4719,24 @@ class Sidecar:
                 on_event(
                     {
                         "type": "status",
-                        "text": "Продолжаю запуск до WORK_RESULT — уже прочитанные файлы не открываю снова.",
+                        "text": (
+                            "Дописываю ответ по заказу — регламент и дело заново не открываю."
+                            if hide_tests
+                            else "Продолжаю запуск до WORK_RESULT — уже прочитанные файлы не открываю снова."
+                        ),
                     }
                 )
                 result = self._bridge_run_with_retry(
                     active,
                     bridge,
-                    prompt=build_continue_run_prompt(),
+                    prompt=build_order_continue_prompt() if hide_tests else build_continue_run_prompt(),
                     workflow_id=workflow_id,
                     cwd=run_cwd,
                     resume_agent_id=agent_id,
                     tools=_tool_specs_for_workflow(workflow),
                     model_params=_workflow_model_params(workflow),
                     on_event=on_event,
-                    on_question=active.gate.ask_question,
+                    on_question=self._order_question(active),
                     should_stop=active.stop.is_set,
                     confirm_writes=True,
                 )
@@ -4664,8 +4746,8 @@ class Sidecar:
                 agent_id = str(result.get("agent_id") or agent_id).strip()
                 self._store_agent_id(workflow_id, agent_id, conversation=bool(conversation_key))
             if getattr(active, "hide_tests", False):
-                answer = _without_tests_label(answer)
-            if status == "ok" and not _turn_answer_done(answer, getattr(active, "hide_tests", False)):
+                answer = _order_turn_answer(answer, str(getattr(active, "answer_buf", "") or ""))
+            if status == "ok" and not _turn_answer_done(self._order_seen_text(active, answer), getattr(active, "hide_tests", False)):
                 status = "error"
                 tail = answer.strip()
                 answer = (
@@ -5145,6 +5227,33 @@ class Sidecar:
             active.history_finished = True
         except ApiError:
             return
+
+    def _order_seen_text(self, active: ActiveRun, answer: str) -> str:
+        buf = str(getattr(active, "answer_buf", "") or "").strip()
+        text = (answer or "").strip()
+        return buf if len(buf) > len(text) else text
+
+    def _order_question(self, active: ActiveRun):
+        """After an employee answers, the order helper must not reopen the case."""
+
+        def ask(payload: dict[str, Any]) -> dict[str, Any]:
+            reply = active.gate.ask_question(payload, active.stop.is_set)
+            if not getattr(active, "hide_tests", False):
+                return reply
+            text = str(reply.get("answer") or reply.get("text") or "").strip()
+            if not text:
+                return reply
+            note = (
+                " Ответь коротко, 3–6 строк. Если это факт — один propose и фраза про кнопку «Принять». "
+                "Регламент, auto_prepare, Read и Grep не вызывай. Список вопросов не пиши. "
+                "Ход мыслей в чат не пиши."
+            )
+            updated = dict(reply)
+            updated["answer"] = text + note
+            updated["text"] = updated["answer"]
+            return updated
+
+        return ask
 
     def _conversation_agent_id(self, workflow_id: str, conversation_key: str) -> str:
         key = (conversation_key or "").strip()

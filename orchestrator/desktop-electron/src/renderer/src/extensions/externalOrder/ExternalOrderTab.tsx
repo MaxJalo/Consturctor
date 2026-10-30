@@ -274,43 +274,22 @@ function activePassport(passports: StagePassport[]): StagePassport | null {
 /** Выжимка для агента: код заказа, служба, этап и сценарий шага вместо однострочной подсказки. */
 function agentBrief(order: Order, role: string, step?: SimplifiedStep, extra = ''): string {
   const passport = activePassport(buildStagePassports(order))
-  const fields = (ROLE_FIELDS[role] || []).flatMap((form) =>
-    form.fields.map((field) => {
-      const value = String(order.sections?.[form.section]?.[field.key] || '').trim()
-      return `- ${form.section}.${field.key} (${field.label}): ${value ? `«${value.slice(0, 80)}»` : 'пусто'}`
-    })
-  )
-  const checks = (order.checks || [])
-    .filter((item) => item.owner_role === role && item.status !== 'done' && item.status !== 'not_applicable')
-    .slice(0, 12)
-    .map((item) => `- ${item.id}: ${item.text}`)
-  const gaps = (order.gaps || [])
-    .filter((item) => item.status === 'open' && (!item.owner_role || item.owner_role === role))
-    .slice(0, 12)
-    .map((item) => `- ${item.field}: ${item.detail}`)
   const stepArg = step ? `, step_id="${step.id}"` : ''
+  const question = (extra || step?.prompt || '').trim()
   return [
-    `Работаем по заказу ${order.code} (order_id=${order.id}).`,
-    `Заказчик: ${order.customer}. Продукт: ${order.product}. Статус: ${order.status_label}.`,
-    `Служба: ${ROLE_NAME[role] || role} (role=${role}).`,
-    step ? `Шаг пути: ${step.title} (step_id=${step.id}).` : '',
-    passport
-      ? `Этап «${passport.label}»: чек-лист ${passport.checks_done}/${passport.checks_total}${passport.blocker ? `, блокер: ${passport.blocker}` : ''}.`
-      : '',
-    (order.blocks || []).length ? `Блокировки: ${order.blocks.join('; ')}.` : '',
-    fields.length ? `Поля службы в карточке:\n${fields.join('\n')}` : '',
-    checks.length ? `Открытые пункты чек-листа службы:\n${checks.join('\n')}` : '',
-    gaps.length ? `Пробелы в данных:\n${gaps.join('\n')}` : '',
+    `Заказ ${order.code} (order_id=${order.id}), заказчик ${order.customer}.`,
+    `Служба: ${ROLE_NAME[role] || role} (role=${role}). Этап: ${passport?.label || order.status_label}.`,
+    question
+      ? `Вопрос сотрудника: ${question}`
+      : 'Вопроса нет: кратко, что уже есть по службе, и одно пустое поле.',
     [
-      'Порядок работы:',
-      `1. Первым действием вызови external_order.case(action="auto_prepare", order_id="${order.id}", role="${role}"${stepArg}). Всё дело приходит этим инструментом: файлы на диске через read/grep не ищи.`,
-      '2. Что нашлось в деле, сразу запиши черновиками через external_order.case(action="propose") с источником. Факт без источника не пиши.',
-      '3. По пустым полям и открытым пунктам задай сотруднику нумерованные вопросы, по одному на поле: что нужно, зачем, где это обычно указано.',
-      '4. Когда сотрудник ответит, проверь ответ на противоречия с делом, запиши его черновиком через propose и скажи, что принять его можно кнопкой «Принять» в карточке. Уточни, если ответ неполный.'
-    ].join('\n'),
-    step?.prompt || '',
-    extra ? `Сотрудник пишет: ${extra}` : ''
-  ].filter(Boolean).join('\n\n')
+      'Шаблоны, один ход. Ход мыслей в чат не писать.',
+      `Первый ход: один external_order.case(action="auto_prepare", order_id="${order.id}", role="${role}"${stepArg}). Файлы и регламент не открывать. Ответ на вопрос, 3–6 строк.`,
+      'Следующее сообщение: инструменты не вызывать. Если сотрудник сообщил факт — один propose и фраза, что принять можно кнопкой «Принять».',
+      'Если ответа в деле нет: одна фраза, чего не хватает, и один вопрос. Ход на этом кончается.',
+      'Список вопросов, повтор черновиков и «сначала открою регламент» не писать.'
+    ].join('\n')
+  ].join('\n\n')
 }
 
 const RETURN_KEY = 'orch.external-order.return'

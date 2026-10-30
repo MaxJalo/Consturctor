@@ -175,11 +175,57 @@ function pushThinking(items: FeedItem[], text: string): FeedItem[] {
   return [...items, { kind: 'thinking', id: nextId('think'), text: appendThinkingText('', text) }]
 }
 
+function plainReply(text: string): string {
+  return visibleAssistant(text).replace(/[*_`#]/g, '').replace(/\s+/g, '').toLowerCase()
+}
+
+const RUN_CHROME = [
+  /Запускаю локальный Cursor SDK агент(?:\s*\([^)]*\))?\s*\.{0,3}\s*/gi,
+  /Инструменты Constructor пустые\.\s*Не ищи проектные MCP-серверы\.?\s*/gi,
+  /Инструменты Constructor:\s*(?:[A-Za-z0-9_.]+(?:,\s*)?)+(?:\s*\(\+\d+\))?\s*/gi,
+  /Агент работает на этом компьютере\s*\.{0,3}\s*/gi,
+  /Cursor SDK tools:\s*(?:[A-Za-z0-9_.]+(?:,\s*)?)*\s*/gi,
+  /Дописываю ответ по заказу[^.\n]*\s*/gi,
+  /Продолжаю запуск до WORK_RESULT[^.\n]*\s*/gi
+]
+
+/** Drop the runner's launch lines so they are not painted as the answer. */
+function stripRunChrome(text: string): string {
+  let value = text || ''
+  for (const pattern of RUN_CHROME) value = value.replace(pattern, ' ')
+  return value.replace(/[ \t]{2,}/g, ' ').replace(/\n{3,}/g, '\n\n').trim()
+}
+
+function turnAgentParts(items: FeedItem[]): string[] {
+  const parts: string[] = []
+  for (let i = items.length - 1; i >= 0; i -= 1) {
+    const item = items[i]
+    if (item.kind === 'message' && item.role === 'user') break
+    if (item.kind === 'message' && item.role === 'agent') parts.push(plainReply(item.text))
+  }
+  return parts.reverse()
+}
+
+/** The итог only repeats phrases the employee already sees in this turn. */
+function resultRepeatsTurn(valuePlain: string, items: FeedItem[]): boolean {
+  const parts = turnAgentParts(items).filter((part) => part.length > 40)
+  if (!parts.length || valuePlain.length <= 80) return false
+  if (!parts.every((part) => valuePlain.includes(part))) return false
+  return valuePlain.length <= parts.join('').length + 160
+}
+
 function pushAssistant(items: FeedItem[], text: string): FeedItem[] {
   const clean = visibleAssistant(text)
   if (!clean.trim()) return items
   const last = items[items.length - 1]
   if (last && last.kind === 'message' && last.role === 'agent') {
+    const previous = plainReply(last.text)
+    const incoming = plainReply(clean)
+    if (incoming.length > 80 && previous === incoming) {
+      const merged = [...items]
+      merged[merged.length - 1] = { ...last, text: clean.length >= last.text.length ? clean : last.text }
+      return merged
+    }
     const merged = [...items]
     merged[merged.length - 1] = { ...last, text: last.text + streamDelta(last.text, clean) }
     return merged
@@ -224,14 +270,18 @@ export function pushUserMessage(items: FeedItem[], text: string): FeedItem[] {
  * shown once, as a crisp result — the way Cursor keeps the last block separate.
  */
 function pushResult(items: FeedItem[], text: string): FeedItem[] {
-  const value = (text || '').trim()
+  const value = stripRunChrome(text)
   if (!value) return items
+  const valuePlain = plainReply(value)
+  if (resultRepeatsTurn(valuePlain, items)) return items
   const last = items[items.length - 1]
+  const lastPlain = last && last.kind === 'message' && last.role === 'agent' ? plainReply(last.text) : ''
   if (
     last &&
     last.kind === 'message' &&
     last.role === 'agent' &&
-    visibleAssistant(last.text).trim() === visibleAssistant(value).trim()
+    valuePlain.length > 80 &&
+    lastPlain === valuePlain
   ) {
     return [...items.slice(0, -1), { kind: 'result', id: nextId('res'), text: value }]
   }

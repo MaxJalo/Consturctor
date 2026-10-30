@@ -292,21 +292,19 @@ def build_sdk_prompt(workflow: WorkflowRecord, user_message: str) -> str:
     prefix = f"Агент: {title}\n\n" if title else ""
     if _is_production_order_helper(workflow):
         read_hint = (
-            "Один раз открой materials/agent.md, если ещё не открывал. "
-            "Сразу вызови external_order.case action=read с order_id из задачи. "
-            "Затем один раз external_order.case action=plan с тем же order_id. "
-            "Действие plan уже есть в схеме этого инструмента, в файлах его не ищи. "
-            "В ответе назови имя файла из summary вызова plan. "
-            "Не пиши строку TESTS, TESTS: PASS и TESTS: FAIL — это не тесты и в ответ не входит. "
-            "После read не останавливайся: без plan файл плана не появляется."
+            "Ход мыслей в чат не писать. После ответа остановиться. "
+            "Если вопрос про план или .mpp — один external_order.case action=plan_preview "
+            "и короткий ответ с именем файла из summary. "
+            "Иначе один action=auto_prepare и ответ на вопрос, 3–6 строк. "
+            "Read, Grep и регламент не вызывать. Не пиши строку TESTS."
         )
     elif _is_external_order_helper(workflow):
         read_hint = (
-            "Один раз открой materials/agent.md, если ещё не открывал. "
-            "Сразу вызови external_order.case action=read с order_id из задачи. "
-            "Не ищи этот инструмент в файлах: он уже в сессии. "
-            "Не пиши строку TESTS, TESTS: PASS и TESTS: FAIL — это не тесты и в ответ не входит. "
-            "Короткий итог напиши один раз и остановись."
+            "Ход мыслей в чат не писать. После ответа остановиться. "
+            "Первый ход: один external_order.case action=auto_prepare с order_id из задачи. "
+            "Read, Grep, регламент и повторный auto_prepare запрещены. "
+            "Ответ на вопрос сотрудника, 3–6 строк. Если вопроса нет — что уже есть и одно пустое поле. "
+            "Не пиши строку TESTS."
         )
     elif _is_meeting_run_agent(workflow):
         read_hint = (
@@ -323,9 +321,14 @@ def build_sdk_prompt(workflow: WorkflowRecord, user_message: str) -> str:
             "Если есть проверенная цепочка — сразу вызывай инструменты Constructor по порядку. "
             "Заверши ## WORK_RESULT и TESTS: PASS."
         )
+    voice = (
+        "Пиши сотруднику только ответ, по-русски. Ход мыслей в чат не пиши."
+        if _is_external_order_helper(workflow)
+        else "Думай и пиши только на русском."
+    )
     return (
         f"{prefix}{read_hint} "
-        "Думай и пиши только на русском.\n\n"
+        f"{voice}\n\n"
         f"Задача:\n{task}"
     )
 
@@ -334,14 +337,25 @@ def build_order_followup_prompt(user_message: str) -> str:
     """Next employee message in the same order conversation (resumed SDK agent)."""
     reply = (user_message or "").strip() or "Продолжай."
     return (
-        "Это продолжение того же разговора по тому же заказу. "
-        "Дело, materials/agent.md и результаты прошлых вызовов у тебя уже есть: "
-        "не вызывай снова auto_prepare и read, не повторяй уже заданные вопросы "
-        "и уже сохранённые черновики. Перечитай дело только если сотрудник об этом просит "
-        "или его ответ меняет данные. Учти ответ, запиши новые черновики через propose, "
-        "задай только оставшиеся вопросы и остановись. "
-        "Не пиши строку TESTS. Думай и пиши только на русском.\n\n"
+        "Продолжение того же заказа. Инструменты не вызывай: дело уже есть. "
+        "Если сотрудник сообщил факт — один propose и фраза, что принять можно кнопкой «Принять». "
+        "Иначе сразу ответ на вопрос, 3–6 строк. "
+        "Если ответа в деле нет — одна фраза и один вопрос. "
+        "Не открывай регламент, не пиши список вопросов и не повторяй черновики. "
+        "Ход мыслей в чат не пиши. Не пиши строку TESTS.\n\n"
         f"Сообщение сотрудника:\n{reply}"
+    )
+
+
+def build_order_continue_prompt() -> str:
+    """Order helper stopped early. Finish the reply; do not reopen the case."""
+    return (
+        "Ответ сотруднику уже начат. Не начинай сначала и не открывай регламент. "
+        "Не вызывай auto_prepare, Read и Grep. "
+        "Если вопрос уже задан — остановись и не пиши его второй раз. "
+        "Если ответа в деле нет — одна фраза и один вопрос. "
+        "Список вопросов не пиши. Ход мыслей в чат не пиши. "
+        "Не пиши WORK_RESULT и TESTS."
     )
 
 

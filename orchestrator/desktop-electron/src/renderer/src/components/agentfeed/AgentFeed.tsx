@@ -64,7 +64,7 @@ function ThinkingBlock({ text, live }: { text: string; live: boolean }): React.J
   const body = text.trim()
   if (!body) return null
   return (
-    <details className={live ? 'feed-thinking live' : 'feed-thinking'} {...(live ? { open: true } : {})}>
+    <details className={live ? 'feed-thinking live' : 'feed-thinking'}>
       <summary>{live ? 'Размышляет…' : 'Размышления'}</summary>
       <p>{body}</p>
     </details>

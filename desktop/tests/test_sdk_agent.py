@@ -1167,14 +1167,14 @@ def test_production_order_prompt_calls_plan() -> None:
         phase="done",
     )
     prompt = build_sdk_prompt(record, "ВЗ-0005")
-    assert "action=plan" in prompt
-    assert "не останавливайся" in prompt
+    assert "plan_preview" in prompt
+    assert "После ответа остановиться" in prompt
     other = WorkflowRecord(
         id="wf-ks",
         title="ИИ-агент внешнего заказа · Коммерческая служба",
         phase="done",
     )
-    assert "action=plan" not in build_sdk_prompt(other, "ВЗ-0005")
+    assert "plan_preview" not in build_sdk_prompt(other, "ВЗ-0005")
 
 
 def test_meeting_run_prompt_skips_manifest_bulk_reads() -> None:
