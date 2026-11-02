@@ -15,6 +15,7 @@ from agent_sidecar import (  # noqa: E402
     _journal_agent_messages,
     _order_memory_from_runs,
     _order_reread_tool,
+    _order_reply_ready,
     _order_restart_after_reply,
     _order_turn_answer,
     _run_answer_done,
@@ -188,6 +189,42 @@ def test_glued_service_reply_is_split_into_paragraphs() -> None:
     assert "пути 1С" in shown
     assert "Х5" in shown
     assert shown.count("\n\n") >= 3
+
+
+def test_repeated_case_summary_is_shown_once() -> None:
+    raw = (
+        "Сначала сниму схему дела и подготовлю заказ одним вызовом. Вызываю подготовку дела по заказу ВЗ-0014. "
+        "По службе ОМТО на этапе «Договор» по заказу ВЗ-0014 уже есть изделие ТКП НП00-004241, "
+        "ИНН2312054894, сумма17800.00 руб., срок поставки2 дн., оплата17800.00 из17800.00. "
+        "К принятию18 черновиков, по службе ОМТО1. "
+        "Чек-лист этапа «Договор» —0 из8. В пути1С договора ещё нет. "
+        "Подтвердите пункт чек-листа: «Закупки и критические позиции обеспечены». "
+        "Сервер оборвал вызов, повторяю подготовку дела. "
+        "По службе ОМТО в заказе ВЗ-0014 уже есть изделие ТКП НП00-004241, ИНН2312054894, сумма17800.00 руб. "
+        "К принятию18 черновиков. Чек-лист этапа «Договор»:0 из8. "
+        "Договор:Сначала сниму схему дела и подготовлю заказ одним вызовом."
+    )
+    shown = _order_turn_answer(raw, raw)
+    folded = shown.casefold()
+    assert "сначала сниму" not in folded
+    assert "сервер оборвал" not in folded
+    assert shown.count("НП00-004241") == 1
+    assert "НП 00" not in shown
+    assert "ВЗ-0014" in shown
+    assert "ИНН 2312054894" in shown
+    assert "сумма 17800" in shown
+    assert "поставки 2" in shown
+    assert "из 8" in shown
+    assert "пути 1С" in shown
+    assert "Подтвердите пункт" in shown
+    assert "\n\n" in shown
+    ready = (
+        "По службе ОМТО уже есть ТКП НП00-004241. К принятию 18 черновиков. "
+        "Чек-лист этапа договор 0 из 8. " + ("Подробность дела. " * 12)
+    )
+    assert _order_reply_ready(ready)
+    assert _order_restart_after_reply(ready, "Сервер оборвал вызов, повторяю подготовку дела.")
+    assert not _order_reply_ready("Сейчас прочитаю дело.")
 
 
 def test_second_regulation_opening_stops_after_the_survey() -> None:

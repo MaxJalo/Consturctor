@@ -2992,22 +2992,31 @@ def auto_prepare_order(
     log: list[str] = []
     refresh_overdue(db, row)
 
-    # 1. Мягкая синхронизация 1С (без падения при недоступности 1С)
+    # 1. Мягкая синхронизация 1С (без падения при недоступности 1С).
+    # Соединение отдаём в пул до запросов в 1С: иначе несколько агентов держат
+    # все 15 соединений и следующий запрос падает по таймауту пула.
     onec = _onec_link(row)
     tkp_key = str(onec.get("tkp_key") or "").strip()
     ref_key = str(onec.get("order_key") or "").strip()
     if tkp_key or ref_key:
+        order_id = row.id
+        _release_db(db)
+        traced: dict | None = None
+        unavailable = False
         try:
             from app.services.external_order_onec import read_order, tkp_key_for_order, trace_tkp
 
             traced = trace_tkp(tkp_key) if tkp_key else _trace_or_order(ref_key, read_order, tkp_key_for_order, trace_tkp)
-            if isinstance(traced, dict) and traced:
-                _apply_onec(row, traced)
-                _remember_tkp_terms(row, traced=True)
-                onec = _onec_link(row)
-                log.append(f"Обновлена цепочка 1С: {_path_label(row) or _payment_note(row)}")
         except Exception:  # noqa: BLE001
+            unavailable = True
+        row = _order(db, order_id)
+        if unavailable:
             log.append("1С сейчас недоступна — использованы сохранённые реквизиты карточки")
+        elif isinstance(traced, dict) and traced:
+            _apply_onec(row, traced)
+            _remember_tkp_terms(row, traced=True)
+            onec = _onec_link(row)
+            log.append(f"Обновлена цепочка 1С: {_path_label(row) or _payment_note(row)}")
 
     sections = _load(row.sections_json)
     owners = _load(row.owners_json)

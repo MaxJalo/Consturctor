@@ -297,12 +297,12 @@ const RETURN_KEY = 'orch.external-order.return'
 
 type ReturnIntent = { orderId: string; page: CardPage }
 
-/** Чат помощника: разговор на заказ, службу и текущий этап; правая панель показывает этот заказ. */
-function chatContext(order: Order, role: string, fresh = false): AgentChatContext {
+/** Чат помощника: один разговор на заказ, службу и этап. Закрытие окна его не сбрасывает. */
+function chatContext(order: Order, role: string): AgentChatContext {
   const passport = activePassport(buildStagePassports(order))
   const stage = passport?.id || order.status || 'none'
   return {
-    conversationKey: orderConversationKey(order.id, role, stage, fresh ? String(Date.now()) : ''),
+    conversationKey: orderConversationKey(order.id, role, stage),
     conversationPrefix: orderConversationPrefix(order.id, role),
     stageLabels: Object.fromEntries(LINE.map((step) => [step.id, step.label])),
     order: {
@@ -690,7 +690,7 @@ export function ExternalOrderTab({
         agent.workflow_id,
         agent.title || `ИИ-агент внешнего заказа · ${ROLE_NAME[role] || role}`,
         agentBrief(order, role, undefined, extra),
-        chatContext(order, role, true)
+        chatContext(order, role)
       )
     } catch (err) {
       setError(helperFailure(err, 'Помощник службы не запустился'))
@@ -2398,7 +2398,7 @@ function Card({
         agent.workflow_id,
         agent.title || 'ИИ-агент внешних закупок',
         agentBrief(order, 'omto'),
-        chatContext(order, 'omto', true)
+        chatContext(order, 'omto')
       )
     } catch (err) {
       setPathNote(helperFailure(err, 'Помощник по закупке не запустился'))
@@ -2420,7 +2420,7 @@ function Card({
         agent.workflow_id,
         agent.title || 'ИИ-агент внешнего заказа',
         agentBrief(order, role, step),
-        chatContext(order, role, true)
+        chatContext(order, role)
       )
     } catch (err) {
       setPathNote(helperFailure(err, 'Помощник не запустился'))

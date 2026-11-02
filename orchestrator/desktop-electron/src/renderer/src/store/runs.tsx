@@ -722,9 +722,10 @@ export function RunProvider({ children }: { children: React.ReactNode }): React.
       )
       if (!list.length) return 0
       const turns = list.slice(0, CONVERSATION_HISTORY_RUNS).reverse()
-      const details = await Promise.all(
-        turns.map((item) => api.getAgentRunDetail(wid, item.runId).catch(() => ({ item, events: [] })))
-      )
+      const details = []
+      for (const item of turns) {
+        details.push(await api.getAgentRunDetail(wid, item.runId).catch(() => ({ item, events: [] })))
+      }
       let items: RunState['items'] = []
       for (const detail of details) {
         const turn = omitTriggerCheckNoise(buildFeedItems(detail.events, { live: false }))

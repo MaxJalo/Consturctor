@@ -312,21 +312,121 @@ def _strip_run_chrome(text: str) -> str:
     return re.sub(r"\n{3,}", "\n\n", cleaned).strip()
 
 
-def _readable_order_answer(text: str) -> str:
-    """Один слипшийся абзац службы разбирается на фразы: пробел перед числом и пустая строка между ними."""
+_NARRATION_RE = re.compile(
+    r"^(?:сначала\s+(?:сниму|открою|посмотрю|сверю)|вызываю подготовку|сервер оборвал|"
+    r"повторяю подготовку|схема получена|готовлю дело|сверяю дело|беру сводку)\b",
+    re.IGNORECASE,
+)
+_STAGE_ONLY_RE = re.compile(r"^(?:договор|ткп|расчёт|расчет)[:.]?$", re.IGNORECASE)
+_KEEP_FACT_RE = re.compile(r"не привед|кнопк|закрыт", re.IGNORECASE)
+
+
+def _space_order_text(text: str) -> str:
+    """Пробел перед числом и между склеенными фразами. Номер ТКП и код изделия не рвём."""
     cleaned = (text or "").strip()
     if not cleaned:
         return cleaned
+    cleaned = re.sub(r"([а-яё])([А-ЯЁ])", r"\1 \2", cleaned)
+    cleaned = re.sub(
+        r"(?i)(?<![а-яёa-z])договор\s*[:.]?\s*(?=сначала|вызываю|сервер|повторяю|схема|готовлю|сверяю)",
+        "",
+        cleaned,
+    )
     cleaned = re.sub(r"(?<![-0-9A-Za-zА-Яа-яЁё])([A-Za-zА-Яа-яЁё]{4,})(\d)", r"\1 \2", cleaned)
+    cleaned = re.sub(
+        r"(^|[\s«\"(])(из|до|по|к|на|от|за|со|в)(?=\d)",
+        r"\1\2 ",
+        cleaned,
+        flags=re.IGNORECASE | re.MULTILINE,
+    )
+    cleaned = re.sub(r"(\d[А-Яа-яЁё]{1,2})(\d)", r"\1 \2", cleaned)
+    cleaned = re.sub(r"(?<![-0-9A-Za-zА-Яа-яЁё])ИНН(?=\d)", "ИНН ", cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r"(?<![-0-9A-Za-zА-Яа-яЁё])ТКП(?=\d{1,2}[./])", "ТКП ", cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r"([»\"])(\d)", r"\1 \2", cleaned)
     cleaned = re.sub(r"([—–])(\d)", r"\1 \2", cleaned)
+    cleaned = re.sub(r"(?<=[A-Za-zА-Яа-яЁё»]):(?=\d)", ": ", cleaned)
     cleaned = re.sub(r"([.!?])(?=[A-Za-zА-Яа-яЁё«])", r"\1 ", cleaned)
     cleaned = re.sub(r",(?=[A-Za-zА-Яа-яЁё«])", ", ", cleaned)
-    if "\n\n" in cleaned:
-        return cleaned
-    parts = [part.strip() for part in re.split(r"(?<=[.!?])\s+", cleaned) if part.strip()]
-    if len(parts) < 2:
-        return cleaned
-    return "\n\n".join(parts)
+    cleaned = re.sub(
+        r"(?i)(?<![.!?])\s+(?=сначала\s+(?:сниму|открою)|вызываю подготовку|сервер оборвал|"
+        r"повторяю подготовку|схема получена|готовлю дело|сверяю дело|беру сводку)",
+        ". ",
+        cleaned,
+    )
+    return re.sub(r"[ \t]{2,}", " ", cleaned).strip()
+
+
+def _order_tokens(sentence: str) -> set[str]:
+    folded = sentence.casefold().replace("ё", "е")
+    return {
+        word.strip("-")
+        for word in re.findall(r"[a-zа-я0-9-]{4,}", folded)
+        if word.strip("-") and not word.strip("-").isdigit()
+    }
+
+
+def _order_sentences(text: str) -> list[str]:
+    spaced = _space_order_text(text)
+    if not spaced:
+        return []
+    sentences: list[str] = []
+    for block in re.split(r"\n{2,}", spaced):
+        sentences.extend(
+            part.strip() for part in re.split(r"(?<=[.!?])\s+", block) if part.strip()
+        )
+    return sentences
+
+
+def _order_sentence_visible(sentence: str, known: set[str]) -> bool:
+    folded = sentence.casefold().replace("ё", "е").strip()
+    if not folded or _NARRATION_RE.match(folded) or _STAGE_ONLY_RE.match(folded):
+        return False
+    if _KEEP_FACT_RE.search(sentence):
+        return True
+    words = _order_tokens(sentence)
+    if not words or not known:
+        return True
+    novel = words - known
+    if not novel and len(words) >= 2:
+        return False
+    return not (len(words) >= 6 and len(novel) <= 1)
+
+
+def _order_visible_delta(prior: str, blob: str) -> str:
+    """Только новые фразы сводки. Повтор дела и слова «сначала сниму» в чат не попадают."""
+    known: set[str] = set()
+    for sentence in _order_sentences(prior):
+        folded = sentence.casefold().replace("ё", "е").strip()
+        if _NARRATION_RE.match(folded) or _STAGE_ONLY_RE.match(folded):
+            continue
+        known.update(_order_tokens(sentence))
+    kept: list[str] = []
+    for sentence in _order_sentences(blob):
+        if not _order_sentence_visible(sentence, known):
+            continue
+        known.update(_order_tokens(sentence))
+        kept.append(sentence)
+    if not kept:
+        return ""
+    if len(kept) == 1:
+        return kept[0]
+    return "\n\n".join(kept)
+
+
+def _readable_order_answer(text: str) -> str:
+    """Одна сводка службы: без плана «сначала сниму», без второго пересказа, абзацами."""
+    known: set[str] = set()
+    kept: list[str] = []
+    for sentence in _order_sentences(text):
+        if not _order_sentence_visible(sentence, known):
+            continue
+        known.update(_order_tokens(sentence))
+        kept.append(sentence)
+    if not kept:
+        return _space_order_text(text)
+    if len(kept) == 1:
+        return kept[0]
+    return "\n\n".join(kept)
 
 
 def _order_turn_answer(runner_answer: str, seen: str) -> str:
@@ -358,15 +458,21 @@ def _run_answer_done(text: str, hide_tests: bool = False) -> bool:
 _ORDER_TURN_MIN_CHARS = 40
 
 
-_ORDER_RESTART_RE = re.compile(r"откро(?:ю|ваю) регламент|запускаю автоподготов", re.I)
+_ORDER_RESTART_RE = re.compile(
+    r"откро(?:ю|ваю) регламент|запускаю автоподготов|сначала\s+сним|вызываю подготовку|"
+    r"сервер оборвал|повторяю подготовку|схема получена|готовлю дело|сверяю дело",
+    re.I,
+)
 
 
 def _order_reply_ready(text: str) -> bool:
     """A survey already written to the employee. Another pass would only repeat it."""
     clean = _without_tests_label(text).strip()
+    folded = clean.casefold().replace("ё", "е")
+    if len(clean) >= 180 and "по службе" in folded and ("чек-лист" in folded or "к принятию" in folded):
+        return True
     if len(clean) < 280:
         return False
-    folded = clean.casefold()
     return "?" in clean or "нужны ответы" in folded or "вопрос" in folded
 
 
@@ -3688,20 +3794,37 @@ class Sidecar:
                     str(payload.get(key) or "")
                     for key in ("text", "answer", "message")
                 )
-                if (
-                    getattr(active, "hide_tests", False)
-                    and event_type == "assistant"
-                    and _order_restart_after_reply(active.answer_buf, blob)
-                ):
-                    active.stop.set()
-                    return
+                if getattr(active, "hide_tests", False) and event_type in {"assistant", "final"}:
+                    original = blob
+                    visible = _order_visible_delta(active.answer_buf, original)
+                    repeated = (
+                        event_type == "assistant"
+                        and _order_reply_ready(active.answer_buf)
+                        and not visible.strip()
+                        and len(original.strip()) > 80
+                    )
+                    if not visible.strip():
+                        if _order_restart_after_reply(active.answer_buf, original) or repeated:
+                            active.stop.set()
+                        return
+                    payload["text"] = visible
+                    payload.pop("answer", None)
+                    payload.pop("message", None)
+                    blob = visible
+                    if event_type == "assistant" and _order_restart_after_reply(
+                        f"{active.answer_buf}\n\n{visible}", original
+                    ):
+                        active.stop.set()
                 if event_type == "assistant":
                     sampler = getattr(active, "metrics", None)
                     if sampler is not None:
                         sampler.note_chars(len(str(payload.get("text") or "")))
                 # Status and the runner's final copy are not a second answer.
                 if blob.strip() and event_type == "assistant":
-                    active.answer_buf = f"{active.answer_buf}{blob}"
+                    if active.answer_buf and getattr(active, "hide_tests", False):
+                        active.answer_buf = f"{active.answer_buf}\n\n{blob}"
+                    else:
+                        active.answer_buf = f"{active.answer_buf}{blob}"
                 if event_type in {"assistant", "final"} and (
                     _run_answer_done(blob, getattr(active, "hide_tests", False))
                     or _run_answer_done(active.answer_buf, getattr(active, "hide_tests", False))

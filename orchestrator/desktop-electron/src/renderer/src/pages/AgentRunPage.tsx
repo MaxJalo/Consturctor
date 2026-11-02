@@ -2,10 +2,10 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { agentClient } from '../api/agent'
 import { api } from '../api/client'
-import type { AgentRunHistoryItem, WorkflowFileItem } from '../api/types'
+import type { WorkflowFileItem } from '../api/types'
 import { AgentFeed } from '../components/agentfeed'
 import type { FeedItem } from '../components/agentfeed/types'
-import { conversationEntryKey, useRuns } from '../store/runs'
+import { conversationEntryKey, useRuns, type RunEntry } from '../store/runs'
 import { fileTypeIconSrc } from '../utils/fileTypeIcon'
 import { categoryOf, FILE_CATEGORY_LABELS, formatFileWhen, formatSize } from './filesGrouping'
 import { isPersonalAgentWorkflowId } from '../workplace/personalAgent'
@@ -50,6 +50,21 @@ function doneInConversation(items: FeedItem[]): { id: string; text: string; deta
     rows.push({ id: item.id, text, detail, error: item.error })
   }
   return rows
+}
+
+function rememberedConversation(entries: Record<string, RunEntry>, workflowId: string, prefix: string, preferred: string): string {
+  const own = entries[conversationEntryKey(workflowId, preferred)]
+  if (own && (own.state.running || (own.state.items?.length ?? 0) > 0)) return preferred
+  const siblings = Object.values(entries).filter((entry) => {
+    const key = entry.conversationKey || ''
+    return (
+      entry.workflowId === workflowId &&
+      key.startsWith(prefix) &&
+      (entry.state.running || (entry.state.items?.length ?? 0) > 0)
+    )
+  })
+  siblings.sort((left, right) => Number(Boolean(right.state.running)) - Number(Boolean(left.state.running)))
+  return siblings[0]?.conversationKey || preferred
 }
 
 function briefLabel(chat: AgentChatContext): string {
@@ -129,7 +144,8 @@ export function AgentRunPage({
 }: AgentRunPageProps): React.JSX.Element {
   const runs = useRuns()
   const personalAgent = isPersonalAgentWorkflowId(workflowId)
-  const conversationKey = chat?.conversationKey || ''
+  const [boundKey, setBoundKey] = useState(chat?.conversationKey || '')
+  const conversationKey = boundKey || chat?.conversationKey || ''
   const entryKey = conversationKey ? conversationEntryKey(workflowId, conversationKey) : workflowId
   const readOnly = Boolean(chat?.readOnly)
   const entry = runs.entries[entryKey]
@@ -138,7 +154,6 @@ export function AgentRunPage({
   const awaiting = Boolean(state?.pendingQuestion || state?.pendingHitl)
   const [rightTab, setRightTab] = useState<RightTab>(chat ? 'order' : 'files')
   const [showWork, setShowWork] = useState(false)
-  const [pastRuns, setPastRuns] = useState<AgentRunHistoryItem[]>([])
   const [historyNote, setHistoryNote] = useState('')
   const conversationOpenedRef = useRef(false)
 
@@ -201,17 +216,29 @@ export function AgentRunPage({
     }
   }, [workflowId, refreshFiles, personalAgent, conversationKey])
 
-  // Разговор по заказу: сначала сохранённые ходы. Новый запрос уходит только
-  // в первый раз, когда у этого заказа, службы и этапа ещё нет ни одного хода.
+  // Разговор по заказу: сначала уже открытый или сохранённый ход.
+  // Новый запуск — только если у этой службы по заказу ещё не было ни одного.
+  // Ошибка загрузки истории не запускает агента заново: повторный ход упирается в таймаут.
   useEffect(() => {
     if (!chat || conversationOpenedRef.current) return
-    // Без отмены в cleanup: в StrictMode эффект отрабатывает дважды, а второй
-    // проход сюда уже не заходит — отмена первого потеряла бы бриф по заказу.
     conversationOpenedRef.current = true
+    const preferred = chat.conversationKey
+    const prefix = chat.conversationPrefix
+    const key = rememberedConversation(runs.entries, workflowId, prefix, preferred)
+    if (key !== preferred) setBoundKey(key)
     void runs
-      .attachConversation(workflowId, chat.conversationKey, title)
-      .then((turns) => {
+      .attachConversation(workflowId, key, title)
+      .then(async (turns) => {
         if (turns > 0 || chat.readOnly) return
+        const rows = await api.listAgentRuns(workflowId, { prefix })
+        const latest = rows.find((item) => (item.conversationKey || '').startsWith(prefix))
+        let active = key
+        if (latest?.conversationKey) {
+          active = latest.conversationKey
+          if (active !== key) setBoundKey(active)
+          const restored = await runs.attachConversation(workflowId, active, title)
+          if (restored > 0) return
+        }
         const task = initialMessage.trim()
         if (!task) return
         runs.startRun({
@@ -219,7 +246,7 @@ export function AgentRunPage({
           title,
           message: task,
           shownMessage: briefLabel(chat),
-          conversationKey: chat.conversationKey
+          conversationKey: active
         })
       })
       .catch(() => {
@@ -227,22 +254,6 @@ export function AgentRunPage({
       })
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [chat?.conversationKey, workflowId])
-
-  useEffect(() => {
-    if (!chat?.conversationPrefix) return
-    let cancelled = false
-    void api
-      .listAgentRuns(workflowId, { prefix: chat.conversationPrefix })
-      .then((rows) => {
-        if (!cancelled) setPastRuns(rows.filter((item) => item.conversationKey && item.conversationKey !== chat.conversationKey))
-      })
-      .catch(() => {
-        if (!cancelled) setPastRuns([])
-      })
-    return () => {
-      cancelled = true
-    }
-  }, [workflowId, chat?.conversationPrefix, chat?.conversationKey])
 
   // Refresh the files panel whenever a run finishes.
   useEffect(() => {

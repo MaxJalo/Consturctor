@@ -185,21 +185,75 @@ export function draftToMarkdown(draft: DesignDraft): string {
   return lines.join('\n')
 }
 
-/** Ответ службы внешнего заказа, склеенный в одну строку, показывается абзацами. */
-export function readableServiceReply(text: string): string {
-  const raw = (text || '').replace(/\r\n/g, '\n').trim()
-  if (!raw || raw.includes('\n\n')) return raw
-  if (!/Чек-лист|К принятию|По службе|В пути/.test(raw)) return raw
-  const spaced = raw
+const SERVICE_REPLY = /Чек-лист|К принятию|По службе|В пути|черновик/i
+const NARRATION = /^(?:сначала\s+(?:сниму|открою|посмотрю|сверю)|вызываю подготовку|сервер оборвал|повторяю подготовку|схема получена|готовлю дело|сверяю дело|беру сводку)\b/i
+const STAGE_ONLY = /^(?:договор|ткп|расчёт|расчет)[:.]?$/i
+const KEEP_FACT = /не привед|кнопк|закрыт/i
+
+function spaceOrderText(text: string): string {
+  let cleaned = text
+    .replace(/([а-яё])([А-ЯЁ])/g, '$1 $2')
+    .replace(/(?<![а-яёa-z])договор\s*[:.]?\s*(?=сначала|вызываю|сервер|повторяю|схема|готовлю|сверяю)/gi, '')
     .replace(/(?<![-0-9A-Za-zА-Яа-яЁё])([A-Za-zА-Яа-яЁё]{4,})(\d)/g, '$1 $2')
+    .replace(/(^|[\s«"(])(из|до|по|к|на|от|за|со|в)(?=\d)/gim, '$1$2 ')
+    .replace(/(\d[А-Яа-яЁё]{1,2})(\d)/g, '$1 $2')
+    .replace(/(?<![-0-9A-Za-zА-Яа-яЁё])ИНН(?=\d)/gi, 'ИНН ')
+    .replace(/(?<![-0-9A-Za-zА-Яа-яЁё])ТКП(?=\d{1,2}[./])/gi, 'ТКП ')
+    .replace(/([»"])(\d)/g, '$1 $2')
     .replace(/([—–])(\d)/g, '$1 $2')
+    .replace(/(?<=[A-Za-zА-Яа-яЁё»]):(?=\d)/g, ': ')
     .replace(/([.!?])(?=[A-Za-zА-Яа-яЁё«])/g, '$1 ')
     .replace(/,(?=[A-Za-zА-Яа-яЁё«])/g, ', ')
-  const parts = spaced
-    .split(/(?<=[.!?])\s+/)
-    .map((part) => part.trim())
-    .filter(Boolean)
-  return parts.length > 1 ? parts.join('\n\n') : spaced
+    .replace(
+      /(?<![.!?])\s+(?=сначала\s+(?:сниму|открою)|вызываю подготовку|сервер оборвал|повторяю подготовку|схема получена|готовлю дело|сверяю дело|беру сводку)/gi,
+      '. '
+    )
+  cleaned = cleaned.replace(/[ \t]{2,}/g, ' ').trim()
+  return cleaned
+}
+
+function orderTokens(sentence: string): Set<string> {
+  const found = sentence.toLowerCase().replace(/ё/g, 'е').match(/[a-zа-я0-9-]{4,}/gi) || []
+  return new Set(found.map((word) => word.replace(/^-+|-+$/g, '')).filter((word) => word && !/^\d+$/.test(word)))
+}
+
+function orderSentences(text: string): string[] {
+  const spaced = spaceOrderText(text)
+  if (!spaced) return []
+  const sentences: string[] = []
+  for (const block of spaced.split(/\n{2,}/)) {
+    for (const part of block.split(/(?<=[.!?])\s+/)) {
+      const sentence = part.trim()
+      if (sentence) sentences.push(sentence)
+    }
+  }
+  return sentences
+}
+
+function sentenceVisible(sentence: string, known: Set<string>): boolean {
+  const folded = sentence.toLowerCase().replace(/ё/g, 'е').trim()
+  if (!folded || NARRATION.test(folded) || STAGE_ONLY.test(folded)) return false
+  if (KEEP_FACT.test(sentence)) return true
+  const words = orderTokens(sentence)
+  if (!words.size || !known.size) return true
+  const novel = [...words].filter((word) => !known.has(word))
+  if (!novel.length && words.size >= 2) return false
+  return !(words.size >= 6 && novel.length <= 1)
+}
+
+/** Одна сводка службы: без «сначала сниму», без второго пересказа, абзацами. */
+export function readableServiceReply(text: string): string {
+  const raw = (text || '').replace(/\r\n/g, '\n').trim()
+  if (!raw || !SERVICE_REPLY.test(raw)) return raw
+  const known = new Set<string>()
+  const kept: string[] = []
+  for (const sentence of orderSentences(raw)) {
+    if (!sentenceVisible(sentence, known)) continue
+    for (const token of orderTokens(sentence)) known.add(token)
+    kept.push(sentence)
+  }
+  if (!kept.length) return spaceOrderText(raw)
+  return kept.length > 1 ? kept.join('\n\n') : kept[0]
 }
 
 export function presentAgentText(text: string): string {
