@@ -1339,15 +1339,103 @@ def build_stage_passports(order: ExternalOrder) -> list[dict]:
     return passports
 
 
+_KNOWN_TOKENS: dict[str, tuple[str, ...]] = {
+    "price": ("сумма 1с", "цена:"),
+    "vat": ("ндс:", "ндс "),
+    "currency": ("валюта:", "валют"),
+    "discount": ("скидк",),
+    "plan_note": ("срок",),
+    "schedule": ("оплата:", "оплачено"),
+    "composition": ("состав:", "изделие:"),
+    "warranty": ("гаранти",),
+    "sanctions": ("санкц",),
+    "payment": ("оплата:", "оплачено"),
+    "term": ("срок",),
+}
+
+
+def known_facts(order: ExternalOrder) -> list[str]:
+    """Факты, которые уже есть в карточке, пути 1С и опросном листе. По ним вопрос не задаётся."""
+    from app.services.external_order_case import survey_sheet_lines
+
+    facts: list[str] = []
+    if str(order.customer or "").strip():
+        inn = f", ИНН {order.inn}" if str(order.inn or "").strip() else ""
+        facts.append(f"Заказчик: {order.customer}{inn}")
+    if str(order.product or "").strip():
+        facts.append(f"Изделие: {order.product}")
+    link = _onec_link(order)
+    if str(link.get("amount") or "").strip():
+        facts.append(f"Сумма 1С: {link.get('amount')}")
+    if str(link.get("vat") or "").strip():
+        facts.append(f"НДС: {link.get('vat')}")
+    if str(link.get("currency") or "").strip():
+        facts.append(f"Валюта: {link.get('currency')}")
+    if str(link.get("delivery_days") or "").strip():
+        facts.append(f"Срок поставки: {link.get('delivery_days')}")
+    if str(link.get("payment_form") or "").strip():
+        facts.append(f"Форма оплаты: {link.get('payment_form')}")
+    if str(link.get("delivery") or "").strip():
+        facts.append(f"Доставка: {link.get('delivery')}")
+    composition = str(link.get("product") or link.get("order_subject") or "").strip()
+    if composition:
+        facts.append(f"Состав: {composition}")
+    if str(link.get("end_customer") or "").strip():
+        facts.append(f"Конечный заказчик: {link.get('end_customer')}")
+    if str(link.get("valid_until") or "").strip():
+        facts.append(f"Срок действия ТКП: {link.get('valid_until')}")
+    number = str(link.get("order_number") or "").strip()
+    if number:
+        dated = f" от {link.get('order_date')}" if str(link.get("order_date") or "").strip() else ""
+        facts.append(f"Заказ клиента: {number}{dated}")
+    tkp = str(link.get("tkp_number") or "").strip()
+    if tkp:
+        facts.append(f"ТКП: {tkp}")
+    contract = " ".join(
+        part for part in (str(link.get("contract_number") or "").strip(), str(link.get("contract") or "").strip()) if part
+    )
+    if contract:
+        facts.append(f"Договор: {contract}")
+    if str(link.get("paid") or "").strip() or order.payment_percent:
+        facts.append(
+            f"Оплата: {link.get('paid') or '0'} из {link.get('amount') or '0'}, {order.payment_percent}%"
+        )
+    if str(link.get("deal_start") or "").strip() or str(link.get("deal_finish") or "").strip():
+        facts.append(f"Срок сделки: {link.get('deal_start') or '—'} — {link.get('deal_finish') or '—'}")
+    comment = str(link.get("comment") or "").strip()
+    if comment:
+        facts.append(f"Комментарий 1С: {comment}")
+    path = _path_label(order)
+    if path:
+        facts.append(f"Путь 1С: {path}")
+    if list(order.lines):
+        shown = "; ".join(
+            f"{line.name} ({line.qty})" if line.qty else line.name for line in list(order.lines)[:8]
+        )
+        facts.append(f"Состав: {shown}")
+    for line in survey_sheet_lines(order):
+        facts.append(f"Опросный лист: {line}")
+    return facts[:40]
+
+
+def _covered_by_known(key: str, facts: list[str]) -> bool:
+    tokens = _KNOWN_TOKENS.get(key)
+    if not tokens:
+        return False
+    blob = " ".join(facts).casefold().replace("ё", "е")
+    return any(token in blob for token in tokens)
+
+
 def build_role_questions(order: ExternalOrder) -> dict[str, list[dict]]:
     sections = _load(order.sections_json)
+    facts = known_facts(order)
     result: dict[str, list[dict]] = {role_id: [] for role_id in ROLES}
     for role_id, specs in ROLE_FIELDS_SPEC.items():
         for spec in specs:
             sec = spec["section"]
             key = spec["key"]
             cur = str((sections.get(sec) or {}).get(key) or "").strip()
-            if cur:
+            if cur or _covered_by_known(key, facts):
                 continue
             result.setdefault(role_id, []).append(
                 {
@@ -1389,7 +1477,7 @@ def build_role_questions(order: ExternalOrder) -> dict[str, list[dict]]:
             }
         )
     for gap in order.gaps:
-        if gap.status != "open":
+        if gap.status != "open" or _covered_by_known(str(gap.field or ""), facts):
             continue
         owner = gap.owner_role or "ks"
         label = _FIELD_LABELS.get(gap.field, gap.field)
@@ -1497,6 +1585,7 @@ def _detail(order: ExternalOrder) -> dict:
             "sections": _load(order.sections_json),
             "ai_fields": _ai_fields(order),
             "project_note": "Публикация плана в TurboProject не подключена",
+            "known": known_facts(order),
             "stage_passports": build_stage_passports(order),
             "role_questions": build_role_questions(order),
             "checks": [
@@ -2581,6 +2670,52 @@ def _can_write_section(role: str, section: str, values: dict) -> bool:
         return False
 
 
+_SURVEY_DRAFTS = (
+    ("ндс", "commercial", "vat", "ks"),
+    ("цена", "commercial", "price", "ks"),
+    ("сумма", "commercial", "price", "ks"),
+    ("валют", "commercial", "currency", "ks"),
+    ("скидк", "commercial", "discount", "ks"),
+    ("срок", "project", "plan_note", "rp"),
+    ("оплат", "finance", "schedule", "finance"),
+    ("гаранти", "contract", "warranty", "legal"),
+    ("санкц", "contract", "sanctions", "legal"),
+    ("состав", "technical", "composition", "kb"),
+)
+
+
+def _draft_survey_sheet(db: Session, row: ExternalOrder, sections: dict) -> None:
+    """Черновик пустого поля из опросного листа. Уже записанный черновик 1С не затирает."""
+    from app.services.external_order_case import survey_sheet_lines
+
+    taken = {item.field for item in row.findings if item.status == "draft"}
+    for line in survey_sheet_lines(row):
+        label, _, value = line.partition(":")
+        value = value.strip()
+        folded = label.casefold().replace("ё", "е")
+        if not value:
+            continue
+        for token, sec, key, owner in _SURVEY_DRAFTS:
+            if token not in folded:
+                continue
+            field = f"section:{sec}.{key}"
+            current = sections.get(sec) if isinstance(sections.get(sec), dict) else {}
+            if field in taken or str((current or {}).get(key) or "").strip():
+                break
+            _upsert_draft_finding(
+                db,
+                row,
+                field=field,
+                value=value,
+                source_ref="Опросный лист",
+                location=label.strip()[:200],
+                owner_role=owner,
+                proposed_by="опросный лист",
+            )
+            taken.add(field)
+            break
+
+
 def auto_prepare_order(
     db: Session,
     row: ExternalOrder,
@@ -2606,6 +2741,7 @@ def auto_prepare_order(
             traced = trace_tkp(tkp_key) if tkp_key else _trace_or_order(ref_key, read_order, tkp_key_for_order, trace_tkp)
             if isinstance(traced, dict) and traced:
                 _apply_onec(row, traced)
+                _remember_tkp_terms(row, traced=True)
                 onec = _onec_link(row)
                 log.append(f"Обновлена цепочка 1С: {_path_label(row) or _payment_note(row)}")
         except Exception:  # noqa: BLE001
@@ -2637,15 +2773,41 @@ def auto_prepare_order(
         log.append(f"Предложена цена из 1С ({onec['amount']} руб.)")
 
     if not str(comm.get("currency") or "").strip():
+        currency = str(onec.get("currency") or "").strip()
         _upsert_draft_finding(
             db,
             row,
             field="section:commercial.currency",
-            value="RUB",
-            source_ref=f"Карточка {row.code}",
-            location="валюта расчётов по умолчанию",
+            value=currency or "RUB",
+            source_ref="1С ТКП" if currency else f"Карточка {row.code}",
+            location="валюта ТКП" if currency else "валюта расчётов по умолчанию",
             owner_role="ks",
-            proposed_by="авто-проверка",
+            proposed_by="авто-проверка 1С" if currency else "авто-проверка",
+        )
+
+    if str(onec.get("vat") or "").strip() and not str(comm.get("vat") or "").strip():
+        _upsert_draft_finding(
+            db,
+            row,
+            field="section:commercial.vat",
+            value=str(onec.get("vat")),
+            source_ref=f"1С ТКП {onec.get('tkp_number') or ''}".strip(),
+            location="НалогообложениеНДС",
+            owner_role="ks",
+            proposed_by="авто-проверка 1С",
+        )
+        log.append(f"НДС взят из ТКП: {onec.get('vat')}")
+
+    if str(onec.get("delivery_days") or "").strip() and not str(proj.get("plan_note") or "").strip():
+        _upsert_draft_finding(
+            db,
+            row,
+            field="section:project.plan_note",
+            value=f"Срок поставки: {onec.get('delivery_days')}",
+            source_ref=f"1С ТКП {onec.get('tkp_number') or ''}".strip(),
+            location="СрокПоставки",
+            owner_role="rp",
+            proposed_by="авто-проверка 1С",
         )
 
     if (onec.get("paid") or onec.get("amount")) and not str(fin.get("schedule") or "").strip():
@@ -2719,6 +2881,8 @@ def auto_prepare_order(
                 owner_role="kb",
                 proposed_by="авто-проверка",
             )
+
+    _draft_survey_sheet(db, row, sections)
 
     # 3. Авто-предложения доказательств по открытым пунктам чек-листа
     tz_docs = [doc for doc in row.documents if doc.kind == "tz"]
@@ -3051,6 +3215,67 @@ def run_copilot(
     }
 
 
+def _facts_text(known: list) -> str:
+    lines = [str(item).strip() for item in known if str(item).strip()]
+    lines = [item if len(item) <= 220 else item[:220] + "…" for item in lines[:30]]
+    text = "; ".join(lines)
+    if len(text) > 2500:
+        text = text[:2500] + "…"
+    return text
+
+
+def _agent_prepare_payload(res: dict) -> dict:
+    """Короткий ответ инструмента: факты 1С остаются в тексте, даже если полный JSON уходит в файл."""
+    order = res.get("order") or {}
+    known = [str(item).strip() for item in (order.get("known") or []) if str(item).strip()]
+    known = [item if len(item) <= 220 else item[:220] + "…" for item in known[:30]]
+    facts = _facts_text(known)
+    passport = res.get("stage_passport") or {}
+    questions = [
+        {"id": item.get("id"), "prompt": str(item.get("prompt") or "")[:180]}
+        for item in (res.get("questions") or [])[:6]
+        if isinstance(item, dict) and str(item.get("prompt") or "").strip()
+    ]
+    proposals = [
+        {
+            "field": item.get("field"),
+            "label": item.get("label"),
+            "value": str(item.get("value") or "")[:160],
+            "owner_role": item.get("owner_role"),
+        }
+        for item in (res.get("proposals") or [])[:8]
+        if isinstance(item, dict)
+    ]
+    if facts:
+        note = (
+            "Поле known — путь 1С и опросный лист. Ответь по нему. "
+            "Чего нет в known — в 1С этого нет, не выдумывай и не спрашивай то, что уже написано."
+        )
+    else:
+        facts = "пусто: 1С и опросный лист ничего не вернули"
+        note = "Поле known пустое: 1С и опросный лист ничего не вернули. Так и напиши, не выдумывай НДС, цену и срок."
+    return {
+        "ok": True,
+        "id": order.get("id"),
+        "code": order.get("code"),
+        "customer": order.get("customer"),
+        "product": order.get("product"),
+        "status_label": order.get("status_label"),
+        "summary": str(res.get("summary") or ""),
+        "known": known,
+        "facts": facts,
+        "questions": questions,
+        "proposals": proposals,
+        "stage": {
+            "label": passport.get("label"),
+            "checks_done": passport.get("checks_done"),
+            "checks_total": passport.get("checks_total"),
+            "blocker": str(passport.get("blocker") or "")[:180],
+        },
+        "note": note + " Черновик принимает сотрудник кнопкой «Принять».",
+    }
+
+
 def invoke_tool(arguments: dict, *, fio: str) -> dict:
     from app.db.session import SessionLocal
 
@@ -3079,22 +3304,7 @@ def invoke_tool(arguments: dict, *, fio: str) -> dict:
                 auto_prepare=True,
             )
             order_data = res["order"]
-            return {
-                "ok": True,
-                "id": order_data.get("id"),
-                "code": order_data.get("code"),
-                "customer": order_data.get("customer"),
-                "product": order_data.get("product"),
-                "status": order_data.get("status"),
-                "status_label": order_data.get("status_label"),
-                "stage_passport": res["stage_passport"],
-                "proposals": res["proposals"][:15],
-                "questions": res["questions"][:10],
-                "blocks": order_data.get("blocks") or [],
-                "summary": res["summary"],
-                "log": res["log"],
-                "note": "Черновики подготовлены. Сотрудник принимает их в карточке заказа.",
-            }
+            return _agent_prepare_payload(res)
         if action == "propose":
             return propose(
                 db,
@@ -3209,6 +3419,7 @@ def import_tkp_order(db: Session, *, role: str, fio: str, ref_key: str) -> dict:
     )
     row = _order(db, created["id"])
     _apply_onec(row, traced)
+    _remember_tkp_terms(row, traced=True)
     _audit(
         db,
         row,
@@ -3267,11 +3478,64 @@ def search_onec(query: str = "", counterparty_key: str = "") -> dict:
         raise ExternalOrderError(exc.detail, exc.status) from exc
 
 
+_TKP_TERM_FIELDS = (
+    "vat",
+    "currency",
+    "delivery_days",
+    "payment_form",
+    "delivery",
+    "valid_until",
+    "product",
+    "end_customer",
+    "order_subject",
+)
+
+
+def _remember_tkp_terms(row: ExternalOrder, *, traced: bool = False) -> None:
+    """Добирает условия ТКП только если путь их ещё не принёс. Повторное чтение карточки не запускает."""
+    from app.services.external_order_onec import tkp_card
+
+    link = _onec_link(row)
+    if any(str(link.get(field) or "").strip() for field in ("vat", "currency", "delivery_days", "payment_form", "product")):
+        return
+    if traced:
+        return
+    key = str(link.get("tkp_key") or "").strip()
+    if not key:
+        return
+    try:
+        card = tkp_card(key)
+    except Exception:  # noqa: BLE001
+        return
+    if not card:
+        return
+    sections = _load(row.sections_json)
+    onec = dict(sections.get("onec") or {})
+    changed = False
+    for field in _TKP_TERM_FIELDS:
+        value = str(card.get(field) or "").strip()
+        if value and not str(onec.get(field) or "").strip():
+            onec[field] = value
+            changed = True
+    if not changed:
+        return
+    sections["onec"] = onec
+    row.sections_json = _dump(sections)
+
+
 def _apply_onec(row: ExternalOrder, link: dict[str, str]) -> None:
     sections = _load(row.sections_json)
     previous = sections.get("onec") if isinstance(sections.get("onec"), dict) else {}
     flat = {key: str(value or "") for key, value in link.items() if key not in {"suggested_stage", "suggested_status"}}
-    for key in ("path", "tkp_key", "tkp_number", "tkp_status", "tkp_status_label", "contract_number"):
+    for key in (
+        "path",
+        "tkp_key",
+        "tkp_number",
+        "tkp_status",
+        "tkp_status_label",
+        "contract_number",
+        *_TKP_TERM_FIELDS,
+    ):
         if not flat.get(key) and previous.get(key):
             flat[key] = str(previous.get(key) or "")
     sections["onec"] = flat
@@ -3305,6 +3569,7 @@ def link_onec(db: Session, order_id: str, *, role: str, fio: str, ref_key: str) 
         raise ExternalOrderError(exc.detail, exc.status) from exc
     row = _order(db, order_id)
     _apply_onec(row, traced)
+    _remember_tkp_terms(row, traced=True)
     _audit(
         db,
         row,
@@ -3340,6 +3605,7 @@ def refresh_onec(db: Session, order_id: str, *, role: str, fio: str) -> dict:
         raise ExternalOrderError(exc.detail, exc.status) from exc
     row = _order(db, order_id)
     _apply_onec(row, traced)
+    _remember_tkp_terms(row, traced=True)
     _audit(db, row, fio=fio, role=role, action="onec_refresh", detail=_path_label(row) or f"{traced.get('payment_percent')}%")
     db.commit()
     db.refresh(row)
@@ -3482,12 +3748,19 @@ def _case_summary(body: dict) -> str:
     path = str(body.get("path_label") or "в 1С не разложен")
     if len(path) > 400:
         path = path[:400] + "…"
+    known = [str(item).strip() for item in (body.get("known") or []) if str(item).strip()]
+    known_text = ""
+    if known:
+        shown = "; ".join(known)
+        if len(shown) > 900:
+            shown = shown[:900] + "…"
+        known_text = f" Уже известно, не спрашивать: {shown}."
     return (
         f"Заказ {body.get('code')} ({body.get('customer')}, {body.get('product')}). "
         f"Стадия «{body.get('status_label')}». {body.get('payment_note')}. "
         f"Путь: {path}. "
         f"Следующий переход «{nxt_label}» делает: {who}. "
-        f"{body.get('project_note')}. Черновик фактом не является."
+        f"{body.get('project_note')}.{known_text} Черновик фактом не является."
     )
 
 
@@ -3572,6 +3845,8 @@ def read_case(db: Session, order_id: str, *, role: str = "", step_id: str = "") 
         "payment_note": body.get("payment_note"),
         "path_label": body.get("path_label"),
         "project_note": body.get("project_note"),
+        "known": body.get("known") or [],
+        "facts": _facts_text(body.get("known") or []),
         "blocks": body.get("blocks") or [],
         "owners": body.get("owners") or {},
         "sections": body.get("sections") or {},
@@ -3591,8 +3866,9 @@ def read_case(db: Session, order_id: str, *, role: str = "", step_id: str = "") 
         "open_by_service": _open_by_service(body),
         "summary": _case_summary(body),
         "agent_limits": (
-            "Ответь по summary и по своей строке в open_by_service. result_file не открывай. "
-        "Не утверждай цену, договор, бюджет, риск и стадию. "
+            "Ответь по summary, known и своей строке в open_by_service. result_file не открывай. "
+            "known — путь 1С и опросный лист. По этим фактам вопрос не задавай. "
+            "Не утверждай цену, договор, бюджет, риск и стадию. "
             "Не придумывай документы, которых нет в пути. Черновик фактом не является."
         ),
     }
@@ -3632,6 +3908,8 @@ def read_full_case(db: Session, order_id: str, *, role: str = "", step_id: str =
         "payment_percent": body.get("payment_percent"),
         "payment_note": body.get("payment_note"),
         "path_label": body.get("path_label"),
+        "known": body.get("known") or [],
+        "facts": _facts_text(body.get("known") or []),
         "blocks": body.get("blocks") or [],
         "owners": body.get("owners") or {},
         "sections": body.get("sections") or {},

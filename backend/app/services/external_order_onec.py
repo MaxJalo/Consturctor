@@ -866,6 +866,43 @@ def recent_sale_orders_page(
     return page
 
 
+def _terms_of_document(
+    row: dict,
+    order: dict | None = None,
+    *,
+    currency: str = "",
+    end_customer: str = "",
+) -> dict[str, str]:
+    """Условия, которые уже лежат на прочитанном ТКП. Отдельный запрос карточки не нужен."""
+    delivery_days = str(row.get("СрокПоставки") or "").strip()
+    if delivery_days in {"", "0", "0.0"}:
+        delivery_days = ""
+    else:
+        delivery_days = delivery_days.split(".", 1)[0] + " дн."
+    names: list[str] = []
+    lines = [line for line in (row.get("Товары") or []) if isinstance(line, dict)]
+    for line in lines:
+        if line.get("CRM_ЭтоРазделитель"):
+            continue
+        text = _plain(line.get("ТекстовоеОписание") or line.get("КомментарийДляПокупателя"), 120)
+        if text and text not in names:
+            names.append(text)
+        if len(names) == 3:
+            break
+    subject = _plain((order or {}).get("Комментарий"), 180)
+    return {
+        "vat": _enum_label(str(row.get("НалогообложениеНДС") or "")),
+        "currency": (currency or "").strip(),
+        "delivery_days": delivery_days,
+        "payment_form": _enum_label(str(row.get("ФормаОплаты") or "")),
+        "delivery": _enum_label(str(row.get("СпособДоставки") or "")),
+        "valid_until": _stamp(str(row.get("СрокДействия") or "")),
+        "product": "; ".join(names),
+        "end_customer": (end_customer or "").strip(),
+        "order_subject": subject,
+    }
+
+
 def trace_tkp(ref_key: str) -> dict[str, str]:
     """Путь одного ТКП: предложение, заказ клиента, договор, производство, отгрузка, оплата."""
     client = _client()
@@ -910,6 +947,19 @@ def trace_tkp(ref_key: str) -> dict[str, str]:
     )
     stage, status = _stage_for(steps, tkp_status=tkp_status, percent=percent)
     comment = str(row.get("Комментарий") or "").strip().splitlines()
+    currency_key = _optional_guid(str(row.get("Валюта_Key") or ""))
+    end_key = _optional_guid(str(row.get("КонтрагентКонечныйЗаказчик_Key") or ""))
+    currency = ""
+    end_customer = ""
+    try:
+        if currency_key:
+            currency = _titles(client, _CURRENCY, {currency_key}).get(currency_key, "")
+        if end_key:
+            end_customer = _titles(client, _CONTRACTOR, {end_key}).get(end_key, "")
+    except OnecLinkError:
+        currency = currency or ""
+        end_customer = end_customer or ""
+    terms = _terms_of_document(row, order, currency=currency, end_customer=end_customer)
     return {
         "tkp_key": key,
         "tkp_number": str(row.get("Number") or "").strip(),
@@ -940,6 +990,7 @@ def trace_tkp(ref_key: str) -> dict[str, str]:
         "path": json.dumps(steps, ensure_ascii=False),
         "suggested_stage": stage,
         "suggested_status": status,
+        **terms,
     }
 
 

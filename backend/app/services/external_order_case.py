@@ -598,6 +598,94 @@ def _xlsx_rows(raw: bytes) -> list[tuple[str, str, str]]:
     return rows
 
 
+def _is_survey_sheet(doc: ExternalOrderDocument) -> bool:
+    blob = f"{doc.title} {doc.file_name}".casefold().replace("ё", "е")
+    return "опрос" in blob
+
+
+def _col_index(ref: str) -> int:
+    letters = "".join(ch for ch in ref if ch.isalpha())
+    if not letters:
+        return -1
+    index = 0
+    for ch in letters:
+        index = index * 26 + ord(ch.upper()) - 64
+    return index - 1
+
+
+def _cell_text(cell: ET.Element, shared: list[str]) -> str:
+    kind = cell.attrib.get("t")
+    if kind == "inlineStr":
+        return "".join(node.text or "" for node in cell.iter(f"{_X}t")).strip()
+    value = cell.find(f"{_X}v")
+    text = value.text if value is not None and value.text else ""
+    if kind == "s" and text.isdigit():
+        index = int(text)
+        text = shared[index] if index < len(shared) else ""
+    return text.strip()
+
+
+def _sheet_grid(raw: bytes) -> list[list[str]]:
+    try:
+        with zipfile.ZipFile(io.BytesIO(raw)) as package:
+            shared = _shared_strings(package)
+            names = sorted(
+                name
+                for name in package.namelist()
+                if name.startswith("xl/worksheets/sheet") and name.endswith(".xml")
+            )
+            sheets = [package.read(name) for name in names] or [package.read("xl/worksheets/sheet1.xml")]
+    except (KeyError, zipfile.BadZipFile):
+        return []
+    grid: list[list[str]] = []
+    for sheet in sheets:
+        root = ET.fromstring(sheet)
+        for row in root.iter(f"{_X}row"):
+            placed: dict[int, str] = {}
+            seq = 0
+            for cell in row.findall(f"{_X}c"):
+                text = _cell_text(cell, shared)
+                index = _col_index(str(cell.attrib.get("r") or ""))
+                if index < 0:
+                    index = seq
+                placed[index] = text
+                seq = index + 1
+            if not any(placed.values()):
+                continue
+            width = max(placed) + 1
+            grid.append([placed.get(i, "") for i in range(width)])
+    return grid
+
+
+def survey_sheet_lines(order: ExternalOrder) -> list[str]:
+    """Строки опросного листа из файлов дела. Путь 1С сюда не входит."""
+    lines: list[str] = []
+    for doc in order.documents:
+        if not _is_survey_sheet(doc):
+            continue
+        path = Path(doc.stored_path) if doc.stored_path else None
+        if path is None or not path.is_file():
+            continue
+        try:
+            raw = path.read_bytes()
+        except OSError:
+            continue
+        suffix = path.suffix.casefold()
+        if suffix == ".docx":
+            lines.extend(line[:240] for line in _docx_paragraphs(raw) if line.strip())
+        elif suffix == ".xlsx":
+            for cells in _sheet_grid(raw):
+                filled = [item for item in cells if item]
+                left = filled[0] if filled else ""
+                right = filled[1] if len(filled) > 1 else ""
+                if not left or left.casefold() in {"поле", "параметр", "наименование", "показатель"}:
+                    continue
+                lines.append(f"{left}: {right}".strip().rstrip(":")[:240] if right else left[:240])
+        if len(lines) >= 30:
+            break
+    return lines[:30]
+
+
 def _shared_strings(package: zipfile.ZipFile) -> list[str]:
     if "xl/sharedStrings.xml" not in package.namelist():
         return []

@@ -105,18 +105,38 @@ _TKP_SKIP = {"key", "has_order"}
 
 
 def _tkp_terms(case: dict) -> dict[str, str]:
-    """Условия ТКП из 1С: валюта, НДС, оплата, доставка, сроки. Без 1С — пусто."""
+    """Условия ТКП. Сначала то, что путь уже записал в карточку, без повторного чтения 1С."""
     from app.services.external_order_onec import tkp_card
 
-    key = str(((case.get("sections") or {}).get("onec") or {}).get("tkp_key") or "").strip()
+    onec = (case.get("sections") or {}).get("onec") or {}
+    stored = {
+        key: str(onec.get(key) or "").strip()
+        for key in (
+            "vat",
+            "currency",
+            "delivery_days",
+            "payment_form",
+            "delivery",
+            "valid_until",
+            "product",
+            "end_customer",
+            "order_subject",
+            "amount",
+            "comment",
+        )
+        if str(onec.get(key) or "").strip()
+    }
+    if stored.get("vat") or stored.get("currency") or stored.get("delivery_days") or stored.get("payment_form"):
+        return stored
+    key = str(onec.get("tkp_key") or "").strip()
     if not key:
-        return {}
+        return stored
     try:
         card = tkp_card(key)
     except Exception as exc:  # noqa: BLE001 — без 1С ИИ работает по делу
 
         logger.info("external order AI: ТКП из 1С не прочитано: %s", exc)
-        return {}
+        return stored
     return {k: str(v) for k, v in card.items() if k not in _TKP_SKIP and str(v or "").strip()}
 
 
@@ -139,6 +159,7 @@ def case_payload(
             "payment": case.get("payment_note"),
             "path_1c": case.get("path_label"),
             "owners": case.get("owners") or {},
+            "known": case.get("known") or [],
         },
         "onec": {
             key: value
@@ -187,7 +208,8 @@ PROMPT = """Ты — помощник служб по внешнему несе�
    заполненные поля, решения Комитета, ответы сотрудника. Ничего не придумывай: ни цен, ни сроков, ни процентов, ни нормативов.
 2. У каждого значения обязателен источник ("source": документ и версия, «1С заказ …», «Спецификация», «Ответ сотрудника»)
    и дословная цитата из источника ("quote", до 300 символов).
-3. Если для поля в деле нет данных — не заполняй его, а задай вопрос в "questions".
+3. Если ответ уже есть в onec, tkp_1c, known или опросном листе — запиши черновик и не задавай вопрос.
+   Вопрос в "questions" только для поля, которого нет ни в одном из этих источников.
 4. Вопрос конкретный, по одному полю. "why" — зачем это поле нужно на этапе (одно предложение).
    "suggestion" — лучшая догадка из дела, если она есть, иначе пустая строка; "suggestion_source" — откуда догадка.
 5. Если в "employee_answers" есть ответы, проверь каждый: противоречит ли он делу, полный ли он.
@@ -287,9 +309,15 @@ def apply_ai_result(
             finding.proposed_by = AI_PROPOSER
             finding.confidence = "ai:medium"
             evidences += 1
+    from app.services.external_orders import _covered_by_known, known_facts
+
+    facts = known_facts(row)
     hints: dict[str, dict[str, str]] = {}
     for item in data.get("questions") or []:
         field = _clean(item.get("field"), 128)
+        key = field.rsplit(".", 1)[-1] if field.startswith("section:") else ""
+        if key and _covered_by_known(key, facts):
+            continue
         known = (
             field in empty
             or (field.startswith("check:") and field[6:] in open_checks)

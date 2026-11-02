@@ -1122,7 +1122,13 @@ class CursorSdkBridge:
         target.write_text(raw, encoding="utf-8")
         rel_path = target.relative_to(base).as_posix()
         next_step = EXTERNALIZED_NEXT_STEP
-        if journal_extract:
+        if tool == "external_order.case":
+            next_step = (
+                "Факты 1С и опросного листа уже в summary.known и summary.facts. "
+                "result_file не открывай. По этим фактам вопрос не задавай. "
+                "Если known пустой — так и скажи, не выдумывай цену, НДС и срок."
+            )
+        elif journal_extract:
             next_step = (
                 "Не читай result_file и не открывай tool_results. "
                 "После обеих выборок один раз вызови excel.write_action_tracker "
@@ -1159,7 +1165,25 @@ class CursorSdkBridge:
                 summary[key] = value
             elif isinstance(value, str):
                 # Ready-made tables the agent must paste verbatim stay whole.
-                summary[key] = value[:12_000] if key.endswith("_markdown") else value[:500]
+                if key in {"known", "facts"}:
+                    summary[key] = value[:2500]
+                elif key.endswith("_markdown"):
+                    summary[key] = value[:12_000]
+                else:
+                    summary[key] = value[:500]
+            elif isinstance(value, list) and key == "known":
+                text = "; ".join(str(item).strip() for item in value if str(item).strip())
+                summary["known"] = text[:2500]
+                summary["known_count"] = len(value)
+            elif isinstance(value, list) and key == "questions":
+                prompts = []
+                for item in value[:8]:
+                    if isinstance(item, dict):
+                        prompts.append(str(item.get("prompt") or item.get("question") or "")[:160])
+                    else:
+                        prompts.append(str(item)[:160])
+                summary["questions"] = [item for item in prompts if item]
+                summary["questions_count"] = len(value)
             elif isinstance(value, list):
                 summary[f"{key}_count"] = len(value)
             elif isinstance(value, dict):

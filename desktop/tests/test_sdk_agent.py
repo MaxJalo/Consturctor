@@ -751,6 +751,28 @@ def test_bridge_externalizes_long_list_even_when_items_tiny(tmp_path: Path) -> N
     assert (tmp_path / compact["result_file"]).is_file()
 
 
+def test_bridge_keeps_order_facts_when_result_is_externalized(tmp_path: Path) -> None:
+    bridge = CursorSdkBridge(runner=tmp_path / "runner.ts")
+    result = {
+        "summary": "Заказ ВЗ-0019",
+        "facts": "НДС: Продажа облагается НДС; Сумма 1С: 400530.00",
+        "known": ["НДС: Продажа облагается НДС", "Сумма 1С: 400530.00"],
+        "questions": [{"id": "section:commercial.discount", "prompt": "Какая скидка?"}],
+        "blob": "x" * 8000,
+    }
+    compact = bridge._externalize_large_result(
+        tool="external_order.case",
+        request_id="req-order",
+        result=result,
+        cwd=str(tmp_path),
+    )
+    assert compact["externalized"] is True
+    assert "result_file" in compact["next_step"] or "не открывай" in compact["next_step"]
+    assert "НДС: Продажа облагается НДС" in compact["summary"]["known"]
+    assert "НДС: Продажа облагается НДС" in compact["summary"]["facts"]
+    assert compact["summary"]["questions"] == ["Какая скидка?"]
+
+
 def test_bridge_keeps_tiny_scalar_result_inline(tmp_path: Path) -> None:
     bridge = CursorSdkBridge(runner=tmp_path / "runner.ts")
     result = {"ok": True, "employee": "Ivanov I.I."}

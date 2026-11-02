@@ -691,7 +691,7 @@ export function buildStagePassports(order: ExternalOrder): StagePassport[] {
  */
 export function buildRoleQuestions(order: ExternalOrder, role: string): CopilotQuestion[] {
   const fromRoleMap = order.role_questions?.[role]
-  if (Array.isArray(fromRoleMap) && fromRoleMap.length > 0) return fromRoleMap
+  if (Array.isArray(fromRoleMap)) return fromRoleMap
   if (Array.isArray(order.questions) && order.questions.length > 0) {
     const filtered = order.questions.filter((q) => !q.owner_role || q.owner_role === role)
     if (filtered.length > 0) return filtered

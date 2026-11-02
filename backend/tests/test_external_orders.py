@@ -1357,3 +1357,174 @@ def test_invoke_tool_read_full_auto_prepare_propose_and_draft_1c(monkeypatch, tm
     assert directive_finding["prefill"]["due_date"] == "2026-11-15"
     assert directive_finding["prefill"]["customer"] == "Заказчик"
 
+
+def test_known_path_and_survey_are_not_asked_again(tmp_path):
+    from openpyxl import Workbook
+
+    db = _db()
+    created = _create(db)
+    row = db.get(ExternalOrder, created["id"])
+    row.sections_json = json.dumps(
+        {
+            "onec": {
+                "amount": "400530.00",
+                "paid": "0",
+                "vat": "Продажа облагается НДС",
+                "currency": "руб.",
+                "delivery_days": "45 дн.",
+                "order_number": "НП00-004243",
+                "tkp_number": "НП00-004243",
+                "contract_number": "3229926",
+                "deal_start": "2026-11-01",
+                "deal_finish": "2027-02-01",
+                "path": json.dumps(
+                    [{"title": "ТКП", "detail": "НП00-004243 выпущено", "state": "done"}],
+                    ensure_ascii=False,
+                ),
+            }
+        },
+        ensure_ascii=False,
+    )
+    book = Workbook()
+    sheet = book.active
+    sheet["A1"] = "Параметр"
+    sheet["C1"] = "Значение"
+    sheet["A2"] = "НДС"
+    sheet["C2"] = "20%, в том числе"
+    path = tmp_path / "Лист опроса.xlsx"
+    book.save(path)
+    db.add(
+        ExternalOrderDocument(
+            id="survey-1",
+            order_id=row.id,
+            kind="other",
+            title="Лист опроса",
+            file_name="Лист опроса.xlsx",
+            stored_path=str(path),
+        )
+    )
+    db.commit()
+    db.refresh(row)
+    body = read_case(db, row.id, role="ks")
+    known = " ".join(body["known"])
+    assert "Сумма 1С: 400530.00" in known
+    assert "НДС: Продажа облагается НДС" in known
+    assert "Валюта: руб." in known
+    assert "Срок поставки: 45 дн." in known
+    assert "Опросный лист: НДС: 20%, в том числе" in known
+    assert "Уже известно, не спрашивать" in body["summary"]
+    assert "НДС: Продажа облагается НДС" in body["summary"]
+    prompts = [item["id"] for item in body["questions"]]
+    assert "section:commercial.price" not in prompts
+    assert "section:commercial.vat" not in prompts
+    assert "section:commercial.currency" not in prompts
+    assert "section:project.plan_note" not in prompts
+    assert "section:commercial.discount" in prompts
+
+
+def test_tkp_card_terms_are_remembered(monkeypatch):
+    from app.services.external_orders import _remember_tkp_terms, known_facts
+
+    db = _db()
+    created = _create(db)
+    row = db.get(ExternalOrder, created["id"])
+    row.sections_json = json.dumps(
+        {"onec": {"tkp_key": "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee", "tkp_number": "НП00-1"}},
+        ensure_ascii=False,
+    )
+    db.commit()
+    monkeypatch.setattr(
+        "app.services.external_order_onec.tkp_card",
+        lambda key: {
+            "vat": "Продажа облагается НДС",
+            "currency": "руб.",
+            "delivery_days": "45 дн.",
+            "payment_form": "Предоплата 50%",
+            "product": "Расходомер",
+        },
+    )
+    _remember_tkp_terms(row)
+    facts = " ".join(known_facts(row))
+    assert "НДС: Продажа облагается НДС" in facts
+    assert "Валюта: руб." in facts
+    assert "Срок поставки: 45 дн." in facts
+    assert "Форма оплаты: Предоплата 50%" in facts
+    assert "Состав: Расходомер" in facts
+
+
+def test_trace_terms_come_from_the_document_already_read():
+    from app.services.external_order_onec import _terms_of_document
+
+    terms = _terms_of_document(
+        {
+            "НалогообложениеНДС": "ПродажаОблагаетсяНДС",
+            "ФормаОплаты": "Безналичная",
+            "СпособДоставки": "Самовывоз",
+            "СрокПоставки": "45",
+            "СрокДействия": "2026-12-01T00:00:00",
+            "Товары": [{"ТекстовоеОписание": "Расходомер"}],
+        },
+        {"Комментарий": "для метро"},
+        currency="руб.",
+    )
+    assert terms["vat"] == "Продажа облагается НДС"
+    assert terms["currency"] == "руб."
+    assert terms["delivery_days"] == "45 дн."
+    assert terms["payment_form"] == "Безналичная"
+    assert terms["delivery"] == "Самовывоз"
+    assert terms["product"] == "Расходомер"
+    assert terms["valid_until"] == "01.12.2026"
+
+
+def test_second_tkp_read_is_skipped_after_trace(monkeypatch):
+    from app.services.external_orders import _remember_tkp_terms
+
+    db = _db()
+    created = _create(db)
+    row = db.get(ExternalOrder, created["id"])
+    row.sections_json = json.dumps(
+        {"onec": {"tkp_key": "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee", "amount": "10.00"}},
+        ensure_ascii=False,
+    )
+    db.commit()
+
+    def fail_card(_key):
+        raise AssertionError("повторное чтение ТКП")
+
+    monkeypatch.setattr("app.services.external_order_onec.tkp_card", fail_card)
+    _remember_tkp_terms(row, traced=True)
+
+
+def test_agent_prepare_payload_keeps_known_text():
+    from app.services.external_orders import _agent_prepare_payload
+
+    payload = _agent_prepare_payload(
+        {
+            "order": {
+                "id": "1",
+                "code": "ВЗ-1",
+                "customer": "А",
+                "product": "Б",
+                "status_label": "ТКП",
+                "known": ["НДС: 20%", "Сумма 1С: 10"],
+            },
+            "summary": "готово",
+            "questions": [{"id": "section:commercial.discount", "prompt": "Какая скидка?"}],
+            "proposals": [],
+            "stage_passport": {
+                "label": "ТКП",
+                "checks_done": 1,
+                "checks_total": 3,
+                "blocker": "",
+                "open_checks": [{"text": "x" * 500}] * 20,
+            },
+        }
+    )
+    assert "НДС: 20%" in payload["facts"]
+    assert "open_checks" not in json.dumps(payload, ensure_ascii=False)
+    assert len(json.dumps(payload, ensure_ascii=False).encode("utf-8")) < 6000
+    empty = _agent_prepare_payload(
+        {"order": {"known": []}, "summary": "", "questions": [], "proposals": [], "stage_passport": {}}
+    )
+    assert "ничего не вернули" in empty["facts"]
+
