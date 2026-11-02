@@ -23,6 +23,7 @@ from app.services.external_orders import (
     close_gap,
     confirm_check,
     create_order,
+    register_request,
     delete_order_file,
     get_order,
     import_onec_order,
@@ -52,6 +53,16 @@ class OrderCreateIn(BaseModel):
     contact: str = ""
     order_type: str = ""
     priority: str = ""
+
+
+class RegisterFileIn(BaseModel):
+    kind: str = ""
+    filename: str = ""
+    content_base64: str = ""
+
+
+class RegisterRequestIn(BaseModel):
+    files: list[RegisterFileIn] = Field(default_factory=list)
 
 
 class OrderPatchIn(BaseModel):
@@ -183,6 +194,23 @@ def get_orders(
     _ = auth
     items = list_orders(db)
     return {"count": len(items), "orders": items}
+
+
+@router.post("/register")
+def post_register(
+    body: RegisterRequestIn,
+    as_role: str = Query(default=""),
+    auth: AuthContext = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> dict:
+    return _call(
+        lambda: register_request(
+            db,
+            role=_role(auth, as_role, db),
+            fio=auth.fio or "",
+            files=[item.model_dump() for item in body.files],
+        )
+    )
 
 
 @router.post("")

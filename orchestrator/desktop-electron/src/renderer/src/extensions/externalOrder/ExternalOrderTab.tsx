@@ -170,7 +170,8 @@ const FILE_KINDS: { id: string; label: string }[] = [
   { id: 'condition', label: 'Заключение' },
   { id: 'acceptance', label: 'Приёмка' },
   { id: 'protocol', label: 'Протокол' },
-  { id: 'plan', label: 'План работ' }
+  { id: 'plan', label: 'План работ' },
+  { id: 'correspondence', label: 'Переписка' }
 ]
 
 function kindLabel(id: string): string {
@@ -723,6 +724,7 @@ export function ExternalOrderTab({
   const role = meta?.role || asRole
   const showDeskSwitch = Boolean(meta?.can_switch) || sameExternalOrderDesk(user)
   const deskRoles = meta?.roles?.length ? meta.roles : DESK_ROLES
+  const requestFilesRef = useRef<HTMLInputElement | null>(null)
   const canCreate = role === 'ks' || role === 'development'
   const canLoad = role === 'ks' || role === 'development' || role === 'finance' || role === 'it'
   const moves = MOVES[role] || []
@@ -850,7 +852,38 @@ export function ExternalOrderTab({
               <input value={product} placeholder="Продукт" onChange={(event) => setProduct(event.target.value)} />
               <div className="eo-actions">
                 <button className="eo-btn is-primary" type="submit">Создать карточку</button>
+                <button type="button" onClick={() => requestFilesRef.current?.click()}>Загрузить запрос, ТЗ и переписку</button>
               </div>
+              <input
+                ref={requestFilesRef}
+                className="eo-file-input"
+                type="file"
+                multiple
+                accept=".docx,.xlsx,.pdf"
+                onChange={(event) => {
+                  const picked = [...(event.target.files || [])]
+                  event.target.value = ''
+                  if (!picked.length) return
+                  void run(async () => {
+                    const files = await Promise.all(picked.map(async (file) => {
+                      const bytes = new Uint8Array(await file.arrayBuffer())
+                      let binary = ''
+                      bytes.forEach((item) => {
+                        binary += String.fromCharCode(item)
+                      })
+                      const folded = file.name.toLowerCase()
+                      const kind = folded.includes('тз') || folded.includes('tz')
+                        ? 'tz'
+                        : folded.includes('договор')
+                          ? 'contract'
+                          : 'correspondence'
+                      return { kind, filename: file.name, content_base64: btoa(binary) }
+                    }))
+                    const created = await api.registerExternalRequest(files, asRole)
+                    setCurrent(created)
+                  })
+                }}
+              />
             </form>
           ) : null}
           <section className="eo-window eo-window-main">
@@ -919,7 +952,7 @@ export function ExternalOrderTab({
                 <div className="eo-actions">
                   <button className="eo-btn" type="button" onClick={() => void run(() => api.buildExternalPlan(deskOrder.id, asRole))}>Собрать проект плана</button>
                   {role === 'rp' ? <button className="eo-btn" type="button" onClick={() => void run(() => api.approveExternalPlan(deskOrder.id, asRole))}>Утвердить базовый план</button> : null}
-                  {role === 'rp' ? <button className="eo-btn" type="button" onClick={() => void run(() => api.publishExternalPlan(deskOrder.id, asRole))}>Опубликовать</button> : null}
+                  {role === 'rp' ? <button className="eo-btn" type="button" onClick={() => void run(() => api.publishExternalPlan(deskOrder.id, asRole))}>Отправить план в TurboProject</button> : null}
                 </div>
               ) : null}
             </section>
@@ -1758,6 +1791,9 @@ function RoleWork({
                     <small>
                       {mark.source}
                       {mark.quote ? ` · «${mark.quote}»` : ''}
+                      {mark.trace
+                        ? ` · ${mark.trace.document} ${mark.trace.version}, ${mark.trace.clause}. Правило: ${mark.trace.rule}. ${mark.trace.author}`
+                        : ''}
                     </small>
                     <div className="eo-actions">
                       <button
@@ -2723,11 +2759,12 @@ function Card({
                     <button type="button" onClick={() => void onRun(() => api.approveExternalPlan(order.id, asRole))}>Утвердить базовый план</button>
                   ) : null}
                   {role === 'rp' ? (
-                    <button type="button" onClick={() => void onRun(() => api.publishExternalPlan(order.id, asRole))}>Опубликовать без копий</button>
+                    <button type="button" onClick={() => void onRun(() => api.publishExternalPlan(order.id, asRole))}>Отправить план в TurboProject</button>
                   ) : null}
                 </div>
               ) : <span className="eo-status">{(order.tasks || []).length}</span>}
             </div>
+            {order.project_note ? <p className="eo-note">{order.project_note}</p> : null}
             <div className="eo-journal-scroll">
               <table className="eo-journal-table">
                 <thead>
@@ -2739,7 +2776,7 @@ function Card({
                   ) : (order.tasks || []).map((item) => (
                     <tr key={item.id}>
                       <td>{item.title}</td>
-                      <td>{item.critical ? 'критический' : 'обычный'}</td>
+                      <td>{item.critical ? item.source_ref || 'критический' : 'обычный'}</td>
                       <td>{item.depends_on || '—'}</td>
                       <td>
                         <span className={item.approved ? 'eo-status is-ok' : 'eo-status'}>
@@ -2974,7 +3011,11 @@ function Card({
                       <tr key={item.id}>
                         <td>{humanFindingLabel(item)}</td>
                         <td>{formatFindingValue(item)}</td>
-                        <td>{item.source_ref || '—'}</td>
+                        <td>
+                          {item.trace
+                            ? `${item.trace.document} ${item.trace.version}, ${item.trace.clause}. Фрагмент: ${item.trace.fragment}. Правило: ${item.trace.rule}. ${item.trace.author}`
+                            : item.source_ref || '—'}
+                        </td>
                         <td>
                           <span className={item.status === 'accepted' ? 'eo-status is-ok' : 'eo-status'}>
                             {item.status === 'accepted' ? 'принято' : item.status === 'rejected' ? 'отклонено' : 'черновик'}

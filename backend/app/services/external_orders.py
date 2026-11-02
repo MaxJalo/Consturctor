@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import base64
 import json
+from pathlib import Path
 from uuid import uuid4
 
 from sqlalchemy.orm import Session
@@ -665,10 +667,21 @@ def _tkp_block(decisions: list[ExternalOrderDecision]) -> str | None:
     return None
 
 
+def _recorded_mismatch(item: ExternalOrderDiff) -> bool:
+    """Расхождение есть только если сверка уже заполнена и стороны не совпали. Пустая строка B01–B35 — ещё не сверка."""
+    if item.level != "blocking" or item.status == "closed":
+        return False
+    left = str(item.left_value or "").strip()
+    right = str(item.right_value or "").strip()
+    if not left or not right:
+        return False
+    return left.casefold() != right.casefold()
+
+
 def _sign_block(order: ExternalOrder) -> str | None:
     from app.services.external_order_case import open_gate
 
-    if any(item.level == "blocking" and item.status != "closed" for item in order.diffs):
+    if any(_recorded_mismatch(item) for item in order.diffs):
         return "Подписание заблокировано: есть блокирующее расхождение"
     text = open_gate(order, {"before_sign"})
     if text:
@@ -1308,7 +1321,7 @@ def build_stage_passports(order: ExternalOrder) -> list[dict]:
                 or any(chk.status in {"overdue", "blocked"} for chk in applicable)
                 or (
                     spec["id"] == "contract"
-                    and any(d.level == "blocking" and d.status != "closed" for d in order.diffs)
+                    and any(_recorded_mismatch(d) for d in order.diffs)
                 )
             )
             state = "blocked" if (blocker and has_hard_block) else "current"
@@ -1562,6 +1575,7 @@ def _ai_fields(order: ExternalOrder) -> dict[str, dict]:
             continue
         if item.status == "draft" and marks.get(target, {}).get("status") == "accepted":
             continue
+        doc = next((document for document in order.documents if document.id == item.document_id), None)
         marks[target] = {
             "status": item.status,
             "finding_id": item.id,
@@ -1569,8 +1583,34 @@ def _ai_fields(order: ExternalOrder) -> dict[str, dict]:
             "source": item.source_ref,
             "quote": item.location,
             "confidence": item.confidence,
+            "trace": _finding_trace(order, item, doc),
         }
     return marks
+
+
+def _finding_trace(order: ExternalOrder, item: ExternalOrderFinding, doc: ExternalOrderDocument | None = None) -> dict[str, str]:
+    """Документ, версия, пункт, фрагмент, правило и автор подтверждения."""
+    found = doc or next((document for document in order.documents if document.id == item.document_id), None)
+    author = str(item.proposed_by or "").strip()
+    return {
+        "document": found.title if found is not None else str(item.source_ref or ""),
+        "version": found.version if found is not None else "",
+        "clause": str(item.location or ""),
+        "fragment": str(item.value or "")[:400],
+        "rule": str(item.field or ""),
+        "author": author,
+    }
+
+
+def _project_note(order: ExternalOrder) -> str:
+    sections = _load(order.sections_json)
+    queue = sections.get("turbo_queue") if isinstance(sections.get("turbo_queue"), dict) else {}
+    if str(queue.get("status") or "") == "queued":
+        return (
+            f"План в очереди TurboProject, попытка {queue.get('attempts') or 1}. "
+            f"Задачи сохранены в деле. {queue.get('error') or ''}"
+        ).strip()
+    return "Публикация плана в TurboProject не подключена"
 
 
 def _detail(order: ExternalOrder) -> dict:
@@ -1584,7 +1624,7 @@ def _detail(order: ExternalOrder) -> dict:
             "owners": _load(order.owners_json),
             "sections": _load(order.sections_json),
             "ai_fields": _ai_fields(order),
-            "project_note": "Публикация плана в TurboProject не подключена",
+            "project_note": _project_note(order),
             "known": known_facts(order),
             "stage_passports": build_stage_passports(order),
             "role_questions": build_role_questions(order),
@@ -1657,6 +1697,7 @@ def _detail(order: ExternalOrder) -> dict:
                     "owner_role": item.owner_role,
                     "owner_label": ROLES.get(item.owner_role, item.owner_role),
                     "proposed_by": item.proposed_by,
+                    "trace": _finding_trace(order, item),
                     "filled_by": "ai" if is_ai_finding(item.proposed_by, item.confidence) else "",
                     "kind": _finding_kind(item.field),
                     "label": _finding_label(order, item),
@@ -1730,6 +1771,7 @@ def _detail(order: ExternalOrder) -> dict:
                     "critical": item.critical,
                     "approved": item.approved,
                     "published": item.published,
+                    "source_ref": item.source_ref or "",
                 }
                 for item in order.tasks
             ],
@@ -1764,11 +1806,128 @@ def list_orders(db: Session) -> list[dict]:
     return [_brief(row) for row in rows]
 
 
+def _onec_progress_note(order: ExternalOrder) -> str:
+    link = _onec_link(order)
+    parts = []
+    tkp = str(link.get("tkp_number") or "").strip()
+    if tkp:
+        label = str(link.get("tkp_status_label") or "").strip()
+        parts.append(f"ТКП {tkp}" + (f" ({label})" if label else ""))
+    order_number = str(link.get("order_number") or "").strip()
+    if order_number:
+        parts.append(f"заказ клиента {order_number}")
+    contract = str(link.get("contract_number") or "").strip()
+    if contract:
+        parts.append(f"договор {contract}")
+    return ", ".join(parts)
+
+
+def _passed_gates(order: ExternalOrder) -> set[str]:
+    current = _current_stage_index(order)
+    gates: set[str] = set()
+    for index, spec in enumerate(STAGE_PASSPORT_SPECS):
+        if index < current:
+            gates.update(spec["gates"])
+    return gates
+
+
+def _sync_passed_checks(row: ExternalOrder) -> int:
+    """Этап уже позади по пути 1С — его пункты не остаются 0/N. Будущие этапы не закрываются."""
+    note = _onec_progress_note(row)
+    if not note:
+        return 0
+    evidence = f"Путь 1С уже пройден: {note}"
+    gates = _passed_gates(row)
+    changed = 0
+    for item in row.checks:
+        if item.gate not in gates or item.status in {"done", "not_applicable"}:
+            continue
+        item.status = "done"
+        item.evidence = evidence
+        if not str(item.confirmed_by or "").strip():
+            item.confirmed_by = "1С"
+        changed += 1
+    return changed
+
+
 def get_order(db: Session, order_id: str) -> dict:
     from app.services.external_order_case import refresh_overdue
 
     row = _order(db, order_id)
     refresh_overdue(db, row)
+    _sync_passed_checks(row)
+    db.commit()
+    db.refresh(row)
+    return _detail(row)
+
+
+def _line_value(line: str, *tokens: str) -> str:
+    folded = line.casefold().replace("ё", "е")
+    if not any(token in folded for token in tokens) or ":" not in line:
+        return ""
+    return line.split(":", 1)[1].strip()
+
+
+def register_request(db: Session, *, role: str, fio: str, files: list[dict]) -> dict:
+    """АТ-01: файлы запроса, ТЗ и переписки создают карточку, реквизиты и пробелы с источником."""
+    from app.services.external_order_case import _docx_paragraphs, _pdf_lines, add_gap, store_file
+
+    if role not in {"ks", "development"}:
+        raise ExternalOrderError("Запрос регистрирует коммерческая служба или служба развития", 403)
+    batch = [item for item in files if isinstance(item, dict) and str(item.get("content_base64") or "").strip()]
+    if not batch:
+        raise ExternalOrderError("Нужны файлы запроса, ТЗ или переписки", 400)
+    customer = ""
+    product = ""
+    inn = ""
+    for item in batch:
+        name = str(item.get("filename") or "")
+        raw = base64.b64decode(str(item.get("content_base64") or "") or "", validate=False)
+        suffix = Path(name).suffix.casefold()
+        lines = _docx_paragraphs(raw) if suffix == ".docx" else (_pdf_lines(raw) or [])
+        for line in lines:
+            customer = customer or _line_value(line, "заказчик", "контрагент")
+            product = product or _line_value(line, "изделие", "продукт", "предмет")
+            inn = inn or _line_value(line, "инн")
+    missing_customer = not customer
+    missing_product = not product
+    created = create_order(
+        db,
+        role=role,
+        fio=fio,
+        fields={
+            "customer": customer or "Заказчик не извлечён",
+            "product": product or "Продукт не извлечён",
+            "inn": inn,
+        },
+    )
+    row = _order(db, created["id"])
+    first_name = ""
+    for item in batch:
+        filename = str(item.get("filename") or "запрос.docx")
+        first_name = first_name or filename
+        kind = str(item.get("kind") or "").strip()
+        folded = filename.casefold()
+        if kind not in {"tz", "tkp", "contract", "specification", "correspondence", "other"}:
+            if "тз" in folded or folded.startswith("tz"):
+                kind = "tz"
+            elif "договор" in folded:
+                kind = "contract"
+            else:
+                kind = "correspondence"
+        store_file(
+            db,
+            row,
+            role=role,
+            fio=fio,
+            kind=kind,
+            filename=filename,
+            content_b64=str(item.get("content_base64") or ""),
+        )
+    if missing_customer:
+        add_gap(db, row, field="customer", owner_role="ks", detail=f"Источник: {first_name}. Заказчик в тексте не найден")
+    if missing_product:
+        add_gap(db, row, field="product", owner_role="ks", detail=f"Источник: {first_name}. Продукт в тексте не найден")
     db.commit()
     db.refresh(row)
     return _detail(row)
@@ -1855,6 +2014,33 @@ def _guard_section(role: str, section: str, values: dict) -> None:
         raise ExternalOrderError("Нельзя изменить юридическое заключение", 403)
 
 
+_CARD_DIFFS = {
+    ("commercial", "price"): "B05",
+    ("commercial", "vat"): "B06",
+    ("contract", "price"): "B05",
+    ("contract", "vat"): "B06",
+}
+
+
+def _sync_card_diff(row: ExternalOrder, section: str, key: str, value: str) -> None:
+    """Правка цены или НДС в карточке становится блокирующим расхождением со ссылкой на поле."""
+    code = _CARD_DIFFS.get((section, key))
+    typed = str(value or "").strip()
+    if not code or not typed:
+        return
+    match = next((item for item in row.diffs if item.code == code), None)
+    if match is None or match.status == "closed":
+        return
+    link = _onec_link(row)
+    baseline = str(link.get("amount") if key == "price" else link.get("vat") or "").strip()
+    if baseline and not str(match.left_value or "").strip():
+        match.left_value = baseline
+    elif not str(match.left_value or "").strip():
+        match.left_value = "значение до правки карточки"
+    match.right_value = typed[:2000]
+    match.note = f"поле {section}.{key}. Строка карточки сверена с источником"
+
+
 def patch_order(db: Session, order_id: str, *, role: str, fio: str, fields: dict) -> dict:
     row = _order(db, order_id)
     _require_business(role)
@@ -1863,10 +2049,18 @@ def patch_order(db: Session, order_id: str, *, role: str, fio: str, fields: dict
     for name, values in sections.items():
         if not isinstance(values, dict):
             continue
-        _guard_section(role, str(name), values)
+        try:
+            _guard_section(role, str(name), values)
+        except ExternalOrderError as exc:
+            if exc.status == 403:
+                _audit(db, row, fio=fio, role=role, action="denied", detail=exc.detail)
+                db.commit()
+            raise
         bucket = dict(current.get(name) or {})
         bucket.update({str(key): value for key, value in values.items()})
         current[name] = bucket
+        for key, value in values.items():
+            _sync_card_diff(row, str(name), str(key), str(value or ""))
         for key, value in values.items():
             field = f"section:{name}.{key}"
             typed = str(value or "").strip()
@@ -1879,6 +2073,9 @@ def patch_order(db: Session, order_id: str, *, role: str, fio: str, fields: dict
                 item.status = "accepted" if typed == str(item.value or "").strip() else "rejected"
     if sections:
         row.sections_json = _dump(current)
+        from app.services.external_order_case import _term_milestone
+
+        _term_milestone(db, row)
     if "route" in fields:
         if role not in {"development", "committee"}:
             raise ExternalOrderError("Маршрут назначает служба развития или Комитет", 403)
@@ -2548,6 +2745,8 @@ def accept_finding(db: Session, order_id: str, finding_id: str, *, role: str, fi
     _require_owner(role, item.owner_role or role, "вывод агента")
     _apply_finding_effect(db, row, item, role=role, fio=fio)
     item.status = "accepted"
+    if fio and "подтвердил" not in str(item.proposed_by or ""):
+        item.proposed_by = f"{item.proposed_by} · подтвердил {fio}"[:512]
     _audit(db, row, fio=fio, role=role, action="accept_finding", detail=item.field, after=item.value[:200])
     db.commit()
     db.refresh(row)
@@ -3267,6 +3466,7 @@ def _agent_prepare_payload(res: dict) -> dict:
         "questions": questions,
         "proposals": proposals,
         "stage": {
+            "id": passport.get("id"),
             "label": passport.get("label"),
             "checks_done": passport.get("checks_done"),
             "checks_total": passport.get("checks_total"),
@@ -3551,6 +3751,7 @@ def _apply_onec(row: ExternalOrder, link: dict[str, str]) -> None:
         row.stage = stage
     if status in STATUSES:
         row.status = status
+    _sync_passed_checks(row)
 
 
 def link_onec(db: Session, order_id: str, *, role: str, fio: str, ref_key: str) -> dict:
@@ -3863,7 +4064,9 @@ def read_case(db: Session, order_id: str, *, role: str = "", step_id: str = "") 
             {"id": q.get("id"), "prompt": q.get("prompt"), "owner_role": q.get("owner_role")}
             for q in role_qs
         ],
-        "open_by_service": _open_by_service(body),
+        "open_by_service": {
+            ROLES.get(role_key, role_key): _open_by_service(body).get(ROLES.get(role_key, role_key), "")
+        },
         "summary": _case_summary(body),
         "agent_limits": (
             "Ответь по summary, known и своей строке в open_by_service. result_file не открывай. "

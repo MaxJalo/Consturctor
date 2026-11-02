@@ -77,6 +77,14 @@ export type ExternalOrderFinding = {
   value: string
   source_ref: string
   location?: string
+  trace?: {
+    document: string
+    version: string
+    clause: string
+    fragment: string
+    rule: string
+    author: string
+  }
   status: string
   owner_role: string
   owner_label?: string
@@ -97,6 +105,14 @@ export type ExternalOrderAiMark = {
   source: string
   quote: string
   confidence: string
+  trace?: {
+    document: string
+    version: string
+    clause: string
+    fragment: string
+    rule: string
+    author: string
+  }
 }
 
 export type CopilotAiResult = {
@@ -296,6 +312,7 @@ export type ExternalOrder = ExternalOrderBrief & {
     critical: boolean
     approved: boolean
     published: boolean
+    source_ref?: string
     depends_on: string
     owner_role?: string
   }[]

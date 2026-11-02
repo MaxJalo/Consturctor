@@ -2543,6 +2543,17 @@ export class ApiClient {
     })
   }
 
+  async registerExternalRequest(
+    files: { kind: string; filename: string; content_base64: string }[],
+    asRole = ''
+  ): Promise<ExternalOrder> {
+    return this.request('POST', '/api/v1/external-orders/register', {
+      body: { files },
+      params: asRole ? { as_role: asRole } : undefined,
+      timeoutMs: 60_000
+    })
+  }
+
   async createExternalOrder(
     body: { customer: string; product: string; inn?: string; contact?: string; order_type?: string; priority?: string },
     asRole = ''

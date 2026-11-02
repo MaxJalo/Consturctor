@@ -199,6 +199,11 @@ def test_close_blocked_without_full_payment():
 def test_sign_blocked_by_open_difference():
     db = _db()
     order = _create(db)
+    row = db.get(ExternalOrder, order["id"])
+    price = next(item for item in row.diffs if item.code == "B05")
+    price.left_value = "100 руб."
+    price.right_value = "90 руб."
+    db.commit()
     try:
         transition(db, order["id"], role="ks", fio="Ильченко", target="contract_signed")
     except ExternalOrderError as exc:
@@ -320,10 +325,10 @@ def test_each_service_has_an_active_agent():
         assert "не переводишь стадию" in book["instructions"]
         assert "Дальнейший путь" in book["instructions"]
         if role == "production":
-            assert "action=plan" in book["instructions"]
-            assert "предмет, состав, количество, цена, НДС" in book["instructions"]
+            assert "plan_preview" in book["instructions"]
+            assert "сборку файла плана работ" in book["instructions"]
             assert "уже не относится" not in book["instructions"]
-            assert "action=plan" in book["steps"][0]["action"]
+            assert "plan_preview" in book["steps"][0]["action"]
         local = {"paused": True, "status": "inactive"}
         stamp_active(local, role)
         assert "paused" not in local
@@ -399,7 +404,8 @@ def test_approved_file_cannot_be_deleted_and_duplicate_is_rejected():
     assert approved["documents"][0]["approved"] is True
 
 
-def test_condition_without_owner_document_is_rejected():
+def test_condition_without_owner_document_is_rejected(monkeypatch):
+    monkeypatch.setattr("app.services.turboproject.turboproject_configured", lambda: False)
     db = _db()
     order = _create(db)
     decided = add_decision(
@@ -469,13 +475,10 @@ def test_new_baseline_after_protocol_needs_reason_and_plan_is_not_copied():
     assert len(again["tasks"]) == count
     accept_plan(db, order["id"], role="rp", fio="РП")
     publish_order_plan(db, order["id"], role="rp", fio="РП")
-    try:
-        publish_order_plan(db, order["id"], role="rp", fio="РП")
-    except ExternalOrderError as exc:
-        assert exc.status == 409
-        assert "копи" in exc.detail
-    else:
-        raise AssertionError("повторная публикация создала задачи")
+    retried = publish_order_plan(db, order["id"], role="rp", fio="РП")
+    assert len(retried["tasks"]) == count
+    assert retried["sections"]["turbo_queue"]["attempts"] == 2
+    assert all(not item["published"] for item in retried["tasks"])
 
 
 def test_new_specification_after_decision_opens_repeat_conclusions():
@@ -1307,7 +1310,7 @@ def test_invoke_tool_read_full_auto_prepare_propose_and_draft_1c(monkeypatch, tm
         fio="Секретарь",
     )
     assert prep["ok"] is True
-    assert prep["stage_passport"]["id"] == "committee"
+    assert prep["stage"]["id"] == "committee"
     prep_fields = {p["field"] for p in prep["proposals"]}
     assert "baseline:draft" in prep_fields
     assert "draft_1c_protocol" in prep_fields
@@ -1452,6 +1455,40 @@ def test_tkp_card_terms_are_remembered(monkeypatch):
     assert "Состав: Расходомер" in facts
 
 
+def test_passed_stages_take_checklist_from_onec_path():
+    from app.services.external_orders import get_order
+
+    db = _db()
+    created = _create(db)
+    row = db.get(ExternalOrder, created["id"])
+    row.status = "tkp_issued"
+    row.stage = "tkp"
+    row.sections_json = json.dumps(
+        {
+            "onec": {
+                "tkp_key": "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+                "tkp_number": "НП00-004275",
+                "tkp_status_label": "Действует",
+            }
+        },
+        ensure_ascii=False,
+    )
+    db.commit()
+    body = get_order(db, row.id)
+    by_id = {item["id"]: item for item in body["stage_passports"]}
+    assert by_id["request"]["state"] == "done"
+    assert by_id["request"]["checks_done"] == by_id["request"]["checks_total"] == 5
+    assert by_id["calc"]["checks_done"] == 5
+    assert by_id["committee"]["checks_done"] == 3
+    assert by_id["tkp"]["state"] == "current"
+    assert by_id["tkp"]["checks_done"] == 3
+    assert by_id["contract"]["state"] == "upcoming"
+    assert by_id["contract"]["checks_done"] == 0
+    evidence = next(item["evidence"] for item in body["checks"] if item["gate"] == "before_calc")
+    assert "НП00-004275" in evidence
+    assert "блокирующее расхождение" not in (by_id["tkp"]["blocker"] or "")
+
+
 def test_trace_terms_come_from_the_document_already_read():
     from app.services.external_order_onec import _terms_of_document
 
@@ -1527,4 +1564,100 @@ def test_agent_prepare_payload_keeps_known_text():
         {"order": {"known": []}, "summary": "", "questions": [], "proposals": [], "stage_passport": {}}
     )
     assert "ничего не вернули" in empty["facts"]
+
+
+def test_acceptance_scenarios_from_section_14(monkeypatch, tmp_path):
+    from app.services.external_orders import (
+        get_order,
+        make_plan,
+        patch_order,
+        publish_order_plan,
+        register_request,
+        transition,
+    )
+
+    monkeypatch.setattr("app.services.external_order_case.BACKEND_ROOT", tmp_path)
+    monkeypatch.setattr("app.services.turboproject.turboproject_configured", lambda: False)
+    db = _db()
+
+    registered = register_request(
+        db,
+        role="ks",
+        fio="Ильченко",
+        files=[
+            {"kind": "tz", "filename": "ТЗ.docx", "content_base64": _docx(["Заказчик: Метрогазсервис", "Изделие: расходомер", "Предмет: расходомер"])},
+            {"kind": "correspondence", "filename": "Переписка.docx", "content_base64": _docx(["Письмо без цены"])},
+        ],
+    )
+    assert registered["customer"] == "Метрогазсервис"
+    assert registered["product"] == "расходомер"
+    assert any(item["kind"] == "correspondence" for item in registered["documents"])
+    price_gap = next(item for item in registered["gaps"] if item["field"] == "price" and item["status"] == "open")
+    assert "Источник:" in price_gap["detail"]
+    traced = next(item for item in registered["findings"] if item["field"] == "subject" or "расходомер" in item["value"])
+    assert traced["trace"]["version"]
+    assert traced["trace"]["clause"]
+    assert traced["trace"]["rule"]
+    assert traced["trace"]["author"]
+
+    order = _create(db)
+    _upload(db, order["id"], "tkp", "tkp.docx", _docx(["Цена: 100 руб."]))
+    changed = patch_order(
+        db,
+        order["id"],
+        role="ks",
+        fio="Ильченко",
+        fields={"sections": {"commercial": {"price": "90 руб."}}},
+    )
+    price = next(item for item in changed["diffs"] if item["code"] == "B05")
+    assert price["left_value"]
+    assert "90" in price["right_value"]
+    assert price["note"]
+    assert price["level"] == "blocking"
+
+    _upload(db, order["id"], "specification", "s1.xlsx", _xlsx([["Насос", "1", "100"]]))
+    second = _upload(db, order["id"], "specification", "s2.xlsx", _xlsx([["Насос", "3", "300"]]))
+    quantity = next(item for item in second["diffs"] if item["code"] == "B04")
+    assert "3" in quantity["right_value"]
+    assert "количество" in quantity["note"]
+    money = next(item for item in second["diffs"] if item["code"] == "B05")
+    assert money["right_value"]
+
+    _upload(db, order["id"], "contract", "dogovor.docx", _docx(["Срок: 45 дней", "Цена: 90 руб."]))
+    planned = make_plan(db, order["id"], role="ks", fio="Ильченко")
+    titles = [item["title"] for item in planned["tasks"]]
+    assert any(item.startswith("Закупки") or item == "Закупки" for item in titles)
+    assert "Отгрузка" in titles
+    assert any(item.startswith("Срок договора") for item in titles)
+    assert all(item["critical"] for item in planned["tasks"])
+    assert any("критический путь" in item["source_ref"] or "Обязательство не было" in item["source_ref"] for item in planned["tasks"])
+    assert all(not item["approved"] for item in planned["tasks"])
+
+    approved = accept_plan(db, order["id"], role="rp", fio="РП")
+    published = publish_order_plan(db, order["id"], role="rp", fio="РП")
+    assert published["sections"]["turbo_queue"]["status"] == "queued"
+    assert published["sections"]["turbo_queue"]["tasks"]
+    assert all(not item["published"] for item in published["tasks"])
+    assert any(item["kind"] == "turbo" for item in published["notices"])
+    again = publish_order_plan(db, order["id"], role="rp", fio="РП")
+    assert again["sections"]["turbo_queue"]["attempts"] == 2
+
+    try:
+        patch_order(db, order["id"], role="ks", fio="Ильченко", fields={"sections": {"contract": {"warranty": "год"}}})
+    except ExternalOrderError as exc:
+        assert exc.status == 403
+    else:
+        raise AssertionError("КС изменила юридическое заключение")
+    denied = get_order(db, order["id"])
+    assert any(item["action"] == "denied" for item in denied["audit"])
+
+    row = db.get(ExternalOrder, order["id"])
+    row.status = "confirmed"
+    db.commit()
+    try:
+        transition(db, order["id"], role="ks", fio="Ильченко", target="tkp_issued")
+    except ExternalOrderError as exc:
+        assert "протокол" in exc.detail.casefold() or "базов" in exc.detail.casefold()
+    else:
+        raise AssertionError("ТКП выпущено без протокола")
 

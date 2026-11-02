@@ -9,6 +9,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import io
+import json
 import re
 import zipfile
 from datetime import datetime, timedelta, timezone
@@ -29,7 +30,7 @@ from app.models.external_order import (
 )
 
 _ALLOWED = {".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document", ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", ".pdf": "application/pdf"}
-_KINDS = {"tz", "tkp", "contract", "specification", "protocol", "condition", "acceptance", "other"}
+_KINDS = {"tz", "tkp", "contract", "specification", "protocol", "condition", "acceptance", "correspondence", "other"}
 _UPLOAD_ROLES = {"ks", "development", "rp", "legal", "kb", "finance", "omto", "production", "committee"}
 _BLOCK_GATES = {
     "before_calc",
@@ -343,21 +344,21 @@ def build_plan(db: Session, order: ExternalOrder, *, role: str, fio: str) -> int
     for title, kind, owner in _PLAN:
         if title == "Испытания" and not _applies(order.route, order.order_type, "before_psi", title)[0]:
             continue
-        task_id = _new_id()
-        db.add(
-            ExternalOrderTask(
-                id=task_id,
-                order_id=order.id,
-                title=title,
-                kind=kind,
-                owner_role=owner,
-                depends_on=previous,
-                critical=True,
-                source_ref="шаблон обязательств",
-            )
+        task = ExternalOrderTask(
+            id=_new_id(),
+            order_id=order.id,
+            title=title,
+            kind=kind,
+            owner_role=owner,
+            depends_on=previous,
+            critical=False,
+            source_ref="обязательство договора",
         )
-        previous = task_id
+        order.tasks.append(task)
+        previous = task.id
         created += 1
+    _mark_critical_path(order)
+    created += _term_milestone(db, order)
     _audit(db, order, fio=fio, role=role, action="plan", detail=f"задач: {created}")
     return created
 
@@ -374,43 +375,140 @@ def approve_plan(db: Session, order: ExternalOrder, *, role: str, fio: str) -> N
     _audit(db, order, fio=fio, role=role, action="plan_approved", detail="базовый план", after="утверждён")
 
 
+def _mark_critical_path(order: ExternalOrder) -> str:
+    """Одна цепочка зависимостей и есть критический путь: его состав пишется в каждую задачу."""
+    ordered = list(order.tasks)
+    if not ordered:
+        return ""
+    chain = " → ".join(item.title for item in ordered)
+    note = f"критический путь: {chain}"
+    for item in ordered:
+        item.critical = True
+        if "Обязательство не было" not in str(item.source_ref or ""):
+            item.source_ref = note
+    return note
+
+
+def _term_milestone(db: Session, order: ExternalOrder, term: str = "", source: str = "") -> int:
+    """Срок есть в деле и его нет среди вех — предлагается веха и влияние на путь."""
+    for item in order.findings:
+        if item.field == "term" and str(item.value or "").strip():
+            term = str(item.value).strip()
+            source = str(item.source_ref or "").strip()
+            break
+    if not term:
+        sections = {}
+        try:
+            loaded = json.loads(order.sections_json or "{}")
+            sections = loaded if isinstance(loaded, dict) else {}
+        except json.JSONDecodeError:
+            sections = {}
+        for bucket in (sections.get("project"), sections.get("contract"), sections.get("commercial")):
+            if isinstance(bucket, dict):
+                term = str(bucket.get("plan_note") or bucket.get("term") or bucket.get("deadlines") or "").strip()
+                if term:
+                    source = "поле карточки"
+                    break
+    if not term or not list(order.tasks):
+        return 0
+    if any("срок договора" in item.title.casefold() or term.casefold() in item.title.casefold() for item in order.tasks):
+        return 0
+    previous = list(order.tasks)[-1].id if list(order.tasks) else ""
+    order.tasks.append(
+        ExternalOrderTask(
+            id=_new_id(),
+            order_id=order.id,
+            title=f"Срок договора: {term[:120]}",
+            kind="milestone",
+            owner_role="rp",
+            depends_on=previous,
+            critical=True,
+            approved=False,
+            source_ref=(
+                f"Обязательство не было в плане ({source or 'дело'}). "
+                "Веха на критическом пути, срок плана сдвигается до утверждения РП."
+            ),
+        )
+    )
+    db.flush()
+    _mark_critical_path(order)
+    return 1
+
+
+def queue_turbo_plan(db: Session, order: ExternalOrder, *, role: str, fio: str) -> None:
+    """TurboProject недоступен или не принимает запись: снимок плана остаётся в деле, уходит уведомление."""
+    from app.services.external_orders import _audit, _dump, _load
+    from app.services.turboproject import TurboProjectError, search_projects, turboproject_configured
+
+    error = "TurboProject не настроен"
+    if turboproject_configured():
+        try:
+            search_projects({"query": order.code, "limit": 1})
+            error = "Запись задач в TurboProject не подключена"
+        except TurboProjectError as exc:
+            error = str(exc)[:300]
+        except Exception as exc:  # noqa: BLE001
+            error = str(exc)[:300]
+    sections = _load(order.sections_json)
+    previous = sections.get("turbo_queue") if isinstance(sections.get("turbo_queue"), dict) else {}
+    attempts = int(previous.get("attempts") or 0) + 1
+    snapshot = [
+        {"title": item.title, "kind": item.kind, "depends_on": item.depends_on, "critical": bool(item.critical)}
+        for item in order.tasks
+    ]
+    sections["turbo_queue"] = {
+        "status": "queued",
+        "attempts": attempts,
+        "error": error,
+        "tasks": snapshot,
+    }
+    order.sections_json = _dump(sections)
+    notify(
+        db,
+        order,
+        kind="turbo",
+        role="rp",
+        title="План в очереди TurboProject",
+        body=f"Попытка {attempts}. {error}. Задачи плана сохранены в деле и не потеряны.",
+    )
+    _audit(db, order, fio=fio, role=role, action="turbo_queued", detail=f"попытка {attempts}", after=error[:200])
+
+
 def publish_plan(db: Session, order: ExternalOrder, *, role: str, fio: str) -> None:
-    from app.services.external_orders import ExternalOrderError, _audit
+    from app.services.external_orders import ExternalOrderError
 
     if role != "rp":
         raise ExternalOrderError("В TurboProject публикует руководитель проекта", 403)
     tasks = list(order.tasks)
     if not tasks or not all(task.approved for task in tasks):
         raise ExternalOrderError("Публикуется только утверждённый план", 400)
-    if any(task.published for task in tasks):
-        raise ExternalOrderError("План уже опубликован, повтор не создаёт копии задач", 409)
-    for task in tasks:
-        task.published = True
-    _audit(db, order, fio=fio, role=role, action="plan_published", detail="без копий задач")
+    queue_turbo_plan(db, order, role=role, fio=fio)
 
 
 def _extract(db: Session, order: ExternalOrder, doc: ExternalOrderDocument, raw: bytes, suffix: str) -> None:
     from app.services.external_orders import _audit
 
     if suffix == ".docx":
-        paragraphs = _docx_paragraphs(raw)
-        found: set[str] = set()
-        for index, line in enumerate(paragraphs, start=1):
-            folded = line.casefold().replace("ё", "е")
-            for field, token, code, owner in _FIELDS:
-                if field in found or token not in folded:
-                    continue
-                found.add(field)
-                _remember(db, order, doc, field=field, value=line, location=f"абзац {index}", code=code, owner=owner)
-        for field, _token, _code, owner in _FIELDS:
-            if field not in found and doc.kind in {"contract", "tz", "tkp"}:
-                add_gap(db, order, field=field, owner_role=owner, detail=f"В {doc.title} нет места для «{field}»")
+        _extract_lines(db, order, doc, _docx_paragraphs(raw))
+    elif suffix == ".pdf":
+        paragraphs = _pdf_lines(raw)
+        if paragraphs is None:
+            add_gap(
+                db,
+                order,
+                field="pdf_text",
+                owner_role="ks",
+                detail=f"Источник: {doc.title} {doc.version}. Текст PDF не извлечён",
+            )
+            return
+        _extract_lines(db, order, doc, paragraphs)
     elif suffix == ".xlsx" and doc.kind == "specification":
         rows = _xlsx_rows(raw)
         if not rows:
             add_gap(db, order, field="specification", owner_role="kb", detail="Строки спецификации не прочитаны")
             return
         changes = _compare(_previous_lines(order, doc), rows)
+        _spec_diffs(order, doc, changes)
         for name, qty, amount, change in changes:
             db.add(
                 ExternalOrderLine(
@@ -424,14 +522,69 @@ def _extract(db: Session, order: ExternalOrder, doc: ExternalOrderDocument, raw:
                 )
             )
         _audit(db, order, fio="система", role="agent", action="spec_lines", detail=f"строк: {len(changes)}")
-    elif suffix == ".pdf":
-        add_gap(
-            db,
-            order,
-            field="pdf_text",
-            owner_role="ks",
-            detail="Текст PDF не извлечён. Вывод сохраняется только со страницей источника.",
-        )
+
+
+def _extract_lines(db: Session, order: ExternalOrder, doc: ExternalOrderDocument, paragraphs: list[str]) -> None:
+    found: set[str] = set()
+    for index, line in enumerate(paragraphs, start=1):
+        folded = line.casefold().replace("ё", "е")
+        for field, token, code, owner in _FIELDS:
+            if field in found or token not in folded:
+                continue
+            found.add(field)
+            _remember(db, order, doc, field=field, value=line, location=f"абзац {index}", code=code, owner=owner)
+    for field, _token, _code, owner in _FIELDS:
+        if field not in found and doc.kind in {"contract", "tz", "tkp", "correspondence"}:
+            add_gap(
+                db,
+                order,
+                field=field,
+                owner_role=owner,
+                detail=f"Источник: {doc.title} {doc.version}. В тексте нет «{field}»",
+            )
+
+
+def _pdf_lines(raw: bytes) -> list[str] | None:
+    try:
+        import fitz
+    except ImportError:
+        return None
+    try:
+        document = fitz.open(stream=raw, filetype="pdf")
+    except Exception:  # noqa: BLE001
+        return None
+    lines: list[str] = []
+    for page in document:
+        for line in (page.get_text() or "").splitlines():
+            text = " ".join(line.split())
+            if text:
+                lines.append(text)
+    return lines
+
+
+def _spec_diffs(order: ExternalOrder, doc: ExternalOrderDocument, changes: list[tuple[str, str, str, str]]) -> None:
+    interesting = [row for row in changes if row[3] != "same"]
+    if not interesting:
+        return
+    source = f"{doc.title} {doc.version}"
+    positions = "; ".join(f"{name} ({change})" for name, _qty, _amount, change in interesting)
+    quantities = "; ".join(f"{name}: {qty or 'удалена'}" for name, qty, _amount, change in interesting if change != "amount")
+    money = "; ".join(f"{name}: {amount or '0'}" for name, _qty, amount, _change in interesting if amount or _change == "removed")
+    _set_diff(order, "B03", positions, f"{source}, позиции")
+    if quantities:
+        _set_diff(order, "B04", quantities, f"{source}, количество")
+    if money:
+        _set_diff(order, "B05", money, f"{source}, стоимость")
+
+
+def _set_diff(order: ExternalOrder, code: str, value: str, note: str) -> None:
+    match = next((item for item in order.diffs if item.code == code), None)
+    if match is None or match.status == "closed":
+        return
+    if not str(match.left_value or "").strip():
+        match.left_value = "прежняя спецификация"
+    match.right_value = value[:2000]
+    match.note = note[:2000]
 
 
 def _remember(db: Session, order, doc, *, field: str, value: str, location: str, code: str, owner: str) -> None:
@@ -443,7 +596,7 @@ def _remember(db: Session, order, doc, *, field: str, value: str, location: str,
             order_id=order.id,
             field=field,
             value=value[:2000],
-            source_ref=doc.title,
+            source_ref=f"{doc.title} {doc.version}".strip(),
             location=location,
             document_id=doc.id,
             confidence="извлечено",
@@ -458,9 +611,14 @@ def _remember(db: Session, order, doc, *, field: str, value: str, location: str,
         return
     if doc.kind == "tkp":
         match.left_value = value[:2000]
-    elif doc.kind in {"contract", "specification"}:
+    elif doc.kind in {"contract", "specification"} or not str(match.right_value or "").strip():
         match.right_value = value[:2000]
-    match.note = location
+    left = str(match.left_value or "").strip()
+    right = str(match.right_value or "").strip()
+    place = f"{doc.title} {doc.version}, {location}"
+    match.note = f"{place}. Расхождение: «{left[:160]}» и «{right[:160]}»" if left and right and left.casefold() != right.casefold() else place
+    if field == "term":
+        _term_milestone(db, order, term=value, source=f"{doc.title} {doc.version}".strip())
 
 
 def _previous_lines(order: ExternalOrder, doc: ExternalOrderDocument) -> list[ExternalOrderLine]:

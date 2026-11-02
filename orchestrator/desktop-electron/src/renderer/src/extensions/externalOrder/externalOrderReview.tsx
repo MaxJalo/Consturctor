@@ -51,6 +51,7 @@ export const FILE_KIND_LABELS: Record<string, string> = {
   acceptance: 'Приёмка',
   protocol: 'Протокол',
   plan: 'План работ',
+  correspondence: 'Переписка',
   other: 'Прочее'
 }
 

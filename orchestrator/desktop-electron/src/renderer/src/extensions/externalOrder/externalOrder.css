@@ -1008,7 +1008,8 @@
   align-self: end;
 }
 
-.eo-card input.eo-file-input {
+.eo-card input.eo-file-input,
+.eo-window input.eo-file-input {
   display: none;
 }
 
