@@ -2409,6 +2409,30 @@ def _draft_findings_in_session(db: Session, order: ExternalOrder) -> list[Extern
     return [item for item in rows.values() if item.status == "draft"]
 
 
+_EMPTY_WORDS = {
+    "пусто",
+    "пустым",
+    "пустое",
+    "не заполнять",
+    "оставить пустым",
+    "оставь пустым",
+    "оставь поле пустым",
+    "н/п",
+    "не применимо",
+}
+
+
+def _blank_reason(item: dict) -> str:
+    """Сотрудник просит оставить поле пустым: это решение, а не текст для карточки."""
+    reason = str(item.get("empty_reason") or "").strip()
+    if item.get("empty") is True or (item.get("value") is None and reason):
+        return reason or "решение сотрудника"
+    folded = str(item.get("value") or "").strip().casefold().strip(" .")
+    if folded in _EMPTY_WORDS or folded.startswith("оставить пуст"):
+        return reason or "решение сотрудника"
+    return ""
+
+
 def _upsert_draft_finding(
     db: Session,
     order: ExternalOrder,
@@ -2473,6 +2497,19 @@ def propose(
     """Черновики агента. Фактом они становятся только после «Принять» владельцем."""
     row = _order(db, order_id)
     created = 0
+    skipped: list[dict[str, str]] = []
+    unchanged: list[str] = []
+
+    def _same_draft(field: str, value: str) -> bool:
+        for item in list(row.findings):
+            if item.field != field or str(item.value or "") != value:
+                continue
+            if item.status == "draft":
+                return True
+            if item.status == "accepted" and str(item.confidence or "") == "empty":
+                return True
+        return False
+
     for item in findings or []:
         if not isinstance(item, dict):
             continue
@@ -2517,7 +2554,21 @@ def propose(
             cleaned = raw_field[len("section:"):] if raw_field.startswith("section:") else raw_field
             sec, key = cleaned.split(".", 1)
         value = str(item.get("value") or "").strip()
-        if not sec or not key or not value:
+        blank = _blank_reason(item)
+        if not sec or not key or (not value and not blank):
+            skipped.append(
+                {
+                    "field": f"section:{sec}.{key}" if sec and key else str(item.get("field") or ""),
+                    "reason": "Пустое значение без пометки empty не записывается. Текст «пусто» подставлять нельзя.",
+                }
+            )
+            continue
+        if blank:
+            value = f"Поле оставлено пустым: {blank}"[:2000]
+            item = {**item, "confidence": "empty"}
+        field_name = f"section:{sec}.{key}"
+        if _same_draft(field_name, value):
+            unchanged.append(field_name)
             continue
         owner = str(item.get("owner_role") or _section_field_owner(sec, key))
         added = _upsert_draft_finding(
@@ -2614,12 +2665,22 @@ def propose(
         match.note = str(item.get("note") or "")
         match.status = "draft"
         created += 1
-    _audit(db, row, fio=fio or "агент", role="agent", action="propose", detail=f"черновиков: {created}")
+    if created:
+        _audit(db, row, fio=fio or "агент", role="agent", action="propose", detail=f"черновиков: {created}")
     db.commit()
     db.refresh(row)
     body = _detail(row)
     body["proposed"] = created
-    body["note"] = "Черновик не является фактом, пока владелец не нажмёт «Принять»."
+    body["skipped"] = skipped
+    body["unchanged"] = unchanged
+    if created:
+        body["note"] = "Черновик не является фактом, пока владелец не нажмёт «Принять»."
+    elif unchanged:
+        body["note"] = "Такой черновик уже есть. Повторно его не записываю."
+    elif skipped:
+        body["note"] = skipped[0]["reason"]
+    else:
+        body["note"] = "Черновик не записан: в вызове не было поля и значения."
     return body
 
 
@@ -2647,6 +2708,8 @@ def _apply_finding_effect(db: Session, row: ExternalOrder, item: ExternalOrderFi
     field = str(item.field or "").strip()
     val = str(item.value or "").strip()
     if field.startswith("section:"):
+        if str(item.confidence or "") == "empty":
+            return
         target = field[len("section:"):].strip()
         if "." in target and val:
             sec, key = target.split(".", 1)
@@ -3506,7 +3569,7 @@ def invoke_tool(arguments: dict, *, fio: str) -> dict:
             order_data = res["order"]
             return _agent_prepare_payload(res)
         if action == "propose":
-            return propose(
+            body = propose(
                 db,
                 order_id,
                 fio=fio,
@@ -3517,6 +3580,27 @@ def invoke_tool(arguments: dict, *, fio: str) -> dict:
                 baseline_proposal=args.get("baseline_proposal") if isinstance(args.get("baseline_proposal"), dict) else None,
                 risk_proposals=list(args.get("risk_proposals") or []),
             )
+            drafts = [
+                {
+                    "id": item.get("id"),
+                    "field": item.get("field"),
+                    "value": str(item.get("value") or "")[:200],
+                    "status": item.get("status"),
+                    "kind": item.get("kind") or "",
+                }
+                for item in (body.get("findings") or [])
+                if item.get("status") == "draft"
+            ]
+            proposed = int(body.get("proposed") or 0)
+            skipped = list(body.get("skipped") or [])
+            return {
+                "ok": proposed > 0 or not skipped,
+                "proposed": proposed,
+                "unchanged": list(body.get("unchanged") or []),
+                "skipped": skipped,
+                "drafts": drafts[-12:],
+                "note": body.get("note") or "",
+            }
         if action == "draft_1c":
             return draft_onec(db, order_id, fio=fio, fields=args)
         if action == "search_1c":

@@ -771,6 +771,8 @@ def test_bridge_keeps_order_facts_when_result_is_externalized(tmp_path: Path) ->
     assert "НДС: Продажа облагается НДС" in compact["summary"]["known"]
     assert "НДС: Продажа облагается НДС" in compact["summary"]["facts"]
     assert compact["summary"]["questions"] == ["Какая скидка?"]
+    stored = (tmp_path / compact["result_file"]).read_text(encoding="utf-8")
+    assert "\n" in stored
 
 
 def test_bridge_keeps_tiny_scalar_result_inline(tmp_path: Path) -> None:

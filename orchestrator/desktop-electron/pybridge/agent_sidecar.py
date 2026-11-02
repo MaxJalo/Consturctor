@@ -312,12 +312,29 @@ def _strip_run_chrome(text: str) -> str:
     return re.sub(r"\n{3,}", "\n\n", cleaned).strip()
 
 
+def _readable_order_answer(text: str) -> str:
+    """Один слипшийся абзац службы разбирается на фразы: пробел перед числом и пустая строка между ними."""
+    cleaned = (text or "").strip()
+    if not cleaned:
+        return cleaned
+    cleaned = re.sub(r"(?<![-0-9A-Za-zА-Яа-яЁё])([A-Za-zА-Яа-яЁё]{4,})(\d)", r"\1 \2", cleaned)
+    cleaned = re.sub(r"([—–])(\d)", r"\1 \2", cleaned)
+    cleaned = re.sub(r"([.!?])(?=[A-Za-zА-Яа-яЁё«])", r"\1 ", cleaned)
+    cleaned = re.sub(r",(?=[A-Za-zА-Яа-яЁё«])", ", ", cleaned)
+    if "\n\n" in cleaned:
+        return cleaned
+    parts = [part.strip() for part in re.split(r"(?<=[.!?])\s+", cleaned) if part.strip()]
+    if len(parts) < 2:
+        return cleaned
+    return "\n\n".join(parts)
+
+
 def _order_turn_answer(runner_answer: str, seen: str) -> str:
     """Итог хода — ответ сотруднику, а не склейка статуса и уже показанных фраз."""
-    answer = _strip_run_chrome(_without_tests_label(runner_answer))
+    answer = _readable_order_answer(_strip_run_chrome(_without_tests_label(runner_answer)))
     if _turn_answer_done(answer, True):
         return answer
-    longer = _strip_run_chrome(_without_tests_label(seen))
+    longer = _readable_order_answer(_strip_run_chrome(_without_tests_label(seen)))
     if _turn_answer_done(longer, True) and len(longer) > len(answer):
         return longer
     return answer
@@ -1911,6 +1928,7 @@ class ElectronBridge(CursorSdkBridge):
         on_question: Any = None,
         should_stop: Any = None,
         confirm_writes: bool = False,
+        order_case_only: bool = False,
         include_app_tools: bool = True,
         images: list[dict[str, Any]] | None = None,
         stop_on_kpi_list: bool = True,
@@ -1945,6 +1963,7 @@ class ElectronBridge(CursorSdkBridge):
             should_stop=should_stop,
             confirm_writes=must_confirm,
             restrict_builtins=kpi or tools is not None,
+            order_case_only=bool(order_case_only),
             images=images,
             stop_on_kpi_list=stop_on_kpi_list,
             kpi_allow_read=kpi_allow_read,
@@ -3114,14 +3133,53 @@ def _journal_questions(events: list[dict[str, Any]], qa_history: list[dict[str, 
 
 
 def _journal_agent_messages(events: list[dict[str, Any]]) -> list[str]:
-    lines: list[str] = []
+    """One readable block. Assistant events are token deltas, not separate lines."""
+    assistant: list[str] = []
+    finals: list[str] = []
     for event in events:
-        if str(event.get("type") or "") not in {"assistant", "agent_message", "final", "work_result"}:
+        kind = str(event.get("type") or "")
+        text = str(event.get("text") or event.get("message") or "")
+        if not text.strip():
             continue
-        text = str(event.get("text") or event.get("message") or "").strip()
-        if text:
-            lines.append(f"- {text[:2000]}")
-    return lines
+        if kind == "assistant":
+            assistant.append(text)
+        elif kind in {"agent_message", "final", "work_result"}:
+            finals.append(text.strip())
+    chunks = assistant or finals
+    if not chunks:
+        return []
+    joined = "".join(chunks)
+    joined = re.sub(r"[ \t]{2,}", " ", joined).strip()
+    if not joined:
+        return []
+    return [joined[:4000]]
+
+
+def _order_memory_from_runs(runs: list[Any], conversation_key: str, message: str) -> tuple[str, str]:
+    """Prior answer in this chat, and the previous answer of this same message."""
+    key = (conversation_key or "").strip()
+    text = (message or "").strip()
+    prior = ""
+    reused = ""
+    for run in runs:
+        if str(getattr(run, "conversation_key", "") or "") != key:
+            continue
+        answer = str(getattr(run, "answer", "") or "").strip()
+        if not answer or "без итога" in answer:
+            continue
+        status = str(getattr(run, "status", "") or "").strip().lower()
+        if status in {"error", "failed", "cancelled", "canceled"}:
+            continue
+        run_message = str(getattr(run, "message", "") or "").strip()
+        if not reused and text and run_message == text:
+            reused = answer
+        if not prior and run_message != text:
+            prior = answer
+        if reused and prior:
+            break
+    if not prior and reused:
+        prior = reused
+    return prior, reused
 
 
 def _journal_tools(events: list[dict[str, Any]]) -> list[str]:
@@ -3914,6 +3972,15 @@ class Sidecar:
                 raise
             except CursorSdkError as exc:
                 last_exc = exc
+                if getattr(active, "hide_tests", False) and _turn_answer_done(
+                    str(getattr(active, "answer_buf", "") or ""),
+                    True,
+                ):
+                    log("order reply already shown, skip sdk retry")
+                    return {
+                        "answer": _readable_order_answer(str(getattr(active, "answer_buf", "") or "")),
+                        "agent_id": str(kwargs.get("resume_agent_id") or ""),
+                    }
                 if (
                     active.stop.is_set()
                     or not is_transient_cursor_error(exc)
@@ -4641,8 +4708,12 @@ class Sidecar:
             if active.hide_tests
             else message
         )
-        if active.hide_tests and resume_agent_id:
-            prompt = build_order_followup_prompt(message)
+        prior = ""
+        reused = ""
+        if active.hide_tests and conversation_key:
+            prior, reused = self._order_conversation_memory(workflow_id, conversation_key, message)
+        if active.hide_tests and (resume_agent_id or prior):
+            prompt = build_order_followup_prompt(message, prior="" if reused else prior)
         else:
             prompt = build_sdk_prompt(workflow, fresh_message)
         note = _attachments_note(attachment_paths)
@@ -4659,46 +4730,56 @@ class Sidecar:
         self._start_run_metrics(active, bridge)
         self._start_run_context(active, bridge)
         try:
-            try:
-                result = self._bridge_run_with_retry(
-                    active,
-                    bridge,
-                    prompt=prompt,
-                    # Regular workflow runs must keep workflow context so tools,
-                    # workspace isolation and run history stay scoped correctly.
-                    workflow_id=workflow_id,
-                    cwd=run_cwd,
-                    resume_agent_id=resume_agent_id,
-                    tools=_tool_specs_for_workflow(workflow),
-                    model_params=_workflow_model_params(workflow),
-                    on_event=self._forward_events(active, events),
-                    on_question=self._order_question(active),
-                    should_stop=active.stop.is_set,
-                    confirm_writes=True,
-                )
-            except Exception as exc:  # noqa: BLE001
-                if resume_agent_id and self._is_missing_resume_agent_error(exc) and not active.stop.is_set():
-                    log(f"resume agent missing for {workflow_id}, retry fresh run")
-                    if not conversation_key:
-                        self._clear_stored_agent_id(workflow_id)
-                    if active.hide_tests:
-                        prompt = build_sdk_prompt(workflow, fresh_message)
+            if reused:
+                self._forward_events(active, events)({"type": "assistant", "text": reused})
+                result = {"answer": reused, "agent_id": resume_agent_id}
+            else:
+                try:
                     result = self._bridge_run_with_retry(
                         active,
                         bridge,
                         prompt=prompt,
+                        # Regular workflow runs must keep workflow context so tools,
+                        # workspace isolation and run history stay scoped correctly.
                         workflow_id=workflow_id,
                         cwd=run_cwd,
-                        resume_agent_id="",
+                        resume_agent_id=resume_agent_id,
                         tools=_tool_specs_for_workflow(workflow),
                         model_params=_workflow_model_params(workflow),
                         on_event=self._forward_events(active, events),
                         on_question=self._order_question(active),
                         should_stop=active.stop.is_set,
                         confirm_writes=True,
+                        order_case_only=bool(active.hide_tests),
                     )
-                else:
-                    raise
+                except Exception as exc:  # noqa: BLE001
+                    if resume_agent_id and self._is_missing_resume_agent_error(exc) and not active.stop.is_set():
+                        log(f"resume agent missing for {workflow_id}, retry fresh run")
+                        if not conversation_key:
+                            self._clear_stored_agent_id(workflow_id)
+                        if active.hide_tests:
+                            prompt = (
+                                build_order_followup_prompt(message, prior=prior)
+                                if prior
+                                else build_sdk_prompt(workflow, fresh_message)
+                            )
+                        result = self._bridge_run_with_retry(
+                            active,
+                            bridge,
+                            prompt=prompt,
+                            workflow_id=workflow_id,
+                            cwd=run_cwd,
+                            resume_agent_id="",
+                            tools=_tool_specs_for_workflow(workflow),
+                            model_params=_workflow_model_params(workflow),
+                            on_event=self._forward_events(active, events),
+                            on_question=self._order_question(active),
+                            should_stop=active.stop.is_set,
+                            confirm_writes=True,
+                            order_case_only=bool(active.hide_tests),
+                        )
+                    else:
+                        raise
             answer = str(result.get("answer") or "").strip()
             agent_id = str(result.get("agent_id") or resume_agent_id).strip()
             self._store_agent_id(workflow_id, agent_id, conversation=bool(conversation_key))
@@ -5254,6 +5335,21 @@ class Sidecar:
             return updated
 
         return ask
+
+    def _order_conversation_memory(
+        self,
+        workflow_id: str,
+        conversation_key: str,
+        message: str,
+    ) -> tuple[str, str]:
+        key = (conversation_key or "").strip()
+        if not key:
+            return "", ""
+        try:
+            runs = self._api.list_agent_runs(workflow_id, conversation_key=key)
+        except ApiError:
+            return "", ""
+        return _order_memory_from_runs(runs, key, message)
 
     def _conversation_agent_id(self, workflow_id: str, conversation_key: str) -> str:
         key = (conversation_key or "").strip()

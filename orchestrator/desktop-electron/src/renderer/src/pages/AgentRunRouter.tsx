@@ -83,6 +83,7 @@ export function AgentRunRouter(props: AgentRunRouterProps): React.JSX.Element {
   }, [route, workflowId])
 
   if (route === undefined) {
+    if (props.chat) return <></>
     return <div className="agent-run-resolving" aria-busy="true" />
   }
   const legacy =

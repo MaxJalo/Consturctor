@@ -1044,8 +1044,13 @@ function AppShell(): React.JSX.Element {
     isAdminMode && activeAdminPanel?.key !== 'finance' && view.kind === 'tab'
       ? ADMIN_PRODUCT_PAGE[view.key]
       : undefined
+  const orderDialog = view.kind === 'agentrun' && Boolean(view.chat)
   const surfaceKey: PageKey | null =
-    view.kind === 'tab' ? (adminProductKey ?? view.key) : null
+    view.kind === 'tab'
+      ? (adminProductKey ?? view.key)
+      : orderDialog && isWorkplaceTabKey(lastTab)
+        ? lastTab
+        : null
   const workplaceGrid = surfaceKey !== null && isWorkplaceTabKey(surfaceKey)
   const workplaceShellKey: WorkplaceTabKey | null = workplaceGrid && surfaceKey && isWorkplaceTabKey(surfaceKey) ? surfaceKey : null
   const adminShell =
@@ -1138,6 +1143,19 @@ function AppShell(): React.JSX.Element {
               topStrip={agentsStrip}
             >
               {renderWorkplaceGridTab(workplaceShellKey)}
+              {view.kind === 'agentrun' && view.chat ? (
+                <AgentRunRouter
+                  key={`${view.workflowId}:${view.chat.conversationKey}:${view.launch ?? ''}`}
+                  workflowId={view.workflowId}
+                  title={view.title}
+                  autoStart={view.autoStart}
+                  initialMessage={view.initialMessage}
+                  appContext={view.appContext}
+                  chat={view.chat}
+                  onBack={() => setView({ kind: 'tab', key: lastTab })}
+                  onOpenHistory={(workflowId, title) => setView({ kind: 'history', workflowId, title })}
+                />
+              ) : null}
             </OrchGridShell>
             </PageSearchProvider>
             <ChatDock

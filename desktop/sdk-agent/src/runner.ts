@@ -38,6 +38,7 @@ type RunCommand = {
   tools?: ToolSpec[];
   resumeAgentId?: string;
   restrictBuiltins?: boolean;
+  orderCaseOnly?: boolean;
   stopOnKpiList?: boolean;
   kpiAllowRead?: boolean;
   images?: Array<{ path?: string; data?: string; mimeType?: string; page?: number }>;
@@ -959,6 +960,20 @@ async function runAgent(command: RunCommand): Promise<void> {
                       "read",
                       "task",
                     ],
+              }
+            : command.orderCaseOnly
+            ? {
+                disallowedTools: [
+                  "shell",
+                  "edit",
+                  "delete",
+                  "applyAgentDiff",
+                  "glob",
+                  "ls",
+                  "grep",
+                  "read",
+                  "task",
+                ],
               }
             : command.restrictBuiltins
             ? {

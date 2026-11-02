@@ -380,6 +380,78 @@ def test_finding_without_location_becomes_gap():
     assert any(item["field"] == "price" for item in body["gaps"])
 
 
+def test_empty_legal_field_is_a_decision_not_text(monkeypatch):
+    from app.services.external_orders import accept_finding, invoke_tool
+
+    db = _db()
+    monkeypatch.setattr(db, "close", lambda: None)
+    monkeypatch.setattr("app.db.session.SessionLocal", lambda: db)
+    order = _create(db)
+    body = propose(
+        db,
+        order["id"],
+        fio="Юрист",
+        section_proposals=[
+            {
+                "section": "contract",
+                "key": "sanctions",
+                "value": None,
+                "empty": True,
+                "empty_reason": "решение сотрудника",
+            }
+        ],
+    )
+    assert body["proposed"] == 1
+    finding = next(item for item in body["findings"] if item["field"] == "section:contract.sanctions")
+    assert finding["confidence"] == "empty"
+    assert "не заполнять" not in finding["value"].casefold()
+    assert "пусто" not in finding["value"].casefold()
+    accepted = accept_finding(db, order["id"], finding["id"], role="legal", fio="Юрист")
+    contract = accepted["sections"].get("contract") or {}
+    assert not str(contract.get("sanctions") or "").strip()
+
+    words = propose(
+        db,
+        order["id"],
+        fio="Юрист",
+        section_proposals=[{"section": "contract", "key": "warranty", "value": "не заполнять"}],
+    )
+    warranty = next(item for item in words["findings"] if item["field"] == "section:contract.warranty")
+    assert warranty["confidence"] == "empty"
+    accept_finding(db, order["id"], warranty["id"], role="legal", fio="Юрист")
+    again = propose(
+        db,
+        order["id"],
+        fio="Юрист",
+        section_proposals=[
+            {
+                "section": "contract",
+                "key": "sanctions",
+                "empty": True,
+                "empty_reason": "решение сотрудника",
+            }
+        ],
+    )
+    assert again["proposed"] == 0
+    assert "section:contract.sanctions" in again["unchanged"]
+    propose_audits = [item for item in again["audit"] if item["action"] == "propose"]
+    assert len(propose_audits) == 2
+
+    refused = invoke_tool(
+        {
+            "action": "propose",
+            "order_id": order["id"],
+            "section_proposals": [{"section": "contract", "key": "liability", "value": ""}],
+        },
+        fio="Юрист",
+    )
+    assert refused["ok"] is False
+    assert refused["proposed"] == 0
+    assert refused["skipped"]
+    assert "stage_passports" not in refused
+    assert "findings" not in refused
+
+
 def test_approved_file_cannot_be_deleted_and_duplicate_is_rejected():
     db = _db()
     order = _create(db)
@@ -1332,8 +1404,10 @@ def test_invoke_tool_read_full_auto_prepare_propose_and_draft_1c(monkeypatch, tm
         },
         fio="Агент КБ",
     )
+    assert prop_res["ok"] is True
     assert prop_res["proposed"] == 3
-    finding_kinds = {f["field"]: f["kind"] for f in prop_res["findings"]}
+    assert "stage_passports" not in prop_res
+    finding_kinds = {f["field"]: f["kind"] for f in prop_res["drafts"]}
     assert finding_kinds["section:technical.limits"] == "section"
     assert finding_kinds[f"check:{kb_check['id']}"] == "check"
     assert finding_kinds["risk:draft"] == "risk"

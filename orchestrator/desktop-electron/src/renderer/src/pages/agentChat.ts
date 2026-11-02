@@ -33,10 +33,11 @@ export function orderConversationPrefix(orderId: string, role: string): string {
   return `eo:${orderId}:${role}:`
 }
 
-export function orderConversationKey(orderId: string, role: string, stage: string): string {
-  return `${orderConversationPrefix(orderId, role)}${stage || 'none'}`
+export function orderConversationKey(orderId: string, role: string, stage: string, fresh = ''): string {
+  const base = `${orderConversationPrefix(orderId, role)}${stage || 'none'}`
+  return fresh ? `${base}~${fresh}` : base
 }
 
 export function stageOfConversation(key: string): string {
-  return key.split(':').slice(3).join(':')
+  return key.split(':').slice(3).join(':').split('~')[0]
 }

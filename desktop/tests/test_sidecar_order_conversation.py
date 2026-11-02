@@ -12,6 +12,8 @@ sys.path.insert(0, str(PYBRIDGE))
 
 from agent_sidecar import (  # noqa: E402
     Sidecar,
+    _journal_agent_messages,
+    _order_memory_from_runs,
     _order_reread_tool,
     _order_restart_after_reply,
     _order_turn_answer,
@@ -91,11 +93,52 @@ def test_order_turn_with_questions_is_finished() -> None:
 
 
 def test_followup_prompt_does_not_restart_case() -> None:
-    prompt = build_order_followup_prompt("Конечный заказчик — АО Ромашка")
-    assert "АО Ромашка" in prompt
+    prompt = build_order_followup_prompt(
+        "оставь поле пустым",
+        prior="Санкции в деле не заполнены. Какой текст записать?",
+    )
+    assert "оставь поле пустым" in prompt
+    assert "Санкции в деле не заполнены" in prompt
     assert "Инструменты не вызывай" in prompt
+    assert "empty=true" in prompt
+    assert "не заполнять" in prompt
     assert "список вопросов" in prompt
     assert "WORK_RESULT" not in prompt
+
+
+def test_same_message_reuses_the_previous_answer() -> None:
+    runs = [
+        SimpleNamespace(
+            conversation_key="eo:1:legal:calc",
+            message="оставь поле пустым",
+            answer="Поле санкций оставлено пустым. Принять можно кнопкой «Принять».",
+            status="ok",
+        ),
+        SimpleNamespace(
+            conversation_key="eo:1:legal:calc",
+            message="Какие санкции?",
+            answer="В деле текста санкций нет.",
+            status="ok",
+        ),
+    ]
+    prior, reused = _order_memory_from_runs(runs, "eo:1:legal:calc", "оставь поле пустым")
+    assert reused.startswith("Поле санкций")
+    assert "текста санкций нет" in prior
+    fresh_prior, fresh_reused = _order_memory_from_runs(runs, "eo:1:legal:calc", "А какой срок?")
+    assert fresh_reused == ""
+    assert fresh_prior
+
+
+def test_journal_joins_token_fragments() -> None:
+    lines = _journal_agent_messages(
+        [
+            {"type": "assistant", "text": "стой"},
+            {"type": "assistant", "text": "кам"},
+            {"type": "assistant", "text": "и"},
+            {"type": "final", "text": "стойками"},
+        ]
+    )
+    assert lines == ["стойками"]
 
 
 def test_continue_prompt_does_not_reopen_the_case() -> None:
@@ -126,7 +169,25 @@ def test_turn_answer_drops_the_launch_log() -> None:
     )
     assert "Запускаю локальный" not in _strip_run_chrome(seen)
     assert "Инструменты Constructor" not in _strip_run_chrome(seen)
-    assert _order_turn_answer(reply, seen) == reply
+    shown = _order_turn_answer(reply, seen)
+    assert "Запускаю локальный" not in shown
+    assert "Пустое поле: НДС." in shown
+    assert "\n\n" in shown
+
+
+def test_glued_service_reply_is_split_into_paragraphs() -> None:
+    raw = (
+        "По службе «Производство» уже есть состав UFG-F-050-Х5-C1TP, срок поставки30 дней и самовывоз. "
+        "К принятию по службе2 черновика. Чек-лист этапа «Расчёт» —0/5. "
+        "В пути1С нет нормативов. Какие нормативы действуют?"
+    )
+    shown = _order_turn_answer(raw, raw)
+    assert "поставки 30" in shown
+    assert "службе 2" in shown
+    assert "— 0/5" in shown
+    assert "пути 1С" in shown
+    assert "Х5" in shown
+    assert shown.count("\n\n") >= 3
 
 
 def test_second_regulation_opening_stops_after_the_survey() -> None:

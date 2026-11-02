@@ -466,6 +466,7 @@ class CursorSdkBridge:
         should_stop: Callable[[], bool] | None = None,
         confirm_writes: bool = False,
         restrict_builtins: bool = False,
+        order_case_only: bool = False,
         images: list[dict[str, Any]] | None = None,
         stop_on_kpi_list: bool = True,
         kpi_allow_read: bool = False,
@@ -578,6 +579,7 @@ class CursorSdkBridge:
                         "resumeAgentId": agent_id or None,
                         "workflowId": workflow_id,
                         "restrictBuiltins": bool(restrict_builtins),
+                        "orderCaseOnly": bool(order_case_only),
                         "stopOnKpiList": bool(stop_on_kpi_list),
                         "kpiAllowRead": bool(kpi_allow_read),
                         "images": [
@@ -1119,7 +1121,10 @@ class CursorSdkBridge:
         target = (out_dir / filename).resolve()
         if base != target and base not in target.parents:
             return result
-        target.write_text(raw, encoding="utf-8")
+        target.write_text(
+            json.dumps(result, ensure_ascii=False, default=str, indent=2),
+            encoding="utf-8",
+        )
         rel_path = target.relative_to(base).as_posix()
         next_step = EXTERNALIZED_NEXT_STEP
         if tool == "external_order.case":

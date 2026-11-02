@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { createPortal } from 'react-dom'
 import { agentClient } from '../api/agent'
 import { api } from '../api/client'
 import type { AgentRunHistoryItem, WorkflowFileItem } from '../api/types'
@@ -9,7 +10,8 @@ import { fileTypeIconSrc } from '../utils/fileTypeIcon'
 import { categoryOf, FILE_CATEGORY_LABELS, formatFileWhen, formatSize } from './filesGrouping'
 import { isPersonalAgentWorkflowId } from '../workplace/personalAgent'
 import { parseIso, sameDay } from '../utils/calendar'
-import { type AgentChatContext, stageOfConversation } from './agentChat'
+import { type AgentChatContext } from './agentChat'
+import './orderAgentDialog.css'
 
 interface AgentRunPageProps {
   workflowId: string
@@ -135,6 +137,7 @@ export function AgentRunPage({
   const running = Boolean(state?.running)
   const awaiting = Boolean(state?.pendingQuestion || state?.pendingHitl)
   const [rightTab, setRightTab] = useState<RightTab>(chat ? 'order' : 'files')
+  const [showWork, setShowWork] = useState(false)
   const [pastRuns, setPastRuns] = useState<AgentRunHistoryItem[]>([])
   const [historyNote, setHistoryNote] = useState('')
   const conversationOpenedRef = useRef(false)
@@ -379,7 +382,7 @@ export function AgentRunPage({
   }, [input, resizeComposer])
 
   useEffect(() => {
-    if (!running) return
+    if (!running || chat) return
     const onKey = (event: KeyboardEvent): void => {
       if (event.key !== 'Escape') return
       event.preventDefault()
@@ -387,7 +390,18 @@ export function AgentRunPage({
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [running, stop])
+  }, [running, stop, chat])
+
+  useEffect(() => {
+    if (!chat) return
+    const onKey = (event: KeyboardEvent): void => {
+      if (event.key !== 'Escape') return
+      event.preventDefault()
+      onBack()
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [chat, onBack])
 
   useEffect(() => {
     const host = leftRef.current
@@ -447,6 +461,12 @@ export function AgentRunPage({
   }, [state?.items, personalAgent])
 
   const doneRows = useMemo(() => doneInConversation(state?.items ?? []), [state?.items])
+  const dialogItems = useMemo(() => {
+    if (showWork) return feedItems
+    return feedItems.filter(
+      (item) => item.kind === 'message' || item.kind === 'result' || (item.kind === 'system' && item.tone === 'error')
+    )
+  }, [feedItems, showWork])
 
   const statusText = running
     ? state?.status || 'Агент работает…'
@@ -454,24 +474,151 @@ export function AgentRunPage({
       ? 'Агент ждёт ваш ответ'
       : 'Готов к работе'
 
+  if (chat) {
+    const progressLabel = running
+      ? state?.status && state.status !== 'Агент работает…'
+        ? state.status
+        : 'Агент работает'
+      : showWork
+        ? 'Ход работы показан'
+        : 'Ход работы скрыт'
+    const badge = running ? 'Работает' : awaiting ? 'Ждёт ответа' : readOnly ? 'Только просмотр' : ''
+    return createPortal(
+      <div className="modal-overlay" onClick={onBack} role="presentation">
+        <div
+          className="modal-card order-agent-dialog"
+          role="dialog"
+          aria-modal="true"
+          aria-label={title || 'Ход работы агента'}
+          onClick={(event) => event.stopPropagation()}
+        >
+          <div className="oad-bar">
+            <button type="button" className="oad-back" onClick={onBack}>
+              <span aria-hidden="true">‹</span>
+              Закрыть
+            </button>
+            <h2 title={title}>{title || 'Запуск агента'}</h2>
+            {badge ? <span className={`oad-badge${running ? ' busy' : ''}`}>{badge}</span> : null}
+          </div>
+          <div className="oad-config">
+            <span className="oad-config-mark" aria-hidden="true" />
+            <span className="oad-config-text">
+              <span className="oad-config-label">Конфигурация запуска</span>
+              <strong>{chat.order.roleLabel || title}</strong>
+            </span>
+            <span className="oad-config-meta">
+              {chat.order.code} · {chat.order.stageLabel}
+            </span>
+            <span className="oad-config-meta">Агент Constructor</span>
+          </div>
+          <button
+            type="button"
+            className={`oad-progress${running ? ' running' : ''}`}
+            aria-expanded={showWork}
+            title="Показать или скрыть ход работы агента"
+            onClick={() => setShowWork((value) => !value)}
+          >
+            {running ? <span className="oad-spinner" /> : null}
+            <span className={running ? 'oad-shimmer' : ''}>{progressLabel}</span>
+            <span className={`oad-chevron${showWork ? ' open' : ''}`} aria-hidden="true" />
+          </button>
+          <div className="oad-scroll">
+            <AgentFeed
+              items={dialogItems}
+              status={state?.status ?? ''}
+              running={running}
+              pendingQuestion={state?.pendingQuestion ?? null}
+              pendingHitl={state?.pendingHitl ?? null}
+              hideRunningStatus
+              emptyHint=""
+              allowQuestionFiles
+              onAnswer={(requestId, value, filePaths) => {
+                runs.answer(entryKey, requestId, value, filePaths)
+                if (filePaths && filePaths.length > 0) {
+                  recordSentAttachments(filePaths)
+                  window.setTimeout(() => {
+                    void refreshFiles()
+                  }, 400)
+                }
+              }}
+              onHitl={(requestId, approved) => runs.respondHitl(entryKey, requestId, approved)}
+              onSkip={() => runs.skip(entryKey)}
+            />
+            {historyNote ? <div className="oad-note">{historyNote}</div> : null}
+          </div>
+          {readOnly ? null : (
+            <div className="oad-dock">
+              {attachments.length > 0 ? (
+                <div className="oad-files">
+                  {attachments.map((path) => (
+                    <span key={path} className="oad-file">
+                      <span>{path.split(/[\\/]/).pop() || path}</span>
+                      <button type="button" onClick={() => removeAttachment(path)} aria-label="Убрать файл">
+                        ×
+                      </button>
+                    </span>
+                  ))}
+                </div>
+              ) : null}
+              <div className="oad-composer">
+                <button type="button" className="oad-clip" title="Прикрепить файл" onClick={() => void pickFiles()}>
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                    <path d="M8 12.5 14.2 6.3a3 3 0 1 1 4.2 4.2l-8.4 8.5a4.5 4.5 0 0 1-6.4-6.4l8.1-8.1" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" />
+                  </svg>
+                </button>
+                <textarea
+                  ref={inputRef}
+                  rows={1}
+                  placeholder={running ? 'Агент работает — дождитесь ответа или остановите' : 'Продолжить диалог с агентом'}
+                  value={input}
+                  onChange={(event) => setInput(event.target.value)}
+                  onKeyDown={(event) => {
+                    if (event.key === 'Enter' && !event.shiftKey) {
+                      event.preventDefault()
+                      submit()
+                    }
+                  }}
+                />
+                {running ? (
+                  <button type="button" className="oad-send oad-stop" onClick={stop} aria-label="Остановить агента">
+                    <span />
+                  </button>
+                ) : (
+                  <button
+                    type="button"
+                    className="oad-send"
+                    disabled={!input.trim() && attachments.length === 0}
+                    onClick={submit}
+                    aria-label="Отправить"
+                  >
+                    ↑
+                  </button>
+                )}
+              </div>
+            </div>
+          )}
+          <div className="oad-status">
+            <span className={`oad-status-dot${running ? ' busy' : awaiting ? ' wait' : ''}`} />
+            <span>{statusText}</span>
+          </div>
+        </div>
+      </div>,
+      document.body
+    )
+  }
+
   return (
     <div className={`wf-page${personalAgent ? ' wf-page--orchestrator' : ''}`}>
       <div className="wf-topbar">
         <button className="wf-back" onClick={onBack}>
-          {chat ? `Назад к ${chat.order.code || 'заказу'}` : 'Назад'}
+          Назад
         </button>
         <div className="wf-title-block">
           <h1 className="wf-title">{title || (personalAgent ? 'Оркестратор' : 'Запуск агента')}</h1>
           {personalAgent ? <span className="wf-title-sub">Базовый агент</span> : null}
-          {chat ? (
-            <span className="wf-title-sub">
-              {chat.order.code} · {chat.order.stageLabel}
-              {readOnly ? ' · только просмотр' : ''}
-            </span>
-          ) : null}
         </div>
         <div className="wf-topbar-spacer" />
-        {onOpenHistory && !personalAgent && !chat && (
+        {onOpenHistory && !personalAgent && (
           <button className="wf-back" onClick={() => onOpenHistory(workflowId, title)}>
             История
           </button>
@@ -574,90 +721,12 @@ export function AgentRunPage({
 
         <div className="wf-right">
           <div className="wf-tabs">
-            {chat ? (
-              <>
-                <button className={`wf-tab${rightTab === 'order' ? ' active' : ''}`} onClick={() => setRightTab('order')}>
-                  Заказ
-                </button>
-                <button className={`wf-tab${rightTab === 'done' ? ' active' : ''}`} onClick={() => setRightTab('done')}>
-                  Сделано {doneRows.length}
-                </button>
-                <button className={`wf-tab${rightTab === 'past' ? ' active' : ''}`} onClick={() => setRightTab('past')}>
-                  Прошлые этапы {pastRuns.length}
-                </button>
-              </>
-            ) : null}
             <button className={`wf-tab${rightTab === 'files' ? ' active' : ''}`} onClick={() => setRightTab('files')}>
               Файлы за сегодня {files.length + sentAttachments.length}
             </button>
           </div>
           <div className="wf-right-body">
-            {chat && rightTab === 'order' ? (
-              <div className="wf-order">
-                <dl className="wf-order-facts">
-                  <dt>Заказ</dt>
-                  <dd>{chat.order.code}</dd>
-                  <dt>Заказчик</dt>
-                  <dd>{chat.order.customer || '—'}</dd>
-                  <dt>Изделие</dt>
-                  <dd>{chat.order.product || '—'}</dd>
-                  <dt>Этап</dt>
-                  <dd>{chat.order.stageLabel || '—'}</dd>
-                  <dt>Служба</dt>
-                  <dd>{chat.order.roleLabel || chat.order.role}</dd>
-                </dl>
-                {chat.order.blockers.length ? (
-                  <div className="wf-order-blockers">
-                    <h4>Что держит заказ</h4>
-                    <ul>
-                      {chat.order.blockers.map((item) => (
-                        <li key={item}>{item}</li>
-                      ))}
-                    </ul>
-                  </div>
-                ) : (
-                  <p className="wf-files-empty">Блокеров нет</p>
-                )}
-                <button type="button" className="wf-order-open" onClick={onBack}>
-                  Открыть карточку
-                </button>
-              </div>
-            ) : null}
-            {chat && rightTab === 'done' ? (
-              doneRows.length ? (
-                <ol className="wf-done">
-                  {doneRows.map((row) => (
-                    <li key={row.id} className={row.error ? 'is-error' : ''}>
-                      <b>{row.text}</b>
-                      {row.detail ? <span>{firstLine(row.detail, 200)}</span> : null}
-                    </li>
-                  ))}
-                </ol>
-              ) : (
-                <div className="wf-files-empty">В этом разговоре агент ещё ничего не сделал</div>
-              )
-            ) : null}
-            {chat && rightTab === 'past' ? (
-              pastRuns.length ? (
-                <ul className="wf-past">
-                  {pastRuns.map((item) => (
-                    <li key={item.runId}>
-                      <details>
-                        <summary>
-                          <b>{chat.stageLabels?.[stageOfConversation(item.conversationKey || '')] || stageOfConversation(item.conversationKey || '')}</b>
-                          <span>{formatFileWhen(item.startedAt)}</span>
-                          <span>{firstLine(item.message)}</span>
-                        </summary>
-                        <div className="wf-past-answer">{(item.answer || item.summary || 'Ответа нет').trim()}</div>
-                      </details>
-                    </li>
-                  ))}
-                </ul>
-              ) : (
-                <div className="wf-files-empty">На прошлых этапах разговоров не было</div>
-              )
-            ) : null}
-            {rightTab !== 'files' ? null : files.length === 0 && sentAttachments.length === 0 ? (
+            {files.length === 0 && sentAttachments.length === 0 ? (
               <div className="wf-files-empty">Сегодня файлов пока нет</div>
             ) : (
               <div className="wf-file-groups">

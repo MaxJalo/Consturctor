@@ -285,7 +285,7 @@ function agentBrief(order: Order, role: string, step?: SimplifiedStep, extra = '
       : 'Вопроса нет: кратко, что уже есть по службе, и одно пустое поле.',
     [
       'Шаблоны, один ход. Ход мыслей в чат не писать.',
-      `Первый ход: один external_order.case(action="auto_prepare", order_id="${order.id}", role="${role}"${stepArg}). Файлы и регламент не открывать. Ответ на вопрос, 3–6 строк.`,
+      `Первый ход: один external_order.case(action="auto_prepare", order_id="${order.id}", role="${role}"${stepArg}). Файлы и регламент не открывать. Ответ — отдельные абзацы через пустую строку: что уже есть, черновики к принятию, чек-лист, чего нет в 1С, один вопрос. Перед числом пробел.`,
       'Следующее сообщение: инструменты не вызывать. Если сотрудник сообщил факт — один propose и фраза, что принять можно кнопкой «Принять».',
       'Если ответа нет ни в деле, ни в known (путь 1С и опросный лист): одна фраза и один вопрос. Ход на этом кончается.',
       'Список вопросов, повтор черновиков и «сначала открою регламент» не писать.'
@@ -298,11 +298,11 @@ const RETURN_KEY = 'orch.external-order.return'
 type ReturnIntent = { orderId: string; page: CardPage }
 
 /** Чат помощника: разговор на заказ, службу и текущий этап; правая панель показывает этот заказ. */
-function chatContext(order: Order, role: string): AgentChatContext {
+function chatContext(order: Order, role: string, fresh = false): AgentChatContext {
   const passport = activePassport(buildStagePassports(order))
   const stage = passport?.id || order.status || 'none'
   return {
-    conversationKey: orderConversationKey(order.id, role, stage),
+    conversationKey: orderConversationKey(order.id, role, stage, fresh ? String(Date.now()) : ''),
     conversationPrefix: orderConversationPrefix(order.id, role),
     stageLabels: Object.fromEntries(LINE.map((step) => [step.id, step.label])),
     order: {
@@ -690,7 +690,7 @@ export function ExternalOrderTab({
         agent.workflow_id,
         agent.title || `ИИ-агент внешнего заказа · ${ROLE_NAME[role] || role}`,
         agentBrief(order, role, undefined, extra),
-        chatContext(order, role)
+        chatContext(order, role, true)
       )
     } catch (err) {
       setError(helperFailure(err, 'Помощник службы не запустился'))
@@ -2398,7 +2398,7 @@ function Card({
         agent.workflow_id,
         agent.title || 'ИИ-агент внешних закупок',
         agentBrief(order, 'omto'),
-        chatContext(order, 'omto')
+        chatContext(order, 'omto', true)
       )
     } catch (err) {
       setPathNote(helperFailure(err, 'Помощник по закупке не запустился'))
@@ -2420,7 +2420,7 @@ function Card({
         agent.workflow_id,
         agent.title || 'ИИ-агент внешнего заказа',
         agentBrief(order, role, step),
-        chatContext(order, role)
+        chatContext(order, role, true)
       )
     } catch (err) {
       setPathNote(helperFailure(err, 'Помощник не запустился'))

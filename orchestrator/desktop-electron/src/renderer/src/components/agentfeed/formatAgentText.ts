@@ -185,9 +185,27 @@ export function draftToMarkdown(draft: DesignDraft): string {
   return lines.join('\n')
 }
 
+/** Ответ службы внешнего заказа, склеенный в одну строку, показывается абзацами. */
+export function readableServiceReply(text: string): string {
+  const raw = (text || '').replace(/\r\n/g, '\n').trim()
+  if (!raw || raw.includes('\n\n')) return raw
+  if (!/Чек-лист|К принятию|По службе|В пути/.test(raw)) return raw
+  const spaced = raw
+    .replace(/(?<![-0-9A-Za-zА-Яа-яЁё])([A-Za-zА-Яа-яЁё]{4,})(\d)/g, '$1 $2')
+    .replace(/([—–])(\d)/g, '$1 $2')
+    .replace(/([.!?])(?=[A-Za-zА-Яа-яЁё«])/g, '$1 ')
+    .replace(/,(?=[A-Za-zА-Яа-яЁё«])/g, ', ')
+  const parts = spaced
+    .split(/(?<=[.!?])\s+/)
+    .map((part) => part.trim())
+    .filter(Boolean)
+  return parts.length > 1 ? parts.join('\n\n') : spaced
+}
+
 export function presentAgentText(text: string): string {
-  const objects = extractJsonObjects(text)
-  if (!objects.length) return text
+  const readable = readableServiceReply(text)
+  const objects = extractJsonObjects(readable)
+  if (!objects.length) return readable
   const verdicts = objects.map((item) => formatVerdictMarkdown(item.data))
   if (verdicts.every(Boolean)) {
     const body = verdicts.join('\n\n')
@@ -196,7 +214,7 @@ export function presentAgentText(text: string): string {
   }
   const extracted = objects[0]
   const draft = parseDesignDraft(extracted.data)
-  if (!draft) return text
+  if (!draft) return readable
   const decoded = draftToMarkdown(draft)
   return extracted.prefix ? `${extracted.prefix}\n\n${decoded}` : decoded
 }
