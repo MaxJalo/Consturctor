@@ -11,20 +11,30 @@ if str(PYBRIDGE) in sys.path:
 sys.path.insert(0, str(PYBRIDGE))
 
 from agent_sidecar import (  # noqa: E402
+    OrderStream,
     Sidecar,
     _journal_agent_messages,
+    _order_case_read,
+    _order_restart_after_reply,
+    _order_sentence_visible,
+    _tool_specs_for_workflow,
     _order_memory_from_runs,
     _order_reread_tool,
     _order_reply_ready,
     _order_restart_after_reply,
     _order_turn_answer,
+    _space_order_text,
     _run_answer_done,
     _strip_run_chrome,
     _turn_answer_done,
     _with_order_brief,
 )
 from app.api_client import ApiError, _parse_agent_run  # noqa: E402
-from app.sdk_agent.prompt import build_order_continue_prompt, build_order_followup_prompt  # noqa: E402
+from app.sdk_agent.prompt import (  # noqa: E402
+    build_order_continue_prompt,
+    build_order_followup_prompt,
+    build_sdk_prompt,
+)
 
 
 class _Api:
@@ -93,6 +103,89 @@ def test_order_turn_with_questions_is_finished() -> None:
     assert _turn_answer_done(answer, hide_tests=False) is False
 
 
+def test_case_scenario_starts_with_its_own_calculation() -> None:
+    task = "Сценарий дела: Что блокирует (scenario=blockers)\n\nЧто блокирует переход."
+    prompt = build_sdk_prompt(SimpleNamespace(title="ИИ-агент внешнего заказа · КС"), task)
+    follow = build_order_followup_prompt(task, prior="Сотрудник: какая цена?\nПомощник: Цены в деле нет.")
+    for text in (prompt, follow):
+        assert "action=scenario" in text
+        assert "result_file" in text
+        assert "office.read_file" in text
+        assert "propose" in text
+        assert "не факт" in text
+        assert "пробел" in text
+    assert "Цены в деле нет" in follow
+    plain = build_order_followup_prompt("оставь поле пустым")
+    assert "Инструменты не вызывай" in plain
+    assert "auto_prepare" in plain
+    assert "result_file" in plain
+
+
+def test_stream_chunks_keep_spaces_and_lines() -> None:
+    stream = OrderStream()
+    shown = [
+        stream.take(chunk)
+        for chunk in ["По", " службе", " ОМТО", " на этапе", " «Расчёт» уже есть путь 1С.", " Срок", " поставки 60 дн."]
+    ]
+    shown.append(stream.take("", flush=True))
+    text = "\n\n".join(part for part in shown if part)
+    assert "По службе ОМТО на этапе «Расчёт» уже есть путь 1С." in text
+    assert "Срок поставки 60 дн." in text
+    assert "Послужбе" not in text
+    assert "\n\nслужбе" not in text
+
+
+def test_stream_drops_the_turn_plan() -> None:
+    stream = OrderStream()
+    assert stream.take("Сначала сниму схему вызова, затем подготовлю дело.\n") == ""
+    assert not _order_sentence_visible("Сначаласнимусхемуделаиподготовлюкарточку ОМТО по заказу.", set())
+    assert not _order_sentence_visible("Снимаю схему дела и готовлю карточку ОМТО по заказу.", set())
+
+
+def test_second_case_read_in_a_turn_is_caught() -> None:
+    call = {"tool": "external_order.case", "arguments": {"action": "auto_prepare"}}
+    assert _order_case_read(call)
+    assert not _order_case_read({"tool": "external_order.case", "arguments": {"action": "propose"}})
+    assert not _order_case_read({"tool": "external_order.case", "arguments": {"action": "read_full"}})
+    assert not _order_case_read({"tool": "external_order.case", "arguments": {"action": "scenario"}})
+    prior = (
+        "По службе ОМТО на этапе «Расчёт» заказа ВЗ-0026 уже есть путь 1С и опросный лист. "
+        "Чек-лист этапа 5 из 5. Черновиков к принятию по службе 2. Пустое поле: заказ клиента. "
+        "Заказчик ИНФРАСТРУКТУРА ТК ООО, ИНН 7734257891."
+    )
+    assert _order_restart_after_reply(prior, "Сначаласнимусхемуделаиподготовлюкарточку")
+
+
+def test_order_prompt_leads_with_the_order_and_the_case_tool() -> None:
+    task = "Заказ ВЗ-0026 (order_id=abc), заказчик Завод.\n\nВопроса нет."
+    prompt = build_sdk_prompt(SimpleNamespace(title="ИИ-агент внешнего заказа · Коммерческая служба"), task)
+    assert prompt.index("order_id=abc") < prompt.index("action=auto_prepare")
+    assert "Не пиши, что инструмента нет" in prompt
+    record = SimpleNamespace(
+        id="wf-ks",
+        title="ИИ-агент внешнего заказа · Коммерческая служба",
+        notes="",
+        local_run={"playbook": {"tools": ["users.current"], "steps": []}},
+    )
+    specs = _tool_specs_for_workflow(record) or []
+    names = {str(item.get("name") or "") for item in specs}
+    assert {"office.read_file", "onec.search_documents", "askQuestion", "excel.read_workbook"} <= names
+    assert not names & {"workspace.powershell_run", "code.run_python", "msproject.build_plan"}
+    case = next(item for item in specs if item.get("name") == "external_order.case")
+    action = (case.get("inputSchema") or {}).get("properties", {}).get("action", {})
+    assert "auto_prepare" in str(case.get("description") or "")
+    assert "auto_prepare" in str(action.get("description") or "")
+    assert "role" in (case.get("inputSchema") or {}).get("properties", {})
+    repair = build_order_followup_prompt(
+        "какая цена",
+        prior="инструмента external_order.case на платформе нет, вызов auto_prepare не выполнен",
+        opening="Заказ ВЗ-0026 (order_id=abc). role=ks.",
+    )
+    assert "order_id=abc" in repair
+    assert "action=auto_prepare" in repair
+    assert "Инструменты не вызывай" not in repair
+
+
 def test_followup_prompt_does_not_restart_case() -> None:
     prompt = build_order_followup_prompt(
         "оставь поле пустым",
@@ -101,13 +194,15 @@ def test_followup_prompt_does_not_restart_case() -> None:
     assert "оставь поле пустым" in prompt
     assert "Санкции в деле не заполнены" in prompt
     assert "Инструменты не вызывай" in prompt
+    assert "eo-ai-1" in prompt
+    assert "Не сливай слова" in prompt
     assert "empty=true" in prompt
     assert "не заполнять" in prompt
     assert "список вопросов" in prompt
     assert "WORK_RESULT" not in prompt
 
 
-def test_same_message_reuses_the_previous_answer() -> None:
+def test_conversation_memory_keeps_the_turns_in_order() -> None:
     runs = [
         SimpleNamespace(
             conversation_key="eo:1:legal:calc",
@@ -123,11 +218,10 @@ def test_same_message_reuses_the_previous_answer() -> None:
         ),
     ]
     prior, reused = _order_memory_from_runs(runs, "eo:1:legal:calc", "оставь поле пустым")
-    assert reused.startswith("Поле санкций")
+    assert reused == ""
+    assert prior.index("Сотрудник: Какие санкции?") < prior.index("Помощник: Поле санкций")
     assert "текста санкций нет" in prior
-    fresh_prior, fresh_reused = _order_memory_from_runs(runs, "eo:1:legal:calc", "А какой срок?")
-    assert fresh_reused == ""
-    assert fresh_prior
+    assert _order_memory_from_runs(runs, "eo:2:legal:calc", "А какой срок?") == ("", "")
 
 
 def test_journal_joins_token_fragments() -> None:
@@ -149,8 +243,9 @@ def test_continue_prompt_does_not_reopen_the_case() -> None:
     assert "auto_prepare" in prompt
 
 
-def test_reread_after_answer_is_a_file_tool() -> None:
-    assert _order_reread_tool({"tool": "Read", "arguments": {}})
+def test_reread_after_answer_is_only_a_second_prepare() -> None:
+    assert not _order_reread_tool({"tool": "Read", "arguments": {}})
+    assert not _order_reread_tool({"tool": "external_order.case", "arguments": {"action": "read_full"}})
     assert _order_reread_tool({"tool": "external_order.case", "arguments": {"action": "auto_prepare"}})
     assert not _order_reread_tool({"tool": "external_order.case", "arguments": {"action": "propose"}})
 
@@ -174,6 +269,20 @@ def test_turn_answer_drops_the_launch_log() -> None:
     assert "Запускаю локальный" not in shown
     assert "Пустое поле: НДС." in shown
     assert "\n\n" in shown
+
+
+def test_glued_russian_words_get_spaces() -> None:
+    raw = (
+        "Покоммерческойслужбевделеужеестьзаказ ВЗ-0026заказчика ИНФРАСТРУКТУРАТК ООО. "
+        "Кпринятию 8черновиковпослужбе. Чек-лист этапа «Расчёт» закрыт: 5из 5."
+    )
+    shown = _space_order_text(raw)
+    assert "По коммерческой службе в деле уже есть заказ" in shown
+    assert "ИНФРАСТРУКТУРА ТК" in shown
+    assert "К принятию" in shown
+    assert "8 черновиков по службе" in shown
+    assert "5 из 5" in shown
+    assert "Нижегороднефтеоргсинтез" in _space_order_text("Нижегороднефтеоргсинтез")
 
 
 def test_glued_service_reply_is_split_into_paragraphs() -> None:

@@ -186,12 +186,52 @@ export function draftToMarkdown(draft: DesignDraft): string {
 }
 
 const SERVICE_REPLY = /Чек-лист|К принятию|По службе|В пути|черновик/i
-const NARRATION = /^(?:сначала\s+(?:сниму|открою|посмотрю|сверю)|вызываю подготовку|сервер оборвал|повторяю подготовку|схема получена|готовлю дело|сверяю дело|беру сводку)\b/i
+const NARRATION = /^(?:сначала\s+(?:сниму|открою|посмотрю|сверю)|вызываю подготовку|снимаю дело|сервер оборвал|повторяю подготовку|схема получена|готовлю дело|сверяю дело|беру сводку)\b/i
+const GLUED_WORDS = new Set([
+  'по', 'коммерческой', 'коммерческая', 'службе', 'служба', 'службы', 'в', 'деле', 'уже', 'есть',
+  'заказ', 'заказа', 'заказчика', 'заказчик', 'изделие', 'состав', 'продажа', 'облагается',
+  'валюта', 'руб', 'срок', 'срока', 'поставки', 'поставка', 'дн', 'дней', 'самовывоз', 'конечный',
+  'действует', 'до', 'оплата', 'из', 'к', 'принятию', 'черновиков', 'черновика', 'чек', 'лист',
+  'этапа', 'этап', 'закрыт', 'блокировок', 'нет', 'пути', 'клиента', 'дата', 'окончания', 'сделки',
+  'пришла', 'как', 'согласованная', 'скидка', 'скидки', 'опросном', 'листе', 'указана', 'какая',
+  'или', 'ее', 'снимаю', 'дело', 'одним', 'вызовом', 'подготовки', 'вызываю', 'подготовку',
+  'инфраструктура', 'тк', 'ткп', 'нп', 'ооо', 'ндс', 'инн', 'и', 'с', 'о', 'не', 'на', 'от', 'за'
+])
+
+function segmentGluedRun(token: string): string {
+  const folded = token.toLowerCase().replace(/ё/g, 'е')
+  const memo = new Map<number, string[] | null>()
+  memo.set(folded.length, [])
+  const solve = (start: number): string[] | null => {
+    if (memo.has(start)) return memo.get(start) ?? null
+    let found: string[] | null = null
+    const limit = Math.min(folded.length, start + 24)
+    for (let end = limit; end > start; end -= 1) {
+      if (!GLUED_WORDS.has(folded.slice(start, end))) continue
+      const rest = solve(end)
+      if (rest) {
+        found = [token.slice(start, end), ...rest]
+        break
+      }
+    }
+    memo.set(start, found)
+    return found
+  }
+  const parts = solve(0)
+  if (!parts || parts.length < 2) return token
+  return parts.join(' ')
+}
+
+export function separateGluedWords(text: string): string {
+  return (text || '').replace(/[А-Яа-яЁё]{8,}/g, (run) => segmentGluedRun(run))
+}
 const STAGE_ONLY = /^(?:договор|ткп|расчёт|расчет)[:.]?$/i
 const KEEP_FACT = /не привед|кнопк|закрыт/i
 
 function spaceOrderText(text: string): string {
-  let cleaned = text
+  let cleaned = separateGluedWords(text)
+    .replace(/(\d)(из|до|по|на|от|за|со)(?=\s|\d|$)/gi, '$1 $2 ')
+    .replace(/(\d)(?=[А-Яа-яЁё]{4})/g, '$1 ')
     .replace(/([а-яё])([А-ЯЁ])/g, '$1 $2')
     .replace(/(?<![а-яёa-z])договор\s*[:.]?\s*(?=сначала|вызываю|сервер|повторяю|схема|готовлю|сверяю)/gi, '')
     .replace(/(?<![-0-9A-Za-zА-Яа-яЁё])([A-Za-zА-Яа-яЁё]{4,})(\d)/g, '$1 $2')
@@ -257,7 +297,7 @@ export function readableServiceReply(text: string): string {
 }
 
 export function presentAgentText(text: string): string {
-  const readable = readableServiceReply(text)
+  const readable = readableServiceReply(separateGluedWords(text))
   const objects = extractJsonObjects(readable)
   if (!objects.length) return readable
   const verdicts = objects.map((item) => formatVerdictMarkdown(item.data))

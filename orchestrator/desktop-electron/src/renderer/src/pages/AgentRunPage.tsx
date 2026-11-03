@@ -229,7 +229,24 @@ export function AgentRunPage({
     void runs
       .attachConversation(workflowId, key, title)
       .then(async (turns) => {
-        if (turns > 0 || chat.readOnly) return
+        const task = initialMessage.trim()
+        const scenarioLine = task.split('\n').find((line) => line.startsWith('Сценарий дела:')) || ''
+        const scenario = Boolean(scenarioLine)
+        const shown = scenario ? scenarioLine.replace(/\s*\(scenario=[a-z_]+\)/, '') : briefLabel(chat)
+        const askScenario = (conversationKey: string): void => {
+          if (!scenario || chat.readOnly || !task) return
+          runs.startRun({
+            workflowId,
+            title,
+            message: task,
+            shownMessage: shown,
+            conversationKey
+          })
+        }
+        if (turns > 0 || chat.readOnly) {
+          askScenario(key)
+          return
+        }
         const rows = await api.listAgentRuns(workflowId, { prefix })
         const latest = rows.find((item) => (item.conversationKey || '').startsWith(prefix))
         let active = key
@@ -237,15 +254,17 @@ export function AgentRunPage({
           active = latest.conversationKey
           if (active !== key) setBoundKey(active)
           const restored = await runs.attachConversation(workflowId, active, title)
-          if (restored > 0) return
+          if (restored > 0) {
+            askScenario(active)
+            return
+          }
         }
-        const task = initialMessage.trim()
         if (!task) return
         runs.startRun({
           workflowId,
           title,
           message: task,
-          shownMessage: briefLabel(chat),
+          shownMessage: shown,
           conversationKey: active
         })
       })

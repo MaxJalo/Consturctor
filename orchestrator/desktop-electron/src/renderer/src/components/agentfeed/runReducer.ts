@@ -281,7 +281,7 @@ function pushResult(items: FeedItem[], text: string): FeedItem[] {
     last.kind === 'message' &&
     last.role === 'agent' &&
     valuePlain.length > 80 &&
-    lastPlain === valuePlain
+    (lastPlain === valuePlain || lastPlain.includes(valuePlain))
   ) {
     return [...items.slice(0, -1), { kind: 'result', id: nextId('res'), text: value }]
   }

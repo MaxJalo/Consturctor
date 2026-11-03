@@ -25,10 +25,12 @@ from app.services.external_orders import (
     create_order,
     register_request,
     delete_order_file,
+    edit_order_file,
     get_order,
     import_onec_order,
     import_tkp_order,
     link_onec,
+    link_order_file,
     list_orders,
     make_plan,
     meta_for,
@@ -36,14 +38,23 @@ from app.services.external_orders import (
     publish_order_plan,
     recent_onec_orders,
     refresh_onec,
+    correct_finding,
     reject_finding,
     run_copilot,
+    save_order_text,
     search_onec,
     transition,
+    unlink_order_file,
     upload_order_file,
 )
 
 router = APIRouter(prefix="/external-orders", tags=["external-orders"])
+
+
+class OrderLineIn(BaseModel):
+    name: str = ""
+    qty: str = ""
+    amount: str = ""
 
 
 class OrderCreateIn(BaseModel):
@@ -53,6 +64,8 @@ class OrderCreateIn(BaseModel):
     contact: str = ""
     order_type: str = ""
     priority: str = ""
+    lines: list[OrderLineIn] = Field(default_factory=list)
+    terms: dict[str, str] = Field(default_factory=dict)
 
 
 class RegisterFileIn(BaseModel):
@@ -110,6 +123,24 @@ class FileIn(BaseModel):
     kind: str = "other"
     filename: str = ""
     content_base64: str = ""
+
+
+class FileLinkIn(BaseModel):
+    target: str = ""
+    relation: str = "attachment"
+
+
+class FileEditIn(BaseModel):
+    kind: str = ""
+    title: str = ""
+
+
+class FileTextIn(BaseModel):
+    kind: str = "correspondence"
+    title: str = ""
+    text: str = ""
+    target: str = ""
+    relation: str = "attachment"
 
 
 class PlanIn(BaseModel):
@@ -558,14 +589,29 @@ def get_order_file(
     db: Session = Depends(get_db),
 ) -> FileResponse:
     _ = auth
-    from app.services.external_order_plan import file_mime, plan_file_path
+    from app.services.external_order_case import stored_file
     from app.services.external_orders import _order
 
     try:
-        path = plan_file_path(_order(db, order_id), document_id)
+        path, mime, filename = stored_file(_order(db, order_id), document_id)
     except ExternalOrderError as exc:
         raise HTTPException(status_code=exc.status, detail=exc.detail) from exc
-    return FileResponse(path, media_type=file_mime(path), filename=path.name.split("_", 1)[-1])
+    return FileResponse(path, media_type=mime or "application/octet-stream", filename=filename)
+
+
+@router.post("/{order_id}/files/text")
+def post_file_text(
+    order_id: str,
+    body: FileTextIn,
+    as_role: str = Query(default=""),
+    auth: AuthContext = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> dict:
+    return _call(
+        lambda: save_order_text(
+            db, order_id, role=_role(auth, as_role, db), fio=auth.fio or "", fields=body.model_dump()
+        )
+    )
 
 
 @router.post("/{order_id}/files")
@@ -583,6 +629,42 @@ def post_file(
     )
 
 
+@router.post("/{order_id}/files/{document_id}/links")
+def post_file_link(
+    order_id: str,
+    document_id: str,
+    body: FileLinkIn,
+    as_role: str = Query(default=""),
+    auth: AuthContext = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> dict:
+    return _call(
+        lambda: link_order_file(
+            db,
+            order_id,
+            document_id,
+            role=_role(auth, as_role, db),
+            fio=auth.fio or "",
+            fields=body.model_dump(),
+        )
+    )
+
+
+@router.delete("/{order_id}/files/links/{link_id}")
+def delete_file_link(
+    order_id: str,
+    link_id: str,
+    as_role: str = Query(default=""),
+    auth: AuthContext = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> dict:
+    return _call(
+        lambda: unlink_order_file(
+            db, order_id, link_id, role=_role(auth, as_role, db), fio=auth.fio or ""
+        )
+    )
+
+
 @router.post("/{order_id}/files/{document_id}/approve")
 def post_approve_file(
     order_id: str,
@@ -594,6 +676,27 @@ def post_approve_file(
     return _call(
         lambda: approve_order_file(
             db, order_id, document_id, role=_role(auth, as_role, db), fio=auth.fio or ""
+        )
+    )
+
+
+@router.patch("/{order_id}/files/{document_id}")
+def patch_file(
+    order_id: str,
+    document_id: str,
+    body: FileEditIn,
+    as_role: str = Query(default=""),
+    auth: AuthContext = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> dict:
+    return _call(
+        lambda: edit_order_file(
+            db,
+            order_id,
+            document_id,
+            role=_role(auth, as_role, db),
+            fio=auth.fio or "",
+            fields=body.model_dump(),
         )
     )
 
@@ -831,17 +934,46 @@ def post_accept(
     )
 
 
+class FindingFeedback(BaseModel):
+    reason: str = ""
+    value: str = ""
+
+
 @router.post("/{order_id}/findings/{finding_id}/reject")
 def post_reject(
     order_id: str,
     finding_id: str,
+    body: FindingFeedback | None = None,
+    as_role: str = Query(default=""),
+    auth: AuthContext = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> dict:
+    reason = body.reason if body else ""
+    return _call(
+        lambda: reject_finding(
+            db, order_id, finding_id, role=_role(auth, as_role, db), fio=auth.fio or "", reason=reason
+        )
+    )
+
+
+@router.post("/{order_id}/findings/{finding_id}/correct")
+def post_correct(
+    order_id: str,
+    finding_id: str,
+    body: FindingFeedback,
     as_role: str = Query(default=""),
     auth: AuthContext = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> dict:
     return _call(
-        lambda: reject_finding(
-            db, order_id, finding_id, role=_role(auth, as_role, db), fio=auth.fio or ""
+        lambda: correct_finding(
+            db,
+            order_id,
+            finding_id,
+            role=_role(auth, as_role, db),
+            fio=auth.fio or "",
+            value=body.value,
+            reason=body.reason,
         )
     )
 

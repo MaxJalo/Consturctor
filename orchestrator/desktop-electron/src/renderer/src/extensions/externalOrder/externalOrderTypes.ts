@@ -42,6 +42,7 @@ export type ExternalOrderBrief = {
   open_diffs_count?: number
   draft_findings_count?: number
   waiting_roles?: string[]
+  attention?: { role: string; kind: string; text: string }[]
 }
 
 export type ExternalOrderCheck = {
@@ -283,6 +284,18 @@ export type ExternalOrder = ExternalOrderBrief & {
     file_name?: string
     approved?: boolean
     owner_role?: string
+    anchor?: string
+    links?: { id: string; relation: string; relation_label: string; target_id: string; target: string }[]
+    backlinks?: { id: string; relation: string; relation_label: string; source_id: string; source: string }[]
+  }[]
+  document_links?: {
+    id: string
+    from_id: string
+    from: string
+    relation: string
+    relation_label: string
+    to_id: string
+    to: string
   }[]
   gaps?: {
     id: string

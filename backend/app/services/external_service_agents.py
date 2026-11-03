@@ -12,10 +12,41 @@ from app.models.workflow import Workflow
 from app.services.external_orders import ROLES, is_zhalybin
 from app.services.triggers.service import workflow_is_deleted
 
+# Запись (1С, письмо, чат) всё равно идёт через подтверждение сотрудника.
 TOOLS = [
     "external_order.case",
     "onec.docflow_document_create",
     "users.current",
+    "users.list",
+    "get_current_date",
+    "askQuestion",
+    "office.read_file",
+    "office.format_document",
+    "excel.list_files",
+    "excel.read_workbook",
+    "excel.create_workbook",
+    "excel.edit_workbook",
+    "report.export_document",
+    "onec.search_documents",
+    "onec.get_document_card",
+    "onec.list_attachments",
+    "onec.read_attachment",
+    "onec.download_artifact",
+    "onec.odata_catalog",
+    "onec.odata_get",
+    "onec.search_tasks",
+    "onec.get_task_card",
+    "onec.docflow_tasks",
+    "onec.position_holders",
+    "turboproject.search_projects",
+    "turboproject.get_project",
+    "turboproject.get_project_tasks",
+    "turboproject.get_project_metrics",
+    "outlook.search_mail",
+    "outlook.fetch_message",
+    "email.create_draft",
+    "calendar.show_meetings",
+    "web_search",
 ]
 MODEL_PARAMS: list[dict[str, str]] = []
 

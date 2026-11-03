@@ -963,6 +963,7 @@ async function runAgent(command: RunCommand): Promise<void> {
               }
             : command.orderCaseOnly
             ? {
+                // Read and Grep stay: read_full and 1C answers land in result_file.
                 disallowedTools: [
                   "shell",
                   "edit",
@@ -970,8 +971,6 @@ async function runAgent(command: RunCommand): Promise<void> {
                   "applyAgentDiff",
                   "glob",
                   "ls",
-                  "grep",
-                  "read",
                   "task",
                 ],
               }

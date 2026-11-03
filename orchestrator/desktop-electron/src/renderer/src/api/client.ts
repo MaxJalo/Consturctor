@@ -2555,7 +2555,16 @@ export class ApiClient {
   }
 
   async createExternalOrder(
-    body: { customer: string; product: string; inn?: string; contact?: string; order_type?: string; priority?: string },
+    body: {
+      customer: string
+      product?: string
+      inn?: string
+      contact?: string
+      order_type?: string
+      priority?: string
+      lines?: { name: string; qty: string; amount: string }[]
+      terms?: Record<string, string>
+    },
     asRole = ''
   ): Promise<ExternalOrder> {
     return this.request('POST', '/api/v1/external-orders', {
@@ -2656,11 +2665,25 @@ export class ApiClient {
     )
   }
 
-  async rejectExternalFinding(id: string, findingId: string, asRole = ''): Promise<ExternalOrder> {
+  async rejectExternalFinding(id: string, findingId: string, asRole = '', reason = ''): Promise<ExternalOrder> {
     return this.request(
       'POST',
       `/api/v1/external-orders/${encodeURIComponent(id)}/findings/${encodeURIComponent(findingId)}/reject`,
-      { params: asRole ? { as_role: asRole } : undefined, timeoutMs: 20_000 }
+      { body: { reason }, params: asRole ? { as_role: asRole } : undefined, timeoutMs: 20_000 }
+    )
+  }
+
+  async correctExternalFinding(
+    id: string,
+    findingId: string,
+    value: string,
+    asRole = '',
+    reason = ''
+  ): Promise<ExternalOrder> {
+    return this.request(
+      'POST',
+      `/api/v1/external-orders/${encodeURIComponent(id)}/findings/${encodeURIComponent(findingId)}/correct`,
+      { body: { value, reason }, params: asRole ? { as_role: asRole } : undefined, timeoutMs: 20_000 }
     )
   }
 
@@ -2751,6 +2774,18 @@ export class ApiClient {
     })
   }
 
+  async saveExternalText(
+    id: string,
+    body: { kind: string; title: string; text: string; target?: string; relation?: string },
+    asRole = ''
+  ): Promise<ExternalOrder> {
+    return this.request('POST', `/api/v1/external-orders/${encodeURIComponent(id)}/files/text`, {
+      body,
+      params: asRole ? { as_role: asRole } : undefined,
+      timeoutMs: 60_000
+    })
+  }
+
   async uploadExternalFile(
     id: string,
     body: { kind: string; filename: string; content_base64: string },
@@ -2763,12 +2798,57 @@ export class ApiClient {
     })
   }
 
+  async linkExternalFile(
+    id: string,
+    documentId: string,
+    body: { target: string; relation: string },
+    asRole = ''
+  ): Promise<ExternalOrder> {
+    return this.request(
+      'POST',
+      `/api/v1/external-orders/${encodeURIComponent(id)}/files/${encodeURIComponent(documentId)}/links`,
+      { body, params: asRole ? { as_role: asRole } : undefined, timeoutMs: 20_000 }
+    )
+  }
+
+  async unlinkExternalFile(id: string, linkId: string, asRole = ''): Promise<ExternalOrder> {
+    return this.request(
+      'DELETE',
+      `/api/v1/external-orders/${encodeURIComponent(id)}/files/links/${encodeURIComponent(linkId)}`,
+      { params: asRole ? { as_role: asRole } : undefined, timeoutMs: 20_000 }
+    )
+  }
+
   async approveExternalFile(id: string, documentId: string, asRole = ''): Promise<ExternalOrder> {
     return this.request(
       'POST',
       `/api/v1/external-orders/${encodeURIComponent(id)}/files/${encodeURIComponent(documentId)}/approve`,
       { params: asRole ? { as_role: asRole } : undefined, timeoutMs: 20_000 }
     )
+  }
+
+  async patchExternalFile(
+    id: string,
+    documentId: string,
+    body: { kind?: string; title?: string },
+    asRole = ''
+  ): Promise<ExternalOrder> {
+    return this.request(
+      'PATCH',
+      `/api/v1/external-orders/${encodeURIComponent(id)}/files/${encodeURIComponent(documentId)}`,
+      { body, params: asRole ? { as_role: asRole } : undefined, timeoutMs: 20_000 }
+    )
+  }
+
+  async openExternalFile(id: string, documentId: string, fileName: string): Promise<boolean> {
+    const res = await window.api.download({
+      url: `/api/v1/external-orders/${encodeURIComponent(id)}/files/${encodeURIComponent(documentId)}`,
+      defaultName: fileName,
+      token: this.resolveToken(),
+      temporary: true,
+      openAfter: true
+    })
+    return Boolean(res.ok)
   }
 
   async deleteExternalFile(id: string, documentId: string, asRole = ''): Promise<ExternalOrder> {

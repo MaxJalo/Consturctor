@@ -313,19 +313,84 @@ def _strip_run_chrome(text: str) -> str:
 
 
 _NARRATION_RE = re.compile(
-    r"^(?:сначала\s+(?:сниму|открою|посмотрю|сверю)|вызываю подготовку|сервер оборвал|"
-    r"повторяю подготовку|схема получена|готовлю дело|сверяю дело|беру сводку)\b",
+    r"^(?:сначала\s+(?:сниму|открою|посмотрю|сверю|подготовлю)|вызываю подготовку|снимаю дело|снимаю схему|"
+    r"сервер оборвал|повторяю подготовку|схема получена|готовлю дело|готовлю карточку|сверяю дело|беру сводку)\b",
     re.IGNORECASE,
 )
+# Тот же план хода, но слова слиплись: «Сначаласнимусхемуделаиподготовлю…».
+_NARRATION_FLAT_RE = re.compile(
+    r"^(?:сначала(?:сниму|открою|посмотрю|сверю|подготовлю)|вызываюподготовку|снимаюдело|снимаюсхему|"
+    r"серверооборвал|сервероборвал|повторяюподготовку|схемаполучена|готовлюдело|готовлюкарточку|"
+    r"сверяюдело|берусводку)"
+)
+
+
+def _flat(text: str) -> str:
+    return re.sub(r"\s+", "", (text or "").casefold().replace("ё", "е"))
+
+
+def _is_narration(sentence: str) -> bool:
+    folded = (sentence or "").casefold().replace("ё", "е").strip()
+    return bool(_NARRATION_RE.match(folded) or _NARRATION_FLAT_RE.match(_flat(folded)))
 _STAGE_ONLY_RE = re.compile(r"^(?:договор|ткп|расчёт|расчет)[:.]?$", re.IGNORECASE)
 _KEEP_FACT_RE = re.compile(r"не привед|кнопк|закрыт", re.IGNORECASE)
 
 
-def _space_order_text(text: str) -> str:
+_GLUED_WORDS = {
+    "по", "коммерческой", "коммерческая", "службе", "служба", "службы", "в", "деле", "уже", "есть",
+    "заказ", "заказа", "заказчика", "заказчик", "изделие", "состав", "продажа", "облагается",
+    "валюта", "руб", "срок", "срока", "поставки", "поставка", "дн", "дней", "самовывоз", "конечный",
+    "действует", "до", "оплата", "из", "к", "принятию", "черновиков", "черновика", "чек", "лист",
+    "этапа", "этап", "закрыт", "блокировок", "нет", "пути", "клиента", "дата", "окончания", "сделки",
+    "пришла", "как", "согласованная", "скидка", "скидки", "опросном", "листе", "указана", "какая",
+    "или", "ее", "снимаю", "дело", "одним", "вызовом", "подготовки", "вызываю", "подготовку",
+    "инфраструктура", "тк", "ткп", "нп", "ооо", "ндс", "инн", "и", "с", "о", "не", "на", "от", "за",
+}
+
+
+def _segment_glued_run(token: str) -> str:
+    """Делит слипшееся русское слово, только если оно целиком собирается из известных слов."""
+    folded = token.casefold().replace("ё", "е")
+    memo: dict[int, list[str] | None] = {len(folded): []}
+
+    def solve(start: int) -> list[str] | None:
+        if start in memo:
+            return memo[start]
+        found: list[str] | None = None
+        limit = min(len(folded), start + 24)
+        for end in range(limit, start, -1):
+            if folded[start:end] not in _GLUED_WORDS:
+                continue
+            rest = solve(end)
+            if rest is not None:
+                found = [token[start:end], *rest]
+                break
+        memo[start] = found
+        return found
+
+    parts = solve(0)
+    if not parts or len(parts) < 2:
+        return token
+    return " ".join(parts)
+
+
+def _separate_glued_words(text: str) -> str:
+    return re.sub(r"[А-Яа-яЁё]{8,}", lambda match: _segment_glued_run(match.group(0)), text)
+
+
+def _space_order_text(text: str, *, glued: bool = True) -> str:
     """Пробел перед числом и между склеенными фразами. Номер ТКП и код изделия не рвём."""
     cleaned = (text or "").strip()
     if not cleaned:
         return cleaned
+    if glued:
+        cleaned = _separate_glued_words(cleaned)
+    cleaned = re.sub(
+        r"(?i)(\d)(из|до|по|на|от|за|со)(?=\s|\d|$)",
+        r"\1 \2 ",
+        cleaned,
+    )
+    cleaned = re.sub(r"(\d)(?=[А-Яа-яЁё]{4})", r"\1 ", cleaned)
     cleaned = re.sub(r"([а-яё])([А-ЯЁ])", r"\1 \2", cleaned)
     cleaned = re.sub(
         r"(?i)(?<![а-яёa-z])договор\s*[:.]?\s*(?=сначала|вызываю|сервер|повторяю|схема|готовлю|сверяю)",
@@ -379,7 +444,7 @@ def _order_sentences(text: str) -> list[str]:
 
 def _order_sentence_visible(sentence: str, known: set[str]) -> bool:
     folded = sentence.casefold().replace("ё", "е").strip()
-    if not folded or _NARRATION_RE.match(folded) or _STAGE_ONLY_RE.match(folded):
+    if not folded or _is_narration(folded) or _STAGE_ONLY_RE.match(folded):
         return False
     if _KEEP_FACT_RE.search(sentence):
         return True
@@ -397,7 +462,7 @@ def _order_visible_delta(prior: str, blob: str) -> str:
     known: set[str] = set()
     for sentence in _order_sentences(prior):
         folded = sentence.casefold().replace("ё", "е").strip()
-        if _NARRATION_RE.match(folded) or _STAGE_ONLY_RE.match(folded):
+        if _is_narration(folded) or _STAGE_ONLY_RE.match(folded):
             continue
         known.update(_order_tokens(sentence))
     kept: list[str] = []
@@ -411,6 +476,60 @@ def _order_visible_delta(prior: str, blob: str) -> str:
     if len(kept) == 1:
         return kept[0]
     return "\n\n".join(kept)
+
+
+_STREAM_END_RE = re.compile(r"[.!?…](?=\s)|\n")
+
+
+def _stream_sentences(text: str) -> list[str]:
+    spaced = _space_order_text(text, glued=False)
+    parts: list[str] = []
+    for block in re.split(r"\n+", spaced):
+        parts.extend(part.strip() for part in re.split(r"(?<=[.!?])\s+", block) if part.strip())
+    return parts
+
+
+class OrderStream:
+    """Ответ заказа приходит кусками по несколько букв. Пробелы между кусками не теряем,
+    наружу отдаём только законченные фразы, без плана хода и повтора дела."""
+
+    def __init__(self) -> None:
+        self.raw = ""
+        self.done = 0
+        self.known: set[str] = set()
+
+    def take(self, chunk: str, *, flush: bool = False) -> str:
+        if chunk:
+            self.raw = chunk if self.raw and chunk.startswith(self.raw) else self.raw + chunk
+        if flush:
+            complete = self.raw
+        else:
+            ends = list(_STREAM_END_RE.finditer(self.raw))
+            if not ends:
+                return ""
+            complete = self.raw[: ends[-1].end()]
+        sentences = _stream_sentences(complete)
+        fresh = sentences[self.done :]
+        self.done = len(sentences)
+        if flush:
+            self.raw = ""
+            self.done = 0
+        kept: list[str] = []
+        for sentence in fresh:
+            if not _order_sentence_visible(sentence, self.known):
+                continue
+            self.known.update(_order_tokens(sentence))
+            kept.append(sentence)
+        return "\n\n".join(kept)
+
+
+def _order_case_read(payload: dict) -> bool:
+    """Повторная подготовка дела. read_full, scenario и чтение result_file — это работа, их не считаем."""
+    tool = str(payload.get("tool") or "").casefold()
+    if not tool.endswith("external_order.case"):
+        return False
+    args = payload.get("arguments") if isinstance(payload.get("arguments"), dict) else {}
+    return str((args or {}).get("action") or "").casefold() == "auto_prepare"
 
 
 def _readable_order_answer(text: str) -> str:
@@ -469,25 +588,33 @@ def _order_reply_ready(text: str) -> bool:
     """A survey already written to the employee. Another pass would only repeat it."""
     clean = _without_tests_label(text).strip()
     folded = clean.casefold().replace("ё", "е")
-    if len(clean) >= 180 and "по службе" in folded and ("чек-лист" in folded or "к принятию" in folded):
+    flat = _flat(folded)
+    if len(clean) >= 180 and "послужбе" in flat and ("чек-лист" in flat or "кпринятию" in flat):
         return True
     if len(clean) < 280:
         return False
     return "?" in clean or "нужны ответы" in folded or "вопрос" in folded
 
 
+_ORDER_RESTART_FLAT_RE = re.compile(
+    r"откро(?:ю|ваю)регламент|запускаюавтоподготов|сначаласним|снимаюсхем|вызываюподготовку|"
+    r"сервероборвал|повторяюподготовку|схемаполучена|готовлюдело|готовлюкарточк|сверяюдело"
+)
+
+
 def _order_restart_after_reply(prior: str, chunk: str) -> bool:
-    return _order_reply_ready(prior) and bool(_ORDER_RESTART_RE.search(chunk or ""))
+    if not _order_reply_ready(prior):
+        return False
+    return bool(_ORDER_RESTART_RE.search(chunk or "") or _ORDER_RESTART_FLAT_RE.search(_flat(chunk)))
 
 
 def _order_reread_tool(payload: dict) -> bool:
-    """Read/grep/auto_prepare after the employee already has an answer."""
-    tool = str(payload.get("tool") or "").casefold().rsplit(".", 1)[-1]
-    if tool in {"read", "grep", "glob", "read_file"}:
-        return True
+    """auto_prepare after the employee already has an answer: it only repeats the survey."""
+    tool = str(payload.get("tool") or "").casefold()
+    if not tool.endswith("external_order.case"):
+        return False
     args = payload.get("arguments") if isinstance(payload.get("arguments"), dict) else {}
-    action = str((args or {}).get("action") or "").casefold()
-    return action in {"auto_prepare", "read", "read_full"}
+    return str((args or {}).get("action") or "").casefold() == "auto_prepare"
 
 
 def _turn_answer_done(text: str, hide_tests: bool = False) -> bool:
@@ -1197,6 +1324,46 @@ def _kpi_shell_auto_approved(workflow_id: str, tool: str, args: dict[str, Any]) 
     return not is_destructive_powershell_command(str(args.get("command") or ""))
 
 
+# Тот же набор, что TOOLS у агентов служб на сервере. Запись идёт через подтверждение.
+_ORDER_HELPER_TOOLS = frozenset(
+    {
+        "external_order.case",
+        "onec.docflow_document_create",
+        "users.current",
+        "users.list",
+        "get_current_date",
+        "askQuestion",
+        "office.read_file",
+        "office.format_document",
+        "excel.list_files",
+        "excel.read_workbook",
+        "excel.create_workbook",
+        "excel.edit_workbook",
+        "report.export_document",
+        "onec.search_documents",
+        "onec.get_document_card",
+        "onec.list_attachments",
+        "onec.read_attachment",
+        "onec.download_artifact",
+        "onec.odata_catalog",
+        "onec.odata_get",
+        "onec.search_tasks",
+        "onec.get_task_card",
+        "onec.docflow_tasks",
+        "onec.position_holders",
+        "turboproject.search_projects",
+        "turboproject.get_project",
+        "turboproject.get_project_tasks",
+        "turboproject.get_project_metrics",
+        "outlook.search_mail",
+        "outlook.fetch_message",
+        "email.create_draft",
+        "calendar.show_meetings",
+        "web_search",
+    }
+)
+
+
 def _tool_specs_for_workflow(record: Any) -> list[dict[str, Any]] | None:
     """Limit an agent to its formation whitelist; fall back to SD/RK/calendar packs."""
     allowed: set[str] | None = None
@@ -1220,6 +1387,8 @@ def _tool_specs_for_workflow(record: Any) -> list[dict[str, Any]] | None:
     allowed = set(allowed)
     allowed.add("get_current_date")
     allowed.add("kpi.read_methodology")
+    if _is_external_order_helper_title(str(getattr(record, "title", "") or "")):
+        allowed |= _ORDER_HELPER_TOOLS
     specs = [
         item
         for item in sdk_tool_specs()
@@ -3261,12 +3430,19 @@ def _journal_agent_messages(events: list[dict[str, Any]]) -> list[str]:
     return [joined[:4000]]
 
 
+_ORDER_MEMORY_TURNS = 8
+_ORDER_MEMORY_CHARS = 8000
+
+
 def _order_memory_from_runs(runs: list[Any], conversation_key: str, message: str) -> tuple[str, str]:
-    """Prior answer in this chat, and the previous answer of this same message."""
+    """Последние ходы этого разговора: что спросил сотрудник и что ответил помощник.
+
+    Готовый ответ не подставляется заново: дело и файлы могли измениться, а «да»
+    на второй вопрос — это уже другой ответ.
+    """
     key = (conversation_key or "").strip()
-    text = (message or "").strip()
-    prior = ""
-    reused = ""
+    _ = message
+    turns: list[str] = []
     for run in runs:
         if str(getattr(run, "conversation_key", "") or "") != key:
             continue
@@ -3276,16 +3452,20 @@ def _order_memory_from_runs(runs: list[Any], conversation_key: str, message: str
         status = str(getattr(run, "status", "") or "").strip().lower()
         if status in {"error", "failed", "cancelled", "canceled"}:
             continue
-        run_message = str(getattr(run, "message", "") or "").strip()
-        if not reused and text and run_message == text:
-            reused = answer
-        if not prior and run_message != text:
-            prior = answer
-        if reused and prior:
+        asked = str(getattr(run, "message", "") or "").strip()
+        asked = asked if len(asked) <= 700 else asked[:700] + "…"
+        said = answer if len(answer) <= 2000 else answer[:2000] + "…"
+        turns.append(f"Сотрудник: {asked}\nПомощник: {said}")
+        if len(turns) >= _ORDER_MEMORY_TURNS:
             break
-    if not prior and reused:
-        prior = reused
-    return prior, reused
+    kept: list[str] = []
+    size = 0
+    for turn in turns:
+        if size + len(turn) > _ORDER_MEMORY_CHARS and kept:
+            break
+        kept.append(turn)
+        size += len(turn)
+    return "\n\n".join(reversed(kept)), ""
 
 
 def _journal_tools(events: list[dict[str, Any]]) -> list[str]:
@@ -3776,6 +3956,13 @@ class Sidecar:
                 return
             if getattr(active, "hide_tests", False) and event_type == "thinking":
                 return
+            if getattr(active, "hide_tests", False) and event_type in {"tool_call", "final"}:
+                on_event({"type": "assistant", "text": "", "_order_flush": True})
+            if getattr(active, "hide_tests", False) and event_type == "tool_call" and _order_case_read(payload):
+                active.case_reads += 1
+                if active.case_reads > 1:
+                    active.stop.set()
+                    return
             if (
                 getattr(active, "hide_tests", False)
                 and event_type == "tool_call"
@@ -3794,27 +3981,26 @@ class Sidecar:
                     str(payload.get(key) or "")
                     for key in ("text", "answer", "message")
                 )
-                if getattr(active, "hide_tests", False) and event_type in {"assistant", "final"}:
+                if getattr(active, "hide_tests", False) and event_type == "assistant":
+                    flush = bool(payload.pop("_order_flush", False))
+                    visible = active.order_stream.take(str(payload.get("text") or ""), flush=flush)
+                    if _order_restart_after_reply(active.answer_buf, active.order_stream.raw):
+                        active.stop.set()
+                    if not visible.strip():
+                        return
+                    payload["text"] = f"\n\n{visible}" if active.answer_buf else visible
+                    payload.pop("answer", None)
+                    payload.pop("message", None)
+                    blob = visible
+                elif getattr(active, "hide_tests", False) and event_type == "final":
                     original = blob
                     visible = _order_visible_delta(active.answer_buf, original)
-                    repeated = (
-                        event_type == "assistant"
-                        and _order_reply_ready(active.answer_buf)
-                        and not visible.strip()
-                        and len(original.strip()) > 80
-                    )
                     if not visible.strip():
-                        if _order_restart_after_reply(active.answer_buf, original) or repeated:
-                            active.stop.set()
                         return
                     payload["text"] = visible
                     payload.pop("answer", None)
                     payload.pop("message", None)
                     blob = visible
-                    if event_type == "assistant" and _order_restart_after_reply(
-                        f"{active.answer_buf}\n\n{visible}", original
-                    ):
-                        active.stop.set()
                 if event_type == "assistant":
                     sampler = getattr(active, "metrics", None)
                     if sampler is not None:
@@ -4836,7 +5022,11 @@ class Sidecar:
         if active.hide_tests and conversation_key:
             prior, reused = self._order_conversation_memory(workflow_id, conversation_key, message)
         if active.hide_tests and (resume_agent_id or prior):
-            prompt = build_order_followup_prompt(message, prior="" if reused else prior)
+            prompt = build_order_followup_prompt(
+                message,
+                prior="" if reused else prior,
+                opening=str(command.get("conversationBrief") or ""),
+            )
         else:
             prompt = build_sdk_prompt(workflow, fresh_message)
         note = _attachments_note(attachment_paths)
@@ -4882,7 +5072,11 @@ class Sidecar:
                             self._clear_stored_agent_id(workflow_id)
                         if active.hide_tests:
                             prompt = (
-                                build_order_followup_prompt(message, prior=prior)
+                                build_order_followup_prompt(
+                                    message,
+                                    prior=prior,
+                                    opening=str(command.get("conversationBrief") or ""),
+                                )
                                 if prior
                                 else build_sdk_prompt(workflow, fresh_message)
                             )
@@ -4950,6 +5144,7 @@ class Sidecar:
                 agent_id = str(result.get("agent_id") or agent_id).strip()
                 self._store_agent_id(workflow_id, agent_id, conversation=bool(conversation_key))
             if getattr(active, "hide_tests", False):
+                self._forward_events(active, events)({"type": "assistant", "text": "", "_order_flush": True})
                 answer = _order_turn_answer(answer, str(getattr(active, "answer_buf", "") or ""))
             if status == "ok" and not _turn_answer_done(self._order_seen_text(active, answer), getattr(active, "hide_tests", False)):
                 status = "error"
@@ -6030,6 +6225,8 @@ class ActiveRun:
         self.history_finished: bool = False
         self.conversation_key: str = ""
         self.answer_buf: str = ""
+        self.order_stream = OrderStream()
+        self.case_reads = 0
         self.event_workflow_id: str = ""
         self.events: list[dict[str, Any]] = []
         gate.bind_events(self.events)

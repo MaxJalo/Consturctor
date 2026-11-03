@@ -490,14 +490,16 @@ def payload_attachments_for_workflow(db: Session, row: Workflow) -> list[dict[st
     return payloads
 
 
-def ensure_workflow_files_table(db: Session, *, user_id: str, workflow_id: str) -> Workflow:
+def ensure_workflow_files_table(
+    db: Session, *, user_id: str, workflow_id: str, owner_only: bool = False
+) -> Workflow:
     row = db.query(Workflow).filter(Workflow.id == workflow_id, Workflow.user_id == user_id).first()
-    if row is None:
+    if row is None and not owner_only:
         shared = db.query(Workflow).filter(Workflow.id == workflow_id).first()
         if shared is not None:
-            from app.services.workflows.service import _tester_may_read_shared
+            from app.services.workflows.service import _may_use_shared
 
-            if _tester_may_read_shared(db, user_id, shared):
+            if _may_use_shared(db, user_id, shared):
                 row = shared
     if row is None:
         raise WorkflowFileError("Workflow не найден", status_code=404)

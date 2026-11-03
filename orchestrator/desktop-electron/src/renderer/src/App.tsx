@@ -947,7 +947,16 @@ function AppShell(): React.JSX.Element {
                 onAskOrchestrator: askOrchestratorFromTab,
                 onRunAgent: (workflowId, title, message, chat) => {
                   setLastTab(key)
-                  setView({ kind: 'agentrun', workflowId, title, autoStart: false, initialMessage: message, chat })
+                  const scenario = (message || '').includes('Сценарий дела:')
+                  setView({
+                    kind: 'agentrun',
+                    workflowId,
+                    title,
+                    autoStart: false,
+                    initialMessage: message,
+                    chat,
+                    ...(scenario ? { launch: Date.now() } : {})
+                  })
                 },
                 onOpenRun: (workflowId, title, runId) => void openAgentRun(workflowId, runId, false, title),
                 onNavigate: (pageKey) => {

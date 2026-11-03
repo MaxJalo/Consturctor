@@ -70,6 +70,9 @@ class ExternalOrder(Base):
     notices: Mapped[list[ExternalOrderNotice]] = relationship(
         "ExternalOrderNotice", cascade="all, delete-orphan"
     )
+    document_links: Mapped[list[ExternalOrderDocumentLink]] = relationship(
+        "ExternalOrderDocumentLink", cascade="all, delete-orphan"
+    )
 
 
 class ExternalOrderCheck(Base):
@@ -165,6 +168,26 @@ class ExternalOrderDocument(Base):
     sha256: Mapped[str] = mapped_column(String(64), nullable=False, default="")
     owner_role: Mapped[str] = mapped_column(String(32), nullable=False, default="")
     approved: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+
+
+class ExternalOrderDocumentLink(Base):
+    """Связь двух файлов дела: [[источник]] — вид → [[цель]], как ссылка в заметке."""
+
+    __tablename__ = "external_order_document_links"
+    __table_args__ = (
+        Index("ix_external_order_document_links_order", "order_id"),
+        Index("uq_external_order_document_link", "source_id", "target_id", "relation", unique=True),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    order_id: Mapped[str] = mapped_column(ForeignKey("external_orders.id", ondelete="CASCADE"), nullable=False)
+    source_id: Mapped[str] = mapped_column(
+        ForeignKey("external_order_documents.id", ondelete="CASCADE"), nullable=False
+    )
+    target_id: Mapped[str] = mapped_column(
+        ForeignKey("external_order_documents.id", ondelete="CASCADE"), nullable=False
+    )
+    relation: Mapped[str] = mapped_column(String(32), nullable=False, default="attachment")
 
 
 class ExternalOrderAudit(Base):

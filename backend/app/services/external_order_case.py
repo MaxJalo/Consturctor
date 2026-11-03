@@ -23,6 +23,7 @@ from app.models.external_order import (
     ExternalOrder,
     ExternalOrderBaseline,
     ExternalOrderDocument,
+    ExternalOrderDocumentLink,
     ExternalOrderGap,
     ExternalOrderLine,
     ExternalOrderNotice,
@@ -30,7 +31,33 @@ from app.models.external_order import (
 )
 
 _ALLOWED = {".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document", ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", ".pdf": "application/pdf"}
-_KINDS = {"tz", "tkp", "contract", "specification", "protocol", "condition", "acceptance", "correspondence", "other"}
+_KINDS = {
+    "tz",
+    "tkp",
+    "contract",
+    "specification",
+    "protocol",
+    "condition",
+    "acceptance",
+    "correspondence",
+    "plan",
+    "survey",
+    "assignment",
+    "memo",
+    "directive",
+    "decree",
+    "customer_order",
+    "attached",
+    "other",
+}
+FILE_RELATIONS = {
+    "attachment": "приложение",
+    "basis": "основание",
+    "supersedes": "заменяет",
+    "confirms": "подтверждает",
+    "contradicts": "противоречит",
+    "version": "версия",
+}
 _UPLOAD_ROLES = {"ks", "development", "rp", "legal", "kb", "finance", "omto", "production", "committee"}
 _BLOCK_GATES = {
     "before_calc",
@@ -178,6 +205,81 @@ def notify(db: Session, order: ExternalOrder, *, kind: str, role: str, title: st
     )
 
 
+def _plain_docx(text: str) -> bytes:
+    paragraphs = [line for line in (text or "").splitlines()] or [" "]
+    body = []
+    for line in paragraphs:
+        safe = line.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+        body.append(f'<w:p><w:r><w:t xml:space="preserve">{safe}</w:t></w:r></w:p>')
+    document = (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
+        f"<w:body>{''.join(body)}</w:body></w:document>"
+    )
+    content_types = (
+        '<?xml version="1.0" encoding="UTF-8"?>'
+        '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">'
+        '<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>'
+        '<Default Extension="xml" ContentType="application/xml"/>'
+        '<Override PartName="/word/document.xml" '
+        'ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>'
+        "</Types>"
+    )
+    rels = (
+        '<?xml version="1.0" encoding="UTF-8"?>'
+        '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+        '<Relationship Id="rId1" '
+        'Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" '
+        'Target="word/document.xml"/>'
+        "</Relationships>"
+    )
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w") as package:
+        package.writestr("[Content_Types].xml", content_types)
+        package.writestr("_rels/.rels", rels)
+        package.writestr("word/document.xml", document.encode("utf-8"))
+    return buffer.getvalue()
+
+
+def store_text_file(
+    db: Session,
+    order: ExternalOrder,
+    *,
+    role: str,
+    fio: str,
+    kind: str,
+    title: str,
+    text: str,
+    target: str = "",
+    relation: str = "attachment",
+) -> None:
+    from app.services.external_orders import ExternalOrderError
+
+    body = (text or "").strip()
+    if not body:
+        raise ExternalOrderError("Нет текста проекта", 400)
+    name = re.sub(r"[^\w.\-]+", "_", (title or "проект").strip())[:80] or "проект"
+    saved = store_file(
+        db,
+        order,
+        role=role,
+        fio=fio,
+        kind=kind or "correspondence",
+        filename=f"{name}.docx",
+        content_b64=base64.b64encode(_plain_docx(body)).decode("ascii"),
+    )
+    if (target or "").strip():
+        link_documents(
+            db,
+            order,
+            saved.id,
+            role=role,
+            fio=fio,
+            target=target,
+            relation=relation or "attachment",
+        )
+
+
 def store_file(
     db: Session,
     order: ExternalOrder,
@@ -234,6 +336,8 @@ def store_file(
     if kind == "specification" and _has_committee(order):
         _material_change(db, order, doc, fio)
     _audit(db, order, fio=fio, role=role, action="file", detail=f"{kind} {version}", after=safe)
+    if doc not in order.documents:
+        order.documents.append(doc)
     return doc
 
 
@@ -246,6 +350,47 @@ def approve_file(db: Session, order: ExternalOrder, document_id: str, *, role: s
     before = "утверждён" if doc.approved else "не утверждён"
     doc.approved = True
     _audit(db, order, fio=fio, role=role, action="approve_file", detail=doc.title, before=before, after="утверждён")
+
+
+def edit_file(
+    db: Session,
+    order: ExternalOrder,
+    document_id: str,
+    *,
+    role: str,
+    fio: str,
+    kind: str = "",
+    title: str = "",
+) -> None:
+    from app.services.external_orders import ExternalOrderError, _audit
+
+    if role not in _UPLOAD_ROLES:
+        raise ExternalOrderError("Править файл может участник маршрута", 403)
+    doc = _doc(order, document_id)
+    if doc.approved:
+        raise ExternalOrderError("Утверждённую версию не правят: загрузите новую версию", 409)
+    next_kind = (kind or "").strip() or doc.kind
+    next_title = (title or "").strip()[:512] or doc.title
+    if next_kind not in _KINDS:
+        raise ExternalOrderError("Неизвестный вид документа", 400)
+    if role == "committee" and next_kind != "protocol":
+        raise ExternalOrderError("Комитет прикладывает только протокол", 403)
+    before = f"{doc.kind} · {doc.title}"
+    after = f"{next_kind} · {next_title}"
+    if before == after:
+        return
+    doc.kind = next_kind
+    doc.title = next_title
+    _audit(
+        db,
+        order,
+        fio=fio,
+        role=role,
+        action="edit_file",
+        detail=doc.file_name or next_title,
+        before=before,
+        after=after,
+    )
 
 
 def delete_file(db: Session, order: ExternalOrder, document_id: str, *, role: str, fio: str) -> None:
@@ -269,6 +414,12 @@ def delete_file(db: Session, order: ExternalOrder, document_id: str, *, role: st
     )
     if path and path.is_file():
         path.unlink()
+    for link in [
+        item
+        for item in order.document_links
+        if item.source_id == doc.id or item.target_id == doc.id
+    ]:
+        order.document_links.remove(link)
     for line in [item for item in order.lines if item.document_id == doc.id]:
         order.lines.remove(line)
     for finding in [item for item in order.findings if item.document_id == doc.id and item.status == "draft"]:
@@ -646,6 +797,18 @@ def _next_number(values: list[str], prefix: str) -> int:
     return max((_version_number(value, prefix) for value in values), default=0) + 1
 
 
+def _norm_number(value: str) -> str:
+    """Одно число из «10 318,00 руб.» и «10318.00 RUB», чтобы сверка не путала запись."""
+    text = (value or "").replace("\u00a0", "").replace(" ", "").replace(",", ".")
+    match = re.search(r"\d+(?:\.\d+)?", text)
+    if not match:
+        return text.casefold()
+    number = match.group(0)
+    if "." in number:
+        number = number.rstrip("0").rstrip(".")
+    return number
+
+
 def _compare(previous: list[ExternalOrderLine], rows: list[tuple[str, str, str]]) -> list[tuple[str, str, str, str]]:
     old = {item.name.casefold(): item for item in previous}
     seen: set[str] = set()
@@ -656,9 +819,9 @@ def _compare(previous: list[ExternalOrderLine], rows: list[tuple[str, str, str]]
         prior = old.get(key)
         if prior is None:
             change = "added"
-        elif prior.qty != qty:
+        elif _norm_number(prior.qty) != _norm_number(qty):
             change = "qty"
-        elif prior.amount != amount:
+        elif _norm_number(prior.amount) != _norm_number(amount):
             change = "amount"
         else:
             change = "same"
@@ -757,6 +920,8 @@ def _xlsx_rows(raw: bytes) -> list[tuple[str, str, str]]:
 
 
 def _is_survey_sheet(doc: ExternalOrderDocument) -> bool:
+    if (doc.kind or "") == "survey":
+        return True
     blob = f"{doc.title} {doc.file_name}".casefold().replace("ё", "е")
     return "опрос" in blob
 
@@ -871,8 +1036,225 @@ def refresh_overdue(db: Session, order: ExternalOrder) -> None:
         notify(db, order, kind="overdue", role=item.owner_role, title="Просрочен пункт чек-листа", body=item.text)
 
 
+def file_anchor(doc: ExternalOrderDocument) -> str:
+    title = (doc.title or doc.file_name or doc.kind or "файл").strip()
+    version = (doc.version or "").strip()
+    label = f"{title} {version}".strip() if version else title
+    return f"[[{label}]]"
+
+
+def file_graph(order: ExternalOrder) -> list[dict]:
+    by_id = {item.id: item for item in order.documents}
+    rows: list[dict] = []
+    for link in order.document_links:
+        source = by_id.get(link.source_id)
+        target = by_id.get(link.target_id)
+        if source is None or target is None:
+            continue
+        rows.append(
+            {
+                "id": link.id,
+                "from_id": source.id,
+                "from": file_anchor(source),
+                "relation": link.relation,
+                "relation_label": FILE_RELATIONS.get(link.relation, link.relation),
+                "to_id": target.id,
+                "to": file_anchor(target),
+            }
+        )
+    return rows
+
+
+def documents_view(order: ExternalOrder) -> tuple[list[dict], list[dict]]:
+    graph = file_graph(order)
+    outgoing: dict[str, list[dict]] = {}
+    incoming: dict[str, list[dict]] = {}
+    for edge in graph:
+        outgoing.setdefault(edge["from_id"], []).append(
+            {
+                "id": edge["id"],
+                "relation": edge["relation"],
+                "relation_label": edge["relation_label"],
+                "target_id": edge["to_id"],
+                "target": edge["to"],
+            }
+        )
+        incoming.setdefault(edge["to_id"], []).append(
+            {
+                "id": edge["id"],
+                "relation": edge["relation"],
+                "relation_label": edge["relation_label"],
+                "source_id": edge["from_id"],
+                "source": edge["from"],
+            }
+        )
+    documents = [
+        {
+            "id": item.id,
+            "kind": item.kind,
+            "title": item.title,
+            "version": item.version,
+            "note": item.note,
+            "file_name": item.file_name,
+            "approved": item.approved,
+            "owner_role": item.owner_role,
+            "anchor": file_anchor(item),
+            "links": outgoing.get(item.id, []),
+            "backlinks": incoming.get(item.id, []),
+        }
+        for item in order.documents
+    ]
+    return documents, graph
+
+
+def _wikilink_name(raw: str) -> str:
+    text = (raw or "").strip()
+    matched = re.fullmatch(r"\[\[(.+?)\]\]", text)
+    if matched:
+        text = matched.group(1).strip()
+    if "|" in text:
+        text = text.split("|", 1)[0].strip()
+    return text
+
+
+def _file_labels(doc: ExternalOrderDocument) -> set[str]:
+    title = (doc.title or "").strip()
+    version = (doc.version or "").strip()
+    stem = Path(doc.file_name or "").stem
+    labels = {title, stem, f"{title} {version}".strip(), file_anchor(doc)}
+    return {item.casefold().replace("ё", "е") for item in labels if item}
+
+
+def _resolve_file(order: ExternalOrder, raw: str) -> ExternalOrderDocument:
+    from app.services.external_orders import ExternalOrderError
+
+    name = _wikilink_name(raw)
+    if not name:
+        raise ExternalOrderError("Укажите файл как [[название]]", 400)
+    by_id = next((item for item in order.documents if item.id == name), None)
+    if by_id is not None:
+        return by_id
+    folded = name.casefold().replace("ё", "е")
+    matches = [item for item in order.documents if folded in _file_labels(item)]
+    if not matches:
+        raise ExternalOrderError(f"В деле нет файла «{name}»", 404)
+    if len(matches) > 1:
+        raise ExternalOrderError("Несколько файлов с таким именем. Укажите название с версией", 409)
+    return matches[0]
+
+
+def link_documents(
+    db: Session,
+    order: ExternalOrder,
+    source_id: str,
+    *,
+    role: str,
+    fio: str,
+    target: str,
+    relation: str,
+) -> None:
+    from app.services.external_orders import ExternalOrderError, _audit
+
+    if role not in _UPLOAD_ROLES:
+        raise ExternalOrderError("Связь ставит участник маршрута", 403)
+    kind = (relation or "attachment").strip()
+    if kind not in FILE_RELATIONS:
+        raise ExternalOrderError("Неизвестный вид связи", 400)
+    source = _doc(order, source_id)
+    found = _resolve_file(order, target)
+    if found.id == source.id:
+        raise ExternalOrderError("Файл нельзя связать с самим собой", 400)
+    if any(
+        item.source_id == source.id and item.target_id == found.id and item.relation == kind
+        for item in order.document_links
+    ):
+        raise ExternalOrderError("Такая связь уже есть", 409)
+    db.add(
+        ExternalOrderDocumentLink(
+            id=_new_id(),
+            order_id=order.id,
+            source_id=source.id,
+            target_id=found.id,
+            relation=kind,
+        )
+    )
+    _audit(
+        db,
+        order,
+        fio=fio,
+        role=role,
+        action="link_file",
+        detail=f"{FILE_RELATIONS[kind]}: {file_anchor(source)} → {file_anchor(found)}",
+    )
+
+
+def unlink_document(db: Session, order: ExternalOrder, link_id: str, *, role: str, fio: str) -> None:
+    from app.services.external_orders import ExternalOrderError, _audit
+
+    if role not in _UPLOAD_ROLES:
+        raise ExternalOrderError("Связь снимает участник маршрута", 403)
+    link = next((item for item in order.document_links if item.id == link_id), None)
+    if link is None:
+        raise ExternalOrderError("Связь не найдена", 404)
+    source = next((item for item in order.documents if item.id == link.source_id), None)
+    target = next((item for item in order.documents if item.id == link.target_id), None)
+    label = FILE_RELATIONS.get(link.relation, link.relation)
+    _audit(
+        db,
+        order,
+        fio=fio,
+        role=role,
+        action="unlink_file",
+        detail=f"{label}: {file_anchor(source) if source else link.source_id} → {file_anchor(target) if target else link.target_id}",
+    )
+    order.document_links.remove(link)
+
+
+def stored_file(order: ExternalOrder, document_id: str) -> tuple[Path, str, str]:
+    from app.services.external_orders import ExternalOrderError
+
+    doc = next((item for item in order.documents if item.id == document_id), None)
+    if doc is None or not doc.stored_path:
+        raise ExternalOrderError("Файл не найден", 404)
+    path = Path(doc.stored_path).resolve()
+    root = (BACKEND_ROOT / "storage" / "external_orders" / order.id).resolve()
+    if root != path and root not in path.parents:
+        raise ExternalOrderError("Файл не найден", 404)
+    if not path.is_file():
+        raise ExternalOrderError("Файл не найден", 404)
+    return path, doc.mime or "application/octet-stream", doc.file_name or path.name
+
+
+_INSTRUCTION_RE = re.compile(
+    r"ignore (?:all |previous |prior )?instructions|игнорируй (?:все )?(?:правила|инструкции)|"
+    r"system prompt|ты теперь|новые правила агента|забудь правила",
+    re.I,
+)
+
+
+def _quoted_lines(lines: list[str], label: str) -> tuple[list[str], list[str]]:
+    """Текст для чтения и та же строка с координатой. Команду агенту из документа прячем."""
+    visible: list[str] = []
+    placed: list[str] = []
+    for index, line in enumerate(lines, start=1):
+        text = " ".join(str(line or "").split())
+        if not text:
+            continue
+        if _INSTRUCTION_RE.search(text):
+            text = "строка скрыта: в документе была команда агенту"
+        visible.append(text)
+        placed.append(f"{label} {index}: {text}")
+    return visible, placed
+
+
 def extract_document_excerpts(order: ExternalOrder) -> list[dict]:
     """Извлекает текстовые фрагменты и таблицы из прикреплённых файлов дела (.docx, .xlsx)."""
+    graph = file_graph(order)
+    outgoing: dict[str, list[str]] = {}
+    incoming: dict[str, list[str]] = {}
+    for edge in graph:
+        outgoing.setdefault(edge["from_id"], []).append(f"{edge['relation_label']} → {edge['to']}")
+        incoming.setdefault(edge["to_id"], []).append(f"{edge['from']} — {edge['relation_label']}")
     excerpts: list[dict] = []
     for doc in order.documents:
         entry: dict = {
@@ -883,7 +1265,12 @@ def extract_document_excerpts(order: ExternalOrder) -> list[dict]:
             "file_name": doc.file_name,
             "approved": bool(doc.approved),
             "owner_role": doc.owner_role,
+            "anchor": file_anchor(doc),
+            "links": outgoing.get(doc.id, []),
+            "backlinks": incoming.get(doc.id, []),
+            "effective": "дата действия в файле не указана",
             "paragraphs": [],
+            "places": [],
             "rows": [],
         }
         path = Path(doc.stored_path) if doc.stored_path else None
@@ -892,16 +1279,222 @@ def extract_document_excerpts(order: ExternalOrder) -> list[dict]:
                 raw = path.read_bytes()
                 suffix = path.suffix.casefold()
                 if suffix == ".docx":
-                    entry["paragraphs"] = _docx_paragraphs(raw)[:25]
+                    entry["paragraphs"], entry["places"] = _quoted_lines(_docx_paragraphs(raw)[:25], "абзац")
                 elif suffix == ".xlsx":
                     entry["rows"] = [
-                        {"name": name, "qty": qty, "amount": amount}
-                        for name, qty, amount in _xlsx_rows(raw)[:40]
+                        {"row": index, "name": name, "qty": qty, "amount": amount}
+                        for index, (name, qty, amount) in enumerate(_xlsx_rows(raw)[:40], start=1)
                     ]
             except Exception:  # noqa: BLE001
                 pass
         excerpts.append(entry)
     return excerpts
+
+
+SCENARIOS = {
+    "changes": "Что изменилось",
+    "blockers": "Что блокирует",
+    "overdue": "Что просрочено",
+    "decisions": "Какие решения нужны",
+    "week": "Что на этой неделе",
+    "letter": "Письмо заказчику",
+    "request": "Запрос данных",
+    "protocol": "Протокол",
+    "disagreements": "Лист разногласий",
+    "memo": "Служебная записка",
+    "report": "Отчёт",
+    "why": "Почему так",
+    "missing": "Чего не хватает",
+    "facts": "Что факт, а что нет",
+}
+
+_DRAFT_SCENARIOS = {"letter", "request", "protocol", "disagreements", "memo", "report"}
+
+_CORE_KINDS = {"tz": "ТЗ", "tkp": "ТКП", "contract": "Договор", "specification": "Спецификация"}
+
+_OPEN_CHECK = {"open", "not_started", "in_progress", "review", "overdue", "blocked"}
+
+
+def _aware(value: datetime | None) -> datetime | None:
+    if value is None:
+        return None
+    return value.replace(tzinfo=timezone.utc) if value.tzinfo is None else value
+
+
+def _role_label(role: str) -> str:
+    from app.services.external_orders import ROLES
+
+    return ROLES.get(role, role)
+
+
+def _dated_items(order: ExternalOrder) -> list[dict]:
+    rows: list[dict] = []
+    for item in order.checks:
+        due = _aware(item.due_at)
+        if due is not None and item.status in _OPEN_CHECK:
+            rows.append({"what": item.text, "kind": "пункт чек-листа", "owner": _role_label(item.owner_role), "due": due})
+    for item in order.gaps:
+        due = _aware(item.due_at)
+        if due is not None and item.status == "open":
+            what = f"{item.field}: {item.detail}".strip(": ")
+            rows.append({"what": what, "kind": "пробел", "owner": _role_label(item.owner_role), "due": due})
+    return sorted(rows, key=lambda row: row["due"])
+
+
+def _dated_view(rows: list[dict], now: datetime) -> list[dict]:
+    return [
+        {**row, "due": row["due"].date().isoformat(), "days": (row["due"].date() - now.date()).days}
+        for row in rows
+    ]
+
+
+def _version_changes(order: ExternalOrder) -> list[dict]:
+    by_id = {item["id"]: item for item in extract_document_excerpts(order)}
+    out: list[dict] = []
+    for link in order.document_links:
+        if link.relation not in {"version", "supersedes"}:
+            continue
+        new, old = by_id.get(link.source_id), by_id.get(link.target_id)
+        if new is None or old is None:
+            continue
+        new_text, old_text = list(new["paragraphs"]), list(old["paragraphs"])
+        old_rows = {row["name"]: row for row in old["rows"]}
+        new_rows = {row["name"]: row for row in new["rows"]}
+        rows_changed = [
+            {"name": name, "was": f"{old_rows[name]['qty']} · {old_rows[name]['amount']}", "now": f"{row['qty']} · {row['amount']}"}
+            for name, row in new_rows.items()
+            if name in old_rows and (row["qty"], row["amount"]) != (old_rows[name]["qty"], old_rows[name]["amount"])
+        ]
+        readable = bool(new_text or new["rows"]) and bool(old_text or old["rows"])
+        out.append(
+            {
+                "new": new["anchor"],
+                "old": old["anchor"],
+                "relation": FILE_RELATIONS.get(link.relation, link.relation),
+                "compared": readable,
+                "added": [line for line in new_text if line not in old_text][:15],
+                "removed": [line for line in old_text if line not in new_text][:15],
+                "rows_added": [name for name in new_rows if name not in old_rows][:15],
+                "rows_removed": [name for name in old_rows if name not in new_rows][:15],
+                "rows_changed": rows_changed[:15],
+            }
+        )
+    return out
+
+
+def case_scenario(order: ExternalOrder, scenario: str, *, role: str = "") -> dict:
+    """Готовый расчёт для кнопки сценария: что есть в деле, без догадок модели."""
+    from app.services.external_orders import ExternalOrderError, build_stage_passports, known_facts
+
+    key = (scenario or "").strip()
+    if key not in SCENARIOS:
+        raise ExternalOrderError(f"Неизвестный сценарий. Есть: {', '.join(SCENARIOS)}", 400)
+    now = datetime.now(timezone.utc)
+    passports = build_stage_passports(order)
+    current = next((item for item in passports if item.get("state") in {"current", "blocked"}), passports[0] if passports else {})
+    documents = [
+        {"anchor": file_anchor(item), "kind": item.kind, "approved": bool(item.approved), "owner": _role_label(item.owner_role)}
+        for item in order.documents
+    ]
+    open_diffs = [
+        {"code": item.code, "title": item.title, "level": item.level, "owner": _role_label(item.owner_role), "left": item.left_value, "right": item.right_value, "note": item.note}
+        for item in order.diffs
+        if item.status != "closed"
+    ]
+    open_gaps = [
+        {"field": item.field, "detail": item.detail, "owner": _role_label(item.owner_role)}
+        for item in order.gaps
+        if item.status == "open"
+    ]
+    drafts = [
+        {"field": item.field, "value": str(item.value or "")[:200], "owner": _role_label(item.owner_role), "source": item.source_ref or item.location or ""}
+        for item in order.findings
+        if item.status == "draft"
+    ]
+    body: dict = {
+        "ok": True,
+        "scenario": key,
+        "title": SCENARIOS[key],
+        "order": {"id": order.id, "code": order.code, "customer": order.customer, "product": order.product, "status": order.status},
+        "stage": {"label": current.get("label"), "blocker": current.get("blocker"), "checks_done": current.get("checks_done"), "checks_total": current.get("checks_total")},
+        "files": documents,
+        "links": [f"{edge['from']} — {edge['relation_label']} → {edge['to']}" for edge in file_graph(order)],
+    }
+    dated = _dated_items(order)
+    if key == "changes":
+        body["versions"] = _version_changes(order)
+        body["open_diffs"] = open_diffs
+    elif key == "blockers":
+        body["blockers"] = [
+            *([{"what": current.get("blocker"), "source": "паспорт этапа"}] if current.get("blocker") else []),
+            *[{"what": item.text, "source": "блокирующий пункт чек-листа", "owner": _role_label(item.owner_role), "status": item.status} for item in order.checks if item.blocking and item.status in _OPEN_CHECK],
+            *[{"what": item["title"], "source": f"расхождение {item['code']}", "owner": item["owner"]} for item in open_diffs if item["level"] == "blocking"],
+            *[{"what": f"{item['field']}: {item['detail']}", "source": "открытый пробел", "owner": item["owner"]} for item in open_gaps],
+        ]
+        body["unapproved_files"] = [item["anchor"] for item in documents if not item["approved"]]
+    elif key == "overdue":
+        body["overdue"] = _dated_view([row for row in dated if row["due"] < now], now)
+    elif key == "week":
+        horizon = now + timedelta(days=7)
+        body["this_week"] = _dated_view([row for row in dated if now <= row["due"] <= horizon], now)
+        body["overdue"] = _dated_view([row for row in dated if row["due"] < now], now)
+    elif key == "decisions":
+        body["drafts_to_accept"] = drafts
+        body["open_diffs"] = open_diffs
+        body["committee_conditions"] = [
+            {"protocol": item.protocol, "decision": item.decision, "conditions": item.conditions}
+            for item in order.decisions
+            if str(item.conditions or "").strip() and not item.conditions_closed
+        ]
+        body["open_risks"] = [
+            {"title": item.title, "impact": item.impact, "measure": item.measure}
+            for item in order.risks
+            if str(item.status or "") not in {"closed", "done"}
+        ]
+    elif key == "why":
+        body["checks"] = [
+            {"gate": item.gate, "text": item.text, "status": item.status, "blocking": bool(item.blocking), "owner": _role_label(item.owner_role), "evidence": item.evidence}
+            for item in order.checks
+            if item.status in _OPEN_CHECK
+        ]
+        body["open_diffs"] = open_diffs
+        body["drafts"] = drafts
+    elif key == "missing":
+        kinds = {item.kind for item in order.documents}
+        body["missing_files"] = [label for kind, label in _CORE_KINDS.items() if kind not in kinds]
+        body["open_gaps"] = open_gaps
+        body["unlinked_files"] = [
+            file_anchor(item)
+            for item in order.documents
+            if not any(item.id in {link.source_id, link.target_id} for link in order.document_links)
+        ]
+    elif key == "facts":
+        body["facts"] = {
+            "known": known_facts(order),
+            "approved_files": [item["anchor"] for item in documents if item["approved"]],
+            "accepted": [{"field": item.field, "value": str(item.value or "")[:200]} for item in order.findings if item.status == "accepted"],
+            "committee": [{"protocol": item.protocol, "decision": item.decision} for item in order.decisions],
+        }
+        body["not_facts"] = {
+            "drafts": drafts,
+            "unapproved_files": [item["anchor"] for item in documents if not item["approved"]],
+            "open_diffs": open_diffs,
+        }
+    if key in _DRAFT_SCENARIOS:
+        body["known"] = known_facts(order)
+        body["excerpts"] = [
+            {"anchor": item["anchor"], "approved": item["approved"], "places": item["places"][:12], "rows": item["rows"][:15]}
+            for item in extract_document_excerpts(order)
+        ]
+        body["open_gaps"] = open_gaps
+        body["open_diffs"] = open_diffs
+        body["overdue"] = _dated_view([row for row in dated if row["due"] < now], now)
+    body["note"] = (
+        "Это расчёт по делу, а не догадка. Отвечай по этим полям и ссылайся на [[файл]]. "
+        "Черновик и неутверждённый файл фактом не называй. Пустой список значит, что в деле этого нет."
+        + (" Проект документа пиши только в чат, ничего не отправляй и не записывай." if key in _DRAFT_SCENARIOS else "")
+    )
+    return body
 
 
 def auto_prepare_order(

@@ -3221,16 +3221,16 @@ def _extract_git(git: dict[str, Any] | None) -> tuple[str, str]:
     return "", ""
 
 
-def _tester_may_read_shared(db: Session, user_id: str, row: Workflow) -> bool:
-    from app.models.user import AppUser
-    from app.services.external_orders import can_test_external_order, is_shared_external_order_agent
+def _may_use_shared(db: Session, user_id: str, row: Workflow) -> bool:
+    """Агент службы внешнего заказа один на всех: открыть и запустить может любой сотрудник.
 
-    if not is_shared_external_order_agent(row.title or ""):
-        return False
-    user = db.get(AppUser, user_id)
-    if user is None:
-        return False
-    return can_test_external_order(user.fio or "", user.position or "", user.department or "")
+    Запуски остаются у каждого свои (AgentRun.user_id), правит агент только владелец.
+    Профиль берётся из токена, записи в app-users у сотрудника может не быть.
+    """
+    from app.services.external_orders import is_shared_external_order_agent
+
+    _ = db
+    return bool((user_id or "").strip()) and is_shared_external_order_agent(row.title or "")
 
 
 def _get_owned(
@@ -3244,7 +3244,7 @@ def _get_owned(
     row = db.query(Workflow).filter(Workflow.id == workflow_id, Workflow.user_id == user_id).first()
     if row is None and allow_shared:
         shared = db.query(Workflow).filter(Workflow.id == workflow_id).first()
-        if shared is not None and _tester_may_read_shared(db, user_id, shared):
+        if shared is not None and _may_use_shared(db, user_id, shared):
             row = shared
     if row is None:
         raise WorkflowError("Workflow не найден", status_code=404)

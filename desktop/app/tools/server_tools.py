@@ -705,20 +705,41 @@ _SERVER_TOOL_DEFS: list[tuple[str, str, dict[str, Any]]] = [
     (
         "external_order.case",
         (
-            "Дело внешнего заказа. action=read — короткая сводка дела. "
-            "action=plan — файл плана работ по заказу с условиями договора, без правки общего шаблона. "
+            "Дело внешнего заказа. Инструмент есть в этом запуске. "
+            "action=auto_prepare — подготовка дела по order_id и role: путь 1С, опросный лист, черновики и чек-лист. "
+            "action=read — сводка дела. action=read_full — полная выжимка дела и файлов; большой ответ дочитай Read из result_file. "
+            "action=scenario — готовый расчёт кнопки сценария: scenario=changes (версии файлов), blockers, overdue, "
+            "decisions, week, why, missing, facts или проект документа letter, request, protocol, disagreements, memo, report. "
             "action=propose — черновики выводов, фактом они не становятся. "
-            "action=draft_1c — текст записки или поручения без записи в 1С. Сервер."
+            "action=draft_1c — черновик 1С ДО (memo, assignment, directive, order, protocol) без записи в 1С. "
+            "action=search_1c — поиск ТКП и заказа клиента. "
+            "action=plan_preview — план без записи. action=plan — черновик плана; базовый план не утверждается. Сервер."
         ),
         _schema(
             {
-                "action": _prop("string", "read | plan | propose | draft_1c", default="read"),
-                "order_id": _prop("string", "id карточки внешнего заказа"),
+                "action": _prop(
+                    "string",
+                    "read | read_full | scenario | auto_prepare | propose | draft_1c | search_1c | plan_preview | plan",
+                    default="read",
+                ),
+                "scenario": _prop(
+                    "string",
+                    "Для scenario: changes | blockers | overdue | decisions | week | why | missing | facts | "
+                    "letter | request | protocol | disagreements | memo | report",
+                ),
+                "order_id": _prop("string", "id или код карточки внешнего заказа"),
+                "role": _prop(
+                    "string",
+                    "Роль службы: ks, development, rp, committee, kb, omto, finance, production, legal, it",
+                ),
+                "step_id": _prop("string", "Код шага пути, если он есть в задаче"),
+                "query": _prop("string", "Для search_1c: номер ТКП, заказа клиента или контрагент"),
                 "findings": _prop("array", "Черновики: {field, value, source_ref, location, confidence, owner_role}"),
                 "diffs": _prop("array", "Черновики сверки: {code, left_value, right_value, note}"),
-                "kind": _prop("string", "Для draft_1c: memo или assignment"),
+                "kind": _prop("string", "Для draft_1c: memo | assignment | directive | order | protocol"),
                 "title": _prop("string", "Заголовок черновика для 1С"),
                 "text": _prop("string", "Текст черновика для 1С"),
+                "start": _prop("string", "Для plan_preview и plan: дата начала YYYY-MM-DD, если её назвал человек"),
             },
             ["action", "order_id"],
         ),

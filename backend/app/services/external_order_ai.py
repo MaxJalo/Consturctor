@@ -20,7 +20,7 @@ from app.models.external_order import ExternalOrder
 
 logger = logging.getLogger(__name__)
 
-AI_PROPOSER = "ИИ · Cursor"
+AI_PROPOSER = "ИИ · Cursor · правила eo-ai-1"
 AI_CONFIDENCE = {"high": "ai:high", "medium": "ai:medium", "low": "ai:low"}
 AI_TIMEOUT_SECONDS = 180
 
@@ -92,9 +92,11 @@ def _excerpts(case: dict) -> list[dict]:
         left -= len(text)
         out.append(
             {
-                "document": item.get("title") or item.get("file_name") or item.get("kind"),
+                "document": item.get("anchor") or item.get("title") or item.get("file_name") or item.get("kind"),
                 "kind": item.get("kind"),
                 "version": item.get("version"),
+                "links": item.get("links") or [],
+                "backlinks": item.get("backlinks") or [],
                 "text": text,
             }
         )
@@ -182,6 +184,10 @@ def case_payload(
             for line in (case.get("lines") or [])[:40]
         ],
         "documents": _excerpts(case),
+        "file_links": [
+            f"{item.get('from')} — {item.get('relation_label')} → {item.get('to')}"
+            for item in (case.get("document_links") or [])
+        ],
         "open_checks": [
             {"check_id": item.get("id"), "text": item.get("text"), "owner": item.get("owner_label")}
             for item in ((case.get("stage_passport") or {}).get("open_checks") or [])
@@ -205,7 +211,9 @@ PROMPT = """Ты — помощник служб по внешнему несе�
 Правила:
 1. Значение поля бери только из дела: документы, строки спецификации, 1С (в том числе условия ТКП в "tkp_1c":
    валюта, НДС, форма оплаты, доставка, срок действия, срок поставки, менеджер, конечный заказчик),
-   заполненные поля, решения Комитета, ответы сотрудника. Ничего не придумывай: ни цен, ни сроков, ни процентов, ни нормативов.
+   заполненные поля, решения Комитета, ответы сотрудника, связи файлов в "file_links".
+   Связь показывает, какой файл является приложением, основанием, версией или заменой другого: сверяй условия по ней, а не по одному файлу.
+   Ничего не придумывай: ни цен, ни сроков, ни процентов, ни нормативов.
 2. У каждого значения обязателен источник ("source": документ и версия, «1С заказ …», «Спецификация», «Ответ сотрудника»)
    и дословная цитата из источника ("quote", до 300 символов).
 3. Если ответ уже есть в onec, tkp_1c, known или опросном листе — запиши черновик и не задавай вопрос.

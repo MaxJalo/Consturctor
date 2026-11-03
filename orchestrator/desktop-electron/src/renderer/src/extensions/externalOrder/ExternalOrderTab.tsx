@@ -5,6 +5,7 @@ import { ApiError } from '../../api/types'
 import { api } from '../../api/client'
 import { OrchSlotMain } from '../../layout/GridSlots'
 import { DocflowCreateDialog } from '../../tabs/grid/DocflowCreateDialog'
+import { TodayFileIcon } from '../../tabs/grid/todayFileIcon'
 import { invokeLocalAcTool } from '../../utils/localAcTool'
 import {
   loadDocflowCreateSchema,
@@ -167,12 +168,78 @@ const FILE_KINDS: { id: string; label: string }[] = [
   { id: 'tkp', label: 'ТКП' },
   { id: 'contract', label: 'Договор' },
   { id: 'specification', label: 'Спецификация' },
+  { id: 'survey', label: 'Опросный лист' },
+  { id: 'protocol', label: 'Протокол' },
+  { id: 'assignment', label: 'Поручение' },
+  { id: 'memo', label: 'Служебная записка' },
+  { id: 'directive', label: 'Распоряжение' },
+  { id: 'decree', label: 'Приказ' },
+  { id: 'customer_order', label: 'Заказ' },
+  { id: 'attached', label: 'Прикреплённый файл' },
   { id: 'condition', label: 'Заключение' },
   { id: 'acceptance', label: 'Приёмка' },
-  { id: 'protocol', label: 'Протокол' },
   { id: 'plan', label: 'План работ' },
-  { id: 'correspondence', label: 'Переписка' }
+  { id: 'correspondence', label: 'Переписка' },
+  { id: 'other', label: 'Другой документ' }
 ]
+
+function guessFileKind(name: string): string {
+  const folded = name.toLowerCase().replace(/ё/g, 'е')
+  if (folded.includes('опрос')) return 'survey'
+  if (folded.includes('протокол')) return 'protocol'
+  if (folded.includes('поручен')) return 'assignment'
+  if (folded.includes('записк')) return 'memo'
+  if (folded.includes('распоряж')) return 'directive'
+  if (folded.includes('приказ')) return 'decree'
+  if (folded.includes('заказ')) return 'customer_order'
+  if (folded.includes('ткп') || folded.includes('tkp')) return 'tkp'
+  if (folded.includes('договор')) return 'contract'
+  if (folded.includes('специф')) return 'specification'
+  if (/(^|[^а-я])тз([^а-я]|$)/.test(folded) || folded.includes('tz')) return 'tz'
+  if (folded.includes('план')) return 'plan'
+  if (folded.includes('прием')) return 'acceptance'
+  if (folded.includes('заключен')) return 'condition'
+  return ''
+}
+
+const FILE_RELATIONS: { id: string; label: string }[] = [
+  { id: 'attachment', label: 'приложение' },
+  { id: 'basis', label: 'основание' },
+  { id: 'supersedes', label: 'заменяет' },
+  { id: 'confirms', label: 'подтверждает' },
+  { id: 'contradicts', label: 'противоречит' },
+  { id: 'version', label: 'версия' }
+]
+
+type FileScenario = { id: string; group: string; label: string; ask: string }
+
+const FILE_SCENARIOS: FileScenario[] = [
+  { id: 'changes', group: 'Сводка', label: 'Что изменилось', ask: 'Что изменилось между связанными файлами и их версиями.' },
+  { id: 'blockers', group: 'Сводка', label: 'Что блокирует', ask: 'Что блокирует переход и какой файл или пункт это держит.' },
+  { id: 'overdue', group: 'Сводка', label: 'Что просрочено', ask: 'Что просрочено: пункт, файл, срок или ожидаемое действие.' },
+  { id: 'decisions', group: 'Сводка', label: 'Какие решения нужны', ask: 'Какие решения нужны и кто их принимает. Сам решение не принимай.' },
+  { id: 'week', group: 'Сводка', label: 'Что на этой неделе', ask: 'Что должно произойти на этой неделе по срокам дела и связанным файлам.' },
+  { id: 'letter', group: 'Проект', label: 'Письмо заказчику', ask: 'Подготовь проект письма заказчику по файлам дела.' },
+  { id: 'request', group: 'Проект', label: 'Запрос данных', ask: 'Подготовь проект запроса недостающих данных. Чего нет — списком пробелов.' },
+  { id: 'protocol', group: 'Проект', label: 'Протокол', ask: 'Подготовь проект протокола по тому, что уже есть в деле.' },
+  { id: 'disagreements', group: 'Проект', label: 'Лист разногласий', ask: 'Подготовь проект листа разногласий по связанным файлам.' },
+  { id: 'memo', group: 'Проект', label: 'Служебная записка', ask: 'Подготовь проект служебной записки по делу.' },
+  { id: 'report', group: 'Проект', label: 'Отчёт', ask: 'Подготовь проект короткого отчёта по делу.' },
+  { id: 'why', group: 'Пояснение', label: 'Почему так', ask: 'Объясни причину каждого вывода, правила и блокировки. Откуда это в файле.' },
+  { id: 'missing', group: 'Пояснение', label: 'Чего не хватает', ask: 'Если данных не хватает — не отвечай догадкой. Перечисли пробелы: файл, связь или поле.' },
+  { id: 'facts', group: 'Граница', label: 'Что факт, а что нет', ask: 'Раздели факт и не факт. Факт — принятый файл, known и решение Комитета. Черновик фактом не называй.' }
+]
+
+function fileScenarioPrompt(order: Order, item: FileScenario): string {
+  const files = (order.documents || []).map((doc) => doc.anchor).filter((item): item is string => Boolean(item))
+  const links = (order.document_links || []).map((link) => `${link.from} — ${link.relation_label} → ${link.to}`)
+  return [
+    `Сценарий дела: ${item.label} (scenario=${item.id})`,
+    item.ask,
+    files.length ? `Файлы дела: ${files.join(', ')}.` : 'Файлов в деле нет.',
+    links.length ? `Связи:\n${links.join('\n')}` : 'Связей между файлами нет.'
+  ].join('\n\n')
+}
 
 function kindLabel(id: string): string {
   return FILE_KINDS.find((item) => item.id === id)?.label || id
@@ -277,6 +344,18 @@ function agentBrief(order: Order, role: string, step?: SimplifiedStep, extra = '
   const passport = activePassport(buildStagePassports(order))
   const stepArg = step ? `, step_id="${step.id}"` : ''
   const question = (extra || step?.prompt || '').trim()
+  const scenario = /scenario=([a-z_]+)/.exec(question)?.[1]
+  if (question.includes('Сценарий дела:')) {
+    return [
+      `Заказ ${order.code} (order_id=${order.id}), заказчик ${order.customer}.`,
+      `Служба: ${ROLE_NAME[role] || role} (role=${role}). Этап: ${passport?.label || order.status_label}.`,
+      question,
+      [
+        `Первый вызов: external_order.case(action="scenario", order_id="${order.id}", role="${role}", scenario="${scenario || 'facts'}") — готовый расчёт этой кнопки.`,
+        'Если нужен текст файла, версии или 1С — открой их нужным инструментом. Ответ ссылается на [[файл]]. Черновик не называй фактом. Без «Принять» в карточку ничего не записывай и никому не отправляй.'
+      ].join('\n')
+    ].join('\n\n')
+  }
   return [
     `Заказ ${order.code} (order_id=${order.id}), заказчик ${order.customer}.`,
     `Служба: ${ROLE_NAME[role] || role} (role=${role}). Этап: ${passport?.label || order.status_label}.`,
@@ -285,8 +364,8 @@ function agentBrief(order: Order, role: string, step?: SimplifiedStep, extra = '
       : 'Вопроса нет: кратко, что уже есть по службе, и одно пустое поле.',
     [
       'Шаблоны, один ход. Ход мыслей в чат не писать.',
-      `Первый ход: один external_order.case(action="auto_prepare", order_id="${order.id}", role="${role}"${stepArg}). Файлы и регламент не открывать. Ответ — отдельные абзацы через пустую строку: что уже есть, черновики к принятию, чек-лист, чего нет в 1С, один вопрос. Перед числом пробел.`,
-      'Следующее сообщение: инструменты не вызывать. Если сотрудник сообщил факт — один propose и фраза, что принять можно кнопкой «Принять».',
+      `Первый ход: один external_order.case(action="auto_prepare", order_id="${order.id}", role="${role}"${stepArg}). Если сводки мало — read_full, файлы дела и 1С. Ответ — отдельные абзацы через пустую строку: что уже есть, черновики к принятию, чек-лист, чего нет в 1С, один вопрос. Перед числом пробел.`,
+      'Следующее сообщение: auto_prepare второй раз не вызывать, нужные данные брать инструментами. Если сотрудник сообщил факт — один propose и фраза, что принять можно кнопкой «Принять».',
       'Если ответа нет ни в деле, ни в known (путь 1С и опросный лист): одна фраза и один вопрос. Ход на этом кончается.',
       'Список вопросов, повтор черновиков и «сначала открою регламент» не писать.'
     ].join('\n')
@@ -396,6 +475,65 @@ function helperFailure(err: unknown, fallback: string): string {
   return err instanceof ApiError ? err.message : fallback
 }
 
+type RequestLine = { name: string; qty: string; amount: string }
+
+type RequestDraft = {
+  customer: string
+  inn: string
+  contact: string
+  end_customer: string
+  order_type: string
+  priority: string
+  price: string
+  vat: string
+  currency: string
+  discount: string
+  delivery_days: string
+  payment_form: string
+  delivery: string
+  valid_until: string
+  order_subject: string
+  lines: RequestLine[]
+}
+
+const REQUEST_HEAD: { key: keyof Omit<RequestDraft, 'lines'>; label: string }[] = [
+  { key: 'customer', label: 'Заказчик' },
+  { key: 'inn', label: 'ИНН' },
+  { key: 'contact', label: 'Контакт' },
+  { key: 'end_customer', label: 'Конечный заказчик' },
+  { key: 'order_type', label: 'Вид' },
+  { key: 'priority', label: 'Приоритет' },
+  { key: 'price', label: 'Сумма' },
+  { key: 'vat', label: 'НДС' },
+  { key: 'currency', label: 'Валюта' },
+  { key: 'discount', label: 'Скидка' },
+  { key: 'delivery_days', label: 'Срок поставки' },
+  { key: 'payment_form', label: 'Форма оплаты' },
+  { key: 'delivery', label: 'Доставка' },
+  { key: 'valid_until', label: 'Срок действия' }
+]
+
+function emptyRequest(): RequestDraft {
+  return {
+    customer: '',
+    inn: '',
+    contact: '',
+    end_customer: '',
+    order_type: '',
+    priority: '',
+    price: '',
+    vat: '',
+    currency: '',
+    discount: '',
+    delivery_days: '',
+    payment_form: '',
+    delivery: '',
+    valid_until: '',
+    order_subject: '',
+    lines: [{ name: '', qty: '', amount: '' }]
+  }
+}
+
 export function ExternalOrderTab({
   user,
   onRunAgent
@@ -412,8 +550,7 @@ export function ExternalOrderTab({
   const [listReady, setListReady] = useState(false)
   const [current, setCurrent] = useState<Order | null>(null)
   const [error, setError] = useState('')
-  const [customer, setCustomer] = useState('')
-  const [product, setProduct] = useState('')
+  const [requestDraft, setRequestDraft] = useState<RequestDraft>(emptyRequest)
   const [evidence, setEvidence] = useState<Record<string, string>>({})
   const [deskOrder, setDeskOrder] = useState<Order | null>(null)
   const [deskAll, setDeskAll] = useState(false)
@@ -511,8 +648,7 @@ export function ExternalOrderTab({
   useEffect(() => {
     const back = takeReturn()
     if (!back) return
-    setReturnPage(back.page)
-    void openOrder(back.orderId)
+    void openOrder(back.orderId, back.page)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
@@ -564,8 +700,9 @@ export function ExternalOrderTab({
     }
   }
 
-  async function openOrder(id: string): Promise<void> {
+  async function openOrder(id: string, page: CardPage = 'files'): Promise<void> {
     setError('')
+    setReturnPage(page)
     try {
       setCurrent(await api.externalOrder(id, asRole))
     } catch (err) {
@@ -785,7 +922,27 @@ export function ExternalOrderTab({
       {error ? <div className="eo-error">{error}</div> : null}
       {docNotice ? <div className={docNotice.error ? 'eo-error' : 'eo-note'}>{docNotice.text}</div> : null}
       {current ? (
+        <div className="eo-work">
+          <aside className="eo-work-queue">
+            <h3>Ждут меня · {waitingMine.length}</h3>
+            <div className="eo-work-list">
+              {waitingMine.length ? waitingMine.map((item) => (
+                <button
+                  key={item.id}
+                  type="button"
+                  className={item.id === current.id ? 'eo-queue-item is-active' : 'eo-queue-item'}
+                  onClick={() => void openOrder(item.id)}
+                >
+                  <b>{item.code}</b>
+                  <span>{item.customer}</span>
+                  <small>{attentionLine(item, role) || item.status_label}</small>
+                </button>
+              )) : <p className="eo-muted">Сейчас от вашей службы ничего не ждут.</p>}
+            </div>
+            <button type="button" className="eo-queue-all" onClick={() => setCurrent(null)}>Вся очередь</button>
+          </aside>
         <Card
+          key={current.id}
           order={current}
           role={role}
           evidence={evidence}
@@ -809,6 +966,7 @@ export function ExternalOrderTab({
           onCopilot={(stepId) => void runCopilot(current, { auto_prepare: true, use_ai: true, step_id: stepId })}
           onDocflow={(kind, draft) => openDocflow(current, kind, draft)}
         />
+        </div>
       ) : view === 'desk' ? (
         <div className="eo-windows">
           <section className="eo-window eo-window-main">
@@ -836,20 +994,124 @@ export function ExternalOrderTab({
           </section>
           {canCreate ? (
             <form
-              className="eo-window"
+              className="eo-window eo-doc"
               onSubmit={(event) => {
                 event.preventDefault()
+                const lines = requestDraft.lines.filter((item) => item.name.trim())
+                const terms: Record<string, string> = {}
+                for (const field of REQUEST_HEAD) {
+                  if (field.key === 'customer') continue
+                  const value = requestDraft[field.key].trim()
+                  if (value) terms[field.key] = value
+                }
+                const comment = requestDraft.order_subject.trim()
+                if (comment) terms.order_subject = comment
                 void run(async () => {
-                  const created = await api.createExternalOrder({ customer, product }, asRole)
-                  setCustomer('')
-                  setProduct('')
+                  const created = await api.createExternalOrder({
+                    customer: requestDraft.customer.trim(),
+                    inn: requestDraft.inn.trim(),
+                    contact: requestDraft.contact.trim(),
+                    order_type: requestDraft.order_type.trim(),
+                    priority: requestDraft.priority.trim(),
+                    lines,
+                    terms
+                  }, asRole)
+                  setRequestDraft(emptyRequest())
                   setCurrent(created)
                 })
               }}
             >
               <h3>Новый запрос</h3>
-              <input value={customer} placeholder="Заказчик" onChange={(event) => setCustomer(event.target.value)} />
-              <input value={product} placeholder="Продукт" onChange={(event) => setProduct(event.target.value)} />
+              <div className="eo-doc-grid">
+                {REQUEST_HEAD.map((field) => (
+                  <label key={field.key}>
+                    {field.label}
+                    <input
+                      value={requestDraft[field.key]}
+                      onChange={(event) => setRequestDraft({ ...requestDraft, [field.key]: event.target.value })}
+                    />
+                  </label>
+                ))}
+              </div>
+              <label className="eo-doc-wide">
+                Комментарий
+                <input
+                  value={requestDraft.order_subject}
+                  onChange={(event) => setRequestDraft({ ...requestDraft, order_subject: event.target.value })}
+                />
+              </label>
+              <div className="eo-doc-goods">
+                <div className="eo-window-head">
+                  <h3>Товары</h3>
+                  <button
+                    type="button"
+                    onClick={() => setRequestDraft({
+                      ...requestDraft,
+                      lines: [...requestDraft.lines, { name: '', qty: '', amount: '' }]
+                    })}
+                  >
+                    Добавить строку
+                  </button>
+                </div>
+                <table className="eo-table">
+                  <thead>
+                    <tr>
+                      <th>Номенклатура</th>
+                      <th>Количество</th>
+                      <th>Сумма</th>
+                      <th></th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {requestDraft.lines.map((line, index) => (
+                      <tr key={index}>
+                        <td>
+                          <input
+                            value={line.name}
+                            aria-label={`Номенклатура ${index + 1}`}
+                            onChange={(event) => {
+                              const lines = requestDraft.lines.map((item, itemIndex) => itemIndex === index ? { ...item, name: event.target.value } : item)
+                              setRequestDraft({ ...requestDraft, lines })
+                            }}
+                          />
+                        </td>
+                        <td>
+                          <input
+                            value={line.qty}
+                            aria-label={`Количество ${index + 1}`}
+                            onChange={(event) => {
+                              const lines = requestDraft.lines.map((item, itemIndex) => itemIndex === index ? { ...item, qty: event.target.value } : item)
+                              setRequestDraft({ ...requestDraft, lines })
+                            }}
+                          />
+                        </td>
+                        <td>
+                          <input
+                            value={line.amount}
+                            aria-label={`Сумма ${index + 1}`}
+                            onChange={(event) => {
+                              const lines = requestDraft.lines.map((item, itemIndex) => itemIndex === index ? { ...item, amount: event.target.value } : item)
+                              setRequestDraft({ ...requestDraft, lines })
+                            }}
+                          />
+                        </td>
+                        <td>
+                          <button
+                            type="button"
+                            disabled={requestDraft.lines.length < 2}
+                            onClick={() => setRequestDraft({
+                              ...requestDraft,
+                              lines: requestDraft.lines.filter((_, itemIndex) => itemIndex !== index)
+                            })}
+                          >
+                            Убрать
+                          </button>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
               <div className="eo-actions">
                 <button className="eo-btn is-primary" type="submit">Создать карточку</button>
                 <button type="button" onClick={() => requestFilesRef.current?.click()}>Загрузить запрос, ТЗ и переписку</button>
@@ -905,6 +1167,7 @@ export function ExternalOrderTab({
             {deskList.length ? (
               <OrderTable
                 rows={deskList}
+                role={role}
                 selectedId={deskOrder?.id || ''}
                 onSelect={(id) => void selectOrder(id)}
                 onOpen={(id) => void openOrder(id)}
@@ -1203,16 +1466,38 @@ export function ExternalOrderTab({
   )
 }
 
+function attentionLine(item: Brief, role: string): string {
+  const labels: Record<string, string> = {
+    overdue: 'Просрочено',
+    check: 'Пункт',
+    gap: 'Пробел',
+    change: 'Файл',
+    block: 'Блок'
+  }
+  const counts = new Map<string, number>()
+  for (const row of item.attention || []) {
+    if (row.role !== role) continue
+    const line = `${labels[row.kind] || row.kind}: ${row.text}`
+    counts.set(line, (counts.get(line) || 0) + 1)
+  }
+  return [...counts.entries()]
+    .slice(0, 3)
+    .map(([line, count]) => (count > 1 ? `${line} ×${count}` : line))
+    .join(' · ')
+}
+
 function OrderTable({
   rows,
   selectedId,
   full = false,
+  role = '',
   onSelect,
   onOpen
 }: {
   rows: Brief[]
   selectedId: string
   full?: boolean
+  role?: string
   onSelect: (id: string) => void
   onOpen: (id: string) => void
 }): React.JSX.Element {
@@ -1232,6 +1517,7 @@ function OrderTable({
             {full ? <th className="eo-col-num">Расхождения</th> : null}
             {full ? <th className="eo-col-num">Черновики ИИ</th> : null}
             <th className="eo-col-wait">Ждут</th>
+            {role ? <th>Почему в очереди</th> : null}
             <th className="eo-col-open"></th>
           </tr>
         </thead>
@@ -1270,6 +1556,11 @@ function OrderTable({
                   {roleNames(item.waiting_roles) || '—'}
                 </span>
               </td>
+              {role ? (
+                <td>
+                  <span className="eo-clip" title={attentionLine(item, role)}>{attentionLine(item, role) || '—'}</span>
+                </td>
+              ) : null}
               <td className="eo-col-open">
                 <button className="eo-btn" type="button" onClick={(event) => { event.stopPropagation(); onOpen(item.id) }}>
                   Карточка
@@ -2309,11 +2600,90 @@ function Card({
   const [lookupError, setLookupError] = useState('')
   const canLink = role === 'ks' || role === 'development' || role === 'finance' || role === 'it'
   const canUpload = UPLOAD_ROLES.has(role)
-  const fileKinds = (role === 'committee' ? FILE_KINDS.filter((item) => item.id === 'protocol') : FILE_KINDS).filter(
-    (item) => item.id !== 'plan'
-  )
+  const fileKinds = role === 'committee' ? FILE_KINDS.filter((item) => item.id === 'protocol') : FILE_KINDS
   const [fileKind, setFileKind] = useState(role === 'committee' ? 'protocol' : 'contract')
+  const [shelfOver, setShelfOver] = useState(false)
+  const [selectedFileId, setSelectedFileId] = useState('')
+  const [fileEdit, setFileEdit] = useState({ kind: '', title: '' })
+  const versionRef = useRef<HTMLInputElement>(null)
+  const selectedFile = order.documents.find((item) => item.id === selectedFileId)
+  const shelfGroups = [
+    ...FILE_KINDS.map((kind) => ({ id: kind.id, label: kind.label, docs: order.documents.filter((doc) => doc.kind === kind.id) })),
+    {
+      id: 'stray',
+      label: 'Другие',
+      docs: order.documents.filter((doc) => !FILE_KINDS.some((kind) => kind.id === doc.kind))
+    }
+  ].filter((group) => group.docs.length)
+  const [linkDraft, setLinkDraft] = useState<Record<string, { target: string; relation: string }>>({})
+  const [fileOffer, setFileOffer] = useState('')
+  const [projectDraft, setProjectDraft] = useState({ title: '', text: '', target: '', relation: 'attachment', kind: 'correspondence' })
   const fileRef = useRef<HTMLInputElement>(null)
+
+  function kindForName(name: string): string {
+    const guessed = guessFileKind(name)
+    if (fileKinds.some((item) => item.id === guessed)) return guessed
+    return fileKinds.some((item) => item.id === fileKind) ? fileKind : fileKinds[0]?.id || 'other'
+  }
+
+  function pickFile(doc: Order['documents'][number] | undefined): void {
+    setSelectedFileId(doc?.id || '')
+    setFileEdit({ kind: doc?.kind || '', title: doc?.title || '' })
+  }
+
+  async function fileBase64(file: File): Promise<string> {
+    const bytes = new Uint8Array(await file.arrayBuffer())
+    let binary = ''
+    bytes.forEach((item) => {
+      binary += String.fromCharCode(item)
+    })
+    return btoa(binary)
+  }
+
+  function uploadFiles(files: File[]): void {
+    if (!files.length || !canUpload) return
+    void onRun(async () => {
+      let next = order
+      let offer = ''
+      let last: Order['documents'][number] | undefined
+      for (const file of files) {
+        const kind = kindForName(file.name)
+        setFileKind(kind)
+        const known = new Set(next.documents.map((item) => item.id))
+        next = await api.uploadExternalFile(order.id, {
+          kind,
+          filename: file.name,
+          content_base64: await fileBase64(file)
+        }, asRole)
+        last = next.documents.find((item) => !known.has(item.id))
+        offer = last?.anchor || last?.title || file.name
+      }
+      if (offer) setFileOffer(offer)
+      if (last) pickFile(last)
+      return next
+    })
+  }
+
+  function uploadVersion(file: File, base: Order['documents'][number]): void {
+    if (!canUpload) return
+    void onRun(async () => {
+      const known = new Set(order.documents.map((item) => item.id))
+      let next = await api.uploadExternalFile(order.id, {
+        kind: base.kind,
+        filename: file.name,
+        content_base64: await fileBase64(file)
+      }, asRole)
+      const added = next.documents.find((item) => !known.has(item.id))
+      if (added && base.anchor) {
+        next = await api.linkExternalFile(order.id, added.id, { target: base.anchor, relation: 'version' }, asRole)
+      }
+      const fresh = next.documents.find((item) => item.id === added?.id)
+      if (fresh) pickFile(fresh)
+      setFileOffer(fresh?.anchor || file.name)
+      return next
+    })
+  }
+
   const [rpName, setRpName] = useState(order.owners?.rp || '')
   const [risk, setRisk] = useState({ title: '', impact: '', measure: '' })
   const [page, setPage] = useState<CardPage>(initialPage)
@@ -2448,7 +2818,7 @@ function Card({
     { id: 'diff', label: 'Сверка B01–B35', note: `${(order.diffs || []).filter((item) => item.status !== 'closed').length} открыто` },
     { id: 'committee', label: 'Комитет и БВ', note: order.decisions?.slice(-1)[0]?.decision || `${(order.baselines || []).length} БВ` },
     { id: 'path', label: 'Путь 1С и план', note: order.onec_number || `${(order.tasks || []).length} задач` },
-    { id: 'files', label: 'Файлы', note: `${(order.documents || []).length} в деле` },
+    { id: 'files', label: 'Файлы дела', note: `${(order.documents || []).length} в деле` },
     { id: 'ai', label: 'ИИ-помощник', note: pendingFindings.length ? `${pendingFindings.length} черновиков` : 'черновиков нет' },
     { id: 'history', label: 'История', note: `${(order.audit || []).length} записей` }
   ]
@@ -2461,6 +2831,13 @@ function Card({
           <button type="button" className="eo-back" onClick={onBack}>К списку</button>
           <h2>{order.code} · {order.customer}</h2>
           <p className="eo-muted">{order.product}. Шаг {currentIndex + 1} из {LINE.length}: {order.status_label}.</p>
+          <p className="eo-case-line">
+            Дальше: {passports[currentIndex + 1]?.label || 'закрытие'}.
+            {' '}Мой шаг: {myOpen.length ? myOpen.map((item) => item.text).slice(0, 2).join('; ') : 'нет'}.
+            {' '}Файлы: {(order.documents || []).length}, связей {(order.document_links || []).length}.
+            {' '}{order.payment_note}
+            {order.sections?.onec?.delivery_days ? `. Срок поставки: ${order.sections.onec.delivery_days}` : ''}.
+          </p>
         </div>
         <div className="eo-actions">
           <button type="button" disabled={pathBusy === 'purchase'} onClick={() => void openPurchaseAgent()}>
@@ -2810,108 +3187,406 @@ function Card({
         <>
           <section className="eo-journal" aria-label="Файлы дела">
             <div className="eo-journal-bar">
-              <div className="eo-kind-tabs" role="tablist" aria-label="Вид файла">
-                {fileKinds.map((item) => (
-                  <button
-                    key={item.id}
-                    type="button"
-                    role="tab"
-                    aria-selected={fileKind === item.id}
-                    className={fileKind === item.id ? 'is-active' : ''}
-                    onClick={() => setFileKind(item.id)}
-                  >
-                    {item.label}
-                  </button>
-                ))}
-              </div>
+              <h3>Файлы дела · {order.documents.length}</h3>
               {canUpload ? (
-                <button type="button" className="is-primary" onClick={() => fileRef.current?.click()}>
-                  <Paperclip size={14} aria-hidden /> Прикрепить
-                </button>
+                <div className="eo-files-add">
+                  <label className="eo-file-kind">
+                    Вид, если из названия не ясно
+                    <select value={fileKind} onChange={(event) => setFileKind(event.target.value)}>
+                      {fileKinds.map((item) => (
+                        <option key={item.id} value={item.id}>{item.label}</option>
+                      ))}
+                    </select>
+                  </label>
+                  <button type="button" className="is-primary" onClick={() => fileRef.current?.click()}>
+                    <Paperclip size={14} aria-hidden /> Прикрепить
+                  </button>
+                </div>
               ) : null}
               <input
                 ref={fileRef}
+                className="eo-file-input"
+                type="file"
+                multiple
+                accept=".docx,.xlsx,.pdf"
+                onChange={(event) => {
+                  const picked = [...(event.target.files || [])]
+                  event.target.value = ''
+                  uploadFiles(picked)
+                }}
+              />
+              <input
+                ref={versionRef}
                 className="eo-file-input"
                 type="file"
                 accept=".docx,.xlsx,.pdf"
                 onChange={(event) => {
                   const file = event.target.files?.[0]
                   event.target.value = ''
-                  if (!file) return
-                  void file.arrayBuffer().then((buffer) => {
-                    const bytes = new Uint8Array(buffer)
-                    let binary = ''
-                    bytes.forEach((item) => {
-                      binary += String.fromCharCode(item)
-                    })
-                    const kind = fileKinds.some((item) => item.id === fileKind) ? fileKind : fileKinds[0].id
-                    void onRun(() => api.uploadExternalFile(order.id, {
-                      kind,
-                      filename: file.name,
-                      content_base64: btoa(binary)
-                    }, asRole))
-                  })
+                  if (file && selectedFile) uploadVersion(file, selectedFile)
                 }}
               />
             </div>
-            <div className="eo-journal-scroll">
-              <table className="eo-journal-table">
-                <thead>
-                  <tr>
-                    <th>Вид</th>
-                    <th>Документ</th>
-                    <th>Версия</th>
-                    <th>Статус</th>
-                    <th></th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {order.documents.length === 0 ? (
-                    <tr>
-                      <td className="eo-journal-empty" colSpan={5}>Файлов в деле ещё нет.</td>
-                    </tr>
-                  ) : order.documents.map((item) => (
-                    <tr key={item.id}>
-                      <td>{kindLabel(item.kind)}</td>
-                      <td>{item.title || item.file_name || '—'}</td>
-                      <td>{item.version || '—'}</td>
-                      <td>
-                        <span className={item.approved ? 'eo-status is-ok' : 'eo-status'}>
-                          {item.approved ? 'утверждён' : 'черновик'}
-                        </span>
-                      </td>
-                      <td>
-                        <div className="eo-journal-actions">
-                          {item.kind === 'plan' ? (
-                            <button
-                              type="button"
-                              onClick={() =>
-                                void api.download(
-                                  `/api/v1/external-orders/${encodeURIComponent(order.id)}/files/${encodeURIComponent(item.id)}`,
-                                  item.file_name || `План работ ${order.code}.xml`
-                                )
-                              }
-                            >
-                              Скачать
-                            </button>
-                          ) : null}
-                          {!item.approved && (role === 'ks' || role === item.owner_role) ? (
-                            <button type="button" onClick={() => void onRun(() => api.approveExternalFile(order.id, item.id, asRole))}>
-                              Утвердить
-                            </button>
-                          ) : null}
-                          {!item.approved && canUpload ? (
-                            <button type="button" onClick={() => void onRun(() => api.deleteExternalFile(order.id, item.id, asRole))}>
-                              Удалить
-                            </button>
-                          ) : null}
+            <div className="eo-files">
+              <div
+                className={`eo-shelf${shelfOver ? ' is-over' : ''}`}
+                onDragEnter={(event) => {
+                  if (!canUpload) return
+                  event.preventDefault()
+                  setShelfOver(true)
+                }}
+                onDragOver={(event) => {
+                  if (!canUpload) return
+                  event.preventDefault()
+                  setShelfOver(true)
+                }}
+                onDragLeave={(event) => {
+                  if (event.currentTarget.contains(event.relatedTarget as Node | null)) return
+                  setShelfOver(false)
+                }}
+                onDrop={(event) => {
+                  event.preventDefault()
+                  setShelfOver(false)
+                  uploadFiles([...(event.dataTransfer.files || [])])
+                }}
+              >
+                {shelfGroups.length === 0 ? (
+                  <p className="eo-shelf-empty">
+                    В деле пока нет файлов.{canUpload ? ' Перетащите сюда DOCX, XLSX или PDF или нажмите «Прикрепить».' : ''}
+                  </p>
+                ) : shelfGroups.map((group) => (
+                  <div key={group.id} className="eo-shelf-group">
+                    <span className="eo-now-kicker">{group.label} · {group.docs.length}</span>
+                    <div className="eo-shelf-grid">
+                      {group.docs.map((doc) => {
+                        const links = (doc.links || []).length + (doc.backlinks || []).length
+                        return (
+                          <button
+                            key={doc.id}
+                            type="button"
+                            className={`eo-file-tile${doc.id === selectedFile?.id ? ' is-active' : ''}`}
+                            title={doc.file_name || doc.title}
+                            onClick={() => pickFile(doc.id === selectedFile?.id ? undefined : doc)}
+                            onDoubleClick={() => {
+                              if (doc.file_name) void api.openExternalFile(order.id, doc.id, doc.file_name)
+                            }}
+                          >
+                            <TodayFileIcon name={doc.file_name || doc.title || 'файл.docx'} size={34} />
+                            <b>{doc.title || doc.file_name || 'файл'}</b>
+                            <small>
+                              {doc.version || '—'} · {doc.approved ? 'утверждён' : 'черновик'}
+                              {links ? ` · связей ${links}` : ''}
+                            </small>
+                          </button>
+                        )
+                      })}
+                    </div>
+                  </div>
+                ))}
+                {shelfOver ? <div className="eo-shelf-drop">Отпустите, чтобы положить в дело</div> : null}
+              </div>
+              {selectedFile ? (() => {
+                const item = selectedFile
+                const draft = linkDraft[item.id] || { target: '', relation: 'attachment' }
+                const others = order.documents.filter((other) => other.id !== item.id)
+                return (
+                  <aside className="eo-file-panel" aria-label="Файл">
+                    <header>
+                      <TodayFileIcon name={item.file_name || item.title || 'файл.docx'} size={40} />
+                      <div>
+                        <b>{item.title || item.file_name || 'файл'}</b>
+                        <small>
+                          {kindLabel(item.kind)} · {item.version || '—'} · {item.approved ? 'утверждён' : 'черновик'}
+                        </small>
+                      </div>
+                      <button type="button" className="eo-file-close" aria-label="Закрыть" onClick={() => pickFile(undefined)}>
+                        ×
+                      </button>
+                    </header>
+                    <div className="eo-file-actions">
+                      {item.file_name ? (
+                        <button
+                          type="button"
+                          className="is-primary"
+                          onClick={() => void api.openExternalFile(order.id, item.id, item.file_name || 'file')}
+                        >
+                          Открыть
+                        </button>
+                      ) : null}
+                      {item.file_name ? (
+                        <button
+                          type="button"
+                          onClick={() =>
+                            void api.download(
+                              `/api/v1/external-orders/${encodeURIComponent(order.id)}/files/${encodeURIComponent(item.id)}`,
+                              item.file_name || item.title || 'file'
+                            )
+                          }
+                        >
+                          Скачать
+                        </button>
+                      ) : null}
+                      {canUpload ? (
+                        <button type="button" onClick={() => versionRef.current?.click()}>
+                          Новая версия
+                        </button>
+                      ) : null}
+                      {!item.approved && (role === 'ks' || role === item.owner_role) ? (
+                        <button type="button" onClick={() => void onRun(() => api.approveExternalFile(order.id, item.id, asRole))}>
+                          Утвердить
+                        </button>
+                      ) : null}
+                      {!item.approved && canUpload ? (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            pickFile(undefined)
+                            void onRun(() => api.deleteExternalFile(order.id, item.id, asRole))
+                          }}
+                        >
+                          Удалить
+                        </button>
+                      ) : null}
+                      {role !== 'viewer' ? (
+                        <button
+                          type="button"
+                          disabled={agentBusy}
+                          onClick={() =>
+                            onServiceAgent(
+                              fileScenarioPrompt(order, {
+                                id: 'changes',
+                                group: 'Сводка',
+                                label: 'Что изменилось',
+                                ask: `Что в файле ${item.anchor || item.title} и что изменилось относительно связанных версий.`
+                              })
+                            )
+                          }
+                        >
+                          Спросить помощника
+                        </button>
+                      ) : null}
+                    </div>
+                    {canUpload && !item.approved ? (
+                      <form
+                        className="eo-file-edit"
+                        onSubmit={(event) => {
+                          event.preventDefault()
+                          void onRun(() => api.patchExternalFile(order.id, item.id, fileEdit, asRole))
+                        }}
+                      >
+                        <label>
+                          Вид
+                          <select value={fileEdit.kind} onChange={(event) => setFileEdit({ ...fileEdit, kind: event.target.value })}>
+                            {fileKinds.map((kind) => (
+                              <option key={kind.id} value={kind.id}>{kind.label}</option>
+                            ))}
+                          </select>
+                        </label>
+                        <label>
+                          Название
+                          <input value={fileEdit.title} onChange={(event) => setFileEdit({ ...fileEdit, title: event.target.value })} />
+                        </label>
+                        <button type="submit" disabled={fileEdit.kind === item.kind && fileEdit.title === item.title}>
+                          Сохранить
+                        </button>
+                      </form>
+                    ) : null}
+                    <div className="eo-file-links">
+                      <span className="eo-now-kicker">Связи</span>
+                      {(item.links || []).length || (item.backlinks || []).length ? (
+                        <div className="eo-link-chips">
+                          {(item.links || []).map((link) => (
+                            <span key={link.id} className="eo-link-chip">
+                              {link.relation_label} → {link.target}
+                              {canUpload ? (
+                                <button type="button" onClick={() => void onRun(() => api.unlinkExternalFile(order.id, link.id, asRole))}>
+                                  снять
+                                </button>
+                              ) : null}
+                            </span>
+                          ))}
+                          {(item.backlinks || []).map((link) => (
+                            <span key={`back-${link.id}`} className="eo-link-chip is-back">
+                              {link.source} → {link.relation_label}
+                            </span>
+                          ))}
                         </div>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
+                      ) : (
+                        <p className="eo-muted">Связей нет.</p>
+                      )}
+                    </div>
+                    {canUpload && others.length ? (
+                      <form
+                        className="eo-file-edit"
+                        onSubmit={(event) => {
+                          event.preventDefault()
+                          const target = draft.target.trim()
+                          if (!target) return
+                          void onRun(async () => {
+                            const next = await api.linkExternalFile(
+                              order.id,
+                              item.id,
+                              { target, relation: draft.relation },
+                              asRole
+                            )
+                            setLinkDraft((prev) => ({ ...prev, [item.id]: { target: '', relation: draft.relation } }))
+                            setFileOffer(item.anchor || item.title || 'файл')
+                            return next
+                          })
+                        }}
+                      >
+                        <label>
+                          Связать с
+                          <select
+                            value={draft.target}
+                            onChange={(event) =>
+                              setLinkDraft((prev) => ({
+                                ...prev,
+                                [item.id]: { target: event.target.value, relation: draft.relation }
+                              }))
+                            }
+                          >
+                            <option value="">Выберите файл</option>
+                            {others.map((other) => (
+                              <option key={other.id} value={other.anchor || ''}>{other.title || other.file_name}</option>
+                            ))}
+                          </select>
+                        </label>
+                        <label>
+                          Как
+                          <select
+                            value={draft.relation}
+                            onChange={(event) =>
+                              setLinkDraft((prev) => ({
+                                ...prev,
+                                [item.id]: { target: draft.target, relation: event.target.value }
+                              }))
+                            }
+                          >
+                            {FILE_RELATIONS.map((relation) => (
+                              <option key={relation.id} value={relation.id}>{relation.label}</option>
+                            ))}
+                          </select>
+                        </label>
+                        <button type="submit" disabled={!draft.target}>Связать</button>
+                      </form>
+                    ) : null}
+                  </aside>
+                )
+              })() : null}
             </div>
+            {role !== 'viewer' ? (
+            <details className="eo-files-more" open={Boolean(fileOffer)}>
+              <summary>Помощник по файлам и проект из разговора</summary>
+            <div className="eo-vault">
+              {fileOffer && role !== 'viewer' ? (
+                <p className="eo-note">
+                  В деле {fileOffer}. Разобрать, не записывая в карточку:
+                  {' '}
+                  {FILE_SCENARIOS.filter((item) => ['Что изменилось', 'Почему так', 'Чего не хватает'].includes(item.label)).map((item) => (
+                    <button key={item.label} type="button" disabled={agentBusy} onClick={() => onServiceAgent(fileScenarioPrompt(order, item))}>
+                      {item.label}
+                    </button>
+                  ))}
+                </p>
+              ) : null}
+              {canUpload ? (
+                <form
+                  className="eo-link-field"
+                  onSubmit={(event) => {
+                    event.preventDefault()
+                    const text = projectDraft.text.trim()
+                    const title = projectDraft.title.trim()
+                    if (!text || !title) return
+                    void onRun(async () => {
+                      const known = new Set(order.documents.map((item) => item.id))
+                      const next = await api.saveExternalText(order.id, projectDraft, asRole)
+                      const added = next.documents.find((item) => !known.has(item.id))
+                      setProjectDraft({ title: '', text: '', target: '', relation: 'attachment', kind: 'correspondence' })
+                      setFileOffer(added?.anchor || title)
+                      return next
+                    })
+                  }}
+                >
+                  <label>
+                    Проект из разговора
+                    <input
+                      value={projectDraft.title}
+                      placeholder="Название"
+                      onChange={(event) => setProjectDraft({ ...projectDraft, title: event.target.value })}
+                    />
+                  </label>
+                  <label>
+                    Вид
+                    <select
+                      value={projectDraft.kind}
+                      onChange={(event) => setProjectDraft({ ...projectDraft, kind: event.target.value })}
+                    >
+                      {fileKinds.map((item) => (
+                        <option key={item.id} value={item.id}>{item.label}</option>
+                      ))}
+                    </select>
+                  </label>
+                  <label>
+                    Текст
+                    <input
+                      value={projectDraft.text}
+                      placeholder="Текст письма, протокола или записки"
+                      onChange={(event) => setProjectDraft({ ...projectDraft, text: event.target.value })}
+                    />
+                  </label>
+                  <label>
+                    Связать с
+                    <input
+                      list="vault-project"
+                      value={projectDraft.target}
+                      placeholder="[[файл]]"
+                      onChange={(event) => setProjectDraft({ ...projectDraft, target: event.target.value })}
+                    />
+                    <datalist id="vault-project">
+                      {order.documents.map((item) => (
+                        <option key={item.id} value={item.anchor || ''} />
+                      ))}
+                    </datalist>
+                  </label>
+                  <button type="submit">Положить в дело</button>
+                </form>
+              ) : null}
+              {role !== 'viewer' ? (
+                <div className="eo-scenarios">
+                  {['Сводка', 'Проект', 'Пояснение', 'Граница'].map((group) => (
+                    <div key={group}>
+                      <span className="eo-now-kicker">{group}</span>
+                      <div className="eo-actions">
+                        {FILE_SCENARIOS.filter((item) => item.group === group).map((item) => (
+                          <button
+                            key={item.label}
+                            type="button"
+                            disabled={agentBusy}
+                            onClick={() => onServiceAgent(fileScenarioPrompt(order, item))}
+                          >
+                            {item.label}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              ) : null}
+              {(order.document_links || []).length ? (
+                <ul className="eo-vault-graph">
+                  {(order.document_links || []).map((link) => (
+                    <li key={link.id}>
+                      <b>{link.from}</b>
+                      <span>{link.relation_label}</span>
+                      <b>{link.to}</b>
+                    </li>
+                  ))}
+                </ul>
+              ) : null}
+            </div>
+            </details>
+            ) : null}
           </section>
         </>
       ) : null}
@@ -3029,8 +3704,28 @@ function Card({
                               </button>
                             ) : null}
                             {item.status === 'draft' && role === item.owner_role ? (
-                              <button type="button" onClick={() => void onRun(() => api.rejectExternalFinding(order.id, item.id, asRole))}>
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  const reason = window.prompt('Почему отклоняете вывод?')
+                                  if (reason == null) return
+                                  void onRun(() => api.rejectExternalFinding(order.id, item.id, asRole, reason))
+                                }}
+                              >
                                 Отклонить
+                              </button>
+                            ) : null}
+                            {item.status === 'draft' && role === item.owner_role ? (
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  const value = window.prompt('Исправленное значение', item.value || '')
+                                  if (!value || !value.trim()) return
+                                  const reason = window.prompt('Почему исправляете?') ?? ''
+                                  void onRun(() => api.correctExternalFinding(order.id, item.id, value.trim(), asRole, reason))
+                                }}
+                              >
+                                Исправить
                               </button>
                             ) : null}
                             {draft ? (

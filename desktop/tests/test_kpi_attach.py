@@ -588,6 +588,34 @@ def test_forward_events_does_not_paint_runner_error(monkeypatch) -> None:
     assert emitted[0]["payload"]["type"] == "status"
 
 
+def test_order_stream_reaches_the_chat_with_spaces_and_one_prepare(monkeypatch) -> None:
+    from threading import Event
+    from types import SimpleNamespace
+
+    sidecar_mod = _load_orch_sidecar()
+    emitted: list[dict] = []
+    monkeypatch.setattr(sidecar_mod, "emit", lambda payload: emitted.append(payload))
+    gate = SimpleNamespace(bind_events=lambda *_a, **_k: None, mark_work_result_done=lambda: None)
+    active = sidecar_mod.ActiveRun("run-1", gate, Event(), SimpleNamespace())
+    active.hide_tests = True
+    on_event = sidecar_mod.Sidecar()._forward_events(active, [])
+    prepare = {"type": "tool_call", "tool": "external_order.case", "arguments": {"action": "auto_prepare"}}
+    on_event({"type": "assistant", "text": "Сначала сниму схему дела.\n"})
+    on_event(prepare)
+    for chunk in ["По", " службе", " ОМТО", " уже", " есть", " путь 1С.", "\n\nСрок", " поставки 60 дн."]:
+        on_event({"type": "assistant", "text": chunk})
+    assert not active.stop.is_set()
+    on_event(prepare)
+    assert active.stop.is_set()
+    shown = "".join(
+        str(item["payload"].get("text") or "")
+        for item in emitted
+        if item.get("payload", {}).get("type") == "assistant"
+    )
+    assert shown == "По службе ОМТО уже есть путь 1С.\n\nСрок поставки 60 дн."
+    assert "Сначала" not in shown
+
+
 def test_bridge_run_retries_network_then_succeeds(monkeypatch) -> None:
     from threading import Event
     from types import SimpleNamespace

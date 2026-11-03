@@ -9,6 +9,7 @@ from app.models.external_order import (
     ExternalOrderDecision,
     ExternalOrderDiff,
     ExternalOrderDocument,
+    ExternalOrderDocumentLink,
     ExternalOrderFinding,
     ExternalOrderRisk,
 )
@@ -54,6 +55,7 @@ __all__ = [
     "ExternalOrderDecision",
     "ExternalOrderDiff",
     "ExternalOrderDocument",
+    "ExternalOrderDocumentLink",
     "ExternalOrderFinding",
     "ExternalOrderRisk",
     "CalendarOverlay",

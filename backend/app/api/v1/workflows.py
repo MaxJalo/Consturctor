@@ -662,7 +662,7 @@ async def upload_workflow_files(
     if keep_origin not in {"user_upload", ORIGIN_KEEP_KNOWLEDGE}:
         keep_origin = "user_upload"
     try:
-        row = ensure_workflow_files_table(db, user_id=auth.user_id, workflow_id=workflow_id)
+        row = ensure_workflow_files_table(db, user_id=auth.user_id, workflow_id=workflow_id, owner_only=True)
         add_user_files_to_workflow(db, row=row, files=payloads, origin=keep_origin)
         db.commit()
         db.refresh(row)
@@ -783,7 +783,7 @@ def remove_workflow_file(
     db: Session = Depends(get_db),
 ) -> dict[str, bool]:
     try:
-        row = ensure_workflow_files_table(db, user_id=auth.user_id, workflow_id=workflow_id)
+        row = ensure_workflow_files_table(db, user_id=auth.user_id, workflow_id=workflow_id, owner_only=True)
         delete_workflow_file(db, row=row, file_id=file_id)
         db.commit()
     except WorkflowFileError as exc:
