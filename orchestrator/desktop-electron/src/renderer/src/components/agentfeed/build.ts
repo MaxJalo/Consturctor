@@ -31,6 +31,9 @@ function visibleAssistant(text: string): string {
     cleaned = out.join('\n')
   }
   return cleaned
+    .replace(/Инструменты Constructor:[\s\S]*?(?:\(\+\d+\)|$)/gi, ' ')
+    .replace(/Инструменты подключены\.?\s*/gi, ' ')
+    .trim()
 }
 
 function normalizeResult(raw: unknown): Record<string, unknown> | null {

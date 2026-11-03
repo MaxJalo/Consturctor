@@ -2053,3 +2053,110 @@ def test_acceptance_scenarios_from_section_14(monkeypatch, tmp_path):
     else:
         raise AssertionError("ТКП выпущено без протокола")
 
+
+def test_order_list_does_not_wait_on_a_busy_pool(monkeypatch) -> None:
+    import time
+
+    import app.services.external_orders as orders
+
+    previous = orders._briefs_cache
+    calls = {"n": 0}
+
+    class _Db:
+        def query(self, _model):
+            return self
+
+        def order_by(self, _column):
+            return self
+
+        def all(self):
+            calls["n"] += 1
+            return []
+
+        def close(self) -> None:
+            return None
+
+    monkeypatch.setattr("app.db.session.SessionLocal", lambda: _Db())
+    monkeypatch.setattr("app.db.session.pool_is_saturated", lambda: False)
+    try:
+        orders._briefs_cache = None
+        assert orders.order_briefs() == []
+        assert calls["n"] == 1
+        assert orders.order_briefs() == []
+        assert calls["n"] == 1
+        orders._briefs_cache = (time.monotonic() - 40, [{"code": "ВЗ-кэш"}])
+        monkeypatch.setattr("app.db.session.pool_is_saturated", lambda: True)
+
+        def _refuse():
+            raise AssertionError("пул не должен открываться")
+
+        monkeypatch.setattr("app.db.session.SessionLocal", _refuse)
+        assert orders.order_briefs() == [{"code": "ВЗ-кэш"}]
+        orders._briefs_lock.acquire()
+        orders._briefs_cache = (time.monotonic() - 400, [{"code": "ВЗ-старый"}])
+        started = time.monotonic()
+        assert orders.order_briefs() == [{"code": "ВЗ-старый"}]
+        assert time.monotonic() - started < 3
+        orders._briefs_lock.release()
+        orders._briefs_cache = None
+        orders._briefs_lock.acquire()
+        started = time.monotonic()
+        try:
+            orders.order_briefs()
+        except ExternalOrderError as exc:
+            assert exc.status == 503
+            assert "ещё раз" in exc.detail
+        else:
+            raise AssertionError("пустой список ждал чужое соединение")
+        assert time.monotonic() - started < 3
+    finally:
+        if orders._briefs_lock.locked():
+            orders._briefs_lock.release()
+        orders._briefs_cache = previous
+
+
+def test_order_code_skips_used_numbers_and_duplicate_import_collapses() -> None:
+    from app.services.external_orders import collapse_imported_duplicates
+
+    db = _db()
+    first = _create(db)
+    row = db.get(ExternalOrder, first["id"])
+    row.code = "ВЗ-0009"
+    sections = json.loads(row.sections_json or "{}")
+    sections["onec"] = {"order_number": "АЛ00-001567"}
+    row.sections_json = json.dumps(sections, ensure_ascii=False)
+    db.commit()
+    second = _create(db)
+    assert second["code"] == "ВЗ-0010"
+    clone = db.get(ExternalOrder, second["id"])
+    clone.code = "ВЗ-0009"
+    clone.sections_json = row.sections_json
+    db.commit()
+    removed = collapse_imported_duplicates(db)
+    assert removed == 1
+    left = db.query(ExternalOrder).all()
+    assert len(left) == 1
+    assert left[0].id == first["id"]
+    assert left[0].code == "ВЗ-0009"
+
+
+def test_order_onec_stops_when_the_budget_is_spent() -> None:
+    import time
+    from types import SimpleNamespace
+
+    from app.services.external_order_onec import OnecLinkError, _rows
+
+    client = SimpleNamespace(order_deadline=time.monotonic() - 1, timeout=60)
+
+    def _hang(**_kwargs):
+        raise AssertionError("1С вызвана после бюджета")
+
+    client.get = _hang
+    try:
+        _rows(client, "Document_ЗаказКлиента")
+    except OnecLinkError as exc:
+        assert exc.status == 504
+        assert "карточке" in exc.detail
+    else:
+        raise AssertionError("запрос в 1С не остановился")
+

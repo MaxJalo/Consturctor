@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import logging
 import re
+import threading
+import time
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Any
@@ -303,24 +305,47 @@ def _evidence(items: list[WorkItem], *, ok: int, total: int, extra: str = "") ->
     return " ".join(parts)
 
 
-def _instruction_tile_update() -> dict[str, Any] | None:
-    """Плитка instructions — уже существующий kpi.instruction_tracker, не запуски агентов."""
-    try:
-        from kpi.instruction_tracker import compute_tile_update
+_INSTRUCTION_TTL = 60.0
+_instruction_cache: tuple[float, dict[str, Any]] | None = None
+_instruction_lock = threading.Lock()
 
-        return compute_tile_update()
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("instruction KPI module failed: %s", exc)
-        return {
-            "id": "instructions",
-            "fact": {"value": None, "unit": "%"},
-            "score_percent": None,
-            "evidence": f"Модуль kpi.instruction_tracker не посчитал: {exc}",
-        }
+
+def _instruction_tile_update() -> dict[str, Any] | None:
+    """Плитка instructions — уже существующий kpi.instruction_tracker, не запуски агентов.
+
+    Один расчёт на минуту. Иначе каждый открытый экран трижды ходит в 1С и
+    держит соединение, пока список заказов ждёт пул.
+    """
+    global _instruction_cache
+    now = time.monotonic()
+    cached = _instruction_cache
+    if cached is not None and now - cached[0] < _INSTRUCTION_TTL:
+        return dict(cached[1])
+    with _instruction_lock:
+        cached = _instruction_cache
+        if cached is not None and time.monotonic() - cached[0] < _INSTRUCTION_TTL:
+            return dict(cached[1])
+        try:
+            from kpi.instruction_tracker import compute_tile_update
+
+            update = compute_tile_update()
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("instruction KPI module failed: %s", exc)
+            update = {
+                "id": "instructions",
+                "fact": {"value": None, "unit": "%"},
+                "score_percent": None,
+                "evidence": f"Модуль kpi.instruction_tracker не посчитал: {exc}",
+            }
+        if isinstance(update, dict):
+            _instruction_cache = (time.monotonic(), update)
+        return dict(update) if isinstance(update, dict) else None
 
 
 def compute_tile_updates(tiles: list[dict[str, Any]], items: list[WorkItem]) -> list[dict[str, Any]]:
     updates: list[dict[str, Any]] = []
+    instruction_update: dict[str, Any] | None = None
+    instruction_ready = False
     for tile in tiles:
         if not isinstance(tile, dict):
             continue
@@ -341,9 +366,11 @@ def compute_tile_updates(tiles: list[dict[str, Any]], items: list[WorkItem]) -> 
             else:
                 extra = "Протокол: успех рабочего запуска, где есть вывод про протокол."
         elif bucket == "instructions":
-            update = _instruction_tile_update()
-            if update is not None:
-                updates.append(update)
+            if not instruction_ready:
+                instruction_update = _instruction_tile_update()
+                instruction_ready = True
+            if instruction_update is not None:
+                updates.append({**instruction_update, "id": tid or instruction_update.get("id")})
                 continue
             chosen = _pick(items, "instructions", fallback=("meeting", "package"))
             late = [item for item in chosen if _is_late(item)]
@@ -401,6 +428,8 @@ def apply_run_facts(
                 break
     if not force and not due and not missing and not stale:
         return False
+    # Отдать соединение до расчёта поручений: он ходит в 1С минутами.
+    db.commit()
     updates = compute_tile_updates(tiles, items)
     due_ids = {str(item.get("id") or "") for item in tiles if item.get("id")}
     updated = agent_kpi.apply_calc_updates({"tiles": tiles}, updates, due_ids=due_ids, now=now)

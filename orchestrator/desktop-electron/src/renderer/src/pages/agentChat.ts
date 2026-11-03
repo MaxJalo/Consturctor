@@ -1,3 +1,5 @@
+import type { OrderCaseBrief } from './orderCaseBrief'
+
 /** Заказ, по которому идёт разговор с помощником службы (правая панель чата). */
 export interface AgentChatOrder {
   id: string
@@ -20,6 +22,8 @@ export interface AgentChatContext {
   /** Подписи этапов для вкладки «Прошлые этапы». */
   stageLabels?: Record<string, string>
   readOnly?: boolean
+  /** Сводка уже открытой карточки. Видна до ответа агента. */
+  caseBrief?: OrderCaseBrief
 }
 
 export type RunAgentHandler = (

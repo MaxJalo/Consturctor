@@ -11,6 +11,7 @@ import { categoryOf, FILE_CATEGORY_LABELS, formatFileWhen, formatSize } from './
 import { isPersonalAgentWorkflowId } from '../workplace/personalAgent'
 import { parseIso, sameDay } from '../utils/calendar'
 import { type AgentChatContext } from './agentChat'
+import { employeeDialogText, isOrderNoise, isOrderPrompt, latestOrderCase } from './orderCaseBrief'
 import './orderAgentDialog.css'
 
 interface AgentRunPageProps {
@@ -491,23 +492,46 @@ export function AgentRunPage({
   }, [state?.items, personalAgent])
 
   const doneRows = useMemo(() => doneInConversation(state?.items ?? []), [state?.items])
+  const caseBrief = useMemo(() => {
+    if (!chat) return null
+    const live = latestOrderCase(feedItems)
+    if (live && !live.error) return live
+    return chat.caseBrief ?? live
+  }, [chat, feedItems])
   const dialogItems = useMemo(() => {
-    if (showWork) return feedItems
-    return feedItems.filter(
-      (item) => item.kind === 'message' || item.kind === 'result' || (item.kind === 'system' && item.tone === 'error')
-    )
-  }, [feedItems, showWork])
+    const visible = showWork
+      ? feedItems
+      : feedItems.filter(
+          (item) => item.kind === 'message' || item.kind === 'result' || (item.kind === 'system' && item.tone === 'error')
+        )
+    if (!caseBrief || showWork) return visible
+    return visible.flatMap((item) => {
+      if (item.kind === 'message' && item.role === 'agent' && (isOrderNoise(item.text) || isOrderPrompt(item.text))) {
+        return []
+      }
+      if (item.kind !== 'message' && item.kind !== 'system') return [item]
+      const text = employeeDialogText(item.text, caseBrief.code)
+      return text === item.text ? [item] : [{ ...item, text }]
+    })
+  }, [feedItems, showWork, caseBrief])
 
+  const rawStatus = (state?.status || '').trim()
+  const catalogStatus =
+    /^Инструменты Constructor\b/i.test(rawStatus) ||
+    /^Инструменты подключены/i.test(rawStatus) ||
+    /^Запускаю локальный Cursor SDK/i.test(rawStatus) ||
+    /^Агент работает на этом компьютере/i.test(rawStatus)
+  const shownStatus = catalogStatus ? '' : rawStatus
   const statusText = running
-    ? state?.status || 'Агент работает…'
+    ? shownStatus || 'Агент работает…'
     : awaiting
       ? 'Агент ждёт ваш ответ'
       : 'Готов к работе'
 
   if (chat) {
     const progressLabel = running
-      ? state?.status && state.status !== 'Агент работает…'
-        ? state.status
+      ? shownStatus && shownStatus !== 'Агент работает…'
+        ? shownStatus
         : 'Агент работает'
       : showWork
         ? 'Ход работы показан'
@@ -553,6 +577,41 @@ export function AgentRunPage({
             <span className={`oad-chevron${showWork ? ' open' : ''}`} aria-hidden="true" />
           </button>
           <div className="oad-scroll">
+            {caseBrief ? (
+              <section className="oad-case" aria-label="Сводка дела">
+                <div className="oad-case-title">
+                  {caseBrief.error ? 'Карточка не открылась' : caseBrief.code || 'Дело заказа'}
+                  {caseBrief.customer ? <span>{caseBrief.customer}</span> : null}
+                </div>
+                {caseBrief.error ? <p className="oad-case-error">{caseBrief.error}</p> : null}
+                {caseBrief.product ? <p className="oad-case-product">{caseBrief.product}</p> : null}
+                {caseBrief.summary ? <p className="oad-case-summary">{caseBrief.summary}</p> : null}
+                {caseBrief.checks || caseBrief.blocker ? (
+                  <p className="oad-case-meta">
+                    {[caseBrief.checks, caseBrief.blocker].filter(Boolean).join(' · ')}
+                  </p>
+                ) : null}
+                {caseBrief.proposalCount > 0 ? (
+                  <p className="oad-case-meta">Черновиков к принятию: {caseBrief.proposalCount}</p>
+                ) : null}
+                {caseBrief.facts.some((fact) => !caseBrief.summary.includes(fact)) ? (
+                  <ul className="oad-case-facts">
+                    {caseBrief.facts
+                      .filter((fact) => !caseBrief.summary.includes(fact))
+                      .map((fact) => (
+                        <li key={fact}>{fact}</li>
+                      ))}
+                  </ul>
+                ) : null}
+                {caseBrief.questions.length > 0 ? (
+                  <div className="oad-case-questions">
+                    {caseBrief.questions.map((question) => (
+                      <p key={question}>{question}</p>
+                    ))}
+                  </div>
+                ) : null}
+              </section>
+            ) : null}
             <AgentFeed
               items={dialogItems}
               status={state?.status ?? ''}

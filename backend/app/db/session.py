@@ -26,6 +26,16 @@ engine = create_engine(
 SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False, future=True)
 
 
+def pool_is_saturated() -> bool:
+    """True when the next checkout would wait. Callers can serve a cached read."""
+    pool = engine.pool
+    limit = pool.size() + int(getattr(pool, "_max_overflow", 0) or 0)
+    try:
+        return pool.checkedout() >= limit
+    except Exception:
+        return False
+
+
 def init_db() -> None:
     # Import models so metadata is populated.
     from app.models import agent_run as _agent_run  # noqa: F401

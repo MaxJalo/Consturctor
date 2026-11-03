@@ -793,7 +793,7 @@ def _fetch_related_tabular_parts(
     prefix = f"{entity}_"
     names = [name for name in sorted(_cached_catalog_names()) if name.startswith(prefix)]
     filter_expr = quote(f"Ref_Key eq guid'{ref_key}'", safe="=,'")
-    for name in names[:12]:
+    for name in names[:3]:
         if name in parts:
             continue
         try:
@@ -872,6 +872,10 @@ def _resolve_navigation_names(row: dict[str, Any], args: dict[str, Any], *, budg
             if not str(key).endswith("@navigationLinkUrl"):
                 continue
             field = key[: -len("@navigationLinkUrl")]
+            # Файлы, подписи и печати не нужны для имени. В журнале запуска они
+            # шли десятками и держали сервер, пока список заказов не получал соединение.
+            if field.startswith("Файл"):
+                continue
             existing = obj.get(field)
             if isinstance(existing, dict) and _navigation_display_name(existing):
                 continue

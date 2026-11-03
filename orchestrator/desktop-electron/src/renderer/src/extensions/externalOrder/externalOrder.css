@@ -247,7 +247,7 @@
 
 .eo-flow {
   display: grid;
-  grid-template-columns: repeat(8, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(148px, 1fr));
   gap: 8px;
   margin: 0;
   padding: 0;
@@ -265,6 +265,7 @@
 .eo-flow-step b {
   font-size: 13px;
   font-weight: 700;
+  overflow-wrap: anywhere;
 }
 
 .eo-flow-step em {
@@ -1881,7 +1882,6 @@
   .eo-integrations,
   .eo-duties,
   .eo-progress,
-  .eo-flow,
   .eo-checks,
   .eo-agenda,
   .eo-qa-item {

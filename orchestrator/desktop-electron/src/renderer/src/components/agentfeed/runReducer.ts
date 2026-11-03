@@ -80,6 +80,9 @@ function visibleAssistant(text: string): string {
     cleaned = out.join('\n')
   }
   return cleaned
+    .replace(/Инструменты Constructor:[\s\S]*?(?:\(\+\d+\)|$)/gi, ' ')
+    .replace(/Инструменты подключены\.?\s*/gi, ' ')
+    .trim()
 }
 
 function normalizeResult(raw: unknown): Record<string, unknown> | null {
@@ -183,6 +186,7 @@ const RUN_CHROME = [
   /Запускаю локальный Cursor SDK агент(?:\s*\([^)]*\))?\s*\.{0,3}\s*/gi,
   /Инструменты Constructor пустые\.\s*Не ищи проектные MCP-серверы\.?\s*/gi,
   /Инструменты Constructor:\s*(?:[A-Za-z0-9_.]+(?:,\s*)?)+(?:\s*\(\+\d+\))?\s*/gi,
+  /Инструменты подключены\.?\s*/gi,
   /Агент работает на этом компьютере\s*\.{0,3}\s*/gi,
   /Cursor SDK tools:\s*(?:[A-Za-z0-9_.]+(?:,\s*)?)*\s*/gi,
   /Дописываю ответ по заказу[^.\n]*\s*/gi,

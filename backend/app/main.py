@@ -145,6 +145,16 @@ async def lifespan(_app: FastAPI):
 
         import threading
 
+        def _warm_order_list() -> None:
+            try:
+                from app.services.external_orders import order_briefs
+
+                count = len(order_briefs())
+                logger.info("External order list warmed (%s)", count)
+            except Exception:
+                logger.warning("External order list warmup failed", exc_info=True)
+
+        threading.Thread(target=_warm_order_list, name="order-list-warm", daemon=True).start()
         threading.Thread(target=_erp_warmup, name="erp-warmup", daemon=True).start()
         threading.Thread(target=_chat_outbound_loop, name="chat-outbound", daemon=True).start()
 

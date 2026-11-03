@@ -49,6 +49,7 @@ import {
   orderConversationKey,
   orderConversationPrefix
 } from '../../pages/agentChat'
+import { briefFromLoadedOrder } from '../../pages/orderCaseBrief'
 import './externalOrder.css'
 
 const ROLE_KEY = 'orch.external-order.role'
@@ -396,7 +397,20 @@ function chatContext(order: Order, role: string): AgentChatContext {
       blockers: [...(passport?.blocker ? [passport.blocker] : []), ...(order.blocks || [])].filter(
         (item, index, all) => item && all.indexOf(item) === index
       )
-    }
+    },
+    caseBrief: briefFromLoadedOrder({
+      code: order.code,
+      customer: order.customer,
+      product: order.product,
+      stageLabel: passport?.label || order.status_label,
+      checksDone: passport?.checks_done || 0,
+      checksTotal: passport?.checks_total || 0,
+      blocker: passport?.blocker || '',
+      draftCount: (order.findings || []).filter((item) => item.status === 'draft').length,
+      pathLabel: order.path_label || '',
+      paymentNote: order.payment_note || '',
+      openChecks: (passport?.open_checks || []).map((item) => item.text)
+    })
   }
 }
 

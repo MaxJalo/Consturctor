@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import json
 import sys
+import threading
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -13,6 +15,7 @@ sys.path.insert(0, str(PYBRIDGE))
 from agent_sidecar import (  # noqa: E402
     OrderStream,
     Sidecar,
+    _finish_order_survey,
     _journal_agent_messages,
     _order_case_read,
     _order_restart_after_reply,
@@ -21,6 +24,7 @@ from agent_sidecar import (  # noqa: E402
     _order_memory_from_runs,
     _order_reread_tool,
     _order_reply_ready,
+    _readable_order_answer,
     _order_restart_after_reply,
     _order_turn_answer,
     _space_order_text,
@@ -100,6 +104,10 @@ def test_order_turn_with_questions_is_finished() -> None:
     assert _run_answer_done(answer, hide_tests=True) is False
     assert _turn_answer_done(answer, hide_tests=True) is True
     assert _turn_answer_done("Сейчас прочитаю", hide_tests=True) is False
+    plan = "Сводка короткая, дочитываю карточку, чтобы назвать пустое поле по делу."
+    assert _turn_answer_done(plan, hide_tests=True) is False
+    assert not _order_sentence_visible(plan, set())
+    assert not _order_sentence_visible("Дочитываю регламент службы и полную карточку дела.", set())
     assert _turn_answer_done(answer, hide_tests=False) is False
 
 
@@ -135,11 +143,130 @@ def test_stream_chunks_keep_spaces_and_lines() -> None:
     assert "\n\nслужбе" not in text
 
 
+def test_syllable_lines_are_not_a_result() -> None:
+    chunks = ["С\n", "начала\n", "сни\n", "му\n", " схему\n", " дела\n", " и\n", " подготов\n", "лю\n", " кар\n", "точку."]
+    stream = OrderStream()
+    shown = [stream.take(chunk) for chunk in chunks]
+    shown.append(stream.take("", flush=True))
+    assert not "".join(shown).strip()
+    assert _readable_order_answer("\n\n".join(chunk.strip() for chunk in chunks)) == ""
+    spaced = _space_order_text("ПослужбеОМТОвпути1СуказанызаказчикИНФРАСТРУКТУРАТКОООО,изделие")
+    assert "По службе ОМТО в пути" in spaced
+    assert "заказчик ИНФРАСТРУКТУРА ТК ООО" in spaced
+    assert "изделие" in spaced
+
+
 def test_stream_drops_the_turn_plan() -> None:
     stream = OrderStream()
     assert stream.take("Сначала сниму схему вызова, затем подготовлю дело.\n") == ""
     assert not _order_sentence_visible("Сначаласнимусхемуделаиподготовлюкарточку ОМТО по заказу.", set())
     assert not _order_sentence_visible("Снимаю схему дела и готовлю карточку ОМТО по заказу.", set())
+
+
+def test_successful_case_read_ends_with_summary_and_questions(tmp_path: Path) -> None:
+    summary = "Заказ ВЗ-0017 (заказчик, изделие). " + ("Стадия «ТКП выпущено». " * 40)
+    assert len(summary) > 500
+    questions = [
+        {"id": "q1", "prompt": "Какой срок поставки?"},
+        {"id": "q2", "prompt": "Кто конечный заказчик?"},
+        {"prompt": "Нужен ли шефмонтаж?"},
+    ]
+    full = {"summary": summary, "questions": questions, "documents": [], "diffs": [{}] * 35}
+    target = tmp_path / "tool_results" / "external_order.case_abc.json"
+    target.parent.mkdir()
+    target.write_text(json.dumps(full, ensure_ascii=False), encoding="utf-8")
+    payload = {
+        "type": "tool_result",
+        "tool": "external_order.case",
+        "ok": True,
+        "result": {
+            "externalized": True,
+            "result_file": "tool_results/external_order.case_abc.json",
+            "summary": {"summary": summary[:500], "questions": ["Какой срок поставки?"]},
+        },
+    }
+    reply = _finish_order_survey(payload, "read_full", cwd=str(tmp_path))
+    assert summary.strip() in reply
+    assert reply.index("Вопросы:") > 500
+    assert "Какой срок поставки?" in reply
+    assert "Кто конечный заказчик?" in reply
+    assert "Нужен ли шефмонтаж?" in reply
+    assert "Вопросы:" in reply
+    assert summary[:500] + "Вопросы" not in reply.replace("\n", "")
+    assert _finish_order_survey(payload, "propose", cwd=str(tmp_path)) == ""
+    assert _finish_order_survey(payload, "scenario", cwd=str(tmp_path)) == ""
+    failed = {
+        "type": "tool_result",
+        "tool": "external_order.case",
+        "ok": False,
+        "error": "нет связи",
+        "result": {"summary": summary},
+    }
+    assert _finish_order_survey(failed, "read", cwd=str(tmp_path)) == ""
+    direct = {"type": "tool_result", "ok": True, "result": {"summary": "Короткая сводка дела.", "questions": []}}
+    assert _finish_order_survey(direct, "auto_prepare", cwd=str(tmp_path)) == "Короткая сводка дела."
+
+
+def test_case_result_stops_before_repository_reads(tmp_path: Path) -> None:
+    summary = "Заказ ВЗ-0017. Стадия «ТКП». Путь в деле уже есть."
+    target = tmp_path / "case.json"
+    target.write_text(
+        json.dumps(
+            {
+                "summary": summary,
+                "questions": [{"prompt": "Какой срок поставки?"}],
+                "documents": [],
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    active = SimpleNamespace(
+        hide_tests=True,
+        stop=threading.Event(),
+        answer_buf="Сначала посмотрю исходники sidecar.",
+        order_stream=OrderStream(),
+        case_reads=0,
+        order_case_actions={},
+        order_case_reply="",
+        run_cwd=str(tmp_path),
+        events=[],
+        context=None,
+        kind="run",
+        workflow_id="",
+        history_run_id="",
+        event_workflow_id="",
+        run_id="r1",
+        gate=SimpleNamespace(mark_work_result_done=lambda: None),
+        metrics=None,
+    )
+    on_event = Sidecar._forward_events(Sidecar.__new__(Sidecar), active, active.events)
+    on_event(
+        {
+            "type": "tool_call",
+            "tool": "external_order.case",
+            "requestId": "case-1",
+            "arguments": {"action": "read_full"},
+        }
+    )
+    on_event(
+        {
+            "type": "tool_result",
+            "tool": "external_order.case",
+            "requestId": "case-1",
+            "ok": True,
+            "result": {"externalized": True, "result_file": "case.json", "summary": {"summary": "обрезано"}},
+        }
+    )
+    assert active.stop.is_set()
+    assert active.order_case_reply.startswith(summary)
+    assert "Какой срок поставки?" in active.order_case_reply
+    assert active.answer_buf == active.order_case_reply
+    on_event({"type": "tool_call", "tool": "grep", "arguments": {"path": "agent_sidecar.py"}})
+    on_event({"type": "tool_call", "tool": "read", "arguments": {"path": "agent_sidecar.py"}})
+    assert [item.get("tool") for item in active.events if item.get("type") == "tool_call"] == [
+        "external_order.case"
+    ]
 
 
 def test_second_case_read_in_a_turn_is_caught() -> None:

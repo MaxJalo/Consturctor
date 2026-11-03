@@ -368,7 +368,36 @@ def prepare_sdk_workspace(
     seed_last_agent_outputs(api, workflow_id, cwd)
     if workflow is not None:
         seed_agent_brief(cwd, workflow, extra=extra_brief)
+    from app.sdk_agent.prompt import _is_external_order_helper
+
+    if workflow is not None and _is_external_order_helper(workflow):
+        apply_order_workspace_rules(cwd)
     return workspace_file_pointer()
+
+
+def apply_order_workspace_rules(cwd: str) -> None:
+    """Replace the generic Constructor playbook in an external-order workspace.
+
+    The shared AGENTS.md and the run journal otherwise send the order agent
+    to read other orders and the design playbook instead of the case.
+    """
+    from app.sdk_agent.prompt import ORDER_AGENT_BRIEF, ORDER_AGENTS_MD
+
+    write_workspace_note(cwd, AGENTS_MD_RELATIVE, ORDER_AGENTS_MD)
+    write_workspace_note(cwd, AGENT_BRIEF_RELATIVE, ORDER_AGENT_BRIEF)
+    note = (
+        "# Журнал внешнего заказа не используется\n\n"
+        "Прошлые запуски других заказов сюда не смотри. "
+        "Дело только через external_order.case.\n"
+    )
+    root = Path(cwd)
+    journal_dir = root / "materials" / "run_journal"
+    if journal_dir.is_dir():
+        for path in journal_dir.glob("*.md"):
+            path.write_text(note, encoding="utf-8")
+    legacy = root / "materials" / "run_journal.md"
+    if legacy.is_file():
+        legacy.write_text(note, encoding="utf-8")
 
 
 def seed_workflow_files(api: ApiClient, workflow_id: str, cwd: str) -> str:

@@ -186,7 +186,7 @@ export function draftToMarkdown(draft: DesignDraft): string {
 }
 
 const SERVICE_REPLY = /Чек-лист|К принятию|По службе|В пути|черновик/i
-const NARRATION = /^(?:сначала\s+(?:сниму|открою|посмотрю|сверю)|вызываю подготовку|снимаю дело|сервер оборвал|повторяю подготовку|схема получена|готовлю дело|сверяю дело|беру сводку)\b/i
+const NARRATION = /^(?:сначала\s+(?:сниму|открою|посмотрю|сверю)|вызываю подготовку|снимаю дело|сервер оборвал|повторяю подготовку|схема получена|готовлю дело|сверяю дело|беру сводку|дочитыва\w*|сводо?к[аи]\s+(?:коротк|по пустому)|регламент службы)\b/i
 const GLUED_WORDS = new Set([
   'по', 'коммерческой', 'коммерческая', 'службе', 'служба', 'службы', 'в', 'деле', 'уже', 'есть',
   'заказ', 'заказа', 'заказчика', 'заказчик', 'изделие', 'состав', 'продажа', 'облагается',
@@ -195,8 +195,23 @@ const GLUED_WORDS = new Set([
   'этапа', 'этап', 'закрыт', 'блокировок', 'нет', 'пути', 'клиента', 'дата', 'окончания', 'сделки',
   'пришла', 'как', 'согласованная', 'скидка', 'скидки', 'опросном', 'листе', 'указана', 'какая',
   'или', 'ее', 'снимаю', 'дело', 'одним', 'вызовом', 'подготовки', 'вызываю', 'подготовку',
-  'инфраструктура', 'тк', 'ткп', 'нп', 'ооо', 'ндс', 'инн', 'и', 'с', 'о', 'не', 'на', 'от', 'за'
+  'инфраструктура', 'тк', 'ткп', 'нп', 'ооо', 'ндс', 'инн', 'и', 'с', 'о', 'не', 'на', 'от', 'за',
+  'пути', 'путь', 'указаны', 'указан', 'указано', 'указана', 'изделие', 'изделия', 'состав', 'состава',
+  'доставка', 'доставкой', 'самовывоз', 'самовывозом', 'конечный', 'конечного', 'конечная', 'дней', 'дня',
+  'ещё', 'еще', 'клиента', 'клиент', 'этапе', 'пустое', 'поле', 'дата', 'окончания', 'окончание', 'срока',
+  'сделки', 'сказано', 'блокировок', 'блокировки', 'черновики', 'сеще'
 ])
+
+const ABBREV = new Set(['омто', 'тк', 'ооо', 'ткп', 'ндс', 'инн', 'нп', 'уфл', 'кб', 'мцр', 'бддс', 'пси'])
+
+function pieceKnown(token: string, folded: string, start: number, end: number): boolean {
+  const piece = folded.slice(start, end)
+  if (GLUED_WORDS.has(piece)) return true
+  if (!ABBREV.has(piece)) return false
+  const original = token.slice(start, end)
+  const letters = [...original].filter((ch) => /\p{L}/u.test(ch))
+  return letters.length > 0 && letters.every((ch) => ch === ch.toUpperCase() && ch !== ch.toLowerCase())
+}
 
 function segmentGluedRun(token: string): string {
   const folded = token.toLowerCase().replace(/ё/g, 'е')
@@ -207,7 +222,7 @@ function segmentGluedRun(token: string): string {
     let found: string[] | null = null
     const limit = Math.min(folded.length, start + 24)
     for (let end = limit; end > start; end -= 1) {
-      if (!GLUED_WORDS.has(folded.slice(start, end))) continue
+      if (!pieceKnown(token, folded, start, end)) continue
       const rest = solve(end)
       if (rest) {
         found = [token.slice(start, end), ...rest]
@@ -223,7 +238,28 @@ function segmentGluedRun(token: string): string {
 }
 
 export function separateGluedWords(text: string): string {
-  return (text || '').replace(/[А-Яа-яЁё]{8,}/g, (run) => segmentGluedRun(run))
+  return (text || '').replace(/[А-Яа-яЁё]{5,}/g, (run) => segmentGluedRun(run))
+}
+
+const STANDALONE = new Set(['и', 'а', 'но', 'в', 'к', 'о', 'на', 'по', 'до', 'из', 'от', 'за', 'не', 'с'])
+
+/** Переносы между слогами — куски потока. Собираем их в одну строку, абзацы не трогаем. */
+export function collapseBrokenLines(text: string): string {
+  const lines = (text || '').split(/\n+/).map((line) => line.trim()).filter(Boolean)
+  if (lines.length < 3) return (text || '').trim()
+  const short = lines.filter((line) => line.length <= 12 && !/[.!?]/u.test(line)).length
+  if (short < Math.max(3, Math.floor(lines.length * 0.6))) return (text || '').trim()
+  let out = ''
+  for (const line of lines) {
+    if (!out) {
+      out = line
+      continue
+    }
+    const last = out.split(/\s+/).pop() || ''
+    if (last.length <= 4 && /^\p{Ll}/u.test(line) && !STANDALONE.has(last.toLowerCase())) out += line
+    else out += ` ${line}`
+  }
+  return out
 }
 const STAGE_ONLY = /^(?:договор|ткп|расчёт|расчет)[:.]?$/i
 const KEEP_FACT = /не привед|кнопк|закрыт/i
@@ -233,6 +269,8 @@ function spaceOrderText(text: string): string {
     .replace(/(\d)(из|до|по|на|от|за|со)(?=\s|\d|$)/gi, '$1 $2 ')
     .replace(/(\d)(?=[А-Яа-яЁё]{4})/g, '$1 ')
     .replace(/([а-яё])([А-ЯЁ])/g, '$1 $2')
+    .replace(/([а-яё])([A-Za-z])/g, '$1 $2')
+    .replace(/([A-Za-z])([А-Яа-яЁё])/g, '$1 $2')
     .replace(/(?<![а-яёa-z])договор\s*[:.]?\s*(?=сначала|вызываю|сервер|повторяю|схема|готовлю|сверяю)/gi, '')
     .replace(/(?<![-0-9A-Za-zА-Яа-яЁё])([A-Za-zА-Яа-яЁё]{4,})(\d)/g, '$1 $2')
     .replace(/(^|[\s«"(])(из|до|по|к|на|от|за|со|в)(?=\d)/gim, '$1$2 ')
@@ -258,7 +296,7 @@ function orderTokens(sentence: string): Set<string> {
 }
 
 function orderSentences(text: string): string[] {
-  const spaced = spaceOrderText(text)
+  const spaced = spaceOrderText(collapseBrokenLines(text))
   if (!spaced) return []
   const sentences: string[] = []
   for (const block of spaced.split(/\n{2,}/)) {
@@ -273,6 +311,7 @@ function orderSentences(text: string): string[] {
 function sentenceVisible(sentence: string, known: Set<string>): boolean {
   const folded = sentence.toLowerCase().replace(/ё/g, 'е').trim()
   if (!folded || NARRATION.test(folded) || STAGE_ONLY.test(folded)) return false
+  if (folded.length <= 12 && !/[.!?]/u.test(sentence)) return false
   if (KEEP_FACT.test(sentence)) return true
   const words = orderTokens(sentence)
   if (!words.size || !known.size) return true
@@ -282,9 +321,13 @@ function sentenceVisible(sentence: string, known: Set<string>): boolean {
 }
 
 /** Одна сводка службы: без «сначала сниму», без второго пересказа, абзацами. */
+const NARRATION_FLAT = /^(?:сначала(?:сниму|открою|посмотрю|сверю|подготовлю)|вызываюподготовку|снимаюдело|снимаюсхему|сервероборвал|повторяюподготовку|схемаполучена|готовлюдело|готовлюкарточку|сверяюдело|берусводку|дочитыва|сводкакороткая|сводкипопустому|регламентслужбы)/
+
 export function readableServiceReply(text: string): string {
-  const raw = (text || '').replace(/\r\n/g, '\n').trim()
-  if (!raw || !SERVICE_REPLY.test(raw)) return raw
+  const raw = collapseBrokenLines((text || '').replace(/\r\n/g, '\n').trim())
+  if (!raw) return ''
+  if (NARRATION_FLAT.test(raw.toLowerCase().replace(/ё/g, 'е').replace(/\s+/g, ''))) return ''
+  if (!SERVICE_REPLY.test(raw)) return separateGluedWords(raw)
   const known = new Set<string>()
   const kept: string[] = []
   for (const sentence of orderSentences(raw)) {

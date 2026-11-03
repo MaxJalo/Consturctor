@@ -79,6 +79,30 @@ required_clarifications: только незакрытые пробелы.
 TESTS: PASS
 """
 
+# The generic playbook above tells every agent to read materials and write
+# WORK_RESULT. The external-order helper shares that workspace, so it was
+# opening other orders' journals instead of the case. These rules replace it.
+ORDER_AGENTS_MD = """\
+# Агент внешнего заказа
+
+Это не проектирование и не общий агент Constructor.
+Дело заказа есть только в инструменте external_order.case.
+Не читай AGENTS.md, materials/agent.md, materials/manifest.json и журнал запусков.
+Не вызывай Read и Grep по рабочей папке.
+Если ответ ушёл в result_file — файл не открывай: факты уже в summary.known и summary.facts.
+В чат пиши только сводку сотруднику по-русски, отдельными абзацами.
+Не пиши WORK_RESULT, TESTS, план и «сначала прочитаю».
+Не ищи MCP и не пиши, что MCP не найден.
+"""
+
+ORDER_AGENT_BRIEF = """\
+# Внешний заказ
+
+Карточка заказа не лежит в этом файле.
+Единственный источник — инструмент external_order.case.
+Этот файл не читай.
+"""
+
 RULES = AGENTS_MD  # backward-compatible alias for tests and callers
 
 _WORK_RESULT_RE = re.compile(r"#{0,6}[ \t]*WORK[ _]?RESULT\b", re.I)
@@ -295,7 +319,7 @@ _AI_RULES = (
     "У вывода есть источник, правило, уверенность, влияние и что сделать человеку. "
     "Если данных нет или они противоречат друг другу — назови пробел и службу, которой задать вопрос. "
     "Цену, бюджет, срок, риск, расхождение и юридический вывод не называй фактом, пока владелец не нажал «Принять». "
-    "Каждое слово пиши отдельно, через пробел. Не сливай слова."
+    "Между словами один пробел. Не сливай слова и не разрывай слово переносом строки."
 )
 
 
@@ -304,10 +328,10 @@ def _is_case_scenario(text: str) -> bool:
 
 
 _WORK_TOOLS = (
-    "Для работы бери любые инструменты запуска: external_order.case (read_full, scenario, plan_preview, search_1c), "
+    "Для работы бери любые инструменты запуска: external_order.case (read_full, scenario, search_1c), "
     "office.read_file и excel.read_workbook для файлов, onec.* для документов и вложений 1С, "
     "turboproject.* для проекта, outlook.search_mail для переписки, users.* для людей. "
-    "Если ответ инструмента ушёл в result_file — дочитай его Read по страницам, тот же инструмент второй раз не вызывай. "
+    "Если ответ ушёл в result_file — файл не открывай: факты уже в summary и known. Тот же инструмент второй раз не вызывай. "
     "Запись в 1С, письмо и сообщение — только после подтверждения сотрудника. "
 )
 
@@ -351,9 +375,10 @@ def build_sdk_prompt(workflow: WorkflowRecord, user_message: str) -> str:
         )
     elif _is_external_order_helper(workflow):
         read_hint = (
-            "Ход мыслей в чат не писать. После ответа остановиться. "
+            "Ход мыслей в чат не писать. Готовую сводку напиши и остановись. "
             "Первый ход: один external_order.case action=auto_prepare с order_id из задачи. "
-            "Повторный auto_prepare не вызывай. Если вопросу мало сводки — read_full, файлы дела и 1С. "
+            "Повторный auto_prepare не вызывай. Если сводки мало — сразу read_full, без фразы в чат. "
+            "Не пиши «дочитываю», «сводка короткая», «сводки мало» и «открою регламент». "
             f"{_WORK_TOOLS}"
             "В чат не пиши план и не повторяй сводку: никаких «сначала сниму», «вызываю подготовку», "
             "«сервер оборвал, повторяю». Если вызов оборвался — одна фраза, auto_prepare второй раз не вызывай. "
@@ -451,11 +476,24 @@ def build_order_followup_prompt(user_message: str, *, prior: str = "", opening: 
     )
 
 
+def build_order_read_prompt() -> str:
+    """The model announced that it would read the case and stopped. Make it actually answer."""
+    return (
+        "Прошлая фраза была планом, не ответом сотруднику. В чат её не повторяй. "
+        "Сразу один external_order.case action=read_full с order_id и role из задачи. "
+        "auto_prepare не вызывай. "
+        "По ответу инструмента напиши сводку отдельными абзацами: что уже есть, "
+        "черновики к принятию, чек-лист, чего нет в пути 1С, одно пустое поле или один вопрос. "
+        "Не пиши «дочитываю», «сводка короткая» и «открою регламент». "
+        "Не пиши WORK_RESULT и TESTS."
+    )
+
+
 def build_order_continue_prompt() -> str:
     """Order helper stopped early. Finish the reply; do not reopen the case."""
     return (
         "Ответ сотруднику уже начат. Не начинай сначала и не открывай регламент. "
-        "Не вызывай auto_prepare. Read — только чтобы дочитать result_file. "
+        "Не вызывай auto_prepare. result_file не открывай. "
         "Если вопрос уже задан — остановись и не пиши его второй раз. "
         "Если ответа в деле нет — одна фраза и один вопрос. "
         "Сводку второй раз не пиши. Если вызов оборвался — одна фраза, подготовку заново не начинай. "

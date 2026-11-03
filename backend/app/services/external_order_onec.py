@@ -45,6 +45,10 @@ def connection_label() -> tuple[str, str]:
     )
 
 
+_ORDER_BUDGET = 12.0
+_ORDER_CALL = 8.0
+
+
 def _client() -> _ODataClient:
     from app.config import settings
     from app.services.onec_tools import _odata_auth, odata_configured
@@ -55,7 +59,11 @@ def _client() -> _ODataClient:
     auth = _odata_auth({})
     if not base or not auth:
         raise OnecLinkError("1С ERP не настроена: нет адреса OData или учётной записи", 503)
-    return _ODataClient(base, auth, label="ERP", validate=True)
+    client = _ODataClient(base, auth, label="ERP", validate=True)
+    # Чужой таймаут OData — минута на каждый запрос. Для заказа хватает 12 секунд на всю цепочку.
+    client.timeout = _ORDER_CALL
+    client.order_deadline = time.monotonic() + _ORDER_BUDGET  # type: ignore[attr-defined]
+    return client
 
 
 def _rows(
@@ -69,6 +77,15 @@ def _rows(
     skip: int = 0,
     select: str = "",
 ) -> list[dict]:
+    deadline = getattr(client, "order_deadline", None)
+    if deadline is not None:
+        left = float(deadline) - time.monotonic()
+        if left < 0.4:
+            raise OnecLinkError(
+                "1С не ответила вовремя. Сводка остаётся по сохранённой карточке.",
+                504,
+            )
+        client.timeout = min(_ORDER_CALL, left)
     try:
         return client.get(
             entity,
@@ -81,6 +98,14 @@ def _rows(
         )
     except DocumentCreateError as exc:
         raise OnecLinkError(str(exc), 502) from exc
+    except Exception as exc:
+        name = exc.__class__.__name__
+        if name in {"TimeoutException", "ConnectTimeout", "ReadTimeout", "ConnectError", "NetworkError"}:
+            raise OnecLinkError(
+                "1С не ответила вовремя. Сводка остаётся по сохранённой карточке.",
+                504,
+            ) from exc
+        raise
 
 
 def _guid(value: str, label: str) -> str:

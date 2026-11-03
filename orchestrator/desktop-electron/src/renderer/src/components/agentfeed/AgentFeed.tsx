@@ -45,8 +45,10 @@ function ResultBlock({
 }: {
   text?: string
   meetings: ReturnType<typeof meetingsFromFeed>
-}): React.JSX.Element {
+}): React.JSX.Element | null {
   const { text: body, actions } = useMemo(() => splitAgentResult((text || '').trim()), [text])
+  const shown = body ? presentAgentText(body) : ''
+  if (!shown.trim() && actions.length === 0 && meetings.length === 0) return null
   return (
     <div className="feed-result">
       {meetings.length > 0 && (
@@ -54,7 +56,7 @@ function ResultBlock({
           <MiniCalendar meetings={meetings} />
         </div>
       )}
-      {body ? <MarkdownBody text={presentAgentText(body)} /> : null}
+      {shown ? <MarkdownBody text={shown} /> : null}
       <DocflowActionsBlock actions={actions} />
     </div>
   )

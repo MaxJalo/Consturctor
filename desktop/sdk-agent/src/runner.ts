@@ -926,7 +926,7 @@ async function runAgent(command: RunCommand): Promise<void> {
             ? "Пишу модуль KPI и прогоняю тесты…"
             : "Читаю методику KPI…"
           : customNames.length
-            ? `Инструменты Constructor: ${customNames.slice(0, 24).join(", ")}${customNames.length > 24 ? ` (+${customNames.length - 24})` : ""}`
+            ? "Инструменты подключены."
             : "Инструменты Constructor пустые. Не ищи проектные MCP-серверы.",
   });
   let agent: Awaited<ReturnType<typeof Agent.create>> | undefined;
@@ -963,7 +963,8 @@ async function runAgent(command: RunCommand): Promise<void> {
               }
             : command.orderCaseOnly
             ? {
-                // Read and Grep stay: read_full and 1C answers land in result_file.
+                // Facts are already in the case tool summary. Read and Grep
+                // sent the agent into AGENTS.md and other orders' journals.
                 disallowedTools: [
                   "shell",
                   "edit",
@@ -971,6 +972,8 @@ async function runAgent(command: RunCommand): Promise<void> {
                   "applyAgentDiff",
                   "glob",
                   "ls",
+                  "grep",
+                  "read",
                   "task",
                 ],
               }

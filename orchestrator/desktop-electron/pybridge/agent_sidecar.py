@@ -169,6 +169,7 @@ from app.sdk_agent.prompt import (  # noqa: E402
     build_design_sdk_prompt,
     build_order_continue_prompt,
     build_order_followup_prompt,
+    build_order_read_prompt,
     build_sdk_prompt,
     text_has_finished_work_result,
 )
@@ -298,6 +299,7 @@ _RUN_CHROME_RE = re.compile(
     r"Запускаю локальный Cursor SDK агент(?:\s*\([^)]*\))?\s*\.{0,3}\s*"
     r"|Инструменты Constructor пустые\.\s*Не ищи проектные MCP-серверы\.?\s*"
     r"|Инструменты Constructor:\s*(?:[A-Za-z0-9_.]+(?:,\s*)?)+(?:\s*\(\+\d+\))?\s*"
+    r"|Инструменты подключены\.?\s*"
     r"|Агент работает на этом компьютере\s*\.{0,3}\s*"
     r"|Cursor SDK tools:\s*(?:[A-Za-z0-9_.]+(?:,\s*)?)*\s*"
     r"|Дописываю ответ по заказу[^.\n]*\s*"
@@ -314,14 +316,15 @@ def _strip_run_chrome(text: str) -> str:
 
 _NARRATION_RE = re.compile(
     r"^(?:сначала\s+(?:сниму|открою|посмотрю|сверю|подготовлю)|вызываю подготовку|снимаю дело|снимаю схему|"
-    r"сервер оборвал|повторяю подготовку|схема получена|готовлю дело|готовлю карточку|сверяю дело|беру сводку)\b",
+    r"сервер оборвал|повторяю подготовку|схема получена|готовлю дело|готовлю карточку|сверяю дело|беру сводку|"
+    r"дочитыва\w*|сводо?к[аи]\s+(?:коротк|по пустому)|регламент службы)\b",
     re.IGNORECASE,
 )
 # Тот же план хода, но слова слиплись: «Сначаласнимусхемуделаиподготовлю…».
 _NARRATION_FLAT_RE = re.compile(
     r"^(?:сначала(?:сниму|открою|посмотрю|сверю|подготовлю)|вызываюподготовку|снимаюдело|снимаюсхему|"
     r"серверооборвал|сервероборвал|повторяюподготовку|схемаполучена|готовлюдело|готовлюкарточку|"
-    r"сверяюдело|берусводку)"
+    r"сверяюдело|берусводку|дочитыва|сводкакороткая|сводкипопустому|регламентслужбы)"
 )
 
 
@@ -345,7 +348,25 @@ _GLUED_WORDS = {
     "пришла", "как", "согласованная", "скидка", "скидки", "опросном", "листе", "указана", "какая",
     "или", "ее", "снимаю", "дело", "одним", "вызовом", "подготовки", "вызываю", "подготовку",
     "инфраструктура", "тк", "ткп", "нп", "ооо", "ндс", "инн", "и", "с", "о", "не", "на", "от", "за",
+    "пути", "путь", "указаны", "указан", "указано", "указана", "изделие", "изделия", "состав", "состава",
+    "доставка", "доставкой", "самовывоз", "самовывозом", "конечный", "конечного", "конечная", "дней", "дня",
+    "ещё", "еще", "клиента", "клиент", "этапе", "пустое", "поле", "дата", "окончания", "окончание", "срока",
+    "сделки", "сказано", "блокировок", "блокировки", "черновики", "сеще",
 }
+
+
+_ABBREV = frozenset({"омто", "тк", "ооо", "ткп", "ндс", "инн", "нп", "уфл", "кб", "мцр", "бддс", "пси"})
+
+
+def _piece_known(token: str, folded: str, start: int, end: int) -> bool:
+    piece = folded[start:end]
+    if piece in _GLUED_WORDS:
+        return True
+    if piece not in _ABBREV:
+        return False
+    original = token[start:end]
+    letters = [ch for ch in original if ch.isalpha()]
+    return bool(letters) and all(ch.isupper() for ch in letters)
 
 
 def _segment_glued_run(token: str) -> str:
@@ -359,7 +380,7 @@ def _segment_glued_run(token: str) -> str:
         found: list[str] | None = None
         limit = min(len(folded), start + 24)
         for end in range(limit, start, -1):
-            if folded[start:end] not in _GLUED_WORDS:
+            if not _piece_known(token, folded, start, end):
                 continue
             rest = solve(end)
             if rest is not None:
@@ -375,7 +396,31 @@ def _segment_glued_run(token: str) -> str:
 
 
 def _separate_glued_words(text: str) -> str:
-    return re.sub(r"[А-Яа-яЁё]{8,}", lambda match: _segment_glued_run(match.group(0)), text)
+    return re.sub(r"[А-Яа-яЁё]{5,}", lambda match: _segment_glued_run(match.group(0)), text)
+
+
+_STANDALONE = frozenset({"и", "а", "но", "в", "к", "о", "на", "по", "до", "из", "от", "за", "не", "с"})
+
+
+def _collapse_broken_lines(text: str) -> str:
+    """Переносы между слогами — это куски потока, не абзацы. Собираем их в строку."""
+    lines = [line.strip() for line in re.split(r"\n+", text or "") if line.strip()]
+    if len(lines) < 3:
+        return (text or "").strip()
+    short = sum(1 for line in lines if len(line) <= 12 and not re.search(r"[.!?]", line))
+    if short < max(3, int(len(lines) * 0.6)):
+        return (text or "").strip()
+    out = ""
+    for line in lines:
+        if not out:
+            out = line
+            continue
+        last = out.split()[-1]
+        if len(last) <= 4 and line[:1].islower() and last.casefold() not in _STANDALONE:
+            out += line
+        else:
+            out += f" {line}"
+    return out
 
 
 def _space_order_text(text: str, *, glued: bool = True) -> str:
@@ -392,6 +437,8 @@ def _space_order_text(text: str, *, glued: bool = True) -> str:
     )
     cleaned = re.sub(r"(\d)(?=[А-Яа-яЁё]{4})", r"\1 ", cleaned)
     cleaned = re.sub(r"([а-яё])([А-ЯЁ])", r"\1 \2", cleaned)
+    cleaned = re.sub(r"([а-яё])([A-Za-z])", r"\1 \2", cleaned)
+    cleaned = re.sub(r"([A-Za-z])([А-Яа-яЁё])", r"\1 \2", cleaned)
     cleaned = re.sub(
         r"(?i)(?<![а-яёa-z])договор\s*[:.]?\s*(?=сначала|вызываю|сервер|повторяю|схема|готовлю|сверяю)",
         "",
@@ -431,7 +478,7 @@ def _order_tokens(sentence: str) -> set[str]:
 
 
 def _order_sentences(text: str) -> list[str]:
-    spaced = _space_order_text(text)
+    spaced = _space_order_text(_collapse_broken_lines(text))
     if not spaced:
         return []
     sentences: list[str] = []
@@ -445,6 +492,8 @@ def _order_sentences(text: str) -> list[str]:
 def _order_sentence_visible(sentence: str, known: set[str]) -> bool:
     folded = sentence.casefold().replace("ё", "е").strip()
     if not folded or _is_narration(folded) or _STAGE_ONLY_RE.match(folded):
+        return False
+    if len(folded) <= 12 and not re.search(r"[.!?]", sentence):
         return False
     if _KEEP_FACT_RE.search(sentence):
         return True
@@ -482,7 +531,7 @@ _STREAM_END_RE = re.compile(r"[.!?…](?=\s)|\n")
 
 
 def _stream_sentences(text: str) -> list[str]:
-    spaced = _space_order_text(text, glued=False)
+    spaced = _space_order_text(_collapse_broken_lines(text), glued=False)
     parts: list[str] = []
     for block in re.split(r"\n+", spaced):
         parts.extend(part.strip() for part in re.split(r"(?<=[.!?])\s+", block) if part.strip())
@@ -509,6 +558,8 @@ class OrderStream:
                 return ""
             complete = self.raw[: ends[-1].end()]
         sentences = _stream_sentences(complete)
+        if not flush and sentences and not re.search(r"[.!?…][\"»)]*\s*$", sentences[-1]):
+            sentences = sentences[:-1]
         fresh = sentences[self.done :]
         self.done = len(sentences)
         if flush:
@@ -532,6 +583,113 @@ def _order_case_read(payload: dict) -> bool:
     return str((args or {}).get("action") or "").casefold() == "auto_prepare"
 
 
+_ORDER_SURVEY_ACTIONS = frozenset({"read", "read_full", "auto_prepare"})
+
+
+def _order_case_action(payload: dict) -> str:
+    args = payload.get("arguments") if isinstance(payload.get("arguments"), dict) else {}
+    return str((args or {}).get("action") or "").strip().casefold()
+
+
+def _order_question_lines(raw: Any, *, limit: int = 6) -> list[str]:
+    if not isinstance(raw, list):
+        return []
+    lines: list[str] = []
+    for item in raw:
+        if len(lines) >= limit:
+            break
+        if isinstance(item, str):
+            text = item.strip()
+        elif isinstance(item, dict):
+            text = str(item.get("prompt") or item.get("question") or item.get("text") or "").strip()
+        else:
+            text = ""
+        if text:
+            lines.append(text)
+    return lines
+
+
+def _read_order_result_file(rel: str, cwd: str) -> dict[str, Any]:
+    """Полный JSON дела, который мост уже сохранил. Чужой каталог не читаем."""
+    raw = (rel or "").strip()
+    if not raw:
+        return {}
+    root = Path(cwd or "").resolve() if (cwd or "").strip() else None
+    target = Path(raw)
+    if not target.is_absolute():
+        if root is None or not root.is_dir():
+            return {}
+        target = root / raw
+    try:
+        target = target.resolve()
+    except OSError:
+        return {}
+    if root is not None and root.is_dir() and target != root and root not in target.parents:
+        return {}
+    if not target.is_file():
+        return {}
+    try:
+        data = json.loads(target.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _order_case_source(result: dict[str, Any], cwd: str) -> dict[str, Any]:
+    """Сводка в конверте обрезана. Полный текст лежит в файле результата."""
+    if result.get("externalized") and result.get("result_file"):
+        loaded = _read_order_result_file(str(result.get("result_file") or ""), cwd)
+        if str(loaded.get("summary") or "").strip() or loaded.get("questions"):
+            return loaded
+    inner = result.get("summary")
+    if isinstance(inner, dict) and (
+        isinstance(inner.get("summary"), str) or isinstance(inner.get("questions"), list)
+    ):
+        return inner
+    return result
+
+
+def _order_survey_failed(payload: dict, body: dict) -> bool:
+    if payload.get("ok") is False or payload.get("skipped") or body.get("skipped"):
+        return True
+    if body.get("ok") is False:
+        return True
+    for source in (payload, body):
+        err = source.get("error")
+        if isinstance(err, str) and err.strip():
+            return True
+        if err not in (None, "", False):
+            return True
+    return False
+
+
+def _order_survey_reply(payload: dict, *, cwd: str = "") -> str:
+    result = payload.get("result") if isinstance(payload.get("result"), dict) else {}
+    body = _order_case_source(result, cwd)
+    if _order_survey_failed(payload, body):
+        return ""
+    summary = body.get("summary")
+    if isinstance(summary, dict):
+        questions = _order_question_lines(summary.get("questions"))
+        summary = str(summary.get("summary") or "").strip()
+    else:
+        summary = str(summary or "").strip()
+        questions = _order_question_lines(body.get("questions"))
+    if not summary:
+        return ""
+    if not questions:
+        return summary
+    lines = "\n".join(f"{index}. {text}" for index, text in enumerate(questions, 1))
+    return f"{summary}\n\nВопросы:\n{lines}"
+
+
+def _finish_order_survey(payload: dict, action: str, *, cwd: str = "") -> str:
+    """Успешные read, read_full и auto_prepare заканчивают ход текстом summary."""
+    if str(action or "").strip().casefold() not in _ORDER_SURVEY_ACTIONS:
+        return ""
+    return _order_survey_reply(payload, cwd=cwd)
+
+
 def _readable_order_answer(text: str) -> str:
     """Одна сводка службы: без плана «сначала сниму», без второго пересказа, абзацами."""
     known: set[str] = set()
@@ -542,7 +700,10 @@ def _readable_order_answer(text: str) -> str:
         known.update(_order_tokens(sentence))
         kept.append(sentence)
     if not kept:
-        return _space_order_text(text)
+        flat = _flat(text)
+        if _NARRATION_FLAT_RE.search(flat) or _NARRATION_RE.search(_collapse_broken_lines(text)):
+            return ""
+        return _space_order_text(_collapse_broken_lines(text))
     if len(kept) == 1:
         return kept[0]
     return "\n\n".join(kept)
@@ -617,12 +778,32 @@ def _order_reread_tool(payload: dict) -> bool:
     return str((args or {}).get("action") or "").casefold() == "auto_prepare"
 
 
+def _order_answer_is_plan(text: str) -> bool:
+    """«Дочитываю карточку» — не сводка. Такой ход нельзя считать готовым ответом."""
+    clean = _without_tests_label(text or "").strip()
+    if not clean:
+        return False
+    folded = clean.casefold().replace("ё", "е")
+    flat = _flat(folded)
+    if "чек-лист" in flat or "черновик" in flat or "?" in clean:
+        return False
+    if _is_narration(folded):
+        return True
+    return any(
+        marker in flat
+        for marker in ("дочитыва", "сводкакороткая", "сводкипопустому", "регламентслужбы", "полнуюкарточку")
+    )
+
+
 def _turn_answer_done(text: str, hide_tests: bool = False) -> bool:
     """A finished SDK turn of an external-order helper is a reply to the employee.
 
     Its instructions end with questions, not ## WORK_RESULT; asking the agent to
     "continue" such a turn makes it repeat the same reads and questions.
+    A sentence that only promises to read the case is not a reply.
     """
+    if hide_tests and _order_answer_is_plan(text):
+        return False
     if _run_answer_done(text, hide_tests):
         return True
     return hide_tests and len(_without_tests_label(text).strip()) >= _ORDER_TURN_MIN_CHARS
@@ -3958,6 +4139,20 @@ class Sidecar:
                 return
             if getattr(active, "hide_tests", False) and event_type in {"tool_call", "final"}:
                 on_event({"type": "assistant", "text": "", "_order_flush": True})
+            if getattr(active, "hide_tests", False) and event_type == "tool_call":
+                tool_name = str(payload.get("tool") or "")
+                if tool_name.casefold().endswith("external_order.case"):
+                    request_id = str(payload.get("requestId") or payload.get("request_id") or "").strip()
+                    action = _order_case_action(payload)
+                    if request_id and action:
+                        actions = getattr(active, "order_case_actions", None)
+                        if not isinstance(actions, dict):
+                            actions = {}
+                            active.order_case_actions = actions
+                        actions[request_id] = action
+                if str(getattr(active, "order_case_reply", "") or "").strip():
+                    active.stop.set()
+                    return
             if getattr(active, "hide_tests", False) and event_type == "tool_call" and _order_case_read(payload):
                 active.case_reads += 1
                 if active.case_reads > 1:
@@ -3971,8 +4166,31 @@ class Sidecar:
             ):
                 active.stop.set()
                 return
+            if (
+                getattr(active, "hide_tests", False)
+                and event_type == "tool_result"
+                and str(payload.get("tool") or "").casefold().endswith("external_order.case")
+                and not str(getattr(active, "order_case_reply", "") or "").strip()
+            ):
+                request_id = str(payload.get("requestId") or payload.get("request_id") or "").strip()
+                actions = getattr(active, "order_case_actions", None)
+                remembered = actions.get(request_id, "") if isinstance(actions, dict) else ""
+                action = str(remembered or _order_case_action(payload))
+                reply = _finish_order_survey(
+                    payload,
+                    action,
+                    cwd=str(getattr(active, "run_cwd", "") or ""),
+                )
+                if reply:
+                    active.order_case_reply = reply
+                    active.stop.set()
+                    on_event({"type": "assistant", "text": reply, "_order_case_reply": True})
+            case_reply = False
+            if event_type == "assistant" and payload.get("_order_case_reply"):
+                case_reply = True
+                payload.pop("_order_case_reply", None)
             if event_type in {"assistant", "thinking", "final", "status"}:
-                if getattr(active, "hide_tests", False):
+                if getattr(active, "hide_tests", False) and not case_reply:
                     for key in ("text", "answer", "message"):
                         value = payload.get(key)
                         if isinstance(value, str) and value:
@@ -3981,7 +4199,15 @@ class Sidecar:
                     str(payload.get(key) or "")
                     for key in ("text", "answer", "message")
                 )
-                if getattr(active, "hide_tests", False) and event_type == "assistant":
+                if case_reply:
+                    text = str(payload.get("text") or "").strip()
+                    payload["text"] = text
+                    payload.pop("answer", None)
+                    payload.pop("message", None)
+                    blob = text
+                    if text:
+                        active.answer_buf = text
+                elif getattr(active, "hide_tests", False) and event_type == "assistant":
                     flush = bool(payload.pop("_order_flush", False))
                     visible = active.order_stream.take(str(payload.get("text") or ""), flush=flush)
                     if _order_restart_after_reply(active.answer_buf, active.order_stream.raw):
@@ -4006,7 +4232,8 @@ class Sidecar:
                     if sampler is not None:
                         sampler.note_chars(len(str(payload.get("text") or "")))
                 # Status and the runner's final copy are not a second answer.
-                if blob.strip() and event_type == "assistant":
+                # Сводка дела уже записана целиком: повторно к плану хода её не клеим.
+                if blob.strip() and event_type == "assistant" and not case_reply:
                     if active.answer_buf and getattr(active, "hide_tests", False):
                         active.answer_buf = f"{active.answer_buf}\n\n{blob}"
                     else:
@@ -4274,6 +4501,12 @@ class Sidecar:
         last_exc: CursorSdkError | None = None
         for attempt in range(1, SDK_RUN_RETRIES + 1):
             if active.stop.is_set():
+                case_reply = str(getattr(active, "order_case_reply", "") or "").strip()
+                if case_reply:
+                    return {
+                        "answer": case_reply,
+                        "agent_id": str(kwargs.get("resume_agent_id") or ""),
+                    }
                 break
             try:
                 return bridge.run(**kwargs)
@@ -4281,6 +4514,13 @@ class Sidecar:
                 raise
             except CursorSdkError as exc:
                 last_exc = exc
+                case_reply = str(getattr(active, "order_case_reply", "") or "").strip()
+                if case_reply:
+                    log("order case already read, skip sdk retry")
+                    return {
+                        "answer": case_reply,
+                        "agent_id": str(kwargs.get("resume_agent_id") or ""),
+                    }
                 if getattr(active, "hide_tests", False) and _turn_answer_done(
                     str(getattr(active, "answer_buf", "") or ""),
                     True,
@@ -5102,6 +5342,34 @@ class Sidecar:
             self._store_agent_id(workflow_id, agent_id, conversation=bool(conversation_key))
             continues = 0
             hide_tests = getattr(active, "hide_tests", False)
+            if (
+                hide_tests
+                and agent_id
+                and not active.stop.is_set()
+                and _order_answer_is_plan(self._order_seen_text(active, answer))
+            ):
+                log(f"order reply was only a reading plan for {workflow_id}, read the case")
+                on_event = self._forward_events(active, events)
+                result = self._bridge_run_with_retry(
+                    active,
+                    bridge,
+                    prompt=build_order_read_prompt(),
+                    workflow_id=workflow_id,
+                    cwd=run_cwd,
+                    resume_agent_id=agent_id,
+                    tools=_tool_specs_for_workflow(workflow),
+                    model_params=_workflow_model_params(workflow),
+                    on_event=on_event,
+                    on_question=self._order_question(active),
+                    should_stop=active.stop.is_set,
+                    confirm_writes=True,
+                    order_case_only=True,
+                )
+                nxt = str(result.get("answer") or "").strip()
+                if nxt and not _order_answer_is_plan(nxt):
+                    answer = nxt
+                agent_id = str(result.get("agent_id") or agent_id).strip()
+                self._store_agent_id(workflow_id, agent_id, conversation=bool(conversation_key))
             # A short reply is the end of an order turn. Do not send another
             # "continue until WORK_RESULT" pass: that reopens the case.
             while not hide_tests and (
@@ -5144,8 +5412,12 @@ class Sidecar:
                 agent_id = str(result.get("agent_id") or agent_id).strip()
                 self._store_agent_id(workflow_id, agent_id, conversation=bool(conversation_key))
             if getattr(active, "hide_tests", False):
-                self._forward_events(active, events)({"type": "assistant", "text": "", "_order_flush": True})
-                answer = _order_turn_answer(answer, str(getattr(active, "answer_buf", "") or ""))
+                case_reply = str(getattr(active, "order_case_reply", "") or "").strip()
+                if case_reply:
+                    answer = case_reply
+                else:
+                    self._forward_events(active, events)({"type": "assistant", "text": "", "_order_flush": True})
+                    answer = _order_turn_answer(answer, str(getattr(active, "answer_buf", "") or ""))
             if status == "ok" and not _turn_answer_done(self._order_seen_text(active, answer), getattr(active, "hide_tests", False)):
                 status = "error"
                 tail = answer.strip()
@@ -5154,7 +5426,7 @@ class Sidecar:
                     if getattr(active, "hide_tests", False)
                     else "Запуск завершился без ## WORK_RESULT и TESTS: PASS — агент остановился после подготовительных шагов."
                 )
-                if tail:
+                if tail and not (getattr(active, "hide_tests", False) and _order_answer_is_plan(tail)):
                     answer = f"{answer}\n\n{tail}"
             if status == "ok" and _is_sd_meeting_workflow(workflow):
                 answer = _with_sd_package_table(answer, events, run_cwd)
@@ -5174,19 +5446,20 @@ class Sidecar:
             except ApiError:
                 self._stop_run_metrics(active)
                 self._stop_run_context(active)
-            try:
-                _append_run_journal(
-                    run_cwd,
-                    workflow_id=workflow_id,
-                    message=message,
-                    answer=answer,
-                    events=events,
-                    qa_history=active.gate.qa_history,
-                    status=status,
-                    run_ref=run_ref,
-                )
-            except Exception as journal_exc:  # noqa: BLE001
-                log("run journal write failed: " + repr(journal_exc))
+            if not getattr(active, "hide_tests", False):
+                try:
+                    _append_run_journal(
+                        run_cwd,
+                        workflow_id=workflow_id,
+                        message=message,
+                        answer=answer,
+                        events=events,
+                        qa_history=active.gate.qa_history,
+                        status=status,
+                        run_ref=run_ref,
+                    )
+                except Exception as journal_exc:  # noqa: BLE001
+                    log("run journal write failed: " + repr(journal_exc))
             raise
         self._api.finish_local_agent_run(
             workflow_id, run_ref, status=status, answer=answer,
@@ -5221,19 +5494,20 @@ class Sidecar:
             )
         except Exception as exc:  # noqa: BLE001
             log("run output sweep failed: " + repr(exc))
-        try:
-            _append_run_journal(
-                run_cwd,
-                workflow_id=workflow_id,
-                message=message,
-                answer=answer,
-                events=events,
-                qa_history=active.gate.qa_history,
-                status=status,
-                run_ref=run_ref,
-            )
-        except Exception as exc:  # noqa: BLE001
-            log("run journal write failed: " + repr(exc))
+        if not getattr(active, "hide_tests", False):
+            try:
+                _append_run_journal(
+                    run_cwd,
+                    workflow_id=workflow_id,
+                    message=message,
+                    answer=answer,
+                    events=events,
+                    qa_history=active.gate.qa_history,
+                    status=status,
+                    run_ref=run_ref,
+                )
+            except Exception as exc:  # noqa: BLE001
+                log("run journal write failed: " + repr(exc))
         emit(
             {
                 "type": "result",
@@ -6227,6 +6501,8 @@ class ActiveRun:
         self.answer_buf: str = ""
         self.order_stream = OrderStream()
         self.case_reads = 0
+        self.order_case_actions: dict[str, str] = {}
+        self.order_case_reply = ""
         self.event_workflow_id: str = ""
         self.events: list[dict[str, Any]] = []
         gate.bind_events(self.events)

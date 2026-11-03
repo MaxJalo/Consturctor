@@ -64,7 +64,8 @@
 .order-agent-dialog .oad-config {
   display: flex;
   align-items: center;
-  gap: 12px;
+  flex-wrap: wrap;
+  gap: 8px 12px;
   padding: 10px 14px;
   border: 1px solid #e6eaf0;
   border-radius: 16px;
@@ -84,7 +85,7 @@
 
 .order-agent-dialog .oad-config-text {
   display: flex;
-  flex: 1;
+  flex: 1 1 180px;
   flex-direction: column;
   min-width: 0;
 }
@@ -105,9 +106,13 @@
 }
 
 .order-agent-dialog .oad-config-meta {
-  flex: none;
+  flex: 0 1 auto;
+  min-width: 0;
   color: #6b7380;
   font-size: 13px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .order-agent-dialog .oad-progress {
@@ -162,6 +167,59 @@
 
 .order-agent-dialog .oad-chevron.open {
   transform: rotate(225deg) translateY(-1px);
+}
+
+.order-agent-dialog .oad-case {
+  margin: 8px 0 12px;
+  padding: 14px 16px;
+  border: 1px solid #e6eaf0;
+  border-radius: 16px;
+  background: #fbfcfd;
+}
+
+.order-agent-dialog .oad-case-title {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: baseline;
+  font-size: 15px;
+  font-weight: 650;
+}
+
+.order-agent-dialog .oad-case-title span,
+.order-agent-dialog .oad-case-product,
+.order-agent-dialog .oad-case-meta {
+  color: #5c6775;
+  font-size: 13px;
+  font-weight: 400;
+}
+
+.order-agent-dialog .oad-case-summary,
+.order-agent-dialog .oad-case-product,
+.order-agent-dialog .oad-case-meta,
+.order-agent-dialog .oad-case-error {
+  margin: 8px 0 0;
+  line-height: 1.45;
+}
+
+.order-agent-dialog .oad-case-error {
+  color: #8a3b2d;
+}
+
+.order-agent-dialog .oad-case-facts {
+  margin: 10px 0 0;
+  padding-left: 18px;
+}
+
+.order-agent-dialog .oad-case-facts li + li {
+  margin-top: 4px;
+}
+
+.order-agent-dialog .oad-case-questions p {
+  margin: 8px 0 0;
+  padding: 8px 10px;
+  border-radius: 10px;
+  background: #fff;
 }
 
 .order-agent-dialog .oad-scroll {

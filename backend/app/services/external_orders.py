@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import base64
 import json
+import re
+import threading
 from pathlib import Path
 from uuid import uuid4
 
@@ -1842,6 +1844,140 @@ def list_orders(db: Session) -> list[dict]:
     return [_brief(row) for row in rows]
 
 
+_briefs_cache: tuple[float, list[dict]] | None = None
+_briefs_lock = threading.Lock()
+_BRIEFS_FRESH = 15.0
+_BRIEFS_STALE = 180.0
+
+
+def order_briefs() -> list[dict]:
+    """Список заказов без ожидания чужого соединения.
+
+    Свежий ответ отдаётся сразу. Если пул занят, отдаётся список не старше
+    трёх минут. Иначе один запрос, даже когда экран открыл список несколько раз.
+    """
+    global _briefs_cache
+    import time
+
+    now = time.monotonic()
+    cached = _briefs_cache
+    if cached is not None and now - cached[0] < _BRIEFS_FRESH:
+        return cached[1]
+    from app.db.session import SessionLocal, pool_is_saturated
+
+    if cached is not None and pool_is_saturated() and now - cached[0] < _BRIEFS_STALE:
+        return cached[1]
+    if not _briefs_lock.acquire(timeout=1.5):
+        cached = _briefs_cache
+        if cached is not None:
+            return cached[1]
+        raise ExternalOrderError(
+            "Список заказов занят другими запросами. Откройте вкладку ещё раз.",
+            503,
+        )
+    try:
+        cached = _briefs_cache
+        now = time.monotonic()
+        if cached is not None and now - cached[0] < _BRIEFS_FRESH:
+            return cached[1]
+        if cached is not None and pool_is_saturated() and now - cached[0] < _BRIEFS_STALE:
+            return cached[1]
+        db = SessionLocal()
+        try:
+            items = list_orders(db)
+        finally:
+            db.close()
+        _briefs_cache = (time.monotonic(), items)
+        return items
+    finally:
+        _briefs_lock.release()
+
+
+_CASE_STALE = 180.0
+_case_cache: dict[str, tuple[float, dict]] = {}
+
+
+def cached_brief(order_id: str) -> dict | None:
+    cached = _briefs_cache
+    if cached is None or not order_id:
+        return None
+    for item in cached[1]:
+        if item.get("id") == order_id or item.get("code") == order_id:
+            return item
+    return None
+
+
+def remember_case(order_id: str, payload: dict) -> dict:
+    if order_id:
+        _case_cache[order_id] = (time.monotonic(), payload)
+        if len(_case_cache) > 40:
+            oldest = min(_case_cache, key=lambda key: _case_cache[key][0])
+            _case_cache.pop(oldest, None)
+    return payload
+
+
+def detail_while_busy(cached: tuple[float, dict] | None) -> dict | None:
+    """Последняя карточка, если пул занят. None — можно открывать сессию."""
+    from app.db.session import pool_is_saturated
+
+    if not pool_is_saturated():
+        return None
+    if cached is not None and time.monotonic() - cached[0] < _CASE_STALE:
+        return cached[1]
+    raise ExternalOrderError(
+        "Карточка занята другими запросами. В списке видна последняя сводка. Откройте заказ ещё раз.",
+        503,
+    )
+
+
+def case_while_busy(order_id: str) -> dict:
+    """Сводка для агента без соединения: последнее чтение или строка списка."""
+    cached = _case_cache.get(order_id)
+    if cached is not None and time.monotonic() - cached[0] < _CASE_STALE:
+        body = dict(cached[1])
+        body["note"] = "Сводка по последнему чтению: соединения сейчас заняты."
+        return body
+    brief = cached_brief(order_id)
+    if brief is None:
+        return {
+            "ok": False,
+            "summary": (
+                "Соединения заняты. Сводка на экране — по уже открытой карточке. "
+                "Повторите разбор через несколько секунд."
+            ),
+            "facts": "",
+            "known": [],
+            "questions": [],
+        }
+    path = str(brief.get("path_label") or "").strip()
+    payment = str(brief.get("payment_note") or "").strip()
+    summary = (
+        f"Заказ {brief.get('code')} ({brief.get('customer')} — {brief.get('product')}), "
+        f"этап «{brief.get('stage_label')}». "
+        "Свежие данные из базы не прочитаны: соединения заняты. "
+        f"Путь 1С: {path or 'не записан'}."
+    )
+    if payment:
+        summary = f"{summary} {payment}"
+    return {
+        "ok": True,
+        "id": brief.get("id"),
+        "code": brief.get("code"),
+        "customer": brief.get("customer"),
+        "product": brief.get("product"),
+        "stage_label": brief.get("stage_label"),
+        "status_label": brief.get("status_label"),
+        "payment_note": payment,
+        "path_label": path,
+        "summary": summary,
+        "facts": path,
+        "known": [path] if path else [],
+        "questions": [],
+        "blocks": brief.get("blocks") or [],
+        "note": "Сводка по списку заказов, без повторного чтения базы и 1С.",
+    }
+
+
 def _onec_progress_note(order: ExternalOrder) -> str:
     link = _onec_link(order)
     parts = []
@@ -2028,10 +2164,9 @@ def create_order(db: Session, *, role: str, fio: str, fields: dict, allow_import
         product = "; ".join(shown)
     if not customer or not product:
         raise ExternalOrderError("Нужны заказчик и хотя бы одна номенклатура", 400)
-    number = db.query(ExternalOrder).count() + 1
     row = ExternalOrder(
         id=_new_id(),
-        code=f"ВЗ-{number:04d}",
+        code=_next_order_code(db),
         customer=customer,
         inn=str(fields.get("inn") or "").strip(),
         contact=str(fields.get("contact") or "").strip(),
@@ -3797,6 +3932,68 @@ def _release_db(db: Session) -> None:
     db.commit()
 
 
+def _next_order_code(db: Session) -> str:
+    """Следующий номер по максимальному коду, а не по числу строк: удалённые заказы не занимают номер повторно."""
+    highest = 0
+    taken: set[str] = set()
+    for (code,) in db.query(ExternalOrder.code).all():
+        text = (code or "").strip()
+        taken.add(text)
+        match = re.fullmatch(r"ВЗ-(\d+)", text)
+        if match:
+            highest = max(highest, int(match.group(1)))
+    number = highest + 1
+    while True:
+        candidate = f"ВЗ-{number:04d}"
+        if candidate not in taken:
+            return candidate
+        number += 1
+
+
+def _order_by_number(db: Session, number: str) -> ExternalOrder | None:
+    text = (number or "").strip()
+    if not text or text == "без номера":
+        return None
+    for row in db.query(ExternalOrder).order_by(ExternalOrder.created_at).all():
+        if _onec_number(row) == text:
+            return row
+    return None
+
+
+def collapse_imported_duplicates(db: Session) -> int:
+    """Убирает пустые повторные загрузки одного заказа 1С. Карточку с черновиками не трогает."""
+    groups: dict[str, list[ExternalOrder]] = {}
+    for row in db.query(ExternalOrder).order_by(ExternalOrder.created_at).all():
+        number = _onec_number(row)
+        if number:
+            groups.setdefault(number, []).append(row)
+    removed = 0
+    for items in groups.values():
+        if len(items) < 2:
+            continue
+        keeper = max(items, key=lambda item: (len(item.findings), len(item.documents), -item.created_at.timestamp()))
+        for row in items:
+            if row.id == keeper.id or row.findings or row.documents:
+                continue
+            db.delete(row)
+            removed += 1
+    db.flush()
+    by_code: dict[str, list[ExternalOrder]] = {}
+    for row in db.query(ExternalOrder).order_by(ExternalOrder.created_at).all():
+        by_code.setdefault(row.code, []).append(row)
+    for items in by_code.values():
+        if len(items) < 2:
+            continue
+        keeper = max(items, key=lambda item: (len(item.findings), len(item.documents), -item.created_at.timestamp()))
+        for row in items:
+            if row.id == keeper.id:
+                continue
+            row.code = _next_order_code(db)
+            db.flush()
+    db.commit()
+    return removed
+
+
 def _order_by_onec(db: Session, ref_key: str) -> ExternalOrder | None:
     key = (ref_key or "").strip()
     if not key:
@@ -3899,6 +4096,9 @@ def import_onec_order(db: Session, *, role: str, fio: str, ref_key: str) -> dict
     except OnecLinkError as exc:
         raise ExternalOrderError(exc.detail, exc.status) from exc
     number = str(preview.get("order_number") or "").strip() or "без номера"
+    already = _order_by_number(db, number)
+    if already is not None:
+        return _detail(already)
     customer = str(preview.get("counterparty") or "").strip() or "Контрагент из 1С"
     product = str(preview.get("product") or preview.get("comment") or "").strip() or f"Заказ клиента {number}"
     created = create_order(
@@ -4394,10 +4594,14 @@ def read_case(db: Session, order_id: str, *, role: str = "", step_id: str = "") 
 
 
 def read_full_case(db: Session, order_id: str, *, role: str = "", step_id: str = "") -> dict:
-    from app.services.external_order_case import extract_document_excerpts
+    from app.services.external_order_case import document_excerpt_shells, fill_document_excerpt_files
 
     row = _order(db, order_id)
     body = _detail(row)
+    shells = document_excerpt_shells(row)
+    # Разбор файлов не должен держать соединение: иначе список заказов ждёт пул.
+    _release_db(db)
+    excerpts = fill_document_excerpt_files(shells)
     passports = body.get("stage_passports") or []
     current_passport = (
         next((p for p in passports if body.get("status") in p.get("statuses", [])), None)
@@ -4436,7 +4640,7 @@ def read_full_case(db: Session, order_id: str, *, role: str = "", step_id: str =
         "stage_passports": passports,
         "documents": body.get("documents") or [],
         "document_links": body.get("document_links") or [],
-        "document_excerpts": extract_document_excerpts(row),
+        "document_excerpts": excerpts,
         "findings": body.get("findings") or [],
         "lines": body.get("lines") or [],
         "diffs": open_diffs,

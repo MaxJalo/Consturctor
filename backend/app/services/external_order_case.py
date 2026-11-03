@@ -1247,8 +1247,8 @@ def _quoted_lines(lines: list[str], label: str) -> tuple[list[str], list[str]]:
     return visible, placed
 
 
-def extract_document_excerpts(order: ExternalOrder) -> list[dict]:
-    """Извлекает текстовые фрагменты и таблицы из прикреплённых файлов дела (.docx, .xlsx)."""
+def document_excerpt_shells(order: ExternalOrder) -> list[dict]:
+    """Метаданные файлов дела. Сами файлы читает fill_document_excerpt_files, уже без сессии."""
     graph = file_graph(order)
     outgoing: dict[str, list[str]] = {}
     incoming: dict[str, list[str]] = {}
@@ -1257,38 +1257,53 @@ def extract_document_excerpts(order: ExternalOrder) -> list[dict]:
         incoming.setdefault(edge["to_id"], []).append(f"{edge['from']} — {edge['relation_label']}")
     excerpts: list[dict] = []
     for doc in order.documents:
-        entry: dict = {
-            "id": doc.id,
-            "kind": doc.kind,
-            "title": doc.title,
-            "version": doc.version,
-            "file_name": doc.file_name,
-            "approved": bool(doc.approved),
-            "owner_role": doc.owner_role,
-            "anchor": file_anchor(doc),
-            "links": outgoing.get(doc.id, []),
-            "backlinks": incoming.get(doc.id, []),
-            "effective": "дата действия в файле не указана",
-            "paragraphs": [],
-            "places": [],
-            "rows": [],
-        }
-        path = Path(doc.stored_path) if doc.stored_path else None
-        if path and path.is_file():
-            try:
-                raw = path.read_bytes()
-                suffix = path.suffix.casefold()
-                if suffix == ".docx":
-                    entry["paragraphs"], entry["places"] = _quoted_lines(_docx_paragraphs(raw)[:25], "абзац")
-                elif suffix == ".xlsx":
-                    entry["rows"] = [
-                        {"row": index, "name": name, "qty": qty, "amount": amount}
-                        for index, (name, qty, amount) in enumerate(_xlsx_rows(raw)[:40], start=1)
-                    ]
-            except Exception:  # noqa: BLE001
-                pass
-        excerpts.append(entry)
+        excerpts.append(
+            {
+                "id": doc.id,
+                "kind": doc.kind,
+                "title": doc.title,
+                "version": doc.version,
+                "file_name": doc.file_name,
+                "approved": bool(doc.approved),
+                "owner_role": doc.owner_role,
+                "anchor": file_anchor(doc),
+                "links": outgoing.get(doc.id, []),
+                "backlinks": incoming.get(doc.id, []),
+                "effective": "дата действия в файле не указана",
+                "paragraphs": [],
+                "places": [],
+                "rows": [],
+                "_stored_path": doc.stored_path or "",
+            }
+        )
     return excerpts
+
+
+def fill_document_excerpt_files(excerpts: list[dict]) -> list[dict]:
+    """Читает docx и xlsx с диска. Соединение с базой для этого не нужно."""
+    for entry in excerpts:
+        raw_path = str(entry.pop("_stored_path", "") or "")
+        path = Path(raw_path) if raw_path else None
+        if path is None or not path.is_file():
+            continue
+        try:
+            raw = path.read_bytes()
+            suffix = path.suffix.casefold()
+            if suffix == ".docx":
+                entry["paragraphs"], entry["places"] = _quoted_lines(_docx_paragraphs(raw)[:25], "абзац")
+            elif suffix == ".xlsx":
+                entry["rows"] = [
+                    {"row": index, "name": name, "qty": qty, "amount": amount}
+                    for index, (name, qty, amount) in enumerate(_xlsx_rows(raw)[:40], start=1)
+                ]
+        except Exception:  # noqa: BLE001
+            pass
+    return excerpts
+
+
+def extract_document_excerpts(order: ExternalOrder) -> list[dict]:
+    """Извлекает текстовые фрагменты и таблицы из прикреплённых файлов дела (.docx, .xlsx)."""
+    return fill_document_excerpt_files(document_excerpt_shells(order))
 
 
 SCENARIOS = {

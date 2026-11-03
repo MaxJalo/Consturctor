@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import threading
+import time
+
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
@@ -7,7 +10,7 @@ from sqlalchemy.orm import Session
 
 from app.api.deps import get_current_user
 from app.core.jwt import AuthContext
-from app.db.session import get_db
+from app.db.session import SessionLocal, get_db, pool_is_saturated
 from app.services.external_orders import (
     ExternalOrderError,
     accept_finding,
@@ -31,7 +34,6 @@ from app.services.external_orders import (
     import_tkp_order,
     link_onec,
     link_order_file,
-    list_orders,
     make_plan,
     meta_for,
     patch_order,
@@ -218,12 +220,11 @@ def get_meta(
 
 
 @router.get("")
-def get_orders(
-    auth: AuthContext = Depends(get_current_user),
-    db: Session = Depends(get_db),
-) -> dict:
+def get_orders(auth: AuthContext = Depends(get_current_user)) -> dict:
     _ = auth
-    items = list_orders(db)
+    from app.services.external_orders import order_briefs
+
+    items = _call(order_briefs)
     return {"count": len(items), "orders": items}
 
 
@@ -289,12 +290,13 @@ def get_purchase_agent(
     return {"workflow_id": row.id, "title": row.title}
 
 
-@router.get("/service-agents")
-def get_service_agents(
-    auth: AuthContext = Depends(get_current_user),
-    db: Session = Depends(get_db),
-) -> dict:
-    _ = auth
+_agents_cache: tuple[float, dict] | None = None
+_agents_lock = threading.Lock()
+_AGENTS_FRESH = 60.0
+_AGENTS_STALE = 180.0
+
+
+def _service_agent_catalog(db: Session) -> dict:
     from app.services.external_service_agents import ensure_agents, is_active, service_roles, title_for
 
     rows = {row.title: row for row in ensure_agents(db)}
@@ -310,6 +312,33 @@ def get_service_agents(
             }
         )
     return {"agents": agents}
+
+
+@router.get("/service-agents")
+def get_service_agents(auth: AuthContext = Depends(get_current_user)) -> dict:
+    """Каталог служб. Повтор и занятый пул не переписывают агентов и не ждут соединение."""
+    _ = auth
+    global _agents_cache
+    now = time.monotonic()
+    cached = _agents_cache
+    if cached is not None and now - cached[0] < _AGENTS_FRESH:
+        return cached[1]
+    if cached is not None and pool_is_saturated() and now - cached[0] < _AGENTS_STALE:
+        return cached[1]
+    with _agents_lock:
+        cached = _agents_cache
+        now = time.monotonic()
+        if cached is not None and now - cached[0] < _AGENTS_FRESH:
+            return cached[1]
+        if cached is not None and pool_is_saturated() and now - cached[0] < _AGENTS_STALE:
+            return cached[1]
+        db = SessionLocal()
+        try:
+            body = _service_agent_catalog(db)
+        finally:
+            db.close()
+        _agents_cache = (time.monotonic(), body)
+        return body
 
 
 @router.get("/matrix")
@@ -425,14 +454,30 @@ def get_review(
     return _call(lambda: review_checklist(get_order(db, order_id)))
 
 
+_detail_cache: dict[str, tuple[float, dict]] = {}
+_DETAIL_STALE = 30.0
+
+
 @router.get("/{order_id}")
-def get_one(
-    order_id: str,
-    auth: AuthContext = Depends(get_current_user),
-    db: Session = Depends(get_db),
-) -> dict:
+def get_one(order_id: str, auth: AuthContext = Depends(get_current_user)) -> dict:
+    """Карточка. Если пул занят, отдаётся последняя копия не старше полминуты."""
     _ = auth
-    return _call(lambda: get_order(db, order_id))
+    now = time.monotonic()
+    cached = _detail_cache.get(order_id)
+    if cached is not None and pool_is_saturated() and now - cached[0] < _DETAIL_STALE:
+        return cached[1]
+    db = SessionLocal()
+    try:
+        body = get_order(db, order_id)
+    except ExternalOrderError as exc:
+        raise HTTPException(status_code=exc.status, detail=exc.detail) from exc
+    finally:
+        db.close()
+    if len(_detail_cache) > 40:
+        oldest = min(_detail_cache, key=lambda key: _detail_cache[key][0])
+        _detail_cache.pop(oldest, None)
+    _detail_cache[order_id] = (time.monotonic(), body)
+    return body
 
 
 @router.patch("/{order_id}")

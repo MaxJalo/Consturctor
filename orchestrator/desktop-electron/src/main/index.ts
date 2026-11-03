@@ -1356,17 +1356,37 @@ function registerMainIpcHandlers(): void {
     const backendUrl = CONFIG.backendUrl.replace(/\/+$/, '')
     const started = Date.now()
     try {
-      const response = await fetch(`${backendUrl}/health`, { signal: AbortSignal.timeout(8000) })
-      const data = (await response.json().catch(() => ({}))) as Record<string, unknown>
+      // Liveness is enough to say the server is up. /health also asks erp_pm and
+      // used to outlive this probe, so a live server was shown as «нет ответа».
+      const live = await fetch(`${backendUrl}/health/live`, { signal: AbortSignal.timeout(3000) })
+      if (!live.ok) {
+        return {
+          ok: false,
+          backendUrl,
+          ms: Date.now() - started,
+          status: '',
+          erpReachable: false,
+          erpServer: '',
+          llmProvider: '',
+          error: `HTTP ${live.status}`
+        }
+      }
+      let data: Record<string, unknown> = {}
+      try {
+        const response = await fetch(`${backendUrl}/health`, { signal: AbortSignal.timeout(3000) })
+        if (response.ok) data = (await response.json().catch(() => ({}))) as Record<string, unknown>
+      } catch {
+        data = {}
+      }
       return {
-        ok: response.ok,
+        ok: true,
         backendUrl,
         ms: Date.now() - started,
-        status: String(data.status || ''),
+        status: String(data.status || 'ok'),
         erpReachable: Boolean(data.erp_reachable ?? data.erpReachable),
         erpServer: String(data.erp_server ?? data.erpServer ?? ''),
         llmProvider: String(data.llm_provider ?? data.llmProvider ?? ''),
-        error: response.ok ? '' : `HTTP ${response.status}`
+        error: ''
       }
     } catch (err) {
       return {

@@ -1141,6 +1141,33 @@ def test_seed_agent_brief_writes_verified_chain(tmp_path: Path) -> None:
     assert "needsFile" in agents_text
 
 
+def test_order_workspace_drops_the_generic_playbook(tmp_path: Path) -> None:
+    from app.sdk_agent.files import apply_order_workspace_rules
+
+    journal = tmp_path / "materials" / "run_journal"
+    journal.mkdir(parents=True)
+    (journal / "4bcdb81f-1fb0-4777-8489-98fcb0dbe0bc.md").write_text(
+        "# Журнал запусков агента\n\nЗаказ ВЗ-0026\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "AGENTS.md").write_text(AGENTS_MD, encoding="utf-8")
+    (tmp_path / "materials" / "agent.md").write_text(
+        "## Проверенная цепочка\nСначала прочитай materials/agent.md\n",
+        encoding="utf-8",
+    )
+    apply_order_workspace_rules(str(tmp_path))
+    agents = (tmp_path / "AGENTS.md").read_text(encoding="utf-8")
+    brief = (tmp_path / "materials" / "agent.md").read_text(encoding="utf-8")
+    saved = (journal / "4bcdb81f-1fb0-4777-8489-98fcb0dbe0bc.md").read_text(encoding="utf-8")
+    assert "external_order.case" in agents
+    assert "WORK_RESULT" in agents
+    assert "Не пиши WORK_RESULT" in agents
+    assert "materials/agent.md" in agents
+    assert "Проверенная цепочка" not in brief
+    assert "ВЗ-0026" not in saved
+    assert "external_order.case" in saved
+
+
 def test_mcp_tool_name_unwraps_constructor_tool() -> None:
     wrap = {
         "tool": "mcp",
