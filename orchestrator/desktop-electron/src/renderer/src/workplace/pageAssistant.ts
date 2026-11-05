@@ -245,7 +245,8 @@ export function agentPrompt(message: string, pageKey: PageKey | null): string {
     'kpi=people — график «Люди», unit — кого оставить (сектор ии, название подразделения).',
     `Ключи: ${keys}.`,
     'Если нужно открыть сайт в браузере, последней строкой напиши [[url:https://адрес]].',
-    'Маркер добавляй только когда сотрудник просит куда-то перейти.',
+    'Маркер добавляй, когда называешь раздел, куда можно перейти: без него ссылка в чате не работает.',
+    'Если вопрос открытый, предложи 2–3 конкретных варианта и задай один уточняющий вопрос.',
     `Сейчас открыто: «${here.title}». ${here.about}`,
     `Вопрос: ${message.trim()}`
   ].join('\n')
@@ -284,6 +285,19 @@ function navAction(key: string, extra: string): AssistantAction | null {
     key: page,
     intent: { subordinateKpi: { mode: mode || 'people', unit } }
   }
+}
+
+/** Раздел, названный в ответе, становится кнопкой. Короткое «заказ» само по себе кнопку не даёт. */
+export function pageLinks(answer: string): AssistantAction[] {
+  const folded = fold(answer)
+  if (!/(откро|перейд|раздел|библиотек|ссылк)/.test(folded)) return []
+  const actions: AssistantAction[] = []
+  for (const guide of GUIDES) {
+    const title = fold(PAGE_LABELS[guide.key] || '')
+    if (title.length < 8 || !folded.includes(title)) continue
+    actions.push({ type: 'navigate', key: guide.key })
+  }
+  return actions
 }
 
 export function takeMarkers(answer: string): { text: string; actions: AssistantAction[] } {

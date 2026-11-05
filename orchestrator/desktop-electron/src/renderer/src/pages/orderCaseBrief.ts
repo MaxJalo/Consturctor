@@ -174,7 +174,6 @@ export function readableOrderSummary(input: {
   roleDrafts: number | null
 }): string {
   const raw = input.raw || ''
-  if (raw && !isCatalogDump(raw) && raw.includes('\n\n')) return raw
   const service = /Служба:\s*([^.\n]+)/i.exec(raw)?.[1]?.trim() || ''
   const draftMatch = /Черновиков к принятию:\s*(\d+)/i.exec(raw)
   const roleMatch = /по вашей службе:\s*(\d+)/i.exec(raw)

@@ -348,7 +348,8 @@ function agentBrief(order: Order, role: string, step?: SimplifiedStep, extra = '
     `Заказ ${order.code} (order_id=${order.id}), заказчик ${order.customer}.`,
     `Служба: ${ROLE_NAME[role] || role} (role=${role}). Этап: ${passport?.label || order.status_label}.`,
     question || 'Что уже есть по службе, какой черновик подготовить и что осталось пустым.',
-    'Черновик не факт, пока его не приняли. Этап не переводи и ничего не отправляй.'
+    'Черновик не факт, пока его не приняли. Этап не переводи и ничего не отправляй.',
+    'Если сотрудник задаст свой вопрос, отвечай на него. Этот старт не повторяй.'
   ].join('\n\n')
 }
 

@@ -12581,6 +12581,45 @@ button.feed-tool-head:hover {
 .chat-dock-line.is-assistant strong {
   font-weight: 700;
 }
+.chat-dock-line.is-error {
+  background: #fff4f4;
+}
+.chat-dock-thinking {
+  margin: 0 0 6px;
+  font-weight: 700;
+  color: #0d3b73;
+  animation: chat-dock-blink 1s step-end infinite;
+}
+.chat-dock-line.is-assistant .chat-dock-thinking:last-child {
+  margin-bottom: 0;
+}
+.chat-dock-error {
+  margin: 0;
+  color: #9b2335;
+  font-weight: 600;
+}
+.chat-dock-links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 8px;
+}
+.chat-dock-link {
+  border: 1px solid rgba(13, 59, 115, 0.2);
+  background: #fff;
+  color: #0d3b73;
+  border-radius: 8px;
+  padding: 4px 10px;
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+}
+@keyframes chat-dock-blink {
+  50% { opacity: 0.2; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .chat-dock-thinking { animation: none; }
+}
 .chat-dock-line.is-wait {
   align-self: flex-start;
   color: #64748b;

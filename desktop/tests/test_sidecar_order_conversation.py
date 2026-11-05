@@ -18,6 +18,7 @@ from agent_sidecar import (  # noqa: E402
     _finish_order_survey,
     _journal_agent_messages,
     _order_case_read,
+    _order_workspace_note,
     _order_restart_after_reply,
     _order_sentence_visible,
     _tool_specs_for_workflow,
@@ -111,6 +112,18 @@ def test_order_turn_with_questions_is_finished() -> None:
     assert _turn_answer_done(answer, hide_tests=False) is False
 
 
+def test_order_agent_does_not_open_workspace_notes() -> None:
+    assert _order_workspace_note("office.read_file", {"filename": "materials/agent.md"})
+    assert _order_workspace_note("office.read_file", {"path": r"materials\AGENTS.md"})
+    assert _order_workspace_note("office.read_file", {"filename": "materials/manifest.json"})
+    journal = "materials/run_journal/a74ab97b-5965-4de1-ae38-79977f6d2c67.md"
+    assert _order_workspace_note("office.read_file", {"filename": journal})
+    result = "tool_results/external_order.case_8b27b653-2e4.json"
+    assert _order_workspace_note("office.read_file", {"filename": result})
+    assert not _order_workspace_note("office.read_file", {"filename": "ТКП НП00-004275.pdf"})
+    assert not _order_workspace_note("external_order.case", {"filename": "materials/agent.md", "action": "read"})
+
+
 def test_case_scenario_starts_with_its_own_calculation() -> None:
     task = "Сценарий дела: Что блокирует (scenario=blockers)\n\nЧто блокирует переход."
     prompt = build_sdk_prompt(SimpleNamespace(title="ИИ-агент внешнего заказа · КС"), task)
@@ -129,6 +142,21 @@ def test_case_scenario_starts_with_its_own_calculation() -> None:
     assert "Инструменты не вызывай" not in plain
     assert "empty=true" not in plain
     assert "Принять" in plain
+    calc = build_order_followup_prompt(
+        "помоги с расчётом",
+        prior="Черновик: служебная записка по ВЗ-0026.",
+        opening="Что уже есть по службе, какой черновик подготовить и что осталось пустым.",
+    )
+    assert "помоги с расчётом" in calc
+    assert "не на заготовленный сценарий" in calc
+    assert "В ответе: что уже есть" not in calc
+    assert "external_order.case" not in calc
+    promise = (
+        "Продолжаю заказ ВЗ-0026 по службе «Производство» на этапе «Расчёт»: "
+        "сначала сверюсь с карточкой и подготовлю черновик."
+    )
+    assert _turn_answer_done(promise, hide_tests=True) is False
+    assert not _order_sentence_visible(promise, set())
 
 
 def test_stream_chunks_keep_spaces_and_lines() -> None:

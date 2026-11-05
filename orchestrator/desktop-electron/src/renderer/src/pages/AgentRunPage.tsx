@@ -163,7 +163,7 @@ export function AgentRunPage({
   const running = Boolean(state?.running)
   const awaiting = Boolean(state?.pendingQuestion || state?.pendingHitl)
   const [rightTab, setRightTab] = useState<RightTab>(chat ? 'order' : 'files')
-  const [showWork, setShowWork] = useState(false)
+  const [showWork, setShowWork] = useState(true)
   const [historyNote, setHistoryNote] = useState('')
   const [takenDrafts, setTakenDrafts] = useState<Record<string, 'busy' | 'done' | 'error'>>({})
   const conversationOpenedRef = useRef(false)
@@ -558,28 +558,15 @@ export function AgentRunPage({
             </span>
             <span className="oad-config-meta">Агент Constructor</span>
           </div>
-          <button
-            type="button"
-            className={`oad-progress${running ? ' running' : ''}`}
-            aria-expanded={showWork}
-            title="Показать или скрыть ход работы агента"
-            onClick={() => setShowWork((value) => !value)}
-          >
-            {running ? <span className="oad-spinner" /> : null}
-            <span className={running ? 'oad-shimmer' : ''}>{progressLabel}</span>
-            <span className={`oad-chevron${showWork ? ' open' : ''}`} aria-hidden="true" />
-          </button>
-          <div className="oad-scroll">
-            {caseBrief ? (
-              <section className="oad-case" aria-label="Сводка дела">
-                <div className="oad-case-title">
-                  {caseBrief.error ? 'Карточка не открылась' : caseBrief.code || 'Дело заказа'}
-                  {caseBrief.customer ? <span>{caseBrief.customer}</span> : null}
-                </div>
-                {caseBrief.error ? <p className="oad-case-error">{caseBrief.error}</p> : null}
-                {caseBrief.product ? <p className="oad-case-product">{caseBrief.product}</p> : null}
-                {caseBrief.summary ? <p className="oad-case-summary">{caseBrief.summary}</p> : null}
-                {caseBrief.checks || caseBrief.blocker ? (
+          {caseBrief ? (
+            <section className="oad-case" aria-label="Сводка дела">
+              <div className="oad-case-title">
+                {caseBrief.error ? 'Карточка не открылась' : caseBrief.code || 'Дело заказа'}
+                {caseBrief.customer ? <span>{caseBrief.customer}</span> : null}
+              </div>
+              {caseBrief.error ? <p className="oad-case-error">{caseBrief.error}</p> : null}
+              {caseBrief.product ? <p className="oad-case-product">{caseBrief.product}</p> : null}
+              {caseBrief.checks || caseBrief.blocker ? (
                   <p className="oad-case-meta">
                     {[caseBrief.checks, caseBrief.blocker].filter(Boolean).join(' · ')}
                   </p>
@@ -656,8 +643,20 @@ export function AgentRunPage({
                       ))}
                   </div>
                 ) : null}
-              </section>
-            ) : null}
+            </section>
+          ) : null}
+          <button
+            type="button"
+            className={`oad-progress${running ? ' running' : ''}`}
+            aria-expanded={showWork}
+            title="Показать или скрыть ход работы агента"
+            onClick={() => setShowWork((value) => !value)}
+          >
+            {running ? <span className="oad-spinner" /> : null}
+            <span className={running ? 'oad-shimmer' : ''}>{progressLabel}</span>
+            <span className={`oad-chevron${showWork ? ' open' : ''}`} aria-hidden="true" />
+          </button>
+          <div className="oad-scroll">
             <AgentFeed
               items={dialogItems}
               status={state?.status ?? ''}

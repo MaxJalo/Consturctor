@@ -53,7 +53,6 @@ export function PlanBuilder({
   const [overrides, setOverrides] = useState<PlanOverrides>({})
   const [drafts, setDrafts] = useState<Record<string, string>>({})
   const [start, setStart] = useState('')
-  const [tick, setTick] = useState(0)
   const [loading, setLoading] = useState(false)
   const [busy, setBusy] = useState<Busy>('')
   const [error, setError] = useState('')
@@ -63,7 +62,7 @@ export function PlanBuilder({
   const rows = useRef<Record<string, HTMLTableRowElement | null>>({})
   const seq = useRef(0)
   const loaded = useRef(false)
-  const lastTick = useRef(-1)
+  const previewGen = useRef(0)
   const canEdit = role !== 'viewer'
   const services = model?.all_resources?.length ? model.all_resources : model?.resources || []
   const planDoc = useMemo(
@@ -73,9 +72,11 @@ export function PlanBuilder({
 
   useEffect(() => {
     const id = ++seq.current
-    const delay = loaded.current && lastTick.current === tick ? 400 : 0
-    lastTick.current = tick
+    const gen = previewGen.current
+    const delay = loaded.current ? 400 : 0
+    if (loaded.current) setNote(null)
     const timer = setTimeout(() => {
+      if (previewGen.current !== gen) return
       setLoading(true)
       setError('')
       api
@@ -92,7 +93,7 @@ export function PlanBuilder({
         })
     }, delay)
     return () => clearTimeout(timer)
-  }, [order.id, asRole, overrides, start, tick])
+  }, [order.id, asRole, overrides, start])
 
   const scale = useMemo(() => {
     if (!model?.start || !model.finish) return null
@@ -134,6 +135,47 @@ export function PlanBuilder({
     setOverrides({})
     setDrafts({})
     setStart('')
+    setNote(null)
+  }
+
+  function visibleStart(): string {
+    if (start) return start
+    const fromModel = model?.start?.slice(0, 10) || ''
+    return Number(fromModel.slice(0, 4)) >= 1900 ? fromModel : ''
+  }
+
+  async function checkPlan(): Promise<void> {
+    previewGen.current += 1
+    const id = ++seq.current
+    const when = visibleStart()
+    setLoading(true)
+    setError('')
+    setNote(null)
+    try {
+      const next = await api.previewExternalPlan(
+        order.id,
+        { overrides, start: when || undefined },
+        asRole
+      )
+      if (seq.current !== id) return
+      loaded.current = true
+      setModel(next)
+      const warnings = next.warnings || []
+      const stops = warnings.filter((item) => item.level === 'stop').length
+      const warns = warnings.length - stops
+      const range = `${ruDate(next.start)} – ${ruDate(next.finish)}`
+      setNote(
+        stops
+          ? { text: `План проверен (${range}). Стоп-замечаний: ${stops}${warns ? `, предупреждений: ${warns}` : ''}.`, tone: 'warn' }
+          : warns
+            ? { text: `План проверен (${range}). Предупреждений: ${warns}, стоп-замечаний нет.`, tone: 'warn' }
+            : { text: `План проверен (${range}). Замечаний нет.`, tone: 'ok' }
+      )
+    } catch (err) {
+      if (seq.current === id) setError(errText(err, 'План не проверен'))
+    } finally {
+      if (seq.current === id) setLoading(false)
+    }
   }
 
   function showRow(key: string): void {
@@ -245,8 +287,14 @@ export function PlanBuilder({
     if (!res.ok || out.ok === false) throw new Error(res.error || String(out.error || '') || 'Шаблон не прочитан')
     if (!tasks.length) throw new Error('В шаблоне не найдено задач')
     const saved = await api.saveExternalPlanTemplate(tasks, asRole)
+    previewGen.current += 1
+    const id = ++seq.current
+    const next = await api.previewExternalPlan(order.id, { overrides, start: start || undefined }, asRole)
+    if (seq.current === id) {
+      loaded.current = true
+      setModel(next)
+    }
     setNote({ text: `Структура обновлена из шаблона: ${saved.count ?? tasks.length} задач`, tone: 'ok' })
-    setTick((value) => value + 1)
   }
 
   const tasks = model?.tasks || []
@@ -300,7 +348,7 @@ export function PlanBuilder({
               />
             </label>
           ) : null}
-          <button type="button" disabled={loading} onClick={() => setTick((value) => value + 1)}>
+          <button type="button" disabled={loading || Boolean(busy)} onClick={() => void checkPlan()}>
             {loading ? 'Проверка…' : 'Проверить план'}
           </button>
           {canEdit && (editedCount || start) ? (

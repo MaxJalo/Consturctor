@@ -317,7 +317,8 @@ def _strip_run_chrome(text: str) -> str:
 _NARRATION_RE = re.compile(
     r"^(?:сначала\s+(?:сниму|открою|посмотрю|сверю|подготовлю)|вызываю подготовку|снимаю дело|снимаю схему|"
     r"сервер оборвал|повторяю подготовку|схема получена|готовлю дело|готовлю карточку|сверяю дело|беру сводку|"
-    r"дочитыва\w*|сводо?к[аи]\s+(?:коротк|по пустому)|регламент службы)\b",
+    r"дочитыва\w*|сводо?к[аи]\s+(?:коротк|по пустому)|регламент службы|"
+    r"продолжаю (?:тот же )?заказ\b.*(?:сверюсь|сверю|подготовлю))\b",
     re.IGNORECASE,
 )
 # Тот же план хода, но слова слиплись: «Сначаласнимусхемуделаиподготовлю…».
@@ -574,6 +575,36 @@ class OrderStream:
         return "\n\n".join(kept)
 
 
+def _order_workspace_note(tool: str, args: dict | None) -> bool:
+    """Инструкции агента и журнал. Это не Word, PDF и не файл дела."""
+    name = (tool or "").casefold()
+    if not (
+        name.endswith("office.read_file")
+        or name.endswith("excel.read_workbook")
+        or name in {"read", "grep"}
+    ):
+        return False
+    raw = ""
+    if isinstance(args, dict):
+        raw = str(
+            args.get("filename")
+            or args.get("path")
+            or args.get("file")
+            or args.get("saved_path")
+            or args.get("target_file")
+            or ""
+        )
+    raw = raw.replace("\\", "/").strip().casefold()
+    if not raw:
+        return False
+    leaf = raw.rsplit("/", 1)[-1]
+    if leaf in {"agents.md", "agent.md", "manifest.json"}:
+        return True
+    if "/run_journal/" in f"/{raw}" and leaf.endswith(".md"):
+        return True
+    return "/tool_results/" in f"/{raw}" and leaf.endswith(".json")
+
+
 def _order_case_read(payload: dict) -> bool:
     """Повторная подготовка дела. read_full, scenario и чтение result_file — это работа, их не считаем."""
     tool = str(payload.get("tool") or "").casefold()
@@ -812,20 +843,30 @@ def _order_reread_tool(payload: dict) -> bool:
 
 
 def _order_answer_is_plan(text: str) -> bool:
-    """«Дочитываю карточку» — не сводка. Такой ход нельзя считать готовым ответом."""
+    """«Дочитываю карточку» и «сейчас сверюсь и подготовлю» — не ответ сотруднику."""
     clean = _without_tests_label(text or "").strip()
     if not clean:
         return False
     folded = clean.casefold().replace("ё", "е")
     flat = _flat(folded)
-    if "чек-лист" in flat or "черновик" in flat or "?" in clean:
+    if "чек-лист" in flat or "черновикподготовлен" in flat or "черновикисохран" in flat:
         return False
     if _is_narration(folded):
         return True
-    return any(
+    if (
+        flat.startswith("продолжаю")
+        and any(marker in flat for marker in ("сверюсь", "сверю", "подготовлю", "дочитыва"))
+        and len(clean) < 450
+    ):
+        return True
+    if any(
         marker in flat
         for marker in ("дочитыва", "сводкакороткая", "сводкипопустому", "регламентслужбы", "полнуюкарточку")
-    )
+    ):
+        return True
+    if "черновик" in flat or "?" in clean:
+        return False
+    return False
 
 
 def _turn_answer_done(text: str, hide_tests: bool = False) -> bool:
@@ -2458,6 +2499,15 @@ class ElectronBridge(CursorSdkBridge):
             kpi_allow_read=kpi_allow_read,
         )
 
+    def _order_case_running(self, workflow_id: str) -> bool:
+        wanted = (workflow_id or "").strip()
+        for active in self._active.values():
+            if not getattr(active, "hide_tests", False):
+                continue
+            if not wanted or str(getattr(active, "workflow_id", "") or "") == wanted:
+                return True
+        return False
+
     def _handle_tool_request(
         self,
         process: Any,
@@ -2470,6 +2520,25 @@ class ElectronBridge(CursorSdkBridge):
         confirm_writes: bool = False,
     ) -> None:
         tool = str(payload.get("tool") or "")
+        args = payload.get("arguments") if isinstance(payload.get("arguments"), dict) else {}
+        if _order_workspace_note(tool, args) and self._order_case_running(workflow_id):
+            request_id = str(payload.get("requestId") or "")
+            self._send(
+                process,
+                {
+                    "type": "tool_result",
+                    "requestId": request_id,
+                    "ok": True,
+                    "result": {
+                        "ok": True,
+                        "text": (
+                            "Это не файл дела. AGENTS.md, agent.md, manifest.json, "
+                            "журнал и json результата не читай. Факты заказа уже в ответе дела."
+                        ),
+                    },
+                },
+            )
+            return
         if _is_keep_knowledge_file(tool):
             request_id = str(payload.get("requestId") or "")
             args = payload.get("arguments") if isinstance(payload.get("arguments"), dict) else {}
@@ -4177,6 +4246,22 @@ class Sidecar:
                 return
             if getattr(active, "hide_tests", False) and event_type in {"tool_call", "final"}:
                 on_event({"type": "assistant", "text": "", "_order_flush": True})
+            if getattr(active, "hide_tests", False) and event_type == "tool_call":
+                note_args = payload.get("arguments") if isinstance(payload.get("arguments"), dict) else {}
+                if _order_workspace_note(str(payload.get("tool") or ""), note_args):
+                    note_id = str(payload.get("requestId") or payload.get("request_id") or "").strip()
+                    if note_id:
+                        notes = getattr(active, "order_note_reads", None)
+                        if not isinstance(notes, set):
+                            notes = set()
+                            active.order_note_reads = notes
+                        notes.add(note_id)
+                    return
+            if getattr(active, "hide_tests", False) and event_type == "tool_result":
+                note_id = str(payload.get("requestId") or payload.get("request_id") or "").strip()
+                notes = getattr(active, "order_note_reads", None)
+                if note_id and isinstance(notes, set) and note_id in notes:
+                    return
             if getattr(active, "hide_tests", False) and event_type == "tool_call":
                 tool_name = str(payload.get("tool") or "")
                 if tool_name.casefold().endswith("external_order.case"):
