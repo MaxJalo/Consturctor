@@ -175,6 +175,8 @@ export function AgentRunPage({
   const leftRef = useRef<HTMLDivElement | null>(null)
   const dockRef = useRef<HTMLDivElement | null>(null)
   const inputRef = useRef<HTMLTextAreaElement | null>(null)
+  const chatScrollRef = useRef<HTMLDivElement | null>(null)
+  const chatPinnedRef = useRef(true)
   const resumeAgentRef = useRef<string>(entry?.resumeAgentId || '')
   const autoStartedRef = useRef(false)
   const initialSentRef = useRef(false)
@@ -248,9 +250,14 @@ export function AgentRunPage({
     }
     void runs
       .attachConversation(workflowId, key, title)
-      .then(() => start())
+      .then((count) => {
+        if (count > 0) return
+        start()
+      })
       .catch(() => {
         setHistoryNote('История разговора не загрузилась.')
+        const live = runs.entries[conversationEntryKey(workflowId, key)]
+        if (live && (live.state.running || (live.state.items?.length ?? 0) > 0)) return
         start()
       })
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -508,6 +515,12 @@ export function AgentRunPage({
     return spoken
   }, [feedItems, showWork, caseBrief])
 
+  useEffect(() => {
+    const box = chatScrollRef.current
+    if (!box || !chatPinnedRef.current) return
+    box.scrollTop = box.scrollHeight
+  }, [dialogItems, running, showWork, caseBrief])
+
   const rawStatus = (state?.status || '').trim()
   const catalogStatus =
     /^Инструменты Constructor\b/i.test(rawStatus) ||
@@ -547,26 +560,45 @@ export function AgentRunPage({
             <h2 title={title}>{title || 'Запуск агента'}</h2>
             {badge ? <span className={`oad-badge${running ? ' busy' : ''}`}>{badge}</span> : null}
           </div>
-          <div className="oad-config">
-            <span className="oad-config-mark" aria-hidden="true" />
-            <span className="oad-config-text">
-              <span className="oad-config-label">Конфигурация запуска</span>
-              <strong>{chat.order.roleLabel || title}</strong>
-            </span>
-            <span className="oad-config-meta">
-              {chat.order.code} · {chat.order.stageLabel}
-            </span>
-            <span className="oad-config-meta">Агент Constructor</span>
-          </div>
-          {caseBrief ? (
-            <section className="oad-case" aria-label="Сводка дела">
-              <div className="oad-case-title">
-                {caseBrief.error ? 'Карточка не открылась' : caseBrief.code || 'Дело заказа'}
-                {caseBrief.customer ? <span>{caseBrief.customer}</span> : null}
-              </div>
-              {caseBrief.error ? <p className="oad-case-error">{caseBrief.error}</p> : null}
-              {caseBrief.product ? <p className="oad-case-product">{caseBrief.product}</p> : null}
-              {caseBrief.checks || caseBrief.blocker ? (
+          <button
+            type="button"
+            className={`oad-progress${running ? ' running' : ''}`}
+            aria-expanded={showWork}
+            title="Показать или скрыть ход работы агента"
+            onClick={() => setShowWork((value) => !value)}
+          >
+            {running ? <span className="oad-spinner" /> : null}
+            <span className={running ? 'oad-shimmer' : ''}>{progressLabel}</span>
+            <span className={`oad-chevron${showWork ? ' open' : ''}`} aria-hidden="true" />
+          </button>
+          <div
+            className="oad-scroll"
+            ref={chatScrollRef}
+            onScroll={(event) => {
+              const box = event.currentTarget
+              chatPinnedRef.current = box.scrollHeight - box.scrollTop - box.clientHeight < 60
+            }}
+          >
+            <div className="oad-config">
+              <span className="oad-config-mark" aria-hidden="true" />
+              <span className="oad-config-text">
+                <span className="oad-config-label">Конфигурация запуска</span>
+                <strong>{chat.order.roleLabel || title}</strong>
+              </span>
+              <span className="oad-config-meta">
+                {chat.order.code} · {chat.order.stageLabel}
+              </span>
+              <span className="oad-config-meta">Агент Constructor</span>
+            </div>
+            {caseBrief ? (
+              <section className="oad-case" aria-label="Сводка дела">
+                <div className="oad-case-title">
+                  {caseBrief.error ? 'Карточка не открылась' : caseBrief.code || 'Дело заказа'}
+                  {caseBrief.customer ? <span>{caseBrief.customer}</span> : null}
+                </div>
+                {caseBrief.error ? <p className="oad-case-error">{caseBrief.error}</p> : null}
+                {caseBrief.product ? <p className="oad-case-product">{caseBrief.product}</p> : null}
+                {caseBrief.checks || caseBrief.blocker ? (
                   <p className="oad-case-meta">
                     {[caseBrief.checks, caseBrief.blocker].filter(Boolean).join(' · ')}
                   </p>
@@ -643,20 +675,8 @@ export function AgentRunPage({
                       ))}
                   </div>
                 ) : null}
-            </section>
-          ) : null}
-          <button
-            type="button"
-            className={`oad-progress${running ? ' running' : ''}`}
-            aria-expanded={showWork}
-            title="Показать или скрыть ход работы агента"
-            onClick={() => setShowWork((value) => !value)}
-          >
-            {running ? <span className="oad-spinner" /> : null}
-            <span className={running ? 'oad-shimmer' : ''}>{progressLabel}</span>
-            <span className={`oad-chevron${showWork ? ' open' : ''}`} aria-hidden="true" />
-          </button>
-          <div className="oad-scroll">
+              </section>
+            ) : null}
             <AgentFeed
               items={dialogItems}
               status={state?.status ?? ''}
