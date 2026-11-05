@@ -41,11 +41,24 @@ export function countCalendarEvents(result: unknown): number {
 const GENERIC_SUMMARY = /^(odata get ok|ok|success|done|данные получены\.?)$/i
 
 /** Compact one-line status for a finished tool. Prefer counts over raw "ok". */
+function caseText(result: Record<string, unknown>): string {
+  const summary = result.summary
+  if (typeof summary === 'string' && summary.trim()) return summary.trim()
+  if (summary && typeof summary === 'object' && !Array.isArray(summary)) {
+    const row = summary as Record<string, unknown>
+    const text = row.summary || row.known || row.facts
+    if (typeof text === 'string' && text.trim()) return text.trim()
+  }
+  return ''
+}
+
 export function summarizeToolResult(result: Record<string, unknown> | null): string {
   if (!result || typeof result !== 'object') return 'Данные получены.'
-  if (typeof result.result_file === 'string' && result.result_file.trim()) {
-    return `Файл: ${result.result_file}`
-  }
+  const file = typeof result.result_file === 'string' ? result.result_file.trim() : ''
+  const internal = file.replace(/\\/g, '/').includes('tool_results/')
+  const text = caseText(result)
+  if (text && (internal || !file)) return text.slice(0, 200)
+  if (file && !internal) return `Файл: ${file}`
   if (result.skipped) return 'Пропущено пользователем'
   if (result.rejected) return 'Отклонено пользователем'
 

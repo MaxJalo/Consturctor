@@ -102,6 +102,7 @@ export interface WorkflowFileItem {
   sizeBytes: number
   mime?: string
   downloadUrl?: string
+  localPath?: string
   createdAt?: string
   workflowId?: string
   runId?: string

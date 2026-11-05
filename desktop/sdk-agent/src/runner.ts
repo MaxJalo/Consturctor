@@ -66,6 +66,15 @@ type PendingTool = {
 };
 
 const pendingTools = new Map<string, PendingTool>();
+let cancelAsked = false;
+let liveCancel: (() => void) | null = null;
+
+function askRunnerCancel(): void {
+  cancelAsked = true;
+  const cancel = liveCancel;
+  liveCancel = null;
+  if (cancel) cancel();
+}
 
 function emit(payload: Record<string, unknown>): void {
   // writeSync: stdout.write can keep the last line in the pipe buffer.
@@ -1050,6 +1059,7 @@ async function runAgent(command: RunCommand): Promise<void> {
         images.length ? { text: command.prompt, images } : command.prompt,
         sendOptions as never,
       );
+    cancelAsked = false;
     let run;
     try {
       run = await withDbLockRetry(sendOnce, "send");
@@ -1079,6 +1089,9 @@ async function runAgent(command: RunCommand): Promise<void> {
       );
     }
     emit({ type: "status", text: "Агент работает на этом компьютере..." });
+    liveCancel = () => {
+      void settleRun(run);
+    };
     const finishIfReady = async (draft: string): Promise<boolean> => {
       const designReady = design && playbookDraftReady(draft);
       const interviewJson = interview ? firstReadyInterviewJson(draft) : null;
@@ -1113,6 +1126,11 @@ async function runAgent(command: RunCommand): Promise<void> {
       return true;
     };
     for await (const event of run.stream()) {
+      if (cancelAsked) {
+        emit({ type: "status", text: "Остановлено." });
+        emit({ type: "done", id, status: "canceled", answer: lastAssistant.trim() || answer });
+        return;
+      }
       if (event.type === "assistant") {
         for (const block of event.message.content) {
           if (block.type === "text" && block.text) {
@@ -1180,10 +1198,15 @@ async function runAgent(command: RunCommand): Promise<void> {
     emit({ type: "final", id, status: okStatus, answer: finalAnswer });
     emit({ type: "done", id, status: okStatus, answer: finalAnswer });
   } catch (error) {
-    const message = safeError(error);
-    emit({ type: "error", id, message });
-    emit({ type: "done", id, status: "error", answer: message });
+    if (cancelAsked) {
+      emit({ type: "done", id, status: "canceled", answer: lastAssistant.trim() || answer });
+    } else {
+      const message = safeError(error);
+      emit({ type: "error", id, message });
+      emit({ type: "done", id, status: "error", answer: message });
+    }
   } finally {
+    if (liveCancel) liveCancel = null;
     try {
       await agent?.close();
     } catch {
@@ -1211,7 +1234,8 @@ rl.on("line", (line: string) => {
     return;
   }
   if (command.type === "cancel") {
-    emit({ type: "status", text: "Отмена будет применена после текущего шага." });
+    askRunnerCancel();
+    emit({ type: "status", text: "Останавливаю." });
   }
 });
 

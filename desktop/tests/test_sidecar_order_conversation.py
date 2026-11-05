@@ -23,6 +23,8 @@ from agent_sidecar import (  # noqa: E402
     _order_sentence_visible,
     _tool_specs_for_workflow,
     _order_memory_from_runs,
+    _order_folder_list,
+    _order_repeat_case,
     _order_reread_tool,
     _order_reply_ready,
     _readable_order_answer,
@@ -38,6 +40,7 @@ from app.api_client import ApiError, _parse_agent_run  # noqa: E402
 from app.sdk_agent.prompt import (  # noqa: E402
     build_order_continue_prompt,
     build_order_followup_prompt,
+    order_turn_prompt,
     build_sdk_prompt,
 )
 
@@ -310,6 +313,16 @@ def test_case_result_stops_before_repository_reads(tmp_path: Path) -> None:
     assert active.plan_writes == 2
 
 
+def test_second_case_snapshot_is_not_a_new_read() -> None:
+    assert not _order_repeat_case("read_full", "", "case-1")
+    assert not _order_repeat_case("read_full", "case-1", "case-1")
+    assert _order_repeat_case("read_full", "case-1", "case-2")
+    assert _order_repeat_case("scenario", "case-1", "case-2")
+    assert not _order_repeat_case("propose", "case-1", "case-2")
+    assert _order_folder_list("excel.list_files")
+    assert not _order_folder_list("excel.read_workbook")
+
+
 def test_second_case_read_in_a_turn_is_caught() -> None:
     call = {"tool": "external_order.case", "arguments": {"action": "auto_prepare"}}
     assert _order_case_read(call)
@@ -356,6 +369,18 @@ def test_order_prompt_leads_with_the_order_and_the_case_tool() -> None:
     assert "external_order.case" not in repair
     assert "Инструменты не вызывай" not in repair
     assert "Не сливай слова" in repair
+
+
+def test_resumed_order_turn_sends_only_the_new_message() -> None:
+    opening = "Сценарий дела: подготовь служебную записку по заказу ВЗ-0026."
+    prior = "Сотрудник: подготовь записку\nПомощник: Черновик записки готов."
+    resumed = order_turn_prompt("помоги с расчётом", resumed=True, prior=prior, opening=opening)
+    fresh = order_turn_prompt("помоги с расчётом", resumed=False, prior=prior, opening=opening)
+    assert "помоги с расчётом" in resumed
+    assert "Сценарий дела" not in resumed
+    assert "Черновик записки" not in resumed
+    assert "Сценарий дела" in fresh
+    assert "Черновик записки" in fresh
 
 
 def test_followup_prompt_does_not_restart_case() -> None:

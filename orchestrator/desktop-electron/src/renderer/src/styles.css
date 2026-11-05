@@ -12728,6 +12728,46 @@ button.feed-tool-head:hover {
 .chat-dock-form input:focus {
   outline: none;
 }
+.chat-dock-files {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 6px;
+}
+.chat-dock-file {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  max-width: 100%;
+  padding: 2px 6px;
+  border-radius: 8px;
+  background: #eef5fb;
+  color: #24527a;
+  font-size: 12px;
+}
+.chat-dock-file button {
+  border: none;
+  background: transparent;
+  color: #24527a;
+  cursor: pointer;
+}
+.chat-dock-clip {
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  font-size: 16px;
+  line-height: 1;
+}
+.chat-dock-stop {
+  border: none;
+  border-radius: 8px;
+  background: #c62828;
+  color: #fff;
+  padding: 6px 8px;
+  font-size: 12px;
+  cursor: pointer;
+  white-space: nowrap;
+}
 
 .proc-page {
   flex: 1;

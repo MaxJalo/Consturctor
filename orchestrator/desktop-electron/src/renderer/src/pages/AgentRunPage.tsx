@@ -107,6 +107,10 @@ function RunFileCard({ file }: { file: WorkflowFileItem }): React.JSX.Element {
         className="wf-file-card history-file-btn"
         type="button"
         onClick={() => {
+          if (file.localPath) {
+            void window.api.openPath(file.localPath)
+            return
+          }
           if (file.downloadUrl) void api.download(file.downloadUrl, name)
         }}
       >
@@ -188,6 +192,7 @@ export function AgentRunPage({
   }, [])
 
   const refreshFiles = useCallback(async () => {
+    if (personalAgent) return
     try {
       const rows = await api.listWorkflowFiles(workflowId)
       // Runtime panel keeps only today's files; older files stay available
@@ -199,7 +204,7 @@ export function AgentRunPage({
     } catch {
       setFiles([])
     }
-  }, [workflowId, isTodayFile])
+  }, [workflowId, isTodayFile, personalAgent])
 
   useEffect(() => {
     return agentClient.onEvent((event) => {
@@ -208,6 +213,32 @@ export function AgentRunPage({
       void refreshFiles()
     })
   }, [workflowId, refreshFiles])
+
+  useEffect(() => {
+    if (!personalAgent) return
+    return agentClient.onEvent((event) => {
+      if (event.type !== 'result') return
+      if (event.workflowId && event.workflowId !== workflowId) return
+      const raw = (event as { files?: { name?: string; path?: string }[] }).files
+      if (!Array.isArray(raw)) return
+      setFiles(
+        raw
+          .map((item) => ({
+            name: String(item?.name || '').trim(),
+            path: String(item?.path || '').trim()
+          }))
+          .filter((item) => item.name && item.path)
+          .map((item) => ({
+            id: item.path,
+            name: item.name,
+            sizeBytes: 0,
+            localPath: item.path,
+            source: 'agent',
+            workflowId
+          }))
+      )
+    })
+  }, [personalAgent, workflowId])
 
   useEffect(() => {
     let cancelled = false

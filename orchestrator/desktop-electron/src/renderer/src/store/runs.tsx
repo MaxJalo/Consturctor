@@ -246,13 +246,7 @@ export function RunProvider({ children }: { children: React.ReactNode }): React.
       }
       const runId = event.runId
       if (!runId) return
-      if (cancelledRunIdsRef.current[runId]) {
-        if (event.type === 'result' || event.type === 'error') {
-          delete cancelledRunIdsRef.current[runId]
-          delete indexRef.current[runId]
-        }
-        return
-      }
+      if (cancelledRunIdsRef.current[runId]) return
       let workflowId = indexRef.current[runId]
       const stampedWf = eventWorkflowId(event)
       if (kind === 'eval' || stampedWf.startsWith('__bg_explain__')) {

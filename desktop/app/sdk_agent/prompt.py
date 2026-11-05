@@ -367,8 +367,22 @@ def build_sdk_prompt(workflow: WorkflowRecord, user_message: str) -> str:
     )
 
 
+def order_turn_prompt(
+    user_message: str, *, resumed: bool, prior: str = "", opening: str = ""
+) -> str:
+    """Следующий ход чата заказа.
+
+    Живой агент Cursor уже помнит тред: его продолжают через Agent.resume и
+    присылают только новое сообщение. Сценарий открытия и прошлые реплики
+    нужны, когда агента нет и создаётся новый.
+    """
+    if resumed:
+        return build_order_followup_prompt(user_message)
+    return build_order_followup_prompt(user_message, prior=prior, opening=opening)
+
+
 def build_order_followup_prompt(user_message: str, *, prior: str = "", opening: str = "") -> str:
-    """Next employee message in the same order conversation (resumed SDK agent)."""
+    """Текст следующего хода. Прошлый разговор добавляет только вызывающий код."""
     reply = (user_message or "").strip() or "Продолжай."
     remembered = (prior or "").strip()
     history = ""

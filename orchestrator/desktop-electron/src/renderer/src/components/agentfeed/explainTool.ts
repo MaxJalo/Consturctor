@@ -604,6 +604,16 @@ function byKnownName(name: string, args: Record<string, unknown>): ToolExplanati
 export function explainTool(tool: string, args?: Record<string, unknown>): ToolExplanation {
   const rawArgs = args && typeof args === 'object' ? args : {}
   const name = resolveToolName(tool, rawArgs)
+  if (compactName(name) === 'externalordercase' || compactName(tool) === 'externalordercase') {
+    const action = asText(rawArgs.action)
+    if (action === 'propose' || action === 'draft_1c') {
+      return explanation('Черновик', 'предложить черновик по делу', 'Готовит черновик')
+    }
+    if (action === 'plan' || action === 'plan_preview') {
+      return explanation('План', 'собрать план по делу', 'Собирает план')
+    }
+    return explanation('Дело заказа', 'открыть дело заказа', 'Смотрит дело заказа')
+  }
   if (isTaskTool(name) || isTaskTool(tool)) {
     const description =
       asText(rawArgs.description) || asText(rawArgs.title) || asText(rawArgs.subagent_type)

@@ -169,6 +169,7 @@ from app.sdk_agent.prompt import (  # noqa: E402
     build_design_sdk_prompt,
     build_order_continue_prompt,
     build_order_followup_prompt,
+    order_turn_prompt,
     build_order_read_prompt,
     build_sdk_prompt,
     text_has_finished_work_result,
@@ -624,11 +625,25 @@ def _order_plan_write(payload: dict) -> bool:
 
 
 _ORDER_SURVEY_ACTIONS = frozenset({"read", "read_full", "auto_prepare"})
+_ORDER_REPEAT_ACTIONS = _ORDER_SURVEY_ACTIONS | {"scenario", "search_1c"}
 
 
 def _order_case_action(payload: dict) -> str:
     args = payload.get("arguments") if isinstance(payload.get("arguments"), dict) else {}
     return str((args or {}).get("action") or "").strip().casefold()
+
+
+def _order_repeat_case(action: str, first_id: str, request_id: str) -> bool:
+    """Второй снимок того же дела в одном ходе. Черновик и план сюда не входят."""
+    if (action or "").strip().casefold() not in _ORDER_REPEAT_ACTIONS:
+        return False
+    first = (first_id or "").strip()
+    current = (request_id or "").strip()
+    return bool(first) and current != first
+
+
+def _order_folder_list(tool: str) -> bool:
+    return (tool or "").casefold().endswith("excel.list_files")
 
 
 def _script_file_tool(tool: str, action: str) -> bool:
@@ -2464,6 +2479,9 @@ class ElectronBridge(CursorSdkBridge):
         stop_on_kpi_list: bool = True,
         kpi_allow_read: bool = False,
     ) -> dict[str, Any]:
+        self.order_chat = bool(order_case_only)
+        if order_case_only:
+            self.order_survey_id = ""
         kpi = (mode or "").strip().casefold() == "kpi"
         if kpi:
             specs = list(tools) if tools is not None else list(sdk_kpi_tool_specs())
@@ -2500,13 +2518,8 @@ class ElectronBridge(CursorSdkBridge):
         )
 
     def _order_case_running(self, workflow_id: str) -> bool:
-        wanted = (workflow_id or "").strip()
-        for active in self._active.values():
-            if not getattr(active, "hide_tests", False):
-                continue
-            if not wanted or str(getattr(active, "workflow_id", "") or "") == wanted:
-                return True
-        return False
+        _ = workflow_id
+        return bool(getattr(self, "order_chat", False))
 
     def _handle_tool_request(
         self,
@@ -2534,6 +2547,32 @@ class ElectronBridge(CursorSdkBridge):
                         "text": (
                             "Это не файл дела. AGENTS.md, agent.md, manifest.json, "
                             "журнал и json результата не читай. Факты заказа уже в ответе дела."
+                        ),
+                    },
+                },
+            )
+            return
+        if getattr(self, "order_chat", False) and (
+            _order_folder_list(tool)
+            or _order_repeat_case(
+                _order_case_action(payload),
+                str(getattr(self, "order_survey_id", "") or ""),
+                str(payload.get("requestId") or ""),
+            )
+        ):
+            request_id = str(payload.get("requestId") or "")
+            self._send(
+                process,
+                {
+                    "type": "tool_result",
+                    "requestId": request_id,
+                    "ok": True,
+                    "result": {
+                        "ok": True,
+                        "text": (
+                            "Дело этого заказа уже открыто в этом ходе. "
+                            "Папку агента, json результата и дело второй раз не открывай. "
+                            "Ответь сотруднику по фактам, которые уже есть."
                         ),
                     },
                 },
@@ -3067,6 +3106,28 @@ def _upload_knowledge_files(
 
 
 _OUTPUT_SWEEP_MAX_AGE_SEC = 12 * 3600
+
+
+def _fresh_chat_files(run_cwd: str, started_at: float) -> list[dict[str, str]]:
+    """Документы, которые помощник создал в этом ходе. Журнал и черновики инструментов не отдаём."""
+    from app.tools.result_files import collect_output_files_from_dir
+
+    root = Path(run_cwd) if (run_cwd or "").strip() else None
+    files: list[dict[str, str]] = []
+    for path in collect_output_files_from_dir(root):
+        try:
+            rel_parts = {part.casefold() for part in path.relative_to(root).parts[:-1]} if root else set()
+        except ValueError:
+            rel_parts = set()
+        if "run_journal" in rel_parts:
+            continue
+        try:
+            if path.stat().st_mtime + 2 < started_at:
+                continue
+        except OSError:
+            continue
+        files.append({"name": path.name, "path": str(path)})
+    return files
 
 
 def _recent_output_paths(paths: list[Path]) -> list[Path]:
@@ -4238,6 +4299,8 @@ class Sidecar:
                 collector.observe(payload)
             if event_type == "usage":
                 return
+            if active.stop.is_set() and event_type in {"assistant", "thinking", "tool_call", "status", "task"}:
+                return
             # The runner prints this line and then the run loop raises the same
             # text. Streaming it paints a second red banner ("Network request failed").
             if event_type == "error":
@@ -4248,7 +4311,25 @@ class Sidecar:
                 on_event({"type": "assistant", "text": "", "_order_flush": True})
             if getattr(active, "hide_tests", False) and event_type == "tool_call":
                 note_args = payload.get("arguments") if isinstance(payload.get("arguments"), dict) else {}
-                if _order_workspace_note(str(payload.get("tool") or ""), note_args):
+                tool_name = str(payload.get("tool") or "")
+                request_id = str(payload.get("requestId") or payload.get("request_id") or "").strip()
+                if _order_folder_list(tool_name) or _order_repeat_case(
+                    _order_case_action(payload), str(getattr(active, "order_survey_id", "") or ""), request_id
+                ):
+                    if request_id:
+                        notes = getattr(active, "order_note_reads", None)
+                        if not isinstance(notes, set):
+                            notes = set()
+                            active.order_note_reads = notes
+                        notes.add(request_id)
+                    return
+                action = _order_case_action(payload)
+                if action in _ORDER_REPEAT_ACTIONS and request_id and not getattr(active, "order_survey_id", ""):
+                    active.order_survey_id = request_id
+                    bridge = getattr(active, "bridge", None)
+                    if bridge is not None:
+                        bridge.order_survey_id = request_id
+                if _order_workspace_note(tool_name, note_args):
                     note_id = str(payload.get("requestId") or payload.get("request_id") or "").strip()
                     if note_id:
                         notes = getattr(active, "order_note_reads", None)
@@ -5356,8 +5437,9 @@ class Sidecar:
         if active.hide_tests and conversation_key:
             prior, reused = self._order_conversation_memory(workflow_id, conversation_key, message)
         if active.hide_tests and (resume_agent_id or prior):
-            prompt = build_order_followup_prompt(
+            prompt = order_turn_prompt(
                 message,
+                resumed=bool(resume_agent_id),
                 prior="" if reused else prior,
                 opening=str(command.get("conversationBrief") or ""),
             )
@@ -5701,6 +5783,7 @@ class Sidecar:
         active.workflow_id = workflow_id
         active.kind = "run"
         active.gate.bind(workflow_id=workflow_id, kind="run")
+        started_at = time.time()
         message = str(command.get("message") or "").strip()
         app_context = str(command.get("appContext") or command.get("app_context") or "").strip()
         source = str(command.get("source") or "chat").strip() or "chat"
@@ -5811,6 +5894,7 @@ class Sidecar:
                 "agentId": agent_id,
                 "status": status,
                 "answer": answer,
+                "files": _fresh_chat_files(run_cwd, started_at),
             }
         )
 

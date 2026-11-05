@@ -707,7 +707,8 @@ _SERVER_TOOL_DEFS: list[tuple[str, str, dict[str, Any]]] = [
         (
             "Дело внешнего заказа. Инструмент есть в этом запуске. "
             "action=auto_prepare — подготовка дела по order_id и role: путь 1С, опросный лист, черновики и чек-лист. "
-            "action=read — сводка дела. action=read_full — полная выжимка дела и файлов; большой ответ дочитай Read из result_file. "
+            "action=read — сводка дела. action=read_full — полная выжимка дела и файлов. "
+            "result_file не открывай: факты уже в summary. Один снимок дела на ход, второй раз не вызывай. "
             "action=scenario — готовый расчёт кнопки сценария: scenario=changes (версии файлов), blockers, overdue, "
             "decisions, week, why, missing, facts или проект документа letter, request, protocol, disagreements, memo, report. "
             "action=propose — черновики выводов, фактом они не становятся. "

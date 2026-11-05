@@ -296,7 +296,13 @@ class CursorSdkBridge:
 
     def close(self) -> None:
         """Stop the SDK runner and the model process it spawned."""
-        self._kill_tree(self._process)
+        process = self._process
+        if process is not None and process.poll() is None and process.stdin is not None:
+            try:
+                self._send(process, {"type": "cancel"})
+            except CursorSdkError:
+                pass
+        self._kill_tree(process)
 
     def _kill_tree(self, process: subprocess.Popen[str] | None) -> None:
         if process is None or process.poll() is not None:
