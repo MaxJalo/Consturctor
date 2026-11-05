@@ -116,17 +116,19 @@ def test_case_scenario_starts_with_its_own_calculation() -> None:
     prompt = build_sdk_prompt(SimpleNamespace(title="ИИ-агент внешнего заказа · КС"), task)
     follow = build_order_followup_prompt(task, prior="Сотрудник: какая цена?\nПомощник: Цены в деле нет.")
     for text in (prompt, follow):
-        assert "action=scenario" in text
-        assert "result_file" in text
-        assert "office.read_file" in text
-        assert "propose" in text
+        assert "external_order.case" not in text
+        assert "action=" not in text
+        assert "auto_prepare" not in text
+        assert "office.read_file" not in text
         assert "не факт" in text
-        assert "пробел" in text
+        assert "Принять" in text
+        assert "Не сливай слова" in text
     assert "Цены в деле нет" in follow
+    assert "Что блокирует" in prompt
     plain = build_order_followup_prompt("оставь поле пустым")
-    assert "Инструменты не вызывай" in plain
-    assert "auto_prepare" in plain
-    assert "result_file" in plain
+    assert "Инструменты не вызывай" not in plain
+    assert "empty=true" not in plain
+    assert "Принять" in plain
 
 
 def test_stream_chunks_keep_spaces_and_lines() -> None:
@@ -186,13 +188,12 @@ def test_successful_case_read_ends_with_summary_and_questions(tmp_path: Path) ->
         },
     }
     reply = _finish_order_survey(payload, "read_full", cwd=str(tmp_path))
-    assert summary.strip() in reply
-    assert reply.index("Вопросы:") > 500
+    assert "ВЗ-0017" in reply
     assert "Какой срок поставки?" in reply
-    assert "Кто конечный заказчик?" in reply
-    assert "Нужен ли шефмонтаж?" in reply
-    assert "Вопросы:" in reply
-    assert summary[:500] + "Вопросы" not in reply.replace("\n", "")
+    assert "Кто конечный заказчик?" not in reply
+    assert "Нужен ли шефмонтаж?" not in reply
+    assert "Вопросы:" not in reply
+    assert reply.count("Стадия") == 1
     assert _finish_order_survey(payload, "propose", cwd=str(tmp_path)) == ""
     assert _finish_order_survey(payload, "scenario", cwd=str(tmp_path)) == ""
     failed = {
@@ -229,6 +230,7 @@ def test_case_result_stops_before_repository_reads(tmp_path: Path) -> None:
         case_reads=0,
         order_case_actions={},
         order_case_reply="",
+        plan_writes=0,
         run_cwd=str(tmp_path),
         events=[],
         context=None,
@@ -258,15 +260,26 @@ def test_case_result_stops_before_repository_reads(tmp_path: Path) -> None:
             "result": {"externalized": True, "result_file": "case.json", "summary": {"summary": "обрезано"}},
         }
     )
+    assert not active.stop.is_set()
+    assert active.order_case_reply == ""
+    assert active.answer_buf == "Сначала посмотрю исходники sidecar."
+    on_event(
+        {
+            "type": "tool_call",
+            "tool": "external_order.case",
+            "arguments": {"action": "plan"},
+        }
+    )
+    assert not active.stop.is_set()
+    on_event(
+        {
+            "type": "tool_call",
+            "tool": "external_order.case",
+            "arguments": {"action": "plan"},
+        }
+    )
     assert active.stop.is_set()
-    assert active.order_case_reply.startswith(summary)
-    assert "Какой срок поставки?" in active.order_case_reply
-    assert active.answer_buf == active.order_case_reply
-    on_event({"type": "tool_call", "tool": "grep", "arguments": {"path": "agent_sidecar.py"}})
-    on_event({"type": "tool_call", "tool": "read", "arguments": {"path": "agent_sidecar.py"}})
-    assert [item.get("tool") for item in active.events if item.get("type") == "tool_call"] == [
-        "external_order.case"
-    ]
+    assert active.plan_writes == 2
 
 
 def test_second_case_read_in_a_turn_is_caught() -> None:
@@ -286,8 +299,10 @@ def test_second_case_read_in_a_turn_is_caught() -> None:
 def test_order_prompt_leads_with_the_order_and_the_case_tool() -> None:
     task = "Заказ ВЗ-0026 (order_id=abc), заказчик Завод.\n\nВопроса нет."
     prompt = build_sdk_prompt(SimpleNamespace(title="ИИ-агент внешнего заказа · Коммерческая служба"), task)
-    assert prompt.index("order_id=abc") < prompt.index("action=auto_prepare")
-    assert "Не пиши, что инструмента нет" in prompt
+    assert "order_id=abc" in prompt
+    assert "action=auto_prepare" not in prompt
+    assert "external_order.case" not in prompt
+    assert "Не сливай слова" in prompt
     record = SimpleNamespace(
         id="wf-ks",
         title="ИИ-агент внешнего заказа · Коммерческая служба",
@@ -309,8 +324,10 @@ def test_order_prompt_leads_with_the_order_and_the_case_tool() -> None:
         opening="Заказ ВЗ-0026 (order_id=abc). role=ks.",
     )
     assert "order_id=abc" in repair
-    assert "action=auto_prepare" in repair
+    assert "action=auto_prepare" not in repair
+    assert "external_order.case" not in repair
     assert "Инструменты не вызывай" not in repair
+    assert "Не сливай слова" in repair
 
 
 def test_followup_prompt_does_not_restart_case() -> None:
@@ -320,12 +337,11 @@ def test_followup_prompt_does_not_restart_case() -> None:
     )
     assert "оставь поле пустым" in prompt
     assert "Санкции в деле не заполнены" in prompt
-    assert "Инструменты не вызывай" in prompt
+    assert "Инструменты не вызывай" not in prompt
     assert "eo-ai-1" in prompt
     assert "Не сливай слова" in prompt
-    assert "empty=true" in prompt
-    assert "не заполнять" in prompt
-    assert "список вопросов" in prompt
+    assert "empty=true" not in prompt
+    assert "Принять" in prompt
     assert "WORK_RESULT" not in prompt
 
 
@@ -367,7 +383,7 @@ def test_continue_prompt_does_not_reopen_the_case() -> None:
     prompt = build_order_continue_prompt()
     assert "Не пиши WORK_RESULT" in prompt
     assert "Не начинай сначала" in prompt
-    assert "auto_prepare" in prompt
+    assert "auto_prepare" not in prompt
 
 
 def test_reread_after_answer_is_only_a_second_prepare() -> None:

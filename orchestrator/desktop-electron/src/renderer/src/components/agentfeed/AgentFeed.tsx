@@ -21,7 +21,7 @@ interface AgentFeedProps {
   hideRunningStatus?: boolean
   dockQuestion?: boolean
   onAnswer: (requestId: string, value: string, filePaths?: string[]) => void
-  onHitl: (requestId: string, approved: boolean) => void
+  onHitl: (requestId: string, approved: boolean, allowAll?: boolean) => void
   onSkip: () => void
 }
 

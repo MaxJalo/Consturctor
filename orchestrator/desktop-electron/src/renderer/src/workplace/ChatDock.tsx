@@ -1,12 +1,14 @@
 import { Send } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
 import type { PageKey } from '../components/Sidebar'
+import { MarkdownBody } from '../components/agentfeed/MarkdownBody'
 import { openWorkplaceTab } from './workplaceNav'
 import { useRuns } from '../store/runs'
 import { personalAgentWorkflowId } from './personalAgent'
 import {
   agentPrompt,
   assistantGreeting,
+  readableChatText,
   replyToAssistant,
   takeMarkers,
   type AssistantAction
@@ -151,17 +153,31 @@ export function ChatDock({ userId, pageKey, onOpenSupport }: ChatDockProps): Rea
             </button>
           </div>
           <div className="chat-dock-log" ref={logRef}>
-            {lines.map((line) => (
-              <p key={line.id} className={`chat-dock-line is-${line.role}`}>
-                {line.text}
-              </p>
-            ))}
-            {pending?.question ? <p className="chat-dock-line is-assistant">{pending.question}</p> : null}
+            {lines.map((line) =>
+              line.role === 'assistant' ? (
+                <div key={line.id} className="chat-dock-line is-assistant">
+                  <MarkdownBody text={readableChatText(line.text)} />
+                </div>
+              ) : (
+                <p key={line.id} className={`chat-dock-line is-${line.role}`}>
+                  {line.text}
+                </p>
+              )
+            )}
+            {pending?.question ? (
+              <div className="chat-dock-line is-assistant">
+                <MarkdownBody text={readableChatText(pending.question)} />
+              </div>
+            ) : null}
             {awaitingRun ? (
-              <p className="chat-dock-line is-assistant">
-                {[...(run?.state.items || [])].reverse().find((item) => item.kind === 'message' && item.role === 'agent')
-                  ?.text || 'Смотрю по приложению…'}
-              </p>
+              <div className="chat-dock-line is-assistant">
+                <MarkdownBody
+                  text={readableChatText(
+                    [...(run?.state.items || [])].reverse().find((item) => item.kind === 'message' && item.role === 'agent')
+                      ?.text || 'Смотрю по приложению…'
+                  )}
+                />
+              </div>
             ) : null}
           </div>
           <form

@@ -8,7 +8,7 @@ from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
-from app.api.deps import get_current_user
+from app.api.deps import get_current_user, require_admin_user
 from app.core.jwt import AuthContext
 from app.db.session import SessionLocal, get_db, pool_is_saturated
 from app.services.external_orders import (
@@ -172,6 +172,14 @@ class OnecLinkIn(BaseModel):
     ref_key: str = ""
 
 
+class ScenarioIn(BaseModel):
+    scenario: str = ""
+
+
+class ProcedureIn(BaseModel):
+    text: str = ""
+
+
 class CopilotIn(BaseModel):
     step_id: str = ""
     message: str = ""
@@ -303,12 +311,14 @@ def _service_agent_catalog(db: Session) -> dict:
     agents = []
     for role in service_roles():
         row = rows.get(title_for(role))
+        local = row.local_run if row is not None and isinstance(row.local_run, dict) else {}
         agents.append(
             {
                 "role": role,
                 "workflow_id": row.id if row is not None else "",
                 "title": row.title if row is not None else title_for(role),
                 "active": bool(row is not None and is_active(row)),
+                "procedure": str(local.get("order_procedure") or ""),
             }
         )
     return {"agents": agents}
@@ -339,6 +349,23 @@ def get_service_agents(auth: AuthContext = Depends(get_current_user)) -> dict:
             db.close()
         _agents_cache = (time.monotonic(), body)
         return body
+
+
+@router.put("/service-agents/{role}/procedure")
+def put_service_procedure(
+    role: str,
+    body: ProcedureIn,
+    auth: AuthContext = Depends(require_admin_user),
+    db: Session = Depends(get_db),
+) -> dict:
+    """Администратор сохраняет порядок шагов службы. Агент сам эту запись не пишет."""
+    _ = auth
+    from app.services.external_service_agents import save_procedure
+
+    global _agents_cache
+    text = _call(lambda: save_procedure(db, role, body.text))
+    _agents_cache = None
+    return {"role": role, "procedure": text}
 
 
 @router.get("/matrix")
@@ -924,6 +951,21 @@ def post_onec_refresh(
             fio=auth.fio or "",
         )
     )
+
+
+@router.post("/{order_id}/scenario")
+def post_scenario(
+    order_id: str,
+    body: ScenarioIn,
+    as_role: str = Query(default=""),
+    auth: AuthContext = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> dict:
+    from app.services.external_order_case import scenario_brief
+    from app.services.external_orders import _order
+
+    role = _role(auth, as_role, db)
+    return _call(lambda: scenario_brief(_order(db, order_id), body.scenario, role=role))
 
 
 @router.post("/{order_id}/copilot")

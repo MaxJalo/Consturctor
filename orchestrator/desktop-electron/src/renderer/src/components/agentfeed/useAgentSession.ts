@@ -123,12 +123,16 @@ export function useAgentSession(options: UseAgentSessionOptions = {}): UseAgentS
     setState((s) => ({ ...s, pendingQuestion: null, status: 'Агент работает…' }))
   }, [])
 
-  const respondHitl = useCallback((requestId: string, approved: boolean) => {
-    agentClient.hitl(requestId, approved)
+  const respondHitl = useCallback((requestId: string, approved: boolean, allowAll = false) => {
+    agentClient.hitl(requestId, approved, allowAll)
     setState((s) => ({
       ...s,
       pendingHitl: null,
-      status: approved ? 'Выполняю действие…' : 'Действие отклонено'
+      status: approved
+        ? allowAll
+          ? 'Операции этого прогона без запроса'
+          : 'Выполняю действие…'
+        : 'Действие отклонено'
     }))
   }, [])
 

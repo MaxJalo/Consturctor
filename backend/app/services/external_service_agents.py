@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from uuid import uuid4
 
 from sqlalchemy.orm import Session
@@ -222,6 +223,38 @@ def playbook(role: str) -> dict:
         "tools": TOOLS,
         "model_params": MODEL_PARAMS,
     }
+
+
+_PROCEDURE_FACT = re.compile(r"ВЗ-\d|ИНН|\d{6,}|руб|@|\.docx|\.xlsx|\.pdf|\.xml|\[\[", re.IGNORECASE)
+
+
+def procedure_text(value: str) -> str:
+    """Порядок шагов службы. Факты заказа сюда не входят."""
+    from app.services.external_orders import ExternalOrderError
+
+    clean = " ".join((value or "").split())
+    if len(clean) > 800:
+        raise ExternalOrderError("Приём длиннее 800 знаков", 400)
+    if _PROCEDURE_FACT.search(clean):
+        raise ExternalOrderError("В приёме не должно быть фактов заказа: сумм, номеров и имён файлов", 400)
+    return clean
+
+
+def save_procedure(db: Session, role: str, value: str) -> str:
+    from app.services.external_orders import ExternalOrderError
+
+    if role not in SERVICE_FOCUS:
+        raise ExternalOrderError("У этой службы нет агента", 404)
+    clean = procedure_text(value)
+    row = ensure_agent(db, role)
+    if row is None:
+        raise ExternalOrderError("Агент службы не опубликован", 404)
+    local = dict(row.local_run or {})
+    local["order_procedure"] = clean
+    row.local_run = local
+    flag_modified(row, "local_run")
+    db.commit()
+    return clean
 
 
 def stamp_active(local: dict, role: str) -> None:

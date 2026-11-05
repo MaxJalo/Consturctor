@@ -215,6 +215,44 @@
   margin-top: 4px;
 }
 
+.order-agent-dialog .oad-case-drafts {
+  margin: 8px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.order-agent-dialog .oad-case-drafts li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 6px;
+  padding: 8px 10px;
+  border-radius: 10px;
+  background: #fff;
+}
+
+.order-agent-dialog .oad-case-drafts button {
+  flex: none;
+  border: 0;
+  border-radius: 8px;
+  padding: 6px 10px;
+  background: #1f6b4a;
+  color: #fff;
+  cursor: pointer;
+}
+
+.order-agent-dialog .oad-case-drafts button:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+.order-agent-dialog .oad-case-drafts em {
+  flex: none;
+  color: #1f6b4a;
+  font-style: normal;
+}
+
 .order-agent-dialog .oad-case-questions p {
   margin: 8px 0 0;
   padding: 8px 10px;

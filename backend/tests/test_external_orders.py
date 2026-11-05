@@ -554,6 +554,33 @@ def test_draft_file_kind_and_title_can_be_edited():
         raise AssertionError("утверждённый файл переименован")
 
 
+def test_letter_without_files_is_a_calculation_not_a_sent_letter():
+    from app.services.external_order_case import scenario_brief
+    from app.services.external_orders import _order
+
+    db = _db()
+    order = _create(db)
+    brief = scenario_brief(_order(db, order["id"]), "letter", role="rp")
+    assert brief["files"] == 0
+    assert "Файлов в деле нет." in brief["summary"]
+    assert "не отправлено" in brief["summary"]
+    assert "не является" in brief["summary"]
+
+
+def test_service_procedure_rejects_order_facts():
+    from app.services.external_orders import ExternalOrderError
+    from app.services.external_service_agents import procedure_text
+
+    assert "один auto_prepare" in procedure_text("Сначала один auto_prepare, затем пояснение без записи.")
+    for bad in ("Сумма 10318153 руб", "Заказ ВЗ-0026", "ИНН 7734257891", "письмо.docx"):
+        try:
+            procedure_text(bad)
+        except ExternalOrderError as exc:
+            assert exc.status == 400
+        else:
+            raise AssertionError(bad)
+
+
 def test_scenario_buttons_get_their_own_calculation():
     from app.services.external_order_case import SCENARIOS, case_scenario
     from app.services.external_orders import _order
@@ -2138,6 +2165,62 @@ def test_order_code_skips_used_numbers_and_duplicate_import_collapses() -> None:
     assert len(left) == 1
     assert left[0].id == first["id"]
     assert left[0].code == "ВЗ-0009"
+
+
+def test_employee_brief_states_known_facts_and_skips_other_services() -> None:
+    from app.services.external_orders import _employee_brief
+
+    text = _employee_brief(
+        order={
+            "known": [
+                "Заказчик: ИНФРАСТРУКТУРА ТК ООО, ИНН 7734257891",
+                "Срок поставки: 60 дн.",
+                "Путь 1С: длинная цепочка",
+            ]
+        },
+        role="development",
+        role_label="Служба развития",
+        passport={"label": "Расчёт", "checks_done": 5, "checks_total": 5, "blocker": ""},
+        proposals=[{}] * 20,
+        questions=[],
+        other_questions=15,
+    )
+    assert "ИНФРАСТРУКТУРА ТК ООО" in text
+    assert "60 дн." in text
+    assert "5 из 5" in text
+    assert "Черновиков других служб: 20." in text
+    assert "другие службы" in text
+    assert "Вопросов на уточнение" not in text
+    assert "Путь 1С" not in text
+
+
+def test_employee_brief_lists_own_drafts_and_counts_the_rest() -> None:
+    from app.services.external_orders import _employee_brief, _own_service_lists
+
+    order = {"sections": {"commercial": {"price": "4 500 000 руб.", "vat": ""}}}
+    proposals = [
+        {"id": "d1", "owner_role": "ks", "status": "draft", "label": "Цена", "value": "4 200 000 руб."},
+        {"id": "d2", "owner_role": "ks", "status": "draft", "label": "НДС", "value": "20%"},
+        {"id": "d3", "owner_role": "legal", "status": "draft", "label": "Санкции", "value": "0,1%"},
+    ]
+    lists = _own_service_lists(order, proposals, "ks")
+    assert lists["filled"] == [{"label": "Цена", "value": "4 500 000 руб."}]
+    assert [item["label"] for item in lists["drafts"]] == ["Цена", "НДС"]
+    assert lists["other_drafts"] == 1
+    assert "Санкции" not in str(lists["drafts"])
+    text = _employee_brief(
+        order=order,
+        role="ks",
+        role_label="Коммерческая служба",
+        passport={"label": "Расчёт", "checks_done": 1, "checks_total": 4, "blocker": ""},
+        proposals=proposals,
+        questions=[],
+        other_questions=0,
+    )
+    assert "Цена — 4 200 000 руб." in text
+    assert "НДС — 20%" in text
+    assert "Черновиков других служб: 1." in text
+    assert "Санкции" not in text
 
 
 def test_order_onec_stops_when_the_budget_is_spent() -> None:

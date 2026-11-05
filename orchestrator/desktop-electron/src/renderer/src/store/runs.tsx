@@ -109,7 +109,7 @@ export interface RunStore {
   activeAgents: () => RunEntry[]
   startRun: (opts: StartRunOptions) => string
   answer: (workflowId: string, requestId: string, value: string, filePaths?: string[], ok?: boolean) => void
-  respondHitl: (workflowId: string, requestId: string, approved: boolean) => void
+  respondHitl: (workflowId: string, requestId: string, approved: boolean, allowAll?: boolean) => void
   respondDecision: (workflowId: string, requestId: string, approved: boolean, tool?: string) => void
   skip: (workflowId: string) => void
   cancel: (workflowId: string, backendRunId?: string) => void
@@ -463,8 +463,8 @@ export function RunProvider({ children }: { children: React.ReactNode }): React.
     []
   )
 
-  const respondHitl = useCallback((workflowId: string, requestId: string, approved: boolean) => {
-    agentClient.hitl(requestId, approved)
+  const respondHitl = useCallback((workflowId: string, requestId: string, approved: boolean, allowAll = false) => {
+    agentClient.hitl(requestId, approved, allowAll)
     setEntries((prev) => {
       const entry = prev[workflowId]
       if (!entry) return prev
@@ -475,7 +475,11 @@ export function RunProvider({ children }: { children: React.ReactNode }): React.
           state: {
             ...entry.state,
             pendingHitl: null,
-            status: approved ? 'Выполняю действие…' : 'Действие отклонено',
+            status: approved
+              ? allowAll
+                ? 'Операции этого прогона без запроса'
+                : 'Выполняю действие…'
+              : 'Действие отклонено',
             runningSinceMs: approved ? entry.state.runningSinceMs || Date.now() : entry.state.runningSinceMs,
             timing: beginAgentPhase(entry.state.timing || EMPTY_TIMING)
           }
@@ -734,7 +738,13 @@ export function RunProvider({ children }: { children: React.ReactNode }): React.
         }
         items = [...items, ...settleOpenFeedTools(turn)]
         const answer = (detail.item.answer || detail.item.summary || '').trim()
-        if (answer && !isTriggerCheckNoise(answer) && !turn.some((item) => item.kind === 'result')) {
+        const alreadySpoken = turn.some((item) => {
+          if (item.kind !== 'message' && item.kind !== 'result') return false
+          const body = (item.text || '').trim()
+          if (!body || !answer) return false
+          return body === answer || body.startsWith(answer.slice(0, 80)) || answer.startsWith(body.slice(0, 80))
+        })
+        if (answer && !isTriggerCheckNoise(answer) && !alreadySpoken && !turn.some((item) => item.kind === 'result')) {
           items =
             String(detail.item.status || '').toLowerCase() === 'error'
               ? pushSystem(items, answer, 'error')

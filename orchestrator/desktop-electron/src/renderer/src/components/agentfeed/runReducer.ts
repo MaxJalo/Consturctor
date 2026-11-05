@@ -82,7 +82,6 @@ function visibleAssistant(text: string): string {
   return cleaned
     .replace(/Инструменты Constructor:[\s\S]*?(?:\(\+\d+\)|$)/gi, ' ')
     .replace(/Инструменты подключены\.?\s*/gi, ' ')
-    .trim()
 }
 
 function normalizeResult(raw: unknown): Record<string, unknown> | null {
@@ -220,8 +219,14 @@ function resultRepeatsTurn(valuePlain: string, items: FeedItem[]): boolean {
 
 function pushAssistant(items: FeedItem[], text: string): FeedItem[] {
   const clean = visibleAssistant(text)
-  if (!clean.trim()) return items
+  if (!clean) return items
   const last = items[items.length - 1]
+  if (!clean.trim()) {
+    if (!(last && last.kind === 'message' && last.role === 'agent')) return items
+    const merged = [...items]
+    merged[merged.length - 1] = { ...last, text: last.text + clean }
+    return merged
+  }
   if (last && last.kind === 'message' && last.role === 'agent') {
     const previous = plainReply(last.text)
     const incoming = plainReply(clean)

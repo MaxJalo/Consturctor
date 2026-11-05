@@ -11,7 +11,16 @@ import { categoryOf, FILE_CATEGORY_LABELS, formatFileWhen, formatSize } from './
 import { isPersonalAgentWorkflowId } from '../workplace/personalAgent'
 import { parseIso, sameDay } from '../utils/calendar'
 import { type AgentChatContext } from './agentChat'
-import { employeeDialogText, isOrderNoise, isOrderPrompt, latestOrderCase } from './orderCaseBrief'
+import {
+  employeeDialogText,
+  factAlreadySaid,
+  isCatalogDump,
+  isOrderNoise,
+  isOrderPrompt,
+  isWorkLog,
+  latestOrderCase,
+  workLogOutcome
+} from './orderCaseBrief'
 import './orderAgentDialog.css'
 
 interface AgentRunPageProps {
@@ -156,6 +165,7 @@ export function AgentRunPage({
   const [rightTab, setRightTab] = useState<RightTab>(chat ? 'order' : 'files')
   const [showWork, setShowWork] = useState(false)
   const [historyNote, setHistoryNote] = useState('')
+  const [takenDrafts, setTakenDrafts] = useState<Record<string, 'busy' | 'done' | 'error'>>({})
   const conversationOpenedRef = useRef(false)
 
   const [input, setInput] = useState('')
@@ -217,9 +227,7 @@ export function AgentRunPage({
     }
   }, [workflowId, refreshFiles, personalAgent, conversationKey])
 
-  // Разговор по заказу: сначала уже открытый или сохранённый ход.
-  // Новый запуск — только если у этой службы по заказу ещё не было ни одного.
-  // Ошибка загрузки истории не запускает агента заново: повторный ход упирается в таймаут.
+  // Разговор по заказу: история остаётся в ленте, и этот ход агент выполняет сам.
   useEffect(() => {
     if (!chat || conversationOpenedRef.current) return
     conversationOpenedRef.current = true
@@ -227,50 +235,23 @@ export function AgentRunPage({
     const prefix = chat.conversationPrefix
     const key = rememberedConversation(runs.entries, workflowId, prefix, preferred)
     if (key !== preferred) setBoundKey(key)
+    const task = initialMessage.trim()
+    const start = (): void => {
+      if (chat.readOnly || !task) return
+      runs.startRun({
+        workflowId,
+        title,
+        message: task,
+        shownMessage: task,
+        conversationKey: key
+      })
+    }
     void runs
       .attachConversation(workflowId, key, title)
-      .then(async (turns) => {
-        const task = initialMessage.trim()
-        const scenarioLine = task.split('\n').find((line) => line.startsWith('Сценарий дела:')) || ''
-        const scenario = Boolean(scenarioLine)
-        const shown = scenario ? scenarioLine.replace(/\s*\(scenario=[a-z_]+\)/, '') : briefLabel(chat)
-        const askScenario = (conversationKey: string): void => {
-          if (!scenario || chat.readOnly || !task) return
-          runs.startRun({
-            workflowId,
-            title,
-            message: task,
-            shownMessage: shown,
-            conversationKey
-          })
-        }
-        if (turns > 0 || chat.readOnly) {
-          askScenario(key)
-          return
-        }
-        const rows = await api.listAgentRuns(workflowId, { prefix })
-        const latest = rows.find((item) => (item.conversationKey || '').startsWith(prefix))
-        let active = key
-        if (latest?.conversationKey) {
-          active = latest.conversationKey
-          if (active !== key) setBoundKey(active)
-          const restored = await runs.attachConversation(workflowId, active, title)
-          if (restored > 0) {
-            askScenario(active)
-            return
-          }
-        }
-        if (!task) return
-        runs.startRun({
-          workflowId,
-          title,
-          message: task,
-          shownMessage: shown,
-          conversationKey: active
-        })
-      })
+      .then(() => start())
       .catch(() => {
-        setHistoryNote('История разговора не загрузилась. Напишите сообщение, чтобы продолжить.')
+        setHistoryNote('История разговора не загрузилась.')
+        start()
       })
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [chat?.conversationKey, workflowId])
@@ -495,8 +476,7 @@ export function AgentRunPage({
   const caseBrief = useMemo(() => {
     if (!chat) return null
     const live = latestOrderCase(feedItems)
-    if (live && !live.error) return live
-    return chat.caseBrief ?? live
+    return live && !live.error ? live : (chat.caseBrief ?? live)
   }, [chat, feedItems])
   const dialogItems = useMemo(() => {
     const visible = showWork
@@ -504,15 +484,28 @@ export function AgentRunPage({
       : feedItems.filter(
           (item) => item.kind === 'message' || item.kind === 'result' || (item.kind === 'system' && item.tone === 'error')
         )
-    if (!caseBrief || showWork) return visible
-    return visible.flatMap((item) => {
-      if (item.kind === 'message' && item.role === 'agent' && (isOrderNoise(item.text) || isOrderPrompt(item.text))) {
-        return []
+    if (!caseBrief) return visible
+    const spoken: FeedItem[] = []
+    for (const item of visible) {
+      if (item.kind === 'message' && item.role === 'agent' && isOrderPrompt(item.text)) continue
+      if (item.kind === 'message' && item.role === 'agent' && isOrderNoise(item.text)) {
+        continue
       }
-      if (item.kind !== 'message' && item.kind !== 'system') return [item]
-      const text = employeeDialogText(item.text, caseBrief.code)
-      return text === item.text ? [item] : [{ ...item, text }]
-    })
+      let next = item
+      if (item.kind === 'message' || item.kind === 'system' || item.kind === 'result') {
+        let text = employeeDialogText(item.text, caseBrief.code)
+        if (/cursor sdk не отвечает|не удалось связаться с cursor|сеть оборвалась|network request failed|без итога/i.test(text)) {
+          text = 'Ответ не получен. Черновики на карточке остаются.'
+        }
+        if (isCatalogDump(text)) text = caseBrief.summary || text
+        else if (isWorkLog(text)) text = workLogOutcome(text)
+        if (text !== item.text) next = { ...item, text }
+      }
+      const prev = spoken[spoken.length - 1]
+      if (prev && 'text' in prev && 'text' in next && prev.text === next.text) continue
+      spoken.push(next)
+    }
+    return spoken
   }, [feedItems, showWork, caseBrief])
 
   const rawStatus = (state?.status || '').trim()
@@ -591,23 +584,76 @@ export function AgentRunPage({
                     {[caseBrief.checks, caseBrief.blocker].filter(Boolean).join(' · ')}
                   </p>
                 ) : null}
-                {caseBrief.proposalCount > 0 ? (
+                {caseBrief.filled.length > 0 ? (
+                  <>
+                    <p className="oad-case-meta">Уже заполнено</p>
+                    <ul className="oad-case-facts">
+                      {caseBrief.filled.map((item) => (
+                        <li key={`${item.label}:${item.value}`}>
+                          {item.label} — {item.value}
+                        </li>
+                      ))}
+                    </ul>
+                  </>
+                ) : null}
+                {caseBrief.drafts.length > 0 ? (
+                  <>
+                    <p className="oad-case-meta">Черновики</p>
+                    <ul className="oad-case-drafts">
+                      {caseBrief.drafts.map((draft) => {
+                        const state = draft.id ? takenDrafts[draft.id] : undefined
+                        return (
+                          <li key={draft.id || `${draft.label}:${draft.value}`}>
+                            <span>
+                              {draft.label} — {draft.value}
+                            </span>
+                            {state === 'done' ? (
+                              <em>записано в карточку</em>
+                            ) : draft.id ? (
+                              <button
+                                type="button"
+                                disabled={state === 'busy'}
+                                onClick={() => {
+                                  if (!chat) return
+                                  setTakenDrafts((prev) => ({ ...prev, [draft.id]: 'busy' }))
+                                  void api
+                                    .acceptExternalFinding(chat.order.id, draft.id, chat.order.role)
+                                    .then(() => setTakenDrafts((prev) => ({ ...prev, [draft.id]: 'done' })))
+                                    .catch(() => setTakenDrafts((prev) => ({ ...prev, [draft.id]: 'error' })))
+                                }}
+                              >
+                                {state === 'busy' ? 'Записываю…' : state === 'error' ? 'Повторить' : 'Принять'}
+                              </button>
+                            ) : null}
+                          </li>
+                        )
+                      })}
+                    </ul>
+                  </>
+                ) : caseBrief.proposalCount > 0 && !/принят/i.test(caseBrief.summary) ? (
                   <p className="oad-case-meta">Черновиков к принятию: {caseBrief.proposalCount}</p>
                 ) : null}
-                {caseBrief.facts.some((fact) => !caseBrief.summary.includes(fact)) ? (
+                {caseBrief.otherDrafts > 0 ? (
+                  <p className="oad-case-meta">
+                    Черновиков других служб: {caseBrief.otherDrafts}. Их принимает владелец раздела.
+                  </p>
+                ) : null}
+                {caseBrief.facts.some((fact) => !factAlreadySaid(caseBrief.summary, fact)) ? (
                   <ul className="oad-case-facts">
                     {caseBrief.facts
-                      .filter((fact) => !caseBrief.summary.includes(fact))
+                      .filter((fact) => !factAlreadySaid(caseBrief.summary, fact))
                       .map((fact) => (
                         <li key={fact}>{fact}</li>
                       ))}
                   </ul>
                 ) : null}
-                {caseBrief.questions.length > 0 ? (
+                {caseBrief.questions.some((question) => !caseBrief.summary.includes(question)) ? (
                   <div className="oad-case-questions">
-                    {caseBrief.questions.map((question) => (
-                      <p key={question}>{question}</p>
-                    ))}
+                    {caseBrief.questions
+                      .filter((question) => !caseBrief.summary.includes(question))
+                      .map((question) => (
+                        <p key={question}>{question}</p>
+                      ))}
                   </div>
                 ) : null}
               </section>
@@ -630,7 +676,7 @@ export function AgentRunPage({
                   }, 400)
                 }
               }}
-              onHitl={(requestId, approved) => runs.respondHitl(entryKey, requestId, approved)}
+              onHitl={(requestId, approved, allowAll) => runs.respondHitl(entryKey, requestId, approved, allowAll)}
               onSkip={() => runs.skip(entryKey)}
             />
             {historyNote ? <div className="oad-note">{historyNote}</div> : null}
@@ -734,7 +780,7 @@ export function AgentRunPage({
                   }, 400)
                 }
               }}
-              onHitl={(requestId, approved) => runs.respondHitl(entryKey, requestId, approved)}
+              onHitl={(requestId, approved, allowAll) => runs.respondHitl(entryKey, requestId, approved, allowAll)}
               onSkip={() => runs.skip(entryKey)}
             />
             {historyNote ? <div className="wf-files-empty">{historyNote}</div> : null}

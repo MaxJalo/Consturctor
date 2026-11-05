@@ -1,5 +1,14 @@
 import type { FeedItem } from '../components/agentfeed/types'
 
+export interface CaseLine {
+  label: string
+  value: string
+}
+
+export interface CaseDraft extends CaseLine {
+  id: string
+}
+
 export interface OrderCaseBrief {
   code: string
   customer: string
@@ -8,6 +17,9 @@ export interface OrderCaseBrief {
   facts: string[]
   questions: string[]
   proposalCount: number
+  filled: CaseLine[]
+  drafts: CaseDraft[]
+  otherDrafts: number
   checks: string
   blocker: string
   error: string
@@ -34,6 +46,37 @@ function factLines(value: unknown): string[] {
     .map((item) => item.trim())
     .filter(Boolean)
     .slice(0, 8)
+}
+
+function namedLines(value: unknown): CaseLine[] {
+  if (!Array.isArray(value)) return []
+  const rows: CaseLine[] = []
+  for (const item of value) {
+    const row = asRecord(item)
+    if (!row) continue
+    const label = text(row.label, 120)
+    const fieldValue = text(row.value, 200)
+    if (!label && !fieldValue) continue
+    rows.push({ label: label || 'Поле', value: fieldValue })
+    if (rows.length >= 12) break
+  }
+  return rows
+}
+
+function draftLines(value: unknown): CaseDraft[] {
+  if (!Array.isArray(value)) return []
+  const rows: CaseDraft[] = []
+  for (const item of value) {
+    const row = asRecord(item)
+    if (!row) continue
+    if (row.status && text(row.status, 20) !== 'draft') continue
+    const label = text(row.label, 120)
+    const fieldValue = text(row.value, 200)
+    if (!label && !fieldValue) continue
+    rows.push({ id: text(row.id, 80), label: label || 'Поле', value: fieldValue })
+    if (rows.length >= 12) break
+  }
+  return rows
 }
 
 function questionLines(value: unknown): string[] {
@@ -81,6 +124,9 @@ export function briefFromLoadedOrder(input: {
   pathLabel: string
   paymentNote: string
   openChecks: string[]
+  filled?: CaseLine[]
+  drafts?: CaseDraft[]
+  otherDrafts?: number
 }): OrderCaseBrief {
   const checks = input.checksTotal > 0 ? `Чек-лист ${input.checksDone} из ${input.checksTotal}` : ''
   const path = input.pathLabel.trim()
@@ -103,10 +149,72 @@ export function briefFromLoadedOrder(input: {
     facts: [path, payment].filter(Boolean).slice(0, 8),
     questions: input.openChecks.map((item) => item.trim()).filter(Boolean).slice(0, 3),
     proposalCount: input.draftCount,
+    filled: input.filled || [],
+    drafts: input.drafts || [],
+    otherDrafts: input.otherDrafts || 0,
     checks,
     blocker: input.blocker.trim(),
     error: ''
   }
+}
+
+/** Старая сводка: каталог счётчиков и нумерованный список чужих вопросов. */
+export function isCatalogDump(value: string): boolean {
+  return /вопросов на уточнение|вопросы:\s*\d+\./i.test(value || '')
+}
+
+export function readableOrderSummary(input: {
+  raw: string
+  facts: string[]
+  stageLabel: string
+  checksDone: number | null
+  checksTotal: number | null
+  blocker: string
+  proposalCount: number
+  roleDrafts: number | null
+}): string {
+  const raw = input.raw || ''
+  if (raw && !isCatalogDump(raw) && raw.includes('\n\n')) return raw
+  const service = /Служба:\s*([^.\n]+)/i.exec(raw)?.[1]?.trim() || ''
+  const draftMatch = /Черновиков к принятию:\s*(\d+)/i.exec(raw)
+  const roleMatch = /по вашей службе:\s*(\d+)/i.exec(raw)
+  const stageMatch = /этап «([^»]+)»/i.exec(raw)
+  const checksMatch = /чек-лист этапа\s*(\d+)\s*\/\s*(\d+)/i.exec(raw)
+  const drafts = draftMatch ? Number(draftMatch[1]) : input.proposalCount
+  const roleDrafts = roleMatch ? Number(roleMatch[1]) : input.roleDrafts
+  const stageLabel = input.stageLabel || stageMatch?.[1] || ''
+  const done = input.checksDone ?? (checksMatch ? Number(checksMatch[1]) : null)
+  const total = input.checksTotal ?? (checksMatch ? Number(checksMatch[2]) : null)
+  const bits = input.facts
+    .filter((line) => !/^путь 1с/i.test(line))
+    .slice(0, 8)
+    .map((line) => {
+      const split = line.indexOf(':')
+      if (split < 0) return line.replace(/\.$/, '')
+      const label = line.slice(0, split).trim()
+      const value = line.slice(split + 1).trim().replace(/\.$/, '')
+      if (!label || !value) return line
+      return `${label.charAt(0).toLowerCase()}${label.slice(1)} ${value}`
+    })
+  const paragraphs: string[] = []
+  if (bits.length) {
+    paragraphs.push(`${service ? `По службе ${service} ` : ''}уже есть ${bits.join(', ')}.`)
+  }
+  if (stageLabel && done != null && total != null) {
+    const blocker = input.blocker.trim()
+    paragraphs.push(
+      `Этап «${stageLabel}»: чек-лист ${done} из ${total}. ${blocker || 'Блокировок этапа нет.'}`
+    )
+  }
+  if (drafts > 0) {
+    paragraphs.push(
+      `К принятию ${drafts} черновиков${roleDrafts != null ? `, по вашей службе ${roleDrafts}` : ''}.`
+    )
+  }
+  if (isCatalogDump(raw)) {
+    paragraphs.push('По вашей службе пустых полей нет. Открытые пункты ведут другие службы.')
+  }
+  return paragraphs.join('\n\n') || raw
 }
 
 export function latestOrderCase(items: FeedItem[]): OrderCaseBrief | null {
@@ -125,6 +233,9 @@ export function latestOrderCase(items: FeedItem[]): OrderCaseBrief | null {
           facts: [],
           questions: [],
           proposalCount: 0,
+          filled: [],
+          drafts: [],
+          otherDrafts: 0,
           checks: '',
           blocker: '',
           error: humanToolError(item.summary)
@@ -135,26 +246,48 @@ export function latestOrderCase(items: FeedItem[]): OrderCaseBrief | null {
     const payload = item.result ? casePayload(item.result) : null
     if (!payload) continue
     const stage = asRecord(payload.stage)
-    const done = stage?.checks_done
-    const total = stage?.checks_total
+    const done = typeof stage?.checks_done === 'number' ? stage.checks_done : null
+    const total = typeof stage?.checks_total === 'number' ? stage.checks_total : null
     const checks = done != null && total != null ? `Чек-лист ${done} из ${total}` : ''
     const proposals = payload.proposals
-    const proposalCount = Array.isArray(proposals)
-      ? proposals.length
-      : Number(payload.proposals_count || 0) || 0
+    const rawSummary = typeof payload.summary === 'string' ? payload.summary : ''
+    const countedDrafts = Number(/Черновиков к принятию:\s*(\d+)/i.exec(rawSummary)?.[1] || 0)
+    const proposalCount = Math.max(
+      Number(payload.proposals_count || 0),
+      countedDrafts,
+      Array.isArray(proposals) ? proposals.length : 0
+    )
+    const facts = factLines(payload.facts || payload.known)
+    const blocker = text(stage?.blocker || payload.blocker, 180)
+    const summary = readableOrderSummary({
+      raw: rawSummary,
+      facts,
+      stageLabel: text(stage?.label, 80),
+      checksDone: done,
+      checksTotal: total,
+      blocker,
+      proposalCount,
+      roleDrafts:
+        payload.role_proposals_count == null ? null : Number(payload.role_proposals_count)
+    })
     const brief: OrderCaseBrief = {
       code: text(payload.code, 40),
       customer: text(payload.customer, 120),
       product: text(payload.product, 160),
-      summary: text(payload.summary, 700),
-      facts: factLines(payload.facts || payload.known),
-      questions: questionLines(payload.questions),
+      summary,
+      facts,
+      questions: isCatalogDump(rawSummary) ? [] : questionLines(payload.questions),
       proposalCount,
+      filled: namedLines(payload.filled),
+      drafts: draftLines(payload.drafts),
+      otherDrafts: Number(payload.other_drafts || 0),
       checks,
-      blocker: text(stage?.blocker || payload.blocker, 180),
+      blocker,
       error: ''
     }
-    if (brief.summary || brief.facts.length || brief.questions.length) return brief
+    if (brief.summary || brief.facts.length || brief.questions.length || brief.filled.length || brief.drafts.length) {
+      return brief
+    }
   }
   return failure
 }
@@ -164,7 +297,35 @@ const SDK_DEAD = /cursor sdk не отвечает/i
 
 /** Внутренняя подсказка агенту, а не реплика сотрудника. */
 export function isOrderPrompt(text: string): boolean {
-  return /первый ход:|external_order\.case|если ответа нет ни в деле|ход мыслей в чат не писать|шаблоны, один ход/i.test(text || '')
+  return /первый ход:|первый вызов:|external_order\.case|если ответа нет ни в деле|ход мыслей в чат не писать|шаблоны, один ход|сценарий дела:|order_id=|один read_full|итог скрипта уже получен/i.test(
+    text || ''
+  )
+}
+
+/** Разбор, который модель расписала как ход работы, а не как итог. */
+export function isWorkLog(value: string): boolean {
+  return /сводка по пункту дела|граница факта|document_excerpts|один read_full/i.test(value || '')
+}
+
+export function workLogOutcome(value: string): string {
+  const letter = /письм/i.test(value)
+  const noFiles = /файлов в деле нет|документов в деле 0/i.test(value)
+  if (letter && noFiles) {
+    return 'Письмо заказчику. Проект по файлам дела не из чего собрать: файлов нет и связей нет. Положите в дело файл основания и запросите проект снова. В карточку ничего не записано и никому не отправлено.'
+  }
+  if (noFiles) {
+    return 'По файлам дела считать нечего: файлов и связей нет. Положите файл основания и запустите сценарий снова.'
+  }
+  return value
+}
+
+export function factAlreadySaid(summary: string, fact: string): boolean {
+  const folded = summary.toLowerCase().replace(/\s+/g, ' ')
+  const raw = fact.trim()
+  if (!raw) return true
+  if (folded.includes(raw.toLowerCase())) return true
+  const value = (raw.includes(':') ? raw.slice(raw.indexOf(':') + 1) : raw).trim().replace(/\.$/, '')
+  return value.length > 3 && folded.includes(value.toLowerCase())
 }
 
 /** Что показать в чате вместо сырого отказа SDK и текста инструкции. */
@@ -173,7 +334,11 @@ export function employeeDialogText(text: string, code: string): string {
   if (SDK_DEAD.test(value)) {
     return 'Модель Cursor сейчас недоступна. Сводка выше собрана по карточке, без модели.'
   }
-  if (isOrderPrompt(value)) return code ? `Разбор заказа ${code}` : 'Разбор заказа'
+  if (isOrderPrompt(value)) {
+    const scenario = /Сценарий дела:\s*([^\n(]+)/i.exec(value)?.[1]?.trim()
+    if (scenario) return scenario
+    return code ? `Разбор заказа ${code}` : 'Разбор заказа'
+  }
   return text
 }
 

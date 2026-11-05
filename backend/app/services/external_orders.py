@@ -1523,24 +1523,32 @@ def build_role_questions(order: ExternalOrder) -> dict[str, list[dict]]:
     return result
 
 
+# Службы текущего этапа — те же, что у линейки на экране (externalOrderReview LINE).
+_QUEUE_STAGE_ROLES: dict[str, set[str]] = {
+    "draft": {"ks", "development"},
+    "collecting": {"ks", "development"},
+    "calculating": {"kb", "omto", "finance", "production", "legal", "development"},
+    "rework": {"kb", "omto", "finance", "production", "legal", "development"},
+    "ready_committee": {"committee", "finance", "ks"},
+    "confirmed": {"committee", "finance", "ks"},
+    "confirmed_conditions": {"committee", "finance", "ks"},
+    "tkp_issued": {"ks"},
+    "contract_review": {"ks", "legal", "finance", "rp"},
+    "contract_signed": {"ks", "legal", "finance", "rp"},
+    "in_progress": {"rp", "kb", "omto", "production"},
+    "production": {"rp", "kb", "omto", "production"},
+    "acceptance": {"production", "ks", "omto", "rp"},
+    "shipped": {"production", "ks", "omto", "rp"},
+    "awaiting_payment": {"finance", "ks", "rp"},
+}
+
+
 def _waiting_roles(order: ExternalOrder) -> list[str]:
-    roles_set: set[str] = set()
-    nxt = NEXT_GATE.get(order.status, "")
-    if nxt:
-        roles_set.update(TRANSITION_ROLES.get(nxt, set()))
-    for item in order.checks:
-        if item.status not in {"done", "not_applicable"} and item.owner_role:
-            roles_set.add(item.owner_role)
-    for item in order.gaps:
-        if item.status == "open" and item.owner_role:
-            roles_set.add(item.owner_role)
-    for item in order.findings:
-        if item.status == "draft" and item.owner_role:
-            roles_set.add(item.owner_role)
-    for item in order.notices:
-        if item.kind in {"overdue", "change"} and item.role:
-            roles_set.add(item.role)
-    return [role_id for role_id in ROLES if role_id != "viewer" and role_id in roles_set]
+    """Очередь службы — заказы её текущего этапа, без пунктов будущих ворот."""
+    if order.status == "closed":
+        return []
+    owners = _QUEUE_STAGE_ROLES.get(order.status, set())
+    return [role_id for role_id in ROLES if role_id != "viewer" and role_id in owners]
 
 
 def _attention(order: ExternalOrder) -> list[dict]:
@@ -3732,23 +3740,18 @@ def run_copilot(
     )
     role_questions_map = detail.get("role_questions") or {}
     questions = list(role_questions_map.get(role) or [])
-    if not questions and role in {"it", "committee", "development"}:
-        for q_list in role_questions_map.values():
-            questions.extend(q_list[:2])
     hints = ai.get("hints") or {}
     if hints:
         questions = [{**item, **{f"ai_{k}": v for k, v in hints.get(item.get("id"), {}).items()}} for item in questions]
-    role_proposals_count = sum(1 for item in proposals if item.get("owner_role") == role)
-    blocker_note = stage_passport.get("blocker") or "блокировок этапа нет"
-    step_info = next((item["title"] for item in SIMPLIFIED_PATH if item["id"] == step_id), "")
-    step_prefix = f"Шаг «{step_info}» · " if step_info else ""
-    summary = (
-        f"{step_prefix}Заказ {row.code} ({row.customer} — {row.product}), этап «{stage_passport.get('label', row.stage)}» "
-        f"(чек-лист этапа {stage_passport.get('checks_done', 0)}/{stage_passport.get('checks_total', 0)}). "
-        f"Служба: {ROLES.get(role, role)}. "
-        f"Черновиков к принятию: {len(proposals)} (по вашей службе: {role_proposals_count}). "
-        f"Вопросов на уточнение: {len(questions)}. "
-        f"{blocker_note}."
+    other_questions = sum(len(items) for key, items in role_questions_map.items() if key != role)
+    summary = _employee_brief(
+        order=detail,
+        role=role,
+        role_label=ROLES.get(role, role),
+        passport=stage_passport,
+        proposals=proposals,
+        questions=questions,
+        other_questions=other_questions,
     )
     return {
         "order": detail,
@@ -3770,6 +3773,112 @@ def run_copilot(
     }
 
 
+def _own_service_lists(order: dict, proposals: list, role: str) -> dict:
+    """Свои заполненные поля и черновики. Чужие черновики остаются числом."""
+    filled: list[dict] = []
+    sections = order.get("sections") if isinstance(order.get("sections"), dict) else {}
+    for spec in ROLE_FIELDS_SPEC.get(role) or []:
+        bucket = sections.get(spec["section"])
+        if not isinstance(bucket, dict):
+            continue
+        value = str(bucket.get(spec["key"]) or "").strip()
+        if not value:
+            continue
+        filled.append({"label": str(spec["label"]), "value": value[:200]})
+        if len(filled) >= 12:
+            break
+    drafts: list[dict] = []
+    others = 0
+    more_own = 0
+    for item in proposals:
+        if not isinstance(item, dict):
+            continue
+        if str(item.get("status") or "draft") != "draft":
+            continue
+        owner = str(item.get("owner_role") or "")
+        if role and owner != role:
+            others += 1
+            continue
+        value = str(item.get("value") or "").strip()
+        label = str(item.get("label") or item.get("field") or "поле").strip() or "поле"
+        if len(drafts) >= 12:
+            more_own += 1
+            continue
+        drafts.append(
+            {
+                "id": str(item.get("id") or ""),
+                "label": label,
+                "value": value[:200],
+                "status": "draft",
+            }
+        )
+    return {"filled": filled, "drafts": drafts, "other_drafts": others, "more_own": more_own}
+
+
+def _employee_brief(
+    *,
+    order: dict,
+    role: str,
+    role_label: str,
+    passport: dict,
+    proposals: list,
+    questions: list,
+    other_questions: int,
+) -> str:
+    """Сводка сотруднику: известные факты, чек-лист, свои черновики и один свой вопрос."""
+    bits: list[str] = []
+    for item in order.get("known") or []:
+        text = str(item).strip()
+        if not text or text.casefold().startswith("путь 1с"):
+            continue
+        label, sep, value = text.partition(":")
+        value = value.strip().rstrip(".")
+        label = label.strip()
+        if sep and value:
+            bits.append(f"{label[:1].lower()}{label[1:]} {value}")
+        else:
+            bits.append(text)
+        if len(bits) >= 8:
+            break
+    paragraphs: list[str] = []
+    if bits:
+        who = f"По службе {role_label} " if role_label else ""
+        paragraphs.append(f"{who}уже есть " + ", ".join(bits) + ".")
+    label = str(passport.get("label") or "").strip()
+    done = passport.get("checks_done")
+    total = passport.get("checks_total")
+    if label and done is not None and total is not None:
+        blocker = str(passport.get("blocker") or "").strip()
+        line = f"Этап «{label}»: чек-лист {done} из {total}."
+        line += f" {blocker}." if blocker else " Блокировок этапа нет."
+        paragraphs.append(line)
+    lists = _own_service_lists(order, proposals, role)
+    own_lines = [f"{item['label']} — {item['value']}" for item in lists["drafts"] if item.get("value")]
+    if own_lines:
+        paragraphs.append("Черновики вашей службы:\n" + "\n".join(own_lines))
+    if lists["more_own"]:
+        paragraphs.append(f"И ещё {lists['more_own']} своих черновиков.")
+    if lists["other_drafts"]:
+        paragraphs.append(f"Черновиков других служб: {lists['other_drafts']}.")
+    elif proposals and not own_lines:
+        paragraphs.append(f"К принятию {len(proposals)} черновиков.")
+    ask = next(
+        (
+            str(item.get("prompt") or "").strip()
+            for item in questions
+            if isinstance(item, dict) and str(item.get("prompt") or "").strip()
+        ),
+        "",
+    )
+    if ask:
+        if ask[-1] not in ".!?":
+            ask += "."
+        paragraphs.append(ask)
+    elif role and other_questions:
+        paragraphs.append("По вашей службе пустых полей нет. Открытые пункты ведут другие службы.")
+    return "\n\n".join(paragraphs)
+
+
 def _facts_text(known: list) -> str:
     lines = [str(item).strip() for item in known if str(item).strip()]
     lines = [item if len(item) <= 400 else item[:400] + "…" for item in lines[:80]]
@@ -3788,19 +3897,11 @@ def _agent_prepare_payload(res: dict) -> dict:
     passport = res.get("stage_passport") or {}
     questions = [
         {"id": item.get("id"), "prompt": str(item.get("prompt") or "")[:180]}
-        for item in (res.get("questions") or [])[:6]
+        for item in (res.get("questions") or [])[:1]
         if isinstance(item, dict) and str(item.get("prompt") or "").strip()
     ]
-    proposals = [
-        {
-            "field": item.get("field"),
-            "label": item.get("label"),
-            "value": str(item.get("value") or "")[:160],
-            "owner_role": item.get("owner_role"),
-        }
-        for item in (res.get("proposals") or [])[:8]
-        if isinstance(item, dict)
-    ]
+    lists = _own_service_lists(order, list(res.get("proposals") or []), str(res.get("role") or ""))
+    proposals = lists["drafts"]
     if facts:
         note = (
             "Поле known — путь 1С и опросный лист. Ответь по нему. "
@@ -3817,6 +3918,13 @@ def _agent_prepare_payload(res: dict) -> dict:
         "product": order.get("product"),
         "status_label": order.get("status_label"),
         "summary": str(res.get("summary") or ""),
+        "role": res.get("role") or "",
+        "role_label": res.get("role_label") or "",
+        "proposals_count": len(lists["drafts"]) + int(lists["other_drafts"]),
+        "role_proposals_count": len(lists["drafts"]),
+        "filled": lists["filled"],
+        "drafts": lists["drafts"],
+        "other_drafts": lists["other_drafts"],
         "known": known,
         "facts": facts,
         "questions": questions,
@@ -4537,17 +4645,11 @@ def read_case(db: Session, order_id: str, *, role: str = "", step_id: str = "") 
     role_key = role if role in ROLES and role != "viewer" else "ks"
     role_qs = (body.get("role_questions") or {}).get(role_key, [])[:6]
     drafts = [
-        {
-            "id": item.get("id"),
-            "field": item.get("field"),
-            "kind": item.get("kind"),
-            "label": item.get("label"),
-            "value": str(item.get("value") or "")[:160],
-            "owner_role": item.get("owner_role"),
-        }
+        item
         for item in (body.get("findings") or [])
-        if item.get("status") == "draft"
-    ][:8]
+        if isinstance(item, dict) and item.get("status") == "draft"
+    ]
+    lists = _own_service_lists(body, drafts, role_key)
     return {
         "id": body.get("id"),
         "code": body.get("code"),
@@ -4575,7 +4677,10 @@ def read_case(db: Session, order_id: str, *, role: str = "", step_id: str = "") 
             "checks_total": current_passport.get("checks_total"),
             "blocker": current_passport.get("blocker"),
         },
-        "draft_findings": drafts,
+        "draft_findings": lists["drafts"],
+        "filled": lists["filled"],
+        "drafts": lists["drafts"],
+        "other_drafts": lists["other_drafts"],
         "questions": [
             {"id": q.get("id"), "prompt": q.get("prompt"), "owner_role": q.get("owner_role")}
             for q in role_qs
@@ -4609,6 +4714,7 @@ def read_full_case(db: Session, order_id: str, *, role: str = "", step_id: str =
     )
     role_key = role if role in ROLES and role != "viewer" else "ks"
     role_qs = (body.get("role_questions") or {}).get(role_key, [])
+    service_lists = _own_service_lists(body, body.get("findings") or [], role_key)
     open_diffs = [
         item
         for item in (body.get("diffs") or [])
@@ -4652,6 +4758,9 @@ def read_full_case(db: Session, order_id: str, *, role: str = "", step_id: str =
         "role_questions": body.get("role_questions") or {},
         "open_by_service": _open_by_service(body),
         "summary": _case_summary(body),
+        "filled": service_lists["filled"],
+        "drafts": service_lists["drafts"],
+        "other_drafts": service_lists["other_drafts"],
         "note": "Полная структурированная выжимка дела. Черновик фактом не является.",
     }
 

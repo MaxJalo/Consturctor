@@ -583,12 +583,29 @@ def _order_case_read(payload: dict) -> bool:
     return str((args or {}).get("action") or "").casefold() == "auto_prepare"
 
 
+def _order_plan_write(payload: dict) -> bool:
+    """Запись файла плана. Предпросмотр файл не создаёт."""
+    tool = str(payload.get("tool") or "").casefold()
+    if not tool.endswith("external_order.case"):
+        return False
+    args = payload.get("arguments") if isinstance(payload.get("arguments"), dict) else {}
+    return str((args or {}).get("action") or "").casefold() == "plan"
+
+
 _ORDER_SURVEY_ACTIONS = frozenset({"read", "read_full", "auto_prepare"})
 
 
 def _order_case_action(payload: dict) -> str:
     args = payload.get("arguments") if isinstance(payload.get("arguments"), dict) else {}
     return str((args or {}).get("action") or "").strip().casefold()
+
+
+def _script_file_tool(tool: str, action: str) -> bool:
+    """Один файл сценария письма, запроса или протокола. План и подготовка сюда не входят."""
+    name = (tool or "").casefold()
+    if name.endswith(("office.read_file", "excel.read_workbook", "onec.read_attachment")):
+        return True
+    return name.endswith("external_order.case") and action in {"read", "read_full"}
 
 
 def _order_question_lines(raw: Any, *, limit: int = 6) -> list[str]:
@@ -675,12 +692,28 @@ def _order_survey_reply(payload: dict, *, cwd: str = "") -> str:
     else:
         summary = str(summary or "").strip()
         questions = _order_question_lines(body.get("questions"))
-    if not summary:
+    if not summary and not questions:
         return ""
-    if not questions:
+    if summary and "Вопросов на уточнение" not in summary and "\n\n" in summary:
         return summary
-    lines = "\n".join(f"{index}. {text}" for index, text in enumerate(questions, 1))
-    return f"{summary}\n\nВопросы:\n{lines}"
+    sentences = [part.strip() for part in re.split(r"(?<=[.!?])\s+", summary) if part.strip()]
+    kept: list[str] = []
+    seen: set[str] = set()
+    for sentence in sentences:
+        key = sentence.casefold()
+        if key in seen or "вопросов на уточнение" in key:
+            continue
+        seen.add(key)
+        kept.append(sentence)
+    if len(kept) > 3:
+        kept = kept[:2]
+    head = " ".join(kept).strip() or summary
+    ask = questions[0] if questions else ""
+    if ask and ask[-1] not in ".!?":
+        ask += "."
+    if head and ask:
+        return f"{head}\n\n{ask}"
+    return head or ask
 
 
 def _finish_order_survey(payload: dict, action: str, *, cwd: str = "") -> str:
@@ -2549,6 +2582,7 @@ class HitlGate:
         self._waiting: dict[str, dict[str, Any]] = {}
         self.on_events_changed: Any = None
         self.work_result_done = False
+        self._allow_all = False
 
     def _emit_waiting(self, request_id: str, event: dict[str, Any]) -> None:
         with self._lock:
@@ -2625,6 +2659,8 @@ class HitlGate:
                 continue
 
     def request(self, tool: str, args: dict[str, Any]) -> bool:
+        if self._allow_all:
+            return True
         if self.work_result_done:
             return False
         request_id = uuid.uuid4().hex
@@ -2667,11 +2703,13 @@ class HitlGate:
                 self._hitl.pop(request_id, None)
                 self._waiting.pop(request_id, None)
 
-    def resolve_hitl(self, request_id: str, approved: bool) -> None:
+    def resolve_hitl(self, request_id: str, approved: bool, allow_all: bool = False) -> None:
         self._record_timing("human_reply", "hitl", request_id)
         self._mark_wait_event(request_id, approved=approved)
         with self._lock:
             box = self._hitl.get(request_id)
+            if approved and allow_all and box is not None:
+                self._allow_all = True
         if box is not None:
             try:
                 box.put_nowait(approved)
@@ -4150,7 +4188,9 @@ class Sidecar:
                             actions = {}
                             active.order_case_actions = actions
                         actions[request_id] = action
-                if str(getattr(active, "order_case_reply", "") or "").strip():
+            if getattr(active, "hide_tests", False) and event_type == "tool_call" and _order_plan_write(payload):
+                active.plan_writes = int(getattr(active, "plan_writes", 0) or 0) + 1
+                if active.plan_writes > 1:
                     active.stop.set()
                     return
             if getattr(active, "hide_tests", False) and event_type == "tool_call" and _order_case_read(payload):
@@ -4166,25 +4206,6 @@ class Sidecar:
             ):
                 active.stop.set()
                 return
-            if (
-                getattr(active, "hide_tests", False)
-                and event_type == "tool_result"
-                and str(payload.get("tool") or "").casefold().endswith("external_order.case")
-                and not str(getattr(active, "order_case_reply", "") or "").strip()
-            ):
-                request_id = str(payload.get("requestId") or payload.get("request_id") or "").strip()
-                actions = getattr(active, "order_case_actions", None)
-                remembered = actions.get(request_id, "") if isinstance(actions, dict) else ""
-                action = str(remembered or _order_case_action(payload))
-                reply = _finish_order_survey(
-                    payload,
-                    action,
-                    cwd=str(getattr(active, "run_cwd", "") or ""),
-                )
-                if reply:
-                    active.order_case_reply = reply
-                    active.stop.set()
-                    on_event({"type": "assistant", "text": reply, "_order_case_reply": True})
             case_reply = False
             if event_type == "assistant" and payload.get("_order_case_reply"):
                 case_reply = True
@@ -4501,12 +4522,6 @@ class Sidecar:
         last_exc: CursorSdkError | None = None
         for attempt in range(1, SDK_RUN_RETRIES + 1):
             if active.stop.is_set():
-                case_reply = str(getattr(active, "order_case_reply", "") or "").strip()
-                if case_reply:
-                    return {
-                        "answer": case_reply,
-                        "agent_id": str(kwargs.get("resume_agent_id") or ""),
-                    }
                 break
             try:
                 return bridge.run(**kwargs)
@@ -4514,13 +4529,6 @@ class Sidecar:
                 raise
             except CursorSdkError as exc:
                 last_exc = exc
-                case_reply = str(getattr(active, "order_case_reply", "") or "").strip()
-                if case_reply:
-                    log("order case already read, skip sdk retry")
-                    return {
-                        "answer": case_reply,
-                        "agent_id": str(kwargs.get("resume_agent_id") or ""),
-                    }
                 if getattr(active, "hide_tests", False) and _turn_answer_done(
                     str(getattr(active, "answer_buf", "") or ""),
                     True,
@@ -5174,6 +5182,7 @@ class Sidecar:
         active.kind = "run"
         active.gate.bind(workflow_id=workflow_id, kind="run")
         message = str(command.get("message") or "").strip()
+        active.order_script = message
         source = str(command.get("source") or "chat").strip() or "chat"
         # Scheduled runs have no file picker, but write confirmations still wait
         # on the Orchestrator «Решения» tab until the user answers.
@@ -5412,12 +5421,10 @@ class Sidecar:
                 agent_id = str(result.get("agent_id") or agent_id).strip()
                 self._store_agent_id(workflow_id, agent_id, conversation=bool(conversation_key))
             if getattr(active, "hide_tests", False):
-                case_reply = str(getattr(active, "order_case_reply", "") or "").strip()
-                if case_reply:
-                    answer = case_reply
-                else:
-                    self._forward_events(active, events)({"type": "assistant", "text": "", "_order_flush": True})
-                    answer = _order_turn_answer(answer, str(getattr(active, "answer_buf", "") or ""))
+                self._forward_events(active, events)({"type": "assistant", "text": "", "_order_flush": True})
+                answer = _order_turn_answer(answer, str(getattr(active, "answer_buf", "") or ""))
+                if not answer.strip():
+                    answer = "Ответ не получен. Черновики на карточке остаются."
             if status == "ok" and not _turn_answer_done(self._order_seen_text(active, answer), getattr(active, "hide_tests", False)):
                 status = "error"
                 tail = answer.strip()
@@ -5433,7 +5440,10 @@ class Sidecar:
             answer = _with_closure_check(answer, run_cwd)
         except Exception as exc:  # noqa: BLE001
             status = "error"
-            answer = _with_closure_check(_user_facing_run_error(exc), run_cwd)
+            if getattr(active, "hide_tests", False):
+                answer = "Ответ не получен. Черновики на карточке остаются."
+            else:
+                answer = _with_closure_check(_user_facing_run_error(exc), run_cwd)
             try:
                 self._api.finish_local_agent_run(
                     workflow_id, run_ref, status="error", answer=answer,
@@ -6213,8 +6223,9 @@ class Sidecar:
     def hitl(self, command: dict[str, Any]) -> None:
         request_id = str(command.get("requestId") or "")
         approved = bool(command.get("approved"))
+        allow_all = bool(command.get("allowAll") or command.get("allow_all"))
         for active in list(self._active.values()):
-            active.gate.resolve_hitl(request_id, approved)
+            active.gate.resolve_hitl(request_id, approved, allow_all=allow_all)
             self._flush_run_events(active)
 
     def skip(self, command: dict[str, Any]) -> None:
@@ -6501,8 +6512,11 @@ class ActiveRun:
         self.answer_buf: str = ""
         self.order_stream = OrderStream()
         self.case_reads = 0
+        self.plan_writes = 0
         self.order_case_actions: dict[str, str] = {}
         self.order_case_reply = ""
+        self.order_script = ""
+        self.script_reads = 0
         self.event_workflow_id: str = ""
         self.events: list[dict[str, Any]] = []
         gate.bind_events(self.events)

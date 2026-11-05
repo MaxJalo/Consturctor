@@ -33,7 +33,6 @@ function visibleAssistant(text: string): string {
   return cleaned
     .replace(/Инструменты Constructor:[\s\S]*?(?:\(\+\d+\)|$)/gi, ' ')
     .replace(/Инструменты подключены\.?\s*/gi, ' ')
-    .trim()
 }
 
 function normalizeResult(raw: unknown): Record<string, unknown> | null {
@@ -127,8 +126,12 @@ export function buildFeedItems(
       case 'assistant':
       case 'agent_message': {
         const clean = visibleAssistant(text)
-        if (!clean.trim()) break
+        if (!clean) break
         const last = items[items.length - 1]
+        if (!clean.trim()) {
+          if (last && last.kind === 'message' && last.role === 'agent') last.text += clean
+          break
+        }
         if (last && last.kind === 'message' && last.role === 'agent') {
           last.text = `${last.text}${clean}`
         } else {

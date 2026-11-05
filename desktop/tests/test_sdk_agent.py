@@ -1218,8 +1218,10 @@ def test_production_order_prompt_calls_plan() -> None:
         phase="done",
     )
     prompt = build_sdk_prompt(record, "ВЗ-0005")
-    assert "plan_preview" in prompt
-    assert "После ответа остановиться" in prompt
+    assert "plan_preview" not in prompt
+    assert "auto_prepare" not in prompt
+    assert "не факт" in prompt
+    assert "Принять" in prompt
     other = WorkflowRecord(
         id="wf-ks",
         title="ИИ-агент внешнего заказа · Коммерческая служба",

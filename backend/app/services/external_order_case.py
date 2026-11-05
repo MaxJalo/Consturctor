@@ -1512,6 +1512,44 @@ def case_scenario(order: ExternalOrder, scenario: str, *, role: str = "") -> dic
     return body
 
 
+def scenario_brief(order: ExternalOrder, scenario: str, *, role: str = "") -> dict:
+    """Короткий итог кнопки сценария. В карточку ничего не пишет."""
+    body = case_scenario(order, scenario, role=role)
+    title = str(body.get("title") or "Сценарий").strip()
+    files = body.get("files") if isinstance(body.get("files"), list) else []
+    links = body.get("links") if isinstance(body.get("links"), list) else []
+    anchors = [str(item.get("anchor")).strip() for item in files if isinstance(item, dict) and str(item.get("anchor") or "").strip()]
+    lines = [f"{title}."]
+    lines.append("Файлы дела: " + ", ".join(anchors[:8]) + "." if anchors else "Файлов в деле нет.")
+    lines.append("Связи: " + "; ".join(str(item) for item in links[:6]) + "." if links else "Связей между файлами нет.")
+    known = body.get("known") if isinstance(body.get("known"), list) else []
+    bits: list[str] = []
+    for item in known:
+        text = str(item).strip().rstrip(".")
+        if not text or text.casefold().startswith("путь 1с"):
+            continue
+        bits.append(text)
+        if len(bits) >= 8:
+            break
+    if bits:
+        lines.append("Поля карточки: " + "; ".join(bits) + ".")
+    blockers = body.get("blockers") if isinstance(body.get("blockers"), list) else []
+    if body.get("scenario") == "blockers":
+        what = [str(item.get("what")).strip() for item in blockers if isinstance(item, dict) and str(item.get("what") or "").strip()]
+        lines.append("Блокирует: " + "; ".join(what[:4]) + "." if what else "Блокировок в деле нет.")
+    missing = body.get("missing_files") if isinstance(body.get("missing_files"), list) else []
+    if missing:
+        lines.append("Нет файлов: " + ", ".join(str(item) for item in missing) + ".")
+    lines.append("Это расчёт по делу. Черновик фактом не является. В карточку ничего не записано и никому не отправлено.")
+    return {
+        "ok": True,
+        "scenario": body.get("scenario"),
+        "title": title,
+        "files": len(anchors),
+        "summary": "\n\n".join(lines),
+    }
+
+
 def auto_prepare_order(
     db: Session,
     order: ExternalOrder,

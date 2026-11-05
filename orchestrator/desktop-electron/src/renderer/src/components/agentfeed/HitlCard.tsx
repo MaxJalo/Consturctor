@@ -4,7 +4,7 @@ import type { PendingHitl } from './types'
 
 interface HitlCardProps {
   hitl: PendingHitl
-  onRespond: (requestId: string, approved: boolean) => void
+  onRespond: (requestId: string, approved: boolean, allowAll?: boolean) => void
   onSkip: () => void
 }
 
@@ -37,6 +37,9 @@ export function HitlCard({ hitl, onRespond, onSkip }: HitlCardProps): React.JSX.
           }}
         >
           Всегда разрешать
+        </button>
+        <button className="btn-ghost" onClick={() => onRespond(hitl.requestId, true, true)}>
+          Все операции до конца прогона
         </button>
         <button className="btn-ghost" onClick={() => onRespond(hitl.requestId, false)}>
           Отклонить

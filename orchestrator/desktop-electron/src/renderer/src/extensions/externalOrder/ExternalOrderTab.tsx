@@ -235,7 +235,7 @@ function fileScenarioPrompt(order: Order, item: FileScenario): string {
   const files = (order.documents || []).map((doc) => doc.anchor).filter((item): item is string => Boolean(item))
   const links = (order.document_links || []).map((link) => `${link.from} — ${link.relation_label} → ${link.to}`)
   return [
-    `Сценарий дела: ${item.label} (scenario=${item.id})`,
+    `Сценарий дела: ${item.label}.`,
     item.ask,
     files.length ? `Файлы дела: ${files.join(', ')}.` : 'Файлов в деле нет.',
     links.length ? `Связи:\n${links.join('\n')}` : 'Связей между файлами нет.'
@@ -340,36 +340,15 @@ function activePassport(passports: StagePassport[]): StagePassport | null {
   return passports.find((item) => item.state === 'current' || item.state === 'blocked') || passports[0] || null
 }
 
-/** Выжимка для агента: код заказа, служба, этап и сценарий шага вместо однострочной подсказки. */
+/** Задача сотруднику: заказ, служба и что сделать. Имена инструментов сюда не пишем. */
 function agentBrief(order: Order, role: string, step?: SimplifiedStep, extra = ''): string {
   const passport = activePassport(buildStagePassports(order))
-  const stepArg = step ? `, step_id="${step.id}"` : ''
   const question = (extra || step?.prompt || '').trim()
-  const scenario = /scenario=([a-z_]+)/.exec(question)?.[1]
-  if (question.includes('Сценарий дела:')) {
-    return [
-      `Заказ ${order.code} (order_id=${order.id}), заказчик ${order.customer}.`,
-      `Служба: ${ROLE_NAME[role] || role} (role=${role}). Этап: ${passport?.label || order.status_label}.`,
-      question,
-      [
-        `Первый вызов: external_order.case(action="scenario", order_id="${order.id}", role="${role}", scenario="${scenario || 'facts'}") — готовый расчёт этой кнопки.`,
-        'Если нужен текст файла, версии или 1С — открой их нужным инструментом. Ответ ссылается на [[файл]]. Черновик не называй фактом. Без «Принять» в карточку ничего не записывай и никому не отправляй.'
-      ].join('\n')
-    ].join('\n\n')
-  }
   return [
     `Заказ ${order.code} (order_id=${order.id}), заказчик ${order.customer}.`,
     `Служба: ${ROLE_NAME[role] || role} (role=${role}). Этап: ${passport?.label || order.status_label}.`,
-    question
-      ? `Вопрос сотрудника: ${question}`
-      : 'Вопроса нет: кратко, что уже есть по службе, и одно пустое поле.',
-    [
-      'Шаблоны, один ход. Ход мыслей в чат не писать.',
-      `Первый ход: один external_order.case(action="auto_prepare", order_id="${order.id}", role="${role}"${stepArg}). Если сводки мало — read_full, файлы дела и 1С. Ответ — отдельные абзацы через пустую строку: что уже есть, черновики к принятию, чек-лист, чего нет в 1С, один вопрос. Перед числом пробел.`,
-      'Следующее сообщение: auto_prepare второй раз не вызывать, нужные данные брать инструментами. Если сотрудник сообщил факт — один propose и фраза, что принять можно кнопкой «Принять».',
-      'Если ответа нет ни в деле, ни в known (путь 1С и опросный лист): одна фраза и один вопрос. Ход на этом кончается.',
-      'Список вопросов, повтор черновиков и «сначала открою регламент» не писать.'
-    ].join('\n')
+    question || 'Что уже есть по службе, какой черновик подготовить и что осталось пустым.',
+    'Черновик не факт, пока его не приняли. Этап не переводи и ничего не отправляй.'
   ].join('\n\n')
 }
 
@@ -378,6 +357,40 @@ const RETURN_KEY = 'orch.external-order.return'
 type ReturnIntent = { orderId: string; page: CardPage }
 
 /** Чат помощника: один разговор на заказ, службу и этап. Закрытие окна его не сбрасывает. */
+function serviceLists(order: Order, role: string): {
+  filled: { label: string; value: string }[]
+  drafts: { id: string; label: string; value: string }[]
+  otherDrafts: number
+} {
+  const filled: { label: string; value: string }[] = []
+  for (const form of ROLE_FIELDS[role] || []) {
+    const bucket = order.sections?.[form.section] || {}
+    for (const field of form.fields) {
+      const value = String(bucket[field.key] || '').trim()
+      if (!value) continue
+      filled.push({ label: field.label, value: value.slice(0, 200) })
+      if (filled.length >= 12) break
+    }
+    if (filled.length >= 12) break
+  }
+  const drafts: { id: string; label: string; value: string }[] = []
+  let otherDrafts = 0
+  for (const item of order.findings || []) {
+    if (item.status !== 'draft') continue
+    if (item.owner_role !== role) {
+      otherDrafts += 1
+      continue
+    }
+    if (drafts.length >= 12) continue
+    drafts.push({
+      id: item.id,
+      label: item.label || 'Поле',
+      value: String(item.value || '').slice(0, 200)
+    })
+  }
+  return { filled, drafts, otherDrafts }
+}
+
 function chatContext(order: Order, role: string): AgentChatContext {
   const passport = activePassport(buildStagePassports(order))
   const stage = passport?.id || order.status || 'none'
@@ -409,7 +422,8 @@ function chatContext(order: Order, role: string): AgentChatContext {
       draftCount: (order.findings || []).filter((item) => item.status === 'draft').length,
       pathLabel: order.path_label || '',
       paymentNote: order.payment_note || '',
-      openChecks: (passport?.open_checks || []).map((item) => item.text)
+      openChecks: (passport?.open_checks || []).map((item) => item.text),
+      ...serviceLists(order, role)
     })
   }
 }
@@ -589,8 +603,10 @@ export function ExternalOrderTab({
   const [createSchemas, setCreateSchemas] = useState<DocflowKindSchema[]>([])
   const [docNotice, setDocNotice] = useState<{ text: string; error: boolean } | null>(null)
   const [serviceAgents, setServiceAgents] = useState<
-    { role: string; workflow_id: string; title: string; active: boolean }[]
+    { role: string; workflow_id: string; title: string; active: boolean; procedure: string }[]
   >([])
+  const [procedureDraft, setProcedureDraft] = useState('')
+  const [procedureNote, setProcedureNote] = useState('')
 
   const fail = (err: unknown): void => {
     setError(err instanceof ApiError ? err.message : err instanceof Error ? err.message : 'Не удалось выполнить действие')
@@ -873,13 +889,36 @@ export function ExternalOrderTab({
   }
 
   const role = meta?.role || asRole
+  const procedureFromServer = serviceAgents.find((item) => item.role === role)?.procedure || ''
+  useEffect(() => {
+    setProcedureDraft(procedureFromServer)
+  }, [role, procedureFromServer])
+
+  async function saveProcedure(): Promise<void> {
+    if (!role || role === 'viewer') return
+    setProcedureNote('')
+    try {
+      const saved = await api.saveServiceProcedure(role, procedureDraft)
+      setServiceAgents((rows) =>
+        rows.map((item) => (item.role === role ? { ...item, procedure: saved.procedure } : item))
+      )
+      setProcedureDraft(saved.procedure)
+      setProcedureNote('Приём сохранён.')
+    } catch (err) {
+      setProcedureNote(err instanceof ApiError ? err.message : 'Приём не сохранён')
+    }
+  }
   const showDeskSwitch = Boolean(meta?.can_switch) || sameExternalOrderDesk(user)
   const deskRoles = meta?.roles?.length ? meta.roles : DESK_ROLES
   const requestFilesRef = useRef<HTMLInputElement | null>(null)
   const canCreate = role === 'ks' || role === 'development'
   const canLoad = role === 'ks' || role === 'development' || role === 'finance' || role === 'it'
   const moves = MOVES[role] || []
-  const waitingMine = orders.filter((item) => (item.waiting_roles || []).includes(role))
+  const waitingMine = orders.filter((item) => {
+    if (item.status === 'closed') return false
+    const step = LINE.find((entry) => entry.statuses.includes(item.status))
+    return Boolean(step?.owner_roles.includes(role))
+  })
   const deskList = deskAll ? orders : waitingMine
   const deskPassport = deskOrder ? activePassport(buildStagePassports(deskOrder)) : null
   const registry = orders.filter((item) => {
@@ -979,6 +1018,10 @@ export function ExternalOrderTab({
           panel={(passport) => panelProps(current, passport)}
           onCopilot={(stepId) => void runCopilot(current, { auto_prepare: true, use_ai: true, step_id: stepId })}
           onDocflow={(kind, draft) => openDocflow(current, kind, draft)}
+          procedureDraft={procedureDraft}
+          procedureNote={procedureNote}
+          onProcedureDraft={setProcedureDraft}
+          onSaveProcedure={() => void saveProcedure()}
         />
         </div>
       ) : view === 'desk' ? (
@@ -2587,7 +2630,11 @@ function Card({
   copilotBusy,
   panel,
   onCopilot,
-  onDocflow
+  onDocflow,
+  procedureDraft,
+  procedureNote,
+  onProcedureDraft,
+  onSaveProcedure
 }: {
   order: Order
   role: string
@@ -2606,6 +2653,10 @@ function Card({
   panel: (passport: StagePassport | null) => HelperPanelProps
   onCopilot: (stepId?: string) => void
   onDocflow: OpenDocflow
+  procedureDraft: string
+  procedureNote: string
+  onProcedureDraft: (value: string) => void
+  onSaveProcedure: () => void
 }): React.JSX.Element {
   const asRole = role
   const linked = order.sections?.onec
@@ -2861,6 +2912,19 @@ function Card({
             <button type="button" disabled={agentBusy} onClick={() => onServiceAgent()}>
               {agentBusy ? 'Служба…' : `Агент · ${ROLE_NAME[role] || 'служба'}`}
             </button>
+          ) : null}
+          {user.isAdmin && role && role !== 'viewer' ? (
+            <details className="eo-procedure">
+              <summary>Приём службы</summary>
+              <textarea
+                value={procedureDraft}
+                rows={4}
+                placeholder="Какой шаг вызывать и чего не писать. Без сумм, номеров и имён файлов."
+                onChange={(event) => onProcedureDraft(event.target.value)}
+              />
+              <button type="button" onClick={onSaveProcedure}>Сохранить приём</button>
+              {procedureNote ? <p>{procedureNote}</p> : null}
+            </details>
           ) : null}
           {role !== 'viewer' ? (
             <button

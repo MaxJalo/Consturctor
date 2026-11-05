@@ -113,8 +113,8 @@ export const agentClient = {
     void window.agent.answer({ requestId, answer, ok, filePaths })
   },
 
-  hitl(requestId: string, approved: boolean): void {
-    void window.agent.hitl({ requestId, approved })
+  hitl(requestId: string, approved: boolean, allowAll = false): void {
+    void window.agent.hitl({ requestId, approved, allowAll })
   },
 
   skip(requestId = ''): void {

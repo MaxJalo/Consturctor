@@ -24,6 +24,10 @@ export interface AgentChatContext {
   readOnly?: boolean
   /** Сводка уже открытой карточки. Видна до ответа агента. */
   caseBrief?: OrderCaseBrief
+  /** Итог скрипта службы. Старая переписка его не подменяет. */
+  outcome?: string
+  /** Задание модели: пояснить готовый итог. В ленте не показывается. */
+  explainTask?: string
 }
 
 export type RunAgentHandler = (

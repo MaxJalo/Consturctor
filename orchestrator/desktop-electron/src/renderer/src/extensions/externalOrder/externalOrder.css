@@ -368,6 +368,19 @@
   padding: 8px 12px;
 }
 
+.eo-procedure {
+  grid-column: 1 / -1;
+  display: grid;
+  gap: 6px;
+  font-size: 13px;
+}
+
+.eo-procedure textarea {
+  width: 100%;
+  min-height: 72px;
+  resize: vertical;
+}
+
 .eo-list {
   display: contents;
 }

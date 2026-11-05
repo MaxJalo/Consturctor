@@ -302,3 +302,76 @@ export function takeMarkers(answer: string): { text: string; actions: AssistantA
     .trim()
   return { text: text || 'Готово.', actions }
 }
+
+const CHAT_WORDS = new Set([
+  'сегодня', 'января', 'февраля', 'марта', 'апреля', 'мая', 'июня', 'июля', 'августа', 'сентября', 'октября', 'ноября', 'декабря',
+  'понедельник', 'вторник', 'среда', 'четверг', 'пятница', 'суббота', 'воскресенье',
+  'открытая', 'открыта', 'задача', 'задачи', 'просроченных', 'просрочена', 'просрочено',
+  'статус', 'создана', 'срок', 'задан', 'согласование', 'согласовано', 'исполнитель',
+  'заявка', 'заявке', 'назначен', 'ответственный', 'нет', 'одна', 'один'
+])
+
+const CHAT_SHORT = ['не', 'по', 'на', 'из', 'от', 'за', 'до', 'и', 'в', 'у', 'к', 'о', 'с', 'а']
+
+function peelChatWord(token: string): string {
+  const folded = token.toLowerCase().replace(/ё/g, 'е')
+  const parts: string[] = []
+  let end = folded.length
+  let long = false
+  while (end > 0) {
+    let found = 0
+    for (let len = Math.min(end, 18); len >= 3; len -= 1) {
+      if (CHAT_WORDS.has(folded.slice(end - len, end))) {
+        found = len
+        break
+      }
+    }
+    if (!found) {
+      for (const word of CHAT_SHORT) {
+        if (end < word.length || folded.slice(end - word.length, end) !== word) continue
+        const rest = end - word.length
+        if (word !== 'в' && word.length < 2 && rest > 0 && !CHAT_WORDS.has(folded.slice(0, rest))) continue
+        found = word.length
+        break
+      }
+    }
+    if (!found) break
+    if (found === end) {
+      if (!parts.length) break
+      if (found >= 4) long = true
+      parts.unshift(token.slice(0, end))
+      end = 0
+      break
+    }
+    if (found >= 4) long = true
+    parts.unshift(token.slice(end - found, end))
+    end -= found
+  }
+  if (!long || !parts.length) return token
+  const head = token.slice(0, end)
+  return [head, ...parts].filter(Boolean).join(' ')
+}
+
+/** Уже нормальный текст не трогаем. Слипшийся ответ снова получает пробелы, переносы и список. */
+export function readableChatText(text: string): string {
+  const raw = text || ''
+  const letters = (raw.match(/\p{L}/gu) || []).length
+  const spaces = (raw.match(/\s/g) || []).length
+  if (letters < 30 || spaces * 8 > letters) return raw
+  const spaced = raw
+    .replace(/([а-яёa-z])([А-ЯЁA-Z])/g, '$1 $2')
+    .replace(/(\d)(?=[A-Za-zА-Яа-яЁё]{2})/g, '$1 ')
+    .replace(/([А-Яа-яЁё]{4,})(?=\d)/g, '$1 ')
+    .replace(/([а-яё])(?=№)/g, '$1 ')
+    .replace(/([вкиуо])(?=\d)/g, '$1 ')
+    .replace(/(\*)([—–])/g, '$1 $2')
+    .replace(/([.!?])(?=\S)/g, '$1 ')
+    .replace(/,(?=\S)/g, ', ')
+    .replace(/:(?=\S)/g, ': ')
+    .replace(/;(?=\S)/g, '; ')
+    .replace(/([A-Za-zА-Яа-яЁё\d])(\()/g, '$1 (')
+    .replace(/\)(?=[A-Za-zА-Яа-яЁё])/g, ') ')
+    .replace(/([—–])(?=\S)/g, '$1 ')
+    .replace(/([.!?])\s*-(?=\S)/g, '$1\n- ')
+  return spaced.replace(/[А-Яа-яЁё]{8,}/g, (token) => peelChatWord(token))
+}

@@ -122,6 +122,7 @@ function parseServiceAgents(data: Record<string, unknown>): {
   workflow_id: string
   title: string
   active: boolean
+  procedure: string
 }[] {
   const rows = Array.isArray(data.agents) ? data.agents : []
   return rows
@@ -130,7 +131,8 @@ function parseServiceAgents(data: Record<string, unknown>): {
       role: String(item.role || ''),
       workflow_id: String(item.workflow_id || ''),
       title: String(item.title || ''),
-      active: item.active === true
+      active: item.active === true,
+      procedure: String(item.procedure || '')
     }))
 }
 
@@ -2974,7 +2976,26 @@ export class ApiClient {
     }
   }
 
-  async externalServiceAgents(): Promise<{ role: string; workflow_id: string; title: string; active: boolean }[]> {
+  async externalScenario(
+    id: string,
+    scenario: string,
+    asRole = ''
+  ): Promise<{ ok: boolean; scenario: string; title: string; files: number; summary: string }> {
+    return this.request('POST', `/api/v1/external-orders/${encodeURIComponent(id)}/scenario`, {
+      body: { scenario },
+      params: asRole ? { as_role: asRole } : undefined,
+      timeoutMs: 30_000
+    })
+  }
+
+  async saveServiceProcedure(role: string, text: string): Promise<{ role: string; procedure: string }> {
+    return this.request('PUT', `/api/v1/external-orders/service-agents/${encodeURIComponent(role)}/procedure`, {
+      body: { text },
+      timeoutMs: 20_000
+    })
+  }
+
+  async externalServiceAgents(): Promise<{ role: string; workflow_id: string; title: string; active: boolean; procedure: string }[]> {
     try {
       const data = await this.request<Record<string, unknown>>('GET', '/api/v1/external-orders/service-agents', {
         timeoutMs: 30_000
@@ -2989,7 +3010,8 @@ export class ApiClient {
           role,
           workflow_id: row?.id || '',
           title: row?.title || title,
-          active: Boolean(row && !row.paused)
+          active: Boolean(row && !row.paused),
+          procedure: ''
         }
       })
     }
