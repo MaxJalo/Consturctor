@@ -64,8 +64,10 @@
 .order-agent-dialog .oad-config {
   display: flex;
   align-items: center;
+  flex: none;
   flex-wrap: wrap;
   gap: 8px 12px;
+  margin-bottom: 10px;
   padding: 10px 14px;
   border: 1px solid #e6eaf0;
   border-radius: 16px;
@@ -260,6 +262,133 @@
   background: #fff;
 }
 
+.order-agent-dialog .oad-gaps {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-top: 10px;
+}
+
+.order-agent-dialog .oad-gap {
+  padding: 10px 12px;
+  border: 1px solid #d7e2ee;
+  border-radius: 12px;
+  background: #fff;
+}
+
+.order-agent-dialog .oad-gap p {
+  margin: 0;
+}
+
+.order-agent-dialog .oad-gap-offer {
+  margin-top: 6px;
+  color: #3d5166;
+}
+
+.order-agent-dialog .oad-gap-options {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.order-agent-dialog .oad-gap-options button,
+.order-agent-dialog .oad-gap-own button,
+.order-agent-dialog .oad-gap-accept button {
+  border: 1px solid #c5d4e4;
+  border-radius: 8px;
+  background: #f4f8fc;
+  padding: 6px 10px;
+  text-align: left;
+}
+
+.order-agent-dialog .oad-gap-own {
+  display: flex;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.order-agent-dialog .oad-gap-own input {
+  flex: 1;
+  min-width: 0;
+  border: 1px solid #c5d4e4;
+  border-radius: 8px;
+  padding: 6px 8px;
+}
+
+.order-agent-dialog .oad-gap-file {
+  display: inline-flex;
+  margin-top: 8px;
+  color: #24527a;
+  cursor: pointer;
+}
+
+.order-agent-dialog .oad-gap-file input {
+  display: none;
+}
+
+.order-agent-dialog .oad-gap-accept {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.order-agent-dialog .oad-gap-accept p,
+.order-agent-dialog .oad-gap-note {
+  margin: 0;
+  color: #3d5166;
+}
+
+.order-agent-dialog .oad-tabs {
+  display: flex;
+  flex: none;
+  gap: 2px;
+  margin: 8px 0 4px;
+  padding: 3px;
+  border-radius: 10px;
+  background: #eef2f6;
+}
+
+.order-agent-dialog .oad-tab {
+  flex: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  height: 32px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: #5c6775;
+  font: inherit;
+  font-size: 13px;
+  font-weight: 650;
+  cursor: pointer;
+}
+
+.order-agent-dialog .oad-tab.is-active {
+  background: #fff;
+  color: #1c2430;
+  box-shadow: 0 1px 3px rgba(16, 20, 26, 0.12);
+}
+
+.order-agent-dialog .oad-tab span {
+  min-width: 18px;
+  padding: 0 5px;
+  border-radius: 9px;
+  background: rgba(21, 101, 192, 0.12);
+  color: #1565c0;
+  font-size: 11px;
+  line-height: 18px;
+}
+
+.order-agent-dialog .oad-pane-empty {
+  margin: 12px 4px;
+  color: #6b7380;
+  font-size: 13px;
+}
+
 .order-agent-dialog .oad-scroll {
   flex: 1;
   min-height: 0;
@@ -288,6 +417,39 @@
 .order-agent-dialog .oad-dock {
   flex: none;
   margin-top: 8px;
+}
+
+.order-agent-dialog .oad-received {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 8px;
+}
+
+.order-agent-dialog .oad-received button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 280px;
+  padding: 6px 10px;
+  border: 1px solid #d7deea;
+  border-radius: 8px;
+  background: #fff;
+  color: #1d2430;
+  cursor: pointer;
+  font-size: 12px;
+}
+
+.order-agent-dialog .oad-received img {
+  width: 16px;
+  height: 16px;
+  flex: none;
+}
+
+.order-agent-dialog .oad-received span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .order-agent-dialog .oad-files {

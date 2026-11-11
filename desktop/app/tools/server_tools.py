@@ -711,16 +711,20 @@ _SERVER_TOOL_DEFS: list[tuple[str, str, dict[str, Any]]] = [
             "result_file не открывай: факты уже в summary. Один снимок дела на ход, второй раз не вызывай. "
             "action=scenario — готовый расчёт кнопки сценария: scenario=changes (версии файлов), blockers, overdue, "
             "decisions, week, why, missing, facts или проект документа letter, request, protocol, disagreements, memo, report. "
+            "action=offer — варианты по id вопросов: options копируй из known, цену и срок не выдумывай. "
             "action=propose — черновики выводов, фактом они не становятся. "
             "action=draft_1c — черновик 1С ДО (memo, assignment, directive, order, protocol) без записи в 1С. "
             "action=search_1c — поиск ТКП и заказа клиента. "
-            "action=plan_preview — план без записи. action=plan — черновик плана; базовый план не утверждается. Сервер."
+            "action=plan_preview — план без записи. "
+            "action=plan — это и есть запись файла плана в файлы дела: XML появляется в деле, в ответе file_name. "
+            "Отдельного действия «сохранить в файлы» нет. Если file_name уже есть, файл лежит в деле: "
+            "назови его и остановись, не пиши, что инструмента нет. Базовый план этим не утверждается. Сервер."
         ),
         _schema(
             {
                 "action": _prop(
                     "string",
-                    "read | read_full | scenario | auto_prepare | propose | draft_1c | search_1c | plan_preview | plan",
+                    "read | read_full | scenario | auto_prepare | offer | propose | draft_1c | search_1c | plan_preview | plan",
                     default="read",
                 ),
                 "scenario": _prop(
@@ -728,13 +732,20 @@ _SERVER_TOOL_DEFS: list[tuple[str, str, dict[str, Any]]] = [
                     "Для scenario: changes | blockers | overdue | decisions | week | why | missing | facts | "
                     "letter | request | protocol | disagreements | memo | report",
                 ),
-                "order_id": _prop("string", "id или код карточки внешнего заказа"),
+                "order_id": _prop(
+                    "string",
+                    "id карточки, код ВЗ-…, номер ТКП или номер заказа 1С. Номер из шапки чата подходит.",
+                ),
                 "role": _prop(
                     "string",
                     "Роль службы: ks, development, rp, committee, kb, omto, finance, production, legal, it",
                 ),
                 "step_id": _prop("string", "Код шага пути, если он есть в задаче"),
                 "query": _prop("string", "Для search_1c: номер ТКП, заказа клиента или контрагент"),
+                "offers": _prop(
+                    "array",
+                    "Для offer: [{id, options}]. options — дословные фрагменты из known, не догадки",
+                ),
                 "findings": _prop("array", "Черновики: {field, value, source_ref, location, confidence, owner_role}"),
                 "diffs": _prop("array", "Черновики сверки: {code, left_value, right_value, note}"),
                 "kind": _prop("string", "Для draft_1c: memo | assignment | directive | order | protocol"),

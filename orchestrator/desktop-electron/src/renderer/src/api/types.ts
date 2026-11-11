@@ -583,6 +583,7 @@ export interface AgentEvent {
     | 'sidecar_exit'
     | 'log'
     | 'files_updated'
+    | 'chat_files'
     | 'run_adopted'
   runId?: string
   linkedRunId?: string
@@ -608,6 +609,7 @@ export interface AgentEvent {
   code?: string | number
   message?: string
   text?: string
+  files?: { name?: string; path?: string }[]
 }
 
 export interface ChatThread {

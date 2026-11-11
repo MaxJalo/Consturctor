@@ -40,6 +40,7 @@ from app.models.position_kpi import (
     PositionKpiSubjectFact,
 )
 from app.models.meeting_audio import MeetingTranscript, VoiceProfile
+from app.models.docflow_card import DocflowClass, DocflowDocument, DocflowEdge, DocflowStatus
 from app.models.workflow import Workflow, WorkflowFile
 
 __all__ = [
@@ -77,6 +78,10 @@ __all__ = [
     "VoiceProfile",
     "Workflow",
     "WorkflowFile",
+    "DocflowClass",
+    "DocflowStatus",
+    "DocflowEdge",
+    "DocflowDocument",
     "WorkplaceKpiDailyMetric",
     "PositionKpiProfile",
     "PositionCompRule",

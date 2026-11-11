@@ -11,12 +11,17 @@ import { categoryOf, FILE_CATEGORY_LABELS, formatFileWhen, formatSize } from './
 import { isPersonalAgentWorkflowId } from '../workplace/personalAgent'
 import { parseIso, sameDay } from '../utils/calendar'
 import { type AgentChatContext } from './agentChat'
+import { ServiceGapPanel, gapsFromFeed, offersFromFeed, readFileBase64 } from './ServiceGapPanel'
 import {
-  employeeDialogText,
+  collapseRepeatedOrderAnswer,
+  dropOrderGapTalk,
+  orderTextsRepeat,
+  recoverLostOrderAnswer,
   factAlreadySaid,
   isCatalogDump,
   isOrderNoise,
   isOrderPrompt,
+  orderTurnAlreadyOpen,
   isWorkLog,
   latestOrderCase,
   workLogOutcome
@@ -45,6 +50,39 @@ const CASE_ACTIONS: Record<string, string> = {
   plan_preview: 'Посчитал план работ',
   plan: 'Собрал файл плана работ',
   draft_1c: 'Подготовил черновик 1С'
+}
+
+const WRITTEN_FILE = /\.(?:docx|xlsx|xls|xlsm|pdf|pptx|ppt|csv|odt|rtf)$/i
+
+function fileFromToolResult(result: Record<string, unknown> | null): { name: string; path: string } | null {
+  if (!result || result.externalized) return null
+  const path = String(result.path || result.file || '').trim()
+  if (!path || !WRITTEN_FILE.test(path)) return null
+  if (path.replace(/\\/g, '/').toLowerCase().includes('/tool_results/')) return null
+  const fromPath = path.split(/[\\/]/).pop() || path
+  const filename = String(result.filename || '').trim()
+  return { name: filename && WRITTEN_FILE.test(filename) ? filename : fromPath, path }
+}
+
+function filesWrittenInFeed(items: FeedItem[]): { name: string; path: string }[] {
+  const found: { name: string; path: string }[] = []
+  const seen = new Set<string>()
+  for (const item of items) {
+    if (item.kind !== 'tool' || !item.done || item.error) continue
+    const file = fileFromToolResult(item.result)
+    if (!file || seen.has(file.path)) continue
+    seen.add(file.path)
+    found.push(file)
+  }
+  return found
+}
+
+function filesOfThisTurn(items: FeedItem[]): { name: string; path: string }[] {
+  let start = 0
+  items.forEach((item, index) => {
+    if (item.kind === 'message' && item.role === 'user') start = index + 1
+  })
+  return filesWrittenInFeed(items.slice(start))
 }
 
 function doneInConversation(items: FeedItem[]): { id: string; text: string; detail: string; error: boolean }[] {
@@ -170,17 +208,24 @@ export function AgentRunPage({
   const [showWork, setShowWork] = useState(true)
   const [historyNote, setHistoryNote] = useState('')
   const [takenDrafts, setTakenDrafts] = useState<Record<string, 'busy' | 'done' | 'error'>>({})
+  const [gapBatch, setGapBatch] = useState('')
+  const [closedGaps, setClosedGaps] = useState<string[]>([])
+  const [gapAccepted, setGapAccepted] = useState(false)
+  const [gapBusy, setGapBusy] = useState(false)
+  const [gapNote, setGapNote] = useState('')
   const conversationOpenedRef = useRef(false)
 
   const [input, setInput] = useState('')
   const [attachments, setAttachments] = useState<string[]>([])
   const [sentAttachments, setSentAttachments] = useState<SentAttachment[]>([])
   const [files, setFiles] = useState<WorkflowFileItem[]>([])
+  const [receivedFiles, setReceivedFiles] = useState<{ name: string; path: string }[]>([])
   const leftRef = useRef<HTMLDivElement | null>(null)
   const dockRef = useRef<HTMLDivElement | null>(null)
   const inputRef = useRef<HTMLTextAreaElement | null>(null)
   const chatScrollRef = useRef<HTMLDivElement | null>(null)
   const chatPinnedRef = useRef(true)
+  const [dialogPane, setDialogPane] = useState<'chat' | 'questions'>('chat')
   const resumeAgentRef = useRef<string>(entry?.resumeAgentId || '')
   const autoStartedRef = useRef(false)
   const initialSentRef = useRef(false)
@@ -217,9 +262,9 @@ export function AgentRunPage({
   useEffect(() => {
     if (!personalAgent) return
     return agentClient.onEvent((event) => {
-      if (event.type !== 'result') return
+      if (event.type !== 'result' && event.type !== 'chat_files') return
       if (event.workflowId && event.workflowId !== workflowId) return
-      const raw = (event as { files?: { name?: string; path?: string }[] }).files
+      const raw = event.files
       if (!Array.isArray(raw)) return
       setFiles(
         raw
@@ -239,6 +284,28 @@ export function AgentRunPage({
       )
     })
   }, [personalAgent, workflowId])
+
+  useEffect(() => {
+    if (!chat) return
+    return agentClient.onEvent((event) => {
+      if (event.type !== 'result' && event.type !== 'chat_files') return
+      if (event.workflowId && event.workflowId !== workflowId) return
+      const raw = event.files
+      if (!Array.isArray(raw)) return
+      const next = raw
+        .map((item) => ({
+          name: String(item?.name || '').trim(),
+          path: String(item?.path || '').trim()
+        }))
+        .filter((item) => item.name && item.path)
+      if (!next.length) return
+      setReceivedFiles((prev) => {
+        const known = new Set(prev.map((item) => item.path))
+        const added = next.filter((item) => !known.has(item.path))
+        return added.length ? [...prev, ...added] : prev
+      })
+    })
+  }, [chat, workflowId])
 
   useEffect(() => {
     let cancelled = false
@@ -269,6 +336,7 @@ export function AgentRunPage({
     const key = rememberedConversation(runs.entries, workflowId, prefix, preferred)
     if (key !== preferred) setBoundKey(key)
     const task = initialMessage.trim()
+    const askedNow = Boolean(task) && !orderTurnAlreadyOpen(task, 1)
     const start = (): void => {
       if (chat.readOnly || !task) return
       runs.startRun({
@@ -276,19 +344,21 @@ export function AgentRunPage({
         title,
         message: task,
         shownMessage: task,
-        conversationKey: key
+        conversationKey: key,
+        forceRestart: askedNow
       })
     }
     void runs
       .attachConversation(workflowId, key, title)
       .then((count) => {
-        if (count > 0) return
+        if (orderTurnAlreadyOpen(task, count)) return
         start()
       })
       .catch(() => {
         setHistoryNote('История разговора не загрузилась.')
         const live = runs.entries[conversationEntryKey(workflowId, key)]
-        if (live && (live.state.running || (live.state.items?.length ?? 0) > 0)) return
+        const kept = live ? (live.state.running ? 1 : live.state.items?.length ?? 0) : 0
+        if (orderTurnAlreadyOpen(task, kept)) return
         start()
       })
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -511,10 +581,79 @@ export function AgentRunPage({
   }, [state?.items, personalAgent])
 
   const doneRows = useMemo(() => doneInConversation(state?.items ?? []), [state?.items])
+  const shownFiles = useMemo(() => {
+    const current = filesOfThisTurn(feedItems)
+    const alreadyInChat = new Set(filesWrittenInFeed(feedItems).map((file) => file.path))
+    const seen = new Set<string>()
+    return [...current, ...receivedFiles.filter((file) => !alreadyInChat.has(file.path))].filter((file) => {
+      if (!file.path || seen.has(file.path)) return false
+      seen.add(file.path)
+      return true
+    })
+  }, [feedItems, receivedFiles])
+  useEffect(() => {
+    setGapBatch('')
+    setClosedGaps([])
+    setGapAccepted(false)
+    setGapNote('')
+  }, [conversationKey])
+  const gapOffers = useMemo(() => offersFromFeed(feedItems), [feedItems])
+  const serviceGaps = useMemo(() => {
+    const live = gapsFromFeed(feedItems)
+    const base = live ?? chat?.gaps ?? []
+    return base.filter((gap) => !closedGaps.includes(gap.id))
+  }, [feedItems, chat?.gaps, closedGaps])
+  const answerGap = async (questionId: string, value: string, file: File | null): Promise<void> => {
+    if (!chat || gapBusy) return
+    setGapBusy(true)
+    setGapNote('')
+    try {
+      let documentId = ''
+      if (file) {
+        const content = await readFileBase64(file)
+        const uploaded = await api.uploadExternalFile(
+          chat.order.id,
+          { kind: 'other', filename: file.name, content_base64: content },
+          chat.order.role
+        )
+        const match = [...(uploaded.documents || [])]
+          .reverse()
+          .find((item) => item.file_name === file.name || item.title === file.name)
+        documentId = match?.id || ''
+      }
+      const saved = await api.answerExternalGap(
+        chat.order.id,
+        { question_id: questionId, value, batch_id: gapBatch, document_id: documentId },
+        chat.order.role
+      )
+      setGapBatch(String(saved.batch_id || gapBatch))
+      setClosedGaps((prev) => (prev.includes(questionId) ? prev : [...prev, questionId]))
+    } catch (err) {
+      setGapNote(err instanceof Error ? err.message : 'Ответ не записан')
+    } finally {
+      setGapBusy(false)
+    }
+  }
+  const acceptGapBatch = async (): Promise<void> => {
+    if (!chat || !gapBatch || gapBusy) return
+    setGapBusy(true)
+    setGapNote('')
+    try {
+      await api.acceptExternalFindingBatch(chat.order.id, gapBatch, chat.order.role)
+      setGapAccepted(true)
+    } catch (err) {
+      setGapNote(err instanceof Error ? err.message : 'Черновик не принят')
+    } finally {
+      setGapBusy(false)
+    }
+  }
   const caseBrief = useMemo(() => {
     if (!chat) return null
     const live = latestOrderCase(feedItems)
-    return live && !live.error ? live : (chat.caseBrief ?? live)
+    const stored = chat.caseBrief ?? null
+    const picked = live && !live.error ? live : (stored ?? live)
+    if (picked && stored?.code && /^ВЗ-/i.test(picked.code)) return { ...picked, code: stored.code }
+    return picked
   }, [chat, feedItems])
   const dialogItems = useMemo(() => {
     const visible = showWork
@@ -531,26 +670,62 @@ export function AgentRunPage({
       }
       let next = item
       if (item.kind === 'message' || item.kind === 'system' || item.kind === 'result') {
-        let text = employeeDialogText(item.text, caseBrief.code)
-        if (/cursor sdk не отвечает|не удалось связаться с cursor|сеть оборвалась|network request failed|без итога/i.test(text)) {
-          text = 'Ответ не получен. Черновики на карточке остаются.'
-        }
+        let text = recoverLostOrderAnswer(item.text, caseBrief)
         if (isCatalogDump(text)) text = caseBrief.summary || text
         else if (isWorkLog(text)) text = workLogOutcome(text)
-        if (text !== item.text) next = { ...item, text }
+        if (item.kind === 'message' && item.role === 'agent') {
+          text = dropOrderGapTalk(collapseRepeatedOrderAnswer(text))
+        }
+        if (!text.trim()) continue
+        if (text !== item.text) {
+          next =
+            caseBrief.summary && text.startsWith(caseBrief.summary) && item.kind !== 'message'
+              ? { kind: 'message', id: item.id, role: 'agent', text }
+              : { ...item, text }
+        }
       }
       const prev = spoken[spoken.length - 1]
       if (prev && 'text' in prev && 'text' in next && prev.text === next.text) continue
       spoken.push(next)
     }
-    return spoken
+    const drop = new Set<number>()
+    let turn = 0
+    const flush = (end: number): void => {
+      const results: string[] = []
+      for (let index = turn; index < end; index += 1) {
+        const item = spoken[index]
+        if (item.kind === 'result') results.push(item.text)
+      }
+      for (let index = turn; index < end; index += 1) {
+        const item = spoken[index]
+        if (item.kind !== 'message' || item.role !== 'agent') continue
+        if (/ответ не получен/i.test(item.text) && (caseBrief.summary || caseBrief.facts.length || caseBrief.drafts.length)) {
+          drop.add(index)
+          continue
+        }
+        if (results.some((result) => orderTextsRepeat(item.text, result))) drop.add(index)
+      }
+    }
+    spoken.forEach((item, index) => {
+      if (item.kind === 'message' && item.role === 'user') {
+        flush(index)
+        turn = index + 1
+      }
+    })
+    flush(spoken.length)
+    return drop.size ? spoken.filter((_, index) => !drop.has(index)) : spoken
   }, [feedItems, showWork, caseBrief])
 
   useEffect(() => {
+    setDialogPane('chat')
+  }, [conversationKey])
+
+  useEffect(() => {
+    if (dialogPane !== 'chat') return
     const box = chatScrollRef.current
     if (!box || !chatPinnedRef.current) return
     box.scrollTop = box.scrollHeight
-  }, [dialogItems, running, showWork, caseBrief])
+  }, [dialogItems, running, showWork, dialogPane])
 
   const rawStatus = (state?.status || '').trim()
   const catalogStatus =
@@ -602,6 +777,39 @@ export function AgentRunPage({
             <span className={running ? 'oad-shimmer' : ''}>{progressLabel}</span>
             <span className={`oad-chevron${showWork ? ' open' : ''}`} aria-hidden="true" />
           </button>
+          <div className="oad-config">
+            <span className="oad-config-mark" aria-hidden="true" />
+            <span className="oad-config-text">
+              <span className="oad-config-label">Конфигурация запуска</span>
+              <strong>{chat.order.roleLabel || title}</strong>
+            </span>
+            <span className="oad-config-meta">
+              {chat.order.code} · {chat.order.stageLabel}
+            </span>
+            <span className="oad-config-meta">Агент Constructor</span>
+          </div>
+          <div className="oad-tabs" role="tablist" aria-label="Диалог заказа">
+            <button
+              type="button"
+              role="tab"
+              aria-selected={dialogPane === 'chat'}
+              className={`oad-tab${dialogPane === 'chat' ? ' is-active' : ''}`}
+              onClick={() => setDialogPane('chat')}
+            >
+              Чат
+            </button>
+            <button
+              type="button"
+              role="tab"
+              aria-selected={dialogPane === 'questions'}
+              className={`oad-tab${dialogPane === 'questions' ? ' is-active' : ''}`}
+              onClick={() => setDialogPane('questions')}
+            >
+              Вопросы
+              {serviceGaps.length > 0 ? <span>{serviceGaps.length}</span> : null}
+            </button>
+          </div>
+          {dialogPane === 'chat' ? (
           <div
             className="oad-scroll"
             ref={chatScrollRef}
@@ -610,17 +818,31 @@ export function AgentRunPage({
               chatPinnedRef.current = box.scrollHeight - box.scrollTop - box.clientHeight < 60
             }}
           >
-            <div className="oad-config">
-              <span className="oad-config-mark" aria-hidden="true" />
-              <span className="oad-config-text">
-                <span className="oad-config-label">Конфигурация запуска</span>
-                <strong>{chat.order.roleLabel || title}</strong>
-              </span>
-              <span className="oad-config-meta">
-                {chat.order.code} · {chat.order.stageLabel}
-              </span>
-              <span className="oad-config-meta">Агент Constructor</span>
-            </div>
+            <AgentFeed
+              items={dialogItems}
+              status={state?.status ?? ''}
+              running={running}
+              pendingQuestion={state?.pendingQuestion ?? null}
+              pendingHitl={state?.pendingHitl ?? null}
+              hideRunningStatus
+              emptyHint=""
+              allowQuestionFiles
+              onAnswer={(requestId, value, filePaths) => {
+                runs.answer(entryKey, requestId, value, filePaths)
+                if (filePaths && filePaths.length > 0) {
+                  recordSentAttachments(filePaths)
+                  window.setTimeout(() => {
+                    void refreshFiles()
+                  }, 400)
+                }
+              }}
+              onHitl={(requestId, approved, allowAll) => runs.respondHitl(entryKey, requestId, approved, allowAll)}
+              onSkip={() => runs.skip(entryKey)}
+            />
+            {historyNote ? <div className="oad-note">{historyNote}</div> : null}
+          </div>
+          ) : (
+          <div className="oad-scroll">
             {caseBrief ? (
               <section className="oad-case" aria-label="Сводка дела">
                 <div className="oad-case-title">
@@ -708,31 +930,40 @@ export function AgentRunPage({
                 ) : null}
               </section>
             ) : null}
-            <AgentFeed
-              items={dialogItems}
-              status={state?.status ?? ''}
-              running={running}
-              pendingQuestion={state?.pendingQuestion ?? null}
-              pendingHitl={state?.pendingHitl ?? null}
-              hideRunningStatus
-              emptyHint=""
-              allowQuestionFiles
-              onAnswer={(requestId, value, filePaths) => {
-                runs.answer(entryKey, requestId, value, filePaths)
-                if (filePaths && filePaths.length > 0) {
-                  recordSentAttachments(filePaths)
-                  window.setTimeout(() => {
-                    void refreshFiles()
-                  }, 400)
-                }
-              }}
-              onHitl={(requestId, approved, allowAll) => runs.respondHitl(entryKey, requestId, approved, allowAll)}
-              onSkip={() => runs.skip(entryKey)}
-            />
-            {historyNote ? <div className="oad-note">{historyNote}</div> : null}
+            {!caseBrief && serviceGaps.length === 0 ? (
+              <p className="oad-pane-empty">Вопросов по заполнению нет.</p>
+            ) : null}
+            {chat && !readOnly ? (
+              <ServiceGapPanel
+                gaps={serviceGaps}
+                offers={gapOffers}
+                batchReady={Boolean(gapBatch)}
+                accepted={gapAccepted}
+                busy={gapBusy}
+                note={gapNote}
+                onAnswer={(questionId, value, file) => void answerGap(questionId, value, file)}
+                onAccept={() => void acceptGapBatch()}
+              />
+            ) : null}
           </div>
-          {readOnly ? null : (
+          )}
+          {readOnly || dialogPane !== 'chat' ? null : (
             <div className="oad-dock">
+              {shownFiles.length > 0 ? (
+                <div className="oad-received">
+                  {shownFiles.map((file) => (
+                    <button
+                      key={file.path}
+                      type="button"
+                      onClick={() => void window.api.openPath(file.path)}
+                      title={file.name}
+                    >
+                      <img src={fileTypeIconSrc(file.name)} alt="" />
+                      <span>{file.name}</span>
+                    </button>
+                  ))}
+                </div>
+              ) : null}
               {attachments.length > 0 ? (
                 <div className="oad-files">
                   {attachments.map((path) => (

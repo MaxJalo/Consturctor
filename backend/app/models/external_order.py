@@ -12,7 +12,11 @@ from app.db.base import Base
 
 class ExternalOrder(Base):
     __tablename__ = "external_orders"
-    __table_args__ = (Index("ix_external_orders_stage_status", "stage", "status"),)
+    __table_args__ = (
+        Index("ix_external_orders_stage_status", "stage", "status"),
+        Index("ix_external_orders_onec_order_key", "onec_order_key"),
+        Index("ix_external_orders_onec_tkp_key", "onec_tkp_key"),
+    )
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True)
     code: Mapped[str] = mapped_column(String(32), nullable=False, default="")
@@ -28,6 +32,16 @@ class ExternalOrder(Base):
     owners_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
     sections_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
     payment_percent: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    onec_tkp_key: Mapped[str] = mapped_column(String(64), nullable=False, default="")
+    onec_order_key: Mapped[str] = mapped_column(String(64), nullable=False, default="")
+    onec_tkp_number: Mapped[str] = mapped_column(String(64), nullable=False, default="")
+    onec_order_number: Mapped[str] = mapped_column(String(64), nullable=False, default="")
+    document_date: Mapped[str] = mapped_column(String(32), nullable=False, default="")
+    amount: Mapped[str] = mapped_column(String(64), nullable=False, default="")
+    manager: Mapped[str] = mapped_column(String(512), nullable=False, default="")
+    onec_status: Mapped[str] = mapped_column(String(128), nullable=False, default="")
+    source_kind: Mapped[str] = mapped_column(String(16), nullable=False, default="")
+    onec_synced_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_by: Mapped[str] = mapped_column(String(512), nullable=False, default="")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     updated_at: Mapped[datetime] = mapped_column(
@@ -151,6 +165,7 @@ class ExternalOrderFinding(Base):
     status: Mapped[str] = mapped_column(String(16), nullable=False, default="draft")
     owner_role: Mapped[str] = mapped_column(String(32), nullable=False, default="")
     proposed_by: Mapped[str] = mapped_column(String(512), nullable=False, default="")
+    batch_id: Mapped[str] = mapped_column(String(64), nullable=False, default="")
 
 
 class ExternalOrderDocument(Base):

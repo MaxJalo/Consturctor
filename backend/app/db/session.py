@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import logging
 from collections.abc import Generator
 
@@ -55,12 +56,29 @@ def init_db() -> None:
     from app.models import position_kpi as _position_kpi  # noqa: F401
     from app.models import meeting_audio as _meeting_audio  # noqa: F401
     from app.models import workflow as _workflow  # noqa: F401
+    from app.models import docflow_card as _docflow_card  # noqa: F401
     from app.modules.chat import models as _chat  # noqa: F401
 
     Base.metadata.create_all(bind=engine)
     _ensure_columns()
     _ensure_indexes()
     _seed_position_kpi()
+    _seed_docflow()
+
+
+def _seed_docflow() -> None:
+    from app.services.docflow_cards import seed_docflow_lifecycle
+
+    db = SessionLocal()
+    try:
+        count = seed_docflow_lifecycle(db)
+        db.commit()
+        logger.info("Docflow lifecycle seeded (%s classes)", count)
+    except Exception:
+        db.rollback()
+        raise
+    finally:
+        db.close()
 
 
 def _seed_position_kpi() -> None:
@@ -514,12 +532,25 @@ def _ensure_external_order_columns(conn) -> None:
         "external_order_findings": (
             ("location", "TEXT NOT NULL DEFAULT ''"),
             ("document_id", "VARCHAR(64) NOT NULL DEFAULT ''"),
+            ("batch_id", "VARCHAR(64) NOT NULL DEFAULT ''"),
         ),
         "external_order_audit": (
             ("before_value", "TEXT NOT NULL DEFAULT ''"),
             ("after_value", "TEXT NOT NULL DEFAULT ''"),
         ),
         "external_order_decisions": (("baseline_id", "VARCHAR(64) NOT NULL DEFAULT ''"),),
+        "external_orders": (
+            ("onec_tkp_key", "VARCHAR(64) NOT NULL DEFAULT ''"),
+            ("onec_order_key", "VARCHAR(64) NOT NULL DEFAULT ''"),
+            ("onec_tkp_number", "VARCHAR(64) NOT NULL DEFAULT ''"),
+            ("onec_order_number", "VARCHAR(64) NOT NULL DEFAULT ''"),
+            ("document_date", "VARCHAR(32) NOT NULL DEFAULT ''"),
+            ("amount", "VARCHAR(64) NOT NULL DEFAULT ''"),
+            ("manager", "VARCHAR(512) NOT NULL DEFAULT ''"),
+            ("onec_status", "VARCHAR(128) NOT NULL DEFAULT ''"),
+            ("source_kind", "VARCHAR(16) NOT NULL DEFAULT ''"),
+            ("onec_synced_at", "TIMESTAMPTZ NULL"),
+        ),
     }
     for table, fields in columns.items():
         rows = conn.execute(
@@ -538,6 +569,141 @@ def _ensure_external_order_columns(conn) -> None:
         for name, ddl in fields:
             if name not in existing:
                 conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {name} {ddl}"))
+    _backfill_external_order_registry(conn)
+    _ensure_external_order_key_indexes(conn)
+
+
+def _registry_kind(tkp_key: str, order_key: str) -> str:
+    if tkp_key and order_key:
+        return "both"
+    if tkp_key:
+        return "tkp"
+    if order_key:
+        return "order"
+    return ""
+
+
+def _external_orders_table(conn) -> bool:
+    found = conn.execute(
+        text(
+            """
+            SELECT 1
+            FROM information_schema.tables
+            WHERE table_schema = 'public' AND table_name = 'external_orders'
+            """
+        )
+    ).first()
+    return found is not None
+
+
+def _backfill_external_order_registry(conn) -> None:
+    """Переносит ключи 1С из sections_json в колонки. Повторный запуск не затирает уже записанное."""
+    if not _external_orders_table(conn):
+        return
+    rows = conn.execute(
+        text(
+            """
+            SELECT id, sections_json, onec_tkp_key, onec_order_key
+            FROM external_orders
+            """
+        )
+    ).fetchall()
+    seen_tkp: set[str] = set()
+    seen_order: set[str] = set()
+    pending: list[tuple] = []
+    for row in rows:
+        current_tkp = str(row[2] or "").strip()
+        current_order = str(row[3] or "").strip()
+        if current_tkp:
+            seen_tkp.add(current_tkp)
+        if current_order:
+            seen_order.add(current_order)
+        if current_tkp or current_order:
+            continue
+        pending.append(row)
+    for row in pending:
+        try:
+            data = json.loads(row[1] or "{}")
+        except json.JSONDecodeError:
+            continue
+        link = data.get("onec") if isinstance(data, dict) else None
+        if not isinstance(link, dict):
+            continue
+        tkp_key = str(link.get("tkp_key") or "").strip()
+        order_key = str(link.get("order_key") or "").strip()
+        if tkp_key in seen_tkp:
+            tkp_key = ""
+        if order_key in seen_order:
+            order_key = ""
+        if not tkp_key and not order_key:
+            continue
+        if tkp_key:
+            seen_tkp.add(tkp_key)
+        if order_key:
+            seen_order.add(order_key)
+        conn.execute(
+            text(
+                """
+                UPDATE external_orders
+                SET onec_tkp_key = :tkp_key,
+                    onec_order_key = :order_key,
+                    onec_tkp_number = :tkp_number,
+                    onec_order_number = :order_number,
+                    document_date = :document_date,
+                    amount = :amount,
+                    manager = :manager,
+                    onec_status = :onec_status,
+                    source_kind = :source_kind
+                WHERE id = :id
+                """
+            ),
+            {
+                "id": row[0],
+                "tkp_key": tkp_key,
+                "order_key": order_key,
+                "tkp_number": str(link.get("tkp_number") or "")[:64],
+                "order_number": str(link.get("order_number") or "")[:64],
+                "document_date": str(link.get("order_date") or link.get("tkp_date") or "")[:32],
+                "amount": str(link.get("amount") or "")[:64],
+                "manager": str(link.get("manager") or "")[:512],
+                "onec_status": str(
+                    link.get("order_status") or link.get("tkp_status_label") or link.get("tkp_status") or ""
+                )[:128],
+                "source_kind": _registry_kind(tkp_key, order_key),
+            },
+        )
+
+
+def _ensure_external_order_key_indexes(conn) -> None:
+    if not _external_orders_table(conn):
+        return
+    for column, name in (
+        ("onec_order_key", "uq_external_orders_onec_order_key"),
+        ("onec_tkp_key", "uq_external_orders_onec_tkp_key"),
+    ):
+        duplicates = conn.execute(
+            text(
+                f"""
+                SELECT {column}
+                FROM external_orders
+                WHERE {column} <> ''
+                GROUP BY {column}
+                HAVING COUNT(*) > 1
+                """
+            )
+        ).fetchall()
+        if duplicates:
+            logger.warning("external_orders.%s has duplicate keys, unique index skipped", column)
+            continue
+        conn.execute(
+            text(
+                f"""
+                CREATE UNIQUE INDEX IF NOT EXISTS {name}
+                ON external_orders ({column})
+                WHERE {column} <> ''
+                """
+            )
+        )
 
 
 def get_db() -> Generator[Session, None, None]:

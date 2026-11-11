@@ -115,6 +115,78 @@
   gap: 12px;
 }
 
+.eo-order-pick {
+  position: relative;
+  max-width: 420px;
+}
+
+.eo-order-pick-btn {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  max-width: 420px;
+  height: 36px;
+  padding: 0 10px;
+  border: 1px solid rgba(13, 59, 115, 0.14);
+  border-radius: 8px;
+  background: #fff;
+  color: #102033;
+  font: inherit;
+  cursor: pointer;
+}
+
+.eo-order-pick-btn span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.eo-order-pick-menu {
+  position: absolute;
+  z-index: 30;
+  top: calc(100% + 4px);
+  right: 0;
+  width: 420px;
+  max-height: 320px;
+  overflow: auto;
+  padding: 8px;
+  border: 1px solid rgba(13, 59, 115, 0.16);
+  border-radius: 10px;
+  background: #fff;
+  box-shadow: 0 8px 24px rgba(16, 20, 26, 0.12);
+}
+
+.eo-order-pick-menu input {
+  width: 100%;
+  margin-bottom: 6px;
+  box-sizing: border-box;
+}
+
+.eo-order-pick-menu button {
+  display: block;
+  width: 100%;
+  padding: 8px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: #102033;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.eo-order-pick-menu button:hover,
+.eo-order-pick-menu button[aria-selected='true'] {
+  background: #e8f1fb;
+}
+
+.eo-head-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-left: auto;
+}
+
 .eo-window .eo-form {
   background: transparent;
   border: 0;
@@ -754,6 +826,120 @@
   margin-top: 2px;
 }
 
+.eo-registry-scroll {
+  max-height: calc(100vh - 240px);
+}
+
+.eo-orders-table.is-registry {
+  min-width: 1180px;
+}
+
+.eo-orders-table.is-registry thead th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: #fff;
+  box-shadow: inset 0 -1px 0 #e3ebf5;
+  padding: 0;
+}
+
+.eo-orders-table.is-registry thead th.eo-col-reg-open {
+  padding: 8px;
+}
+
+.eo-sort-pair {
+  display: flex;
+  align-items: center;
+}
+
+.eo-sort-btn {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  width: 100%;
+  min-height: 36px;
+  padding: 8px;
+  border: 0;
+  background: transparent;
+  font: inherit;
+  font-weight: 600;
+  color: #5d7290;
+  text-align: left;
+  cursor: pointer;
+}
+
+.eo-sort-pair .eo-sort-btn {
+  width: auto;
+}
+
+.eo-sort-btn.is-end {
+  justify-content: flex-end;
+}
+
+.eo-sort-btn:hover {
+  color: #1565c0;
+}
+
+.eo-sort-btn.is-sorted,
+.eo-orders-table.is-registry thead th.is-sorted {
+  background: #1565c0;
+  color: #fff;
+}
+
+.eo-sort-btn.is-sorted:hover {
+  color: #fff;
+}
+
+.eo-sort-ico {
+  flex: 0 0 auto;
+  opacity: 0.35;
+}
+
+.eo-sort-btn:hover .eo-sort-ico,
+.eo-sort-ico.is-active {
+  opacity: 1;
+}
+
+.eo-sort-ico.is-asc {
+  transform: rotate(180deg);
+}
+
+.eo-orders-table.is-registry .eo-col-reg-num { width: 148px; }
+.eo-orders-table.is-registry .eo-col-reg-num b,
+.eo-orders-table.is-registry .eo-col-reg-num small {
+  display: block;
+}
+.eo-orders-table.is-registry .eo-col-reg-num small {
+  margin-top: 2px;
+  color: #5d7290;
+  font-weight: 400;
+}
+.eo-orders-table.is-registry .eo-col-reg-party { width: 18%; }
+.eo-orders-table.is-registry .eo-col-reg-amount {
+  width: 110px;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.eo-orders-table.is-registry .eo-col-reg-manager { width: 16%; }
+.eo-orders-table.is-registry .eo-col-reg-status { width: 12%; }
+.eo-orders-table.is-registry .eo-col-reg-link { width: 132px; }
+.eo-orders-table.is-registry .eo-col-reg-stage { width: 88px; white-space: nowrap; }
+.eo-orders-table.is-registry .eo-col-reg-block { width: 84px; }
+.eo-orders-table.is-registry .eo-col-reg-open { width: 188px; }
+
+.eo-row-actions {
+  display: flex;
+  flex-wrap: nowrap;
+  align-items: center;
+  gap: 6px;
+}
+
+.eo-row-actions .eo-btn {
+  flex: 0 0 auto;
+  padding: 0 10px;
+}
+
 .eo-table.eo-tkp {
   width: max-content;
   min-width: 100%;
@@ -945,7 +1131,8 @@
 }
 
 .eo-journal-table {
-  width: 100%;
+  width: max-content;
+  min-width: 100%;
   border-collapse: collapse;
   font-size: 12px;
 }
@@ -1008,10 +1195,27 @@
   color: #2e7d32;
 }
 
+.eo-journal-table td:nth-child(2),
+.eo-journal-table td:nth-child(3) {
+  max-width: 420px;
+  overflow-wrap: anywhere;
+}
+
+.eo-journal-table td:last-child {
+  min-width: 220px;
+  white-space: nowrap;
+  vertical-align: top;
+}
+
 .eo-journal-actions {
   display: flex;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
   gap: 6px;
+}
+
+.eo-journal-actions button {
+  white-space: nowrap;
+  flex: none;
 }
 
 .eo-journal-note {
@@ -2277,6 +2481,23 @@ button.eo-tile:hover {
 
 .eo-table.eo-tkp.is-compact td:first-child {
   white-space: nowrap;
+}
+
+.eo-table.eo-tkp.is-compact tr:not(.eo-tkp-more) > th:last-child,
+.eo-table.eo-tkp.is-compact tr:not(.eo-tkp-more) > td:last-child {
+  width: 148px;
+  min-width: 148px;
+  white-space: nowrap;
+  vertical-align: middle;
+  text-align: right;
+}
+
+.eo-table.eo-tkp.is-compact td:last-child .eo-btn {
+  white-space: nowrap;
+}
+
+.eo-table.eo-tkp.is-compact tbody tr:not(.eo-tkp-more):hover > td:last-child {
+  background: #f3f7fc;
 }
 
 .eo-table.eo-tkp.is-compact .eo-tkp-more > td:last-child {

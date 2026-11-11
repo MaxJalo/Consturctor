@@ -51,11 +51,13 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import traceback
 import uuid
 from dataclasses import asdict, is_dataclass
+from urllib.parse import quote
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -319,14 +321,22 @@ _NARRATION_RE = re.compile(
     r"^(?:сначала\s+(?:сниму|открою|посмотрю|сверю|подготовлю)|вызываю подготовку|снимаю дело|снимаю схему|"
     r"сервер оборвал|повторяю подготовку|схема получена|готовлю дело|готовлю карточку|сверяю дело|беру сводку|"
     r"дочитыва\w*|сводо?к[аи]\s+(?:коротк|по пустому)|регламент службы|"
-    r"продолжаю (?:тот же )?заказ\b.*(?:сверюсь|сверю|подготовлю))\b",
+    r"продолжаю (?:тот же )?заказ\b.*(?:сверюсь|сверю|подготовлю)|"
+    r"смотрю дело|ищу готовые факты|ищу файл|ищу сводк\w*|ищу снимок|"
+    r"файл не найден|читаю excel|читаю документ|"
+    r"вызов вернул|карточка(?: в этом ходе)? уже открыта|смотрю,?\s+какие факты|"
+    r"следующий шаг|сейчас передам|"
+    r"дело уже открыто)\b",
     re.IGNORECASE,
 )
 # Тот же план хода, но слова слиплись: «Сначаласнимусхемуделаиподготовлю…».
 _NARRATION_FLAT_RE = re.compile(
     r"^(?:сначала(?:сниму|открою|посмотрю|сверю|подготовлю)|вызываюподготовку|снимаюдело|снимаюсхему|"
     r"серверооборвал|сервероборвал|повторяюподготовку|схемаполучена|готовлюдело|готовлюкарточку|"
-    r"сверяюдело|берусводку|дочитыва|сводкакороткая|сводкипопустому|регламентслужбы)"
+    r"сверяюдело|берусводку|дочитыва|сводкакороткая|сводкипопустому|регламентслужбы|"
+    r"смотрюдело|ищуготовыефакты|ищуфайл|ищусводк|ищуснимок|файлненайден|читаюexcel|"
+    r"читаюдокумент|вызоввернул|карточкавэтомходеужеоткрыта|карточкаужеоткрыта|"
+    r"смотрюкакиефакты|следующийшаг|сейчаспередам|делоужеоткрыто)"
 )
 
 
@@ -337,10 +347,56 @@ def _flat(text: str) -> str:
 def _is_narration(sentence: str) -> bool:
     folded = (sentence or "").casefold().replace("ё", "е").strip()
     return bool(_NARRATION_RE.match(folded) or _NARRATION_FLAT_RE.match(_flat(folded)))
+
+
+# Пересказ карточки и отчёт о своих шагах. Вывод для службы эти фразы не заменяют.
+_PROCESS_RE = re.compile(
+    r"^(?:это черновик|фактом он станет|этап не перевожу|письмо и документы|пустые пункты|"
+    r"дело открыто|дело в этом ходе|дальше передам|сейчас передам|в known нет|дословн\w+ вариант|"
+    r"данные получены|черновик расч[её]та|подтвердите пункт|подтвердите эти)\b",
+    re.IGNORECASE,
+)
+_CASE_ECHO_RE = re.compile(
+    r"^(?:по службе\b.*\bуже есть\b|заказчик\s*:|конечный заказчик\s*:|изделие(?: и состав)?\s*:|"
+    r"сумма(?:\s*1с)?\s*:|ндс\s*:|валюта\s*:|срок поставки\s*:|срок поставки\s+\d|доставка\s*:|"
+    r"срок действия ткп\s*:|оплата\s*:|срок сделки\s*:|путь 1с\s*:|статус карточки\s*:|"
+    r"этап «[^»]+»[,:]?\s*чек-лист\b|"
+    r"чек-лист этапа\b|к принятию\b|черновик(?:и)? (?:вашей )?службы\s*:|служба \w+,\s*этап\b)",
+    re.IGNORECASE,
+)
+_CONCLUSION_RE = re.compile(
+    r"\b(?:поэтому|значит|риск|нужно|надо|пока|нельзя|расходится|не сходится|не ваш|не ваша|"
+    r"ещё нет|еще нет|не закрыт)\b",
+    re.IGNORECASE,
+)
+
+
+_GAP_REPORT_RE = re.compile(
+    r"(?:пусты[ейяю]|зафиксированных ответов|подтвержд[её]нных ответов|"
+    r"открыты\s+\S+\s+пункт|четыре пустых пункта|нет ни цены|"
+    r"пока эти пункты пустые|ответов на проверки)",
+    re.IGNORECASE,
+)
+_GAP_ASK_RE = re.compile(
+    r"^(?:нужно подтвердить|сотруднику нужно подтвердить|подтвердите эти)\b",
+    re.IGNORECASE,
+)
+
+
+def _is_gap_report(sentence: str) -> bool:
+    """Пересказ, что пропуски есть. Их задаёт панель вопросов, не чат."""
+    folded = (sentence or "").casefold().replace("ё", "е").strip()
+    return bool(_GAP_REPORT_RE.search(folded) or _GAP_ASK_RE.match(folded))
+
+
+def _is_case_echo(sentence: str) -> bool:
+    folded = (sentence or "").casefold().replace("ё", "е").strip()
+    if not folded or _PROCESS_RE.match(folded):
+        return bool(folded)
+    if _CONCLUSION_RE.search(folded):
+        return False
+    return bool(_CASE_ECHO_RE.match(folded))
 _STAGE_ONLY_RE = re.compile(r"^(?:договор|ткп|расчёт|расчет)[:.]?$", re.IGNORECASE)
-_KEEP_FACT_RE = re.compile(r"не привед|кнопк|закрыт", re.IGNORECASE)
-
-
 _GLUED_WORDS = {
     "по", "коммерческой", "коммерческая", "службе", "служба", "службы", "в", "деле", "уже", "есть",
     "заказ", "заказа", "заказчика", "заказчик", "изделие", "состав", "продажа", "облагается",
@@ -472,11 +528,13 @@ def _space_order_text(text: str, *, glued: bool = True) -> str:
 
 def _order_tokens(sentence: str) -> set[str]:
     folded = sentence.casefold().replace("ё", "е")
-    return {
+    words = {
         word.strip("-")
         for word in re.findall(r"[a-zа-я0-9-]{4,}", folded)
         if word.strip("-") and not word.strip("-").isdigit()
     }
+    words.update(re.findall(r"(?<![\w-])\d+(?:[.,]\d+)?(?![\w-])", folded))
+    return words
 
 
 def _order_sentences(text: str) -> list[str]:
@@ -493,17 +551,33 @@ def _order_sentences(text: str) -> list[str]:
 
 def _order_sentence_visible(sentence: str, known: set[str]) -> bool:
     folded = sentence.casefold().replace("ё", "е").strip()
-    if not folded or _is_narration(folded) or _STAGE_ONLY_RE.match(folded):
+    if (
+        not folded
+        or _is_narration(folded)
+        or _is_case_echo(folded)
+        or _is_gap_report(folded)
+        or _STAGE_ONLY_RE.match(folded)
+    ):
+        return False
+    # «Отдельный файл .» — модель не получила путь. Сам файл приходит карточкой.
+    if re.fullmatch(r"отдельн\w*\s+файл\s*\.?", folded):
         return False
     if len(folded) <= 12 and not re.search(r"[.!?]", sentence):
         return False
-    if _KEEP_FACT_RE.search(sentence):
-        return True
     words = _order_tokens(sentence)
     if not words or not known:
         return True
     novel = words - known
     if not novel and len(words) >= 2:
+        return False
+    # «Кнопка» и «закрыт» не оправдывают второй пересказ тех же чисел.
+    novel_numbers = {word for word in novel if word[:1].isdigit()}
+    if novel_numbers:
+        return True
+    if len(novel) <= 1 and len(words) >= 3:
+        return False
+    repeated_number = any(word[:1].isdigit() for word in words & known)
+    if repeated_number and len(novel) <= 3:
         return False
     return not (len(words) >= 6 and len(novel) <= 1)
 
@@ -576,6 +650,103 @@ class OrderStream:
         return "\n\n".join(kept)
 
 
+_ORDER_JUNK_FILES = frozenset({"desktop.ini", "thumbs.db", ".ds_store"})
+_ORDER_NO_FILE = (
+    "Этого файла в деле нет. Не выдумывай путь и не открывай materials/attachments, "
+    "knowledge/eo-ai-1.md, desktop.ini и саму папку. "
+    "Факты бери из external_order.case action=read_full — один раз. "
+    "Файл открывай только по точному пути из ответа дела или onec.download_artifact. "
+    "Если пути нет, назови пробел и ответь сотруднику."
+)
+
+
+def _order_read_target(tool: str, args: dict | None) -> str:
+    """Путь из office.read_file / excel.read_workbook. Пустая строка — это не чтение файла."""
+    name = (tool or "").casefold()
+    if not (name.endswith("office.read_file") or name.endswith("excel.read_workbook")):
+        return ""
+    if not isinstance(args, dict):
+        return " "
+    raw = str(
+        args.get("filename")
+        or args.get("path")
+        or args.get("file")
+        or args.get("saved_path")
+        or args.get("target_file")
+        or ""
+    ).strip()
+    return raw or " "
+
+
+def _order_allowed_read(candidate: Path, root: Path | None, cache: Path) -> bool:
+    """Вложение этого хода или файл, который скачал onec.download_artifact."""
+    if root is not None:
+        attachments = root / "materials" / "attachments"
+        try:
+            attachments = attachments.resolve()
+        except OSError:
+            attachments = root / "materials" / "attachments"
+        if candidate == attachments or attachments in candidate.parents:
+            return True
+    return candidate == cache or cache in candidate.parents
+
+
+def _order_named_file(root: Path, name: str) -> bool:
+    """Файл с таким именем уже лежит во вложениях хода или в кэше 1С."""
+    leaf = (name or "").strip().casefold()
+    if not leaf:
+        return False
+    attachments = root / "materials" / "attachments"
+    if attachments.is_dir():
+        for path in attachments.iterdir():
+            if not path.is_file():
+                continue
+            current = path.name.casefold()
+            if current == leaf or current.endswith("_" + leaf):
+                return True
+    cached = Path(tempfile.gettempdir()) / "constructor-onec-artifacts" / Path(leaf).name
+    return cached.is_file()
+
+
+def _order_guessed_file(tool: str, args: dict | None, cwd: str) -> bool:
+    """Чтение мимо вложения сотрудника и кэша 1С. Файл в корне папки хода тоже мимо."""
+    raw = _order_read_target(tool, args)
+    if not raw:
+        return False
+    if raw == " ":
+        return True
+    folded = raw.replace("\\", "/").strip().casefold()
+    leaf = folded.rsplit("/", 1)[-1]
+    if leaf in _ORDER_JUNK_FILES or folded.endswith("/") or folded in {"materials/attachments", "materials"}:
+        return True
+    if folded.startswith("knowledge/") or "/knowledge/" in f"/{folded}":
+        return True
+    root = Path(cwd).resolve() if (cwd or "").strip() else None
+    candidate = Path(raw)
+    if not candidate.is_absolute():
+        if root is None:
+            return True
+        candidate = root / raw
+    try:
+        candidate = candidate.resolve()
+    except OSError:
+        return True
+    cache = (Path(tempfile.gettempdir()) / "constructor-onec-artifacts").resolve()
+    in_cache = candidate == cache or cache in candidate.parents
+    in_workspace = root is not None and (candidate == root or root in candidate.parents)
+    if not in_workspace and not in_cache:
+        return True
+    if candidate.is_dir():
+        return True
+    if candidate.is_file():
+        # Файл в корне папки хода (probe, INCLUDETEXT) не открываем: это минуты Word.
+        # Читаем только вложение сотрудника и кэш 1С.
+        return not _order_allowed_read(candidate, root, cache)
+    if root is not None and _order_named_file(root, leaf):
+        return False
+    return True
+
+
 def _order_workspace_note(tool: str, args: dict | None) -> bool:
     """Инструкции агента и журнал. Это не Word, PDF и не файл дела."""
     name = (tool or "").casefold()
@@ -622,6 +793,160 @@ def _order_plan_write(payload: dict) -> bool:
         return False
     args = payload.get("arguments") if isinstance(payload.get("arguments"), dict) else {}
     return str((args or {}).get("action") or "").casefold() == "plan"
+
+
+_PLAN_DENIAL_MARKERS = (
+    "нет записи в файлы",
+    "нет отдельного",
+    "в схеме нет",
+    "в инструментах нет",
+)
+
+
+def _plan_denial(text: str) -> bool:
+    flat = _flat(text)
+    return any(_flat(marker) in flat for marker in _PLAN_DENIAL_MARKERS)
+
+
+def _order_plan_fields(payload: dict, cwd: str) -> tuple[str, str] | None:
+    """Имя и id файла плана из ответа external_order.case, в том числе из свёрнутого конверта."""
+    raw = payload.get("result")
+    if isinstance(raw, str) and raw.strip().startswith("{"):
+        try:
+            raw = json.loads(raw)
+        except json.JSONDecodeError:
+            raw = {}
+    result = raw if isinstance(raw, dict) else {}
+    body = _order_case_source(result, cwd)
+    if not isinstance(body, dict) or body.get("ok") is False:
+        return None
+    name = str(body.get("file_name") or "").strip()
+    document_id = str(body.get("document_id") or "").strip()
+    if not name or not document_id:
+        return None
+    return name, document_id
+
+
+def _order_plan_target(order_id: str, document_id: str, file_name: str) -> tuple[str, str, str] | None:
+    """Код заказа, id документа и имя файла. Чужой путь и пустое имя не скачиваем."""
+    order = (order_id or "").strip()
+    document = (document_id or "").strip()
+    name = (file_name or "").strip()
+    if not order or "/" in order or "\\" in order or ".." in order:
+        return None
+    if not re.fullmatch(r"[0-9a-fA-F-]{8,64}", document):
+        return None
+    leaf = Path(name).name
+    if not leaf or leaf != name or not leaf.casefold().endswith((".xml", ".mpp")):
+        return None
+    return order, document, leaf
+
+
+def _save_order_plan_file(
+    api: Any,
+    cwd: str,
+    order_id: str,
+    document_id: str,
+    file_name: str,
+) -> dict[str, str] | None:
+    """Копия плана из дела в папку хода, чтобы сотрудник открыл её из чата."""
+    parsed = _order_plan_target(order_id, document_id, file_name)
+    folder = Path(cwd or "")
+    if parsed is None or not folder.is_dir():
+        return None
+    order, document, leaf = parsed
+    path = f"/api/v1/external-orders/{quote(order, safe='')}/files/{quote(document, safe='')}"
+    try:
+        raw = api.fetch_bytes(path)
+    except Exception:  # noqa: BLE001 — нет файла в деле, ход ответа не обрываем
+        return None
+    if not isinstance(raw, (bytes, bytearray)) or not raw:
+        return None
+    target = folder / leaf
+    try:
+        target.write_bytes(bytes(raw))
+    except OSError:
+        return None
+    return {"name": leaf, "path": str(target)}
+
+
+def _order_mpp_name(file_name: str) -> str:
+    leaf = Path(file_name or "").name.strip()
+    if leaf.casefold().endswith(".xml"):
+        leaf = f"{leaf[:-4]}.mpp"
+    elif leaf and not leaf.casefold().endswith(".mpp"):
+        leaf = f"{Path(leaf).stem}.mpp"
+    return leaf
+
+
+def _save_order_mpp(
+    api: Any,
+    cwd: str,
+    order_id: str,
+    plan_args: dict | None,
+    file_name: str,
+) -> dict[str, str] | None:
+    """Собрать .mpp на этом ПК и положить его в дело рядом с XML. Без Project остаётся XML."""
+    order = (order_id or "").strip()
+    folder = Path(cwd or "")
+    name = _order_mpp_name(file_name)
+    if not order or "/" in order or "\\" in order or ".." in order or not name or not folder.is_dir():
+        return None
+    args = plan_args if isinstance(plan_args, dict) else {}
+    overrides = args.get("overrides") if isinstance(args.get("overrides"), dict) else {}
+    start = str(args.get("start") or "")
+    try:
+        model = api._request(
+            "POST",
+            f"/api/v1/external-orders/{quote(order, safe='')}/plan/preview",
+            json={"overrides": overrides, "start": start},
+            timeout=60.0,
+        )
+    except Exception:  # noqa: BLE001
+        return None
+    if not isinstance(model, dict) or not model.get("tasks"):
+        return None
+    try:
+        from app.tools.ac.workers.com_gateway_client import call
+        from app.tools.ac.workers.msproject_com_actions import msproject_com_availability
+
+        if not msproject_com_availability()[0]:
+            return None
+        built = call(
+            "project",
+            "msproject.build_plan",
+            {
+                "model": model,
+                "template_path": str(model.get("template_path") or ""),
+                "file_name": name,
+            },
+            300,
+        )
+    except Exception:  # noqa: BLE001
+        return None
+    if not isinstance(built, dict) or not built.get("ok"):
+        return None
+    source = Path(str(built.get("path") or ""))
+    if not source.is_file():
+        return None
+    target = folder / name
+    try:
+        if source.resolve() != target.resolve():
+            target.write_bytes(source.read_bytes())
+    except OSError:
+        return None
+    content = str(built.get("content_base64") or "")
+    if content:
+        try:
+            api._request(
+                "POST",
+                f"/api/v1/external-orders/{quote(order, safe='')}/plan/upload-mpp",
+                json={"filename": name, "content_base64": content},
+                timeout=120.0,
+            )
+        except Exception as exc:  # noqa: BLE001
+            log("order mpp upload failed: " + _ascii(repr(exc)))
+    return {"name": name, "path": str(target)}
 
 
 _ORDER_SURVEY_ACTIONS = frozenset({"read", "read_full", "auto_prepare"})
@@ -769,6 +1094,50 @@ def _finish_order_survey(payload: dict, action: str, *, cwd: str = "") -> str:
     return _order_survey_reply(payload, cwd=cwd)
 
 
+def _service_reading_from_events(events: list[dict[str, Any]], cwd: str = "") -> str:
+    """Если модель только переписала карточку, сотруднику остаётся вывод, а не реквизиты."""
+    for payload in reversed(events or []):
+        if str(payload.get("type") or "") != "tool_result":
+            continue
+        result = payload.get("result") if isinstance(payload.get("result"), dict) else {}
+        tool = str(payload.get("tool") or "").casefold()
+        if not tool.endswith("external_order.case") and "questions" not in result and "stage" not in result:
+            continue
+        body = _order_case_source(result, cwd)
+        if not isinstance(body, dict) or _order_survey_failed(payload, body):
+            continue
+        role = str(body.get("role_label") or "").strip()
+        stage = body.get("stage") if isinstance(body.get("stage"), dict) else {}
+        blocker = str(stage.get("blocker") or "").strip().rstrip(".")
+        questions = _order_question_lines(body.get("questions"), limit=3)
+        parts: list[str] = []
+        who = f"Для {role} " if role else ""
+        parts.append(f"{who}реквизиты уже на карточке, переписывать их незачем.".strip())
+        if blocker:
+            parts.append(f"Ход сейчас держит: {blocker}.")
+        if questions:
+            decisions = "; ".join(item.rstrip(".?") for item in questions)
+            parts.append(f"Службе осталось решить: {decisions}.")
+        if len(parts) > 1:
+            return " ".join(parts)
+    return ""
+
+
+def _survey_from_events(events: list[dict[str, Any]], cwd: str = "") -> str:
+    """Сводка уже прочитанного дела, если модель свой текст не отдала."""
+    for payload in reversed(events or []):
+        if str(payload.get("type") or "") != "tool_result":
+            continue
+        tool = str(payload.get("tool") or "").casefold()
+        result = payload.get("result") if isinstance(payload.get("result"), dict) else {}
+        if not tool.endswith("external_order.case") and "summary" not in result:
+            continue
+        reply = _order_survey_reply(payload, cwd=cwd)
+        if reply:
+            return reply
+    return ""
+
+
 def _readable_order_answer(text: str) -> str:
     """Одна сводка службы: без плана «сначала сниму», без второго пересказа, абзацами."""
     known: set[str] = set()
@@ -779,10 +1148,7 @@ def _readable_order_answer(text: str) -> str:
         known.update(_order_tokens(sentence))
         kept.append(sentence)
     if not kept:
-        flat = _flat(text)
-        if _NARRATION_FLAT_RE.search(flat) or _NARRATION_RE.search(_collapse_broken_lines(text)):
-            return ""
-        return _space_order_text(_collapse_broken_lines(text))
+        return ""
     if len(kept) == 1:
         return kept[0]
     return "\n\n".join(kept)
@@ -848,6 +1214,25 @@ def _order_restart_after_reply(prior: str, chunk: str) -> bool:
     return bool(_ORDER_RESTART_RE.search(chunk or "") or _ORDER_RESTART_FLAT_RE.search(_flat(chunk)))
 
 
+def _order_report_saved(payload: dict) -> bool:
+    """Успешный Word или Excel. Второй такой файл в том же ходе — копия."""
+    tool = str(payload.get("tool") or "").casefold()
+    if not tool.endswith("report.export_document"):
+        return False
+    if payload.get("ok") is False:
+        return False
+    result = payload.get("result")
+    if isinstance(result, str) and result.strip().startswith("{"):
+        try:
+            result = json.loads(result)
+        except json.JSONDecodeError:
+            return False
+    if not isinstance(result, dict):
+        return False
+    path = str(result.get("path") or result.get("file") or result.get("filename") or "")
+    return Path(path).suffix.lower() in {".docx", ".xlsx", ".xls", ".pdf"}
+
+
 def _order_reread_tool(payload: dict) -> bool:
     """auto_prepare after the employee already has an answer: it only repeats the survey."""
     tool = str(payload.get("tool") or "").casefold()
@@ -896,6 +1281,20 @@ def _turn_answer_done(text: str, hide_tests: bool = False) -> bool:
     if _run_answer_done(text, hide_tests):
         return True
     return hide_tests and len(_without_tests_label(text).strip()) >= _ORDER_TURN_MIN_CHARS
+
+
+_ORDER_CARD_STUB = "Реквизиты уже на карточке. Ниже пункты, которые служба ещё не закрыла."
+
+
+def _order_reply_or_card(answer: str, events: list[dict[str, Any]], cwd: str = "") -> str:
+    """Сводка дела вместо фразы «без итога», если модель оборвалась на подготовке."""
+    survey = _survey_from_events(events, cwd) or _service_reading_from_events(events, cwd)
+    if survey:
+        return survey
+    clean = (answer or "").strip()
+    if clean and "без итога" not in clean and not _order_answer_is_plan(clean):
+        return clean
+    return _ORDER_CARD_STUB
 
 
 def _with_order_brief(message: str, brief: str) -> str:
@@ -1376,6 +1775,48 @@ RUN_INPUTS_RUN_HINT = (
     "in materials/attachments, stop and ask via askQuestion with needsFile=true. "
     "Do not substitute another tool or system for a missing user file."
 )
+ORDER_CASE_HINT = (
+    "This is an external-order chat. Call external_order.case with action=auto_prepare, "
+    "then once more with action=offer, then answer and stop. "
+    "If the employee asks for a work plan, .mpp, or to save a plan into the case files, the one call is action=plan. "
+    "That call writes the file. When the result has file_name, the file is already in the case: name it and stop. "
+    "There is no separate save-to-files action. Do not say the tool is missing. "
+    "order_id is the order_id= value from the opening message, or the ТКП number in the chat title. "
+    "Do not look up the order in TurboProject, document tasks, or audio. "
+    "Do not request the order list, and do not repeat a call with another as_role. "
+    "One external_order.case call reads this order. "
+    "Otherwise prepare the case and offer options copied verbatim from known. "
+    "Do not invent a price, VAT or date. "
+    "The case card already shows the customer, product, sums, VAT, currency, dates, path and checklist score. "
+    "Do not repeat them and do not retell the tool result. "
+    "The chat answer is the judgment for this service, in 3 to 5 sentences: "
+    "what is already settled, what is thin or in conflict, and what the employee should confirm. "
+    "Do not narrate tools, the gap panel, or that a draft is not a fact. "
+    "The one prepare call is action=auto_prepare. "
+    "Do not call office.read_file, excel.read_workbook or excel.list_files. "
+    "A guessed path, knowledge/eo-ai-1.md, desktop.ini, a folder, workspace files, "
+    "and invented names such as 001_spec.pdf or 002_kp.xlsx are not case files. "
+    "Read a file only when the employee attached it in this message. "
+    "If a fact is missing, leave it on the gap panel. Do not hunt files. "
+    "Empty checklist items are those gaps. Do not answer that they are empty, "
+    "that no answers are recorded, or that the draft is empty because of them. "
+    "Do not write a paragraph for each tool call. "
+    "If the employee asks for a Word or Excel file, call report.export_document once. "
+    "When that call returns a file, stop. Do not write a second copy and do not call another tool."
+)
+ORDER_CONTINUE_HINT = (
+    "This turn continues the same order chat. The earlier answer is already in the thread. "
+    "Do not restate the case card, checklist, prices, dates, or the previous draft. "
+    "Answer only the employee's new message. "
+    "If the employee asks for a work plan, .mpp, or to save a plan into the case files, the one call is external_order.case action=plan. "
+    "That call writes the file. When the result has file_name, the file is already in the case: name it and stop. "
+    "There is no separate save-to-files action. Do not say the tool is missing. "
+    "order_id is the order_id= value from the first message of this chat, not the workflow id, current, * or ВЗ. "
+    "Do not search 1C, the web, TurboProject or workspace files for the order. "
+    "Do not open the case again and do not prepare it a second time unless the new message asks for a plan. "
+    "If the employee asks for a Word or Excel file, call report.export_document once. "
+    "When that call returns a file, stop. Do not write a second copy and do not call another tool."
+)
 RUN_INPUT_WAIT_SECONDS = 30
 FILE_QUESTION_SKIP_ANSWER = (
     "Файла нет. Продолжай без вложения: ищи данные в 1С, Outlook, Excel "
@@ -1672,6 +2113,26 @@ def _tool_specs_for_workflow(record: Any) -> list[dict[str, Any]] | None:
             for item in specs
         ]
     return specs
+
+
+_ORDER_SLOW_FILE_TOOLS = frozenset(
+    {
+        "office.read_file",
+        "office.format_document",
+        "excel.list_files",
+        "excel.read_workbook",
+        "excel.create_workbook",
+        "excel.edit_workbook",
+    }
+)
+
+
+def _order_turn_tools(record: Any, *, attached: bool) -> list[dict[str, Any]] | None:
+    """Без вложения сотрудника Word и Excel в ход не отдаём: каждый вызов — это минуты."""
+    specs = _tool_specs_for_workflow(record)
+    if not specs or attached:
+        return specs
+    return [item for item in specs if str(item.get("name") or "") not in _ORDER_SLOW_FILE_TOOLS]
 
 
 def _workflow_model_params(record: Any) -> list[dict[str, str]] | None:
@@ -2001,12 +2462,35 @@ def _kpi_vision_ready(run_cwd: Path) -> bool:
     return len(pages) >= 2
 
 
+def _is_order_followup(text: str) -> bool:
+    folded = (text or "").casefold().replace("ё", "е").strip()
+    return (
+        "продолжение того же заказа" in folded
+        or folded.startswith("ответ сотруднику уже начат")
+        or folded.startswith("прошлая фраза была планом")
+    )
+
+
+def _is_external_order_prompt(text: str) -> bool:
+    folded = (text or "").casefold().replace("ё", "е").strip()
+    if not folded:
+        return False
+    if "eo-ai-1" in folded:
+        return True
+    if "ии-агент внешних закупок" in folded or "ии-агент внешнего заказа" in folded:
+        return True
+    return folded.startswith("ответ сотруднику уже начат") or folded.startswith("прошлая фраза была планом")
+
+
 def _with_sidecar_prompt(prompt: str, *, mode: str = "run") -> str:
     folded = (mode or "").strip().casefold()
     text = (prompt or "").strip()
     # KPI explain / other one-shot evals must not inherit playbook tool hints.
     if folded == "eval":
         return text
+    if _is_external_order_prompt(text):
+        hint = ORDER_CONTINUE_HINT if _is_order_followup(text) else ORDER_CASE_HINT
+        return "\n\n".join(part for part in (hint, text) if part)
     if folded == "kpi":
         if _kpi_already_read(text):
             return text
@@ -2534,6 +3018,18 @@ class ElectronBridge(CursorSdkBridge):
     ) -> None:
         tool = str(payload.get("tool") or "")
         args = payload.get("arguments") if isinstance(payload.get("arguments"), dict) else {}
+        if self._order_case_running(workflow_id) and _order_guessed_file(tool, args, cwd):
+            request_id = str(payload.get("requestId") or "")
+            self._send(
+                process,
+                {
+                    "type": "tool_result",
+                    "requestId": request_id,
+                    "ok": True,
+                    "result": {"ok": True, "text": _ORDER_NO_FILE},
+                },
+            )
+            return
         if _order_workspace_note(tool, args) and self._order_case_running(workflow_id):
             request_id = str(payload.get("requestId") or "")
             self._send(
@@ -2570,9 +3066,9 @@ class ElectronBridge(CursorSdkBridge):
                     "result": {
                         "ok": True,
                         "text": (
-                            "Дело этого заказа уже открыто в этом ходе. "
-                            "Папку агента, json результата и дело второй раз не открывай. "
-                            "Ответь сотруднику по фактам, которые уже есть."
+                            "Пропуски этого хода уже на панели «Вопросы». "
+                            "Не пиши в чат, что пункты пустые, что ответов нет и что дело открыто. "
+                            "На этот вызов не отвечай. Остановись."
                         ),
                     },
                 },
@@ -3128,6 +3624,41 @@ def _fresh_chat_files(run_cwd: str, started_at: float) -> list[dict[str, str]]:
             continue
         files.append({"name": path.name, "path": str(path)})
     return files
+
+
+def _chat_files_notice(active: Any, *, force: bool = False) -> dict[str, Any] | None:
+    """Документ, который помощник уже записал в этом ходе, не дожидаясь конца прогона."""
+    workflow_id = str(
+        getattr(active, "event_workflow_id", "") or getattr(active, "workflow_id", "") or ""
+    ).strip()
+    order_chat = bool(getattr(active, "hide_tests", False))
+    if not workflow_id.startswith("personal-agent:") and not order_chat:
+        return None
+    started = float(getattr(active, "chat_started_at", 0) or 0)
+    cwd = str(getattr(active, "run_cwd", "") or "").strip()
+    if started <= 0 or not cwd:
+        return None
+    now = time.time()
+    if not force and now - float(getattr(active, "chat_files_checked", 0) or 0) < 1.0:
+        return None
+    active.chat_files_checked = now
+    files = _fresh_chat_files(cwd, started)
+    signature = tuple(item["path"] for item in files)
+    if not signature or signature == tuple(getattr(active, "chat_files_sent", ()) or ()):
+        return None
+    active.chat_files_sent = signature
+    return {
+        "type": "chat_files",
+        "runId": getattr(active, "run_id", ""),
+        "workflowId": workflow_id,
+        "files": files,
+    }
+
+
+def _publish_chat_files(active: Any, *, force: bool = False) -> None:
+    notice = _chat_files_notice(active, force=force)
+    if notice:
+        emit(notice)
 
 
 def _recent_output_paths(paths: list[Path]) -> list[Path]:
@@ -4284,6 +4815,96 @@ class Sidecar:
                 run_id=active.history_run_id,
             )
 
+    def _publish_order_plan(self, active: ActiveRun, payload: dict[str, Any]) -> None:
+        """Файл плана лежит в деле. Кладём копию в папку хода и отдаём её в чат."""
+        if not getattr(active, "hide_tests", False):
+            return
+        request_id = str(payload.get("requestId") or payload.get("request_id") or "").strip()
+        actions = getattr(active, "order_case_actions", None)
+        if not request_id or not isinstance(actions, dict) or actions.get(request_id) != "plan":
+            return
+        orders = getattr(active, "plan_orders", None)
+        order_id = str(orders.get(request_id) or "").strip() if isinstance(orders, dict) else ""
+        fields = _order_plan_fields(payload, str(getattr(active, "run_cwd", "") or ""))
+        if fields is None:
+            return
+        active.plan_file_name = fields[0]
+        stop = getattr(active, "stop", None)
+        if stop is not None:
+            stop.set()
+        raw_result = payload.get("result")
+        if isinstance(raw_result, str) and raw_result.strip().startswith("{"):
+            try:
+                raw_result = json.loads(raw_result)
+            except json.JSONDecodeError:
+                raw_result = {}
+        result = raw_result if isinstance(raw_result, dict) else {}
+        body = _order_case_source(result, str(getattr(active, "run_cwd", "") or ""))
+        resolved = str(body.get("order_id") or "").strip() if isinstance(body, dict) else ""
+        if resolved:
+            order_id = resolved
+        saved = _save_order_plan_file(
+            self._api,
+            str(getattr(active, "run_cwd", "") or ""),
+            order_id,
+            fields[1],
+            fields[0],
+        )
+        files = [item for item in list(getattr(active, "order_plan_files", ()) or ()) if isinstance(item, dict)]
+        if saved is not None and all(str(item.get("path") or "") != saved["path"] for item in files):
+            files.append(saved)
+        stored_args = getattr(active, "plan_args", None)
+        plan_args = stored_args.get(request_id) if isinstance(stored_args, dict) else {}
+        mpp = _save_order_mpp(
+            self._api,
+            str(getattr(active, "run_cwd", "") or ""),
+            order_id,
+            plan_args if isinstance(plan_args, dict) else {},
+            fields[0],
+        )
+        if mpp is not None and all(str(item.get("path") or "") != mpp["path"] for item in files):
+            files.append(mpp)
+        active.order_plan_files = files
+        workflow_id = str(
+            getattr(active, "event_workflow_id", "") or getattr(active, "workflow_id", "") or ""
+        ).strip()
+        if files:
+            emit(
+                {
+                    "type": "chat_files",
+                    "runId": getattr(active, "run_id", ""),
+                    "workflowId": workflow_id,
+                    "files": files,
+                }
+            )
+        names = ", ".join(str(item.get("name") or "") for item in files if item.get("name"))
+        if names and not str(getattr(active, "answer_buf", "") or "").strip():
+            note = f"В дело записан план: {names}."
+            active.answer_buf = note
+            emit(
+                _stamp_run_event(
+                    {
+                        "type": "event",
+                        "runId": getattr(active, "run_id", ""),
+                        "payload": {"type": "assistant", "text": note},
+                    },
+                    workflow_id=workflow_id,
+                    kind=str(getattr(active, "kind", "") or "run"),
+                )
+            )
+        try:
+            _upload_run_outputs(
+                self._api,
+                str(getattr(active, "workflow_id", "") or ""),
+                [str(item.get("path") or "") for item in files],
+                run_id=str(getattr(active, "history_run_id", "") or getattr(active, "run_id", "") or ""),
+            )
+        except Exception as exc:  # noqa: BLE001
+            log("order plan upload failed: " + _ascii(repr(exc)))
+        stop = getattr(active, "stop", None)
+        if stop is not None:
+            stop.set()
+
     def _forward_events(self, active: ActiveRun, events: list[dict[str, Any]]):
         """Build an on_event callback that streams raw runner events."""
 
@@ -4313,8 +4934,14 @@ class Sidecar:
                 note_args = payload.get("arguments") if isinstance(payload.get("arguments"), dict) else {}
                 tool_name = str(payload.get("tool") or "")
                 request_id = str(payload.get("requestId") or payload.get("request_id") or "").strip()
-                if _order_folder_list(tool_name) or _order_repeat_case(
-                    _order_case_action(payload), str(getattr(active, "order_survey_id", "") or ""), request_id
+                if (
+                    _order_folder_list(tool_name)
+                    or _order_guessed_file(tool_name, note_args, str(getattr(active, "run_cwd", "") or ""))
+                    or _order_repeat_case(
+                        _order_case_action(payload),
+                        str(getattr(active, "order_survey_id", "") or ""),
+                        request_id,
+                    )
                 ):
                     if request_id:
                         notes = getattr(active, "order_note_reads", None)
@@ -4343,6 +4970,9 @@ class Sidecar:
                 notes = getattr(active, "order_note_reads", None)
                 if note_id and isinstance(notes, set) and note_id in notes:
                     return
+                self._publish_order_plan(active, payload)
+                if _order_report_saved(payload):
+                    active.stop.set()
             if getattr(active, "hide_tests", False) and event_type == "tool_call":
                 tool_name = str(payload.get("tool") or "")
                 if tool_name.casefold().endswith("external_order.case"):
@@ -4354,7 +4984,33 @@ class Sidecar:
                             actions = {}
                             active.order_case_actions = actions
                         actions[request_id] = action
+            if (
+                getattr(active, "hide_tests", False)
+                and event_type == "tool_call"
+                and str(payload.get("tool") or "").casefold().endswith("report.export_document")
+            ):
+                active.report_writes = int(getattr(active, "report_writes", 0) or 0) + 1
+                if active.report_writes > 1:
+                    active.stop.set()
+                    return
             if getattr(active, "hide_tests", False) and event_type == "tool_call" and _order_plan_write(payload):
+                request_id = str(payload.get("requestId") or payload.get("request_id") or "").strip()
+                plan_args = payload.get("arguments") if isinstance(payload.get("arguments"), dict) else {}
+                order_id = str((plan_args or {}).get("order_id") or "").strip()
+                if request_id and order_id:
+                    orders = getattr(active, "plan_orders", None)
+                    if not isinstance(orders, dict):
+                        orders = {}
+                        active.plan_orders = orders
+                    orders[request_id] = order_id
+                    stored = getattr(active, "plan_args", None)
+                    if not isinstance(stored, dict):
+                        stored = {}
+                        active.plan_args = stored
+                    stored[request_id] = {
+                        "overrides": plan_args.get("overrides") if isinstance(plan_args.get("overrides"), dict) else {},
+                        "start": str(plan_args.get("start") or ""),
+                    }
                 active.plan_writes = int(getattr(active, "plan_writes", 0) or 0) + 1
                 if active.plan_writes > 1:
                     active.stop.set()
@@ -4397,6 +5053,10 @@ class Sidecar:
                 elif getattr(active, "hide_tests", False) and event_type == "assistant":
                     flush = bool(payload.pop("_order_flush", False))
                     visible = active.order_stream.take(str(payload.get("text") or ""), flush=flush)
+                    saved_name = str(getattr(active, "plan_file_name", "") or "").strip()
+                    if saved_name and _plan_denial(visible):
+                        visible = f"В деле уже лежит {saved_name}."
+                        active.stop.set()
                     if _order_restart_after_reply(active.answer_buf, active.order_stream.raw):
                         active.stop.set()
                     if not visible.strip():
@@ -4439,6 +5099,10 @@ class Sidecar:
                     and not blob.strip()
                 ):
                     return
+            if event_type == "tool_result":
+                _publish_chat_files(active, force=True)
+            elif event_type == "assistant":
+                _publish_chat_files(active)
             if event_type not in {"ready", "done"}:
                 events.append(_with_at(payload))
             event_wf = (active.event_workflow_id or active.workflow_id or "").strip()
@@ -5456,8 +6120,17 @@ class Sidecar:
         status = "ok"
         answer = ""
         agent_id = resume_agent_id
+        turn_tools = (
+            _order_turn_tools(workflow, attached=bool(file_paths))
+            if active.hide_tests
+            else _tool_specs_for_workflow(workflow)
+        )
         self._start_run_metrics(active, bridge)
         self._start_run_context(active, bridge)
+        if active.hide_tests:
+            active.chat_started_at = time.time()
+            active.chat_files_sent = ()
+            active.chat_files_checked = 0.0
         try:
             if reused:
                 self._forward_events(active, events)({"type": "assistant", "text": reused})
@@ -5473,7 +6146,7 @@ class Sidecar:
                         workflow_id=workflow_id,
                         cwd=run_cwd,
                         resume_agent_id=resume_agent_id,
-                        tools=_tool_specs_for_workflow(workflow),
+                        tools=turn_tools,
                         model_params=_workflow_model_params(workflow),
                         on_event=self._forward_events(active, events),
                         on_question=self._order_question(active),
@@ -5503,7 +6176,7 @@ class Sidecar:
                             workflow_id=workflow_id,
                             cwd=run_cwd,
                             resume_agent_id="",
-                            tools=_tool_specs_for_workflow(workflow),
+                            tools=turn_tools,
                             model_params=_workflow_model_params(workflow),
                             on_event=self._forward_events(active, events),
                             on_question=self._order_question(active),
@@ -5533,7 +6206,7 @@ class Sidecar:
                     workflow_id=workflow_id,
                     cwd=run_cwd,
                     resume_agent_id=agent_id,
-                    tools=_tool_specs_for_workflow(workflow),
+                    tools=turn_tools,
                     model_params=_workflow_model_params(workflow),
                     on_event=on_event,
                     on_question=self._order_question(active),
@@ -5575,7 +6248,7 @@ class Sidecar:
                     workflow_id=workflow_id,
                     cwd=run_cwd,
                     resume_agent_id=agent_id,
-                    tools=_tool_specs_for_workflow(workflow),
+                    tools=turn_tools,
                     model_params=_workflow_model_params(workflow),
                     on_event=on_event,
                     on_question=self._order_question(active),
@@ -5590,40 +6263,44 @@ class Sidecar:
             if getattr(active, "hide_tests", False):
                 self._forward_events(active, events)({"type": "assistant", "text": "", "_order_flush": True})
                 answer = _order_turn_answer(answer, str(getattr(active, "answer_buf", "") or ""))
-                if not answer.strip():
-                    answer = "Ответ не получен. Черновики на карточке остаются."
+                if not answer.strip() or _order_answer_is_plan(answer):
+                    answer = _order_reply_or_card(answer, events, run_cwd)
             if status == "ok" and not _turn_answer_done(self._order_seen_text(active, answer), getattr(active, "hide_tests", False)):
-                status = "error"
-                tail = answer.strip()
-                answer = (
-                    "Запуск завершился без итога — агент остановился после подготовительных шагов."
-                    if getattr(active, "hide_tests", False)
-                    else "Запуск завершился без ## WORK_RESULT и TESTS: PASS — агент остановился после подготовительных шагов."
-                )
-                if tail and not (getattr(active, "hide_tests", False) and _order_answer_is_plan(tail)):
-                    answer = f"{answer}\n\n{tail}"
+                if getattr(active, "hide_tests", False):
+                    answer = _order_reply_or_card(answer, events, run_cwd)
+                else:
+                    status = "error"
+                    tail = answer.strip()
+                    answer = (
+                        "Запуск завершился без ## WORK_RESULT и TESTS: PASS — "
+                        "агент остановился после подготовительных шагов."
+                    )
+                    if tail:
+                        answer = f"{answer}\n\n{tail}"
             if status == "ok" and _is_sd_meeting_workflow(workflow):
                 answer = _with_sd_package_table(answer, events, run_cwd)
             answer = _with_closure_check(answer, run_cwd)
         except Exception as exc:  # noqa: BLE001
-            status = "error"
+            log("run failed: " + repr(exc))
             if getattr(active, "hide_tests", False):
-                answer = "Ответ не получен. Черновики на карточке остаются."
+                # Карточка уже открыта. Обрыв Cursor не должен затирать чат фразой про сеть.
+                answer = _order_reply_or_card(answer, events, run_cwd)
+                status = "ok"
             else:
+                status = "error"
                 answer = _with_closure_check(_user_facing_run_error(exc), run_cwd)
-            try:
-                self._api.finish_local_agent_run(
-                    workflow_id, run_ref, status="error", answer=answer,
-                    events=events, message=message,
-                    metrics=self._stop_run_metrics(active),
-                    context=self._stop_run_context(active),
-                    sdk_agent_id=agent_id if conversation_key else "",
-                )
-                active.history_finished = True
-            except ApiError:
-                self._stop_run_metrics(active)
-                self._stop_run_context(active)
-            if not getattr(active, "hide_tests", False):
+                try:
+                    self._api.finish_local_agent_run(
+                        workflow_id, run_ref, status="error", answer=answer,
+                        events=events, message=message,
+                        metrics=self._stop_run_metrics(active),
+                        context=self._stop_run_context(active),
+                        sdk_agent_id=agent_id if conversation_key else "",
+                    )
+                    active.history_finished = True
+                except ApiError:
+                    self._stop_run_metrics(active)
+                    self._stop_run_context(active)
                 try:
                     _append_run_journal(
                         run_cwd,
@@ -5637,7 +6314,7 @@ class Sidecar:
                     )
                 except Exception as journal_exc:  # noqa: BLE001
                     log("run journal write failed: " + repr(journal_exc))
-            raise
+                raise
         self._api.finish_local_agent_run(
             workflow_id, run_ref, status=status, answer=answer,
             events=events, message=message,
@@ -5685,18 +6362,30 @@ class Sidecar:
                 )
             except Exception as exc:  # noqa: BLE001
                 log("run journal write failed: " + repr(exc))
-        emit(
-            {
-                "type": "result",
-                "runId": active.run_id,
-                "kind": "run",
-                "workflowId": workflow_id,
-                "runRef": run_ref,
-                "agentId": agent_id,
-                "status": status,
-                "answer": answer,
-            }
-        )
+        result_event: dict[str, Any] = {
+            "type": "result",
+            "runId": active.run_id,
+            "kind": "run",
+            "workflowId": workflow_id,
+            "runRef": run_ref,
+            "agentId": agent_id,
+            "status": status,
+            "answer": answer,
+        }
+        plan_files = [
+            item for item in list(getattr(active, "order_plan_files", ()) or ()) if isinstance(item, dict)
+        ]
+        started = float(getattr(active, "chat_started_at", 0) or 0)
+        written = _fresh_chat_files(run_cwd, started) if started > 0 else []
+        known = {str(item.get("path") or "") for item in plan_files}
+        files = list(plan_files)
+        for item in written:
+            if item["path"] not in known:
+                files.append(item)
+                known.add(item["path"])
+        if files:
+            result_event["files"] = files
+        emit(result_event)
 
     def _run_eval(
         self,
@@ -5784,6 +6473,9 @@ class Sidecar:
         active.kind = "run"
         active.gate.bind(workflow_id=workflow_id, kind="run")
         started_at = time.time()
+        active.chat_started_at = started_at
+        active.chat_files_sent = ()
+        active.chat_files_checked = 0.0
         message = str(command.get("message") or "").strip()
         app_context = str(command.get("appContext") or command.get("app_context") or "").strip()
         source = str(command.get("source") or "chat").strip() or "chat"
@@ -6410,8 +7102,8 @@ class Sidecar:
 
         Runs in a background thread so the sidecar command loop keeps serving
         agent runs while Outlook COM (which can be slow) is queried. Reuses the
-        exact tool the agent uses (outlook.read_calendar via SubprocessComWorker),
-        so COM stays isolated and the safe read path is shared.
+        exact tool the agent uses (outlook.read_calendar via the COM gateway),
+        so the screen and the agents share one Outlook queue.
         """
         request_id = str(command.get("requestId") or command.get("id") or "")
         input_data: dict[str, Any] = {}
@@ -6682,6 +7374,7 @@ class ActiveRun:
         self.order_stream = OrderStream()
         self.case_reads = 0
         self.plan_writes = 0
+        self.report_writes = 0
         self.order_case_actions: dict[str, str] = {}
         self.order_case_reply = ""
         self.order_script = ""

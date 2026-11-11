@@ -22,6 +22,8 @@ _ORDER = "Document_ЗаказКлиента"
 _PAY = "Document_ПоступлениеБезналичныхДенежныхСредств_РасшифровкаПлатежа"
 _CONTRACTOR = "Catalog_Контрагенты"
 _CONTRACT = "Catalog_ДоговорыКонтрагентов"
+_TKP_FILES = "Catalog_КоммерческоеПредложениеКлиентуПрисоединенныеФайлы"
+_ORDER_FILES = "Catalog_ЗаказКлиентаПрисоединенныеФайлы"
 
 
 class OnecLinkError(Exception):
@@ -106,6 +108,38 @@ def _rows(
                 504,
             ) from exc
         raise
+
+
+def attached_files(owner_key: str, *, kind: str) -> list[dict]:
+    """Присоединённые файлы ТКП или заказа клиента. Нет каталога — пустой список."""
+    key = (owner_key or "").strip()
+    if not _GUID.match(key) or key == _EMPTY:
+        return []
+    entity = _TKP_FILES if kind == "tkp" else _ORDER_FILES
+    try:
+        client = _client()
+        rows = _rows(
+            client,
+            entity,
+            filt=f"ВладелецФайла_Key eq guid'{key}' and DeletionMark eq false",
+            top=50,
+        )
+    except OnecLinkError:
+        return []
+    found: list[dict] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        file_id = str(row.get("Ref_Key") or "").strip()
+        if not _GUID.match(file_id) or file_id == _EMPTY:
+            continue
+        name = str(row.get("Description") or "").strip()
+        ext = str(row.get("Расширение") or "").strip().lstrip(".")
+        filename = name or file_id
+        if ext and not filename.casefold().endswith(f".{ext.casefold()}"):
+            filename = f"{filename}.{ext}"
+        found.append({"file_id": file_id, "filename": filename})
+    return found
 
 
 def _guid(value: str, label: str) -> str:
@@ -1106,8 +1140,8 @@ def _deal(client: _ODataClient, order: dict, tkp: dict) -> dict[str, str]:
         "deal_key": key,
         "deal_name": _name(row),
         "deal_status": _DEAL_STATUS.get(status, status),
-        "deal_start": str(row.get("ДатаНачала") or "")[:10],
-        "deal_finish": str(row.get("ДатаОкончания") or "")[:10],
+        "deal_start": _stamp(str(row.get("ДатаНачала") or "")),
+        "deal_finish": _stamp(str(row.get("ДатаОкончания") or "")),
     }
 
 

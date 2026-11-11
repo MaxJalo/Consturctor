@@ -14,6 +14,7 @@ from app.sdk_agent.bridge import (
     DEFAULT_SDK_MODEL,
     CursorSdkBridge,
     CursorSdkUnavailable,
+    _file_already_written,
     foreign_runner_pids,
 )
 from app.sdk_agent.files import (
@@ -476,6 +477,20 @@ def test_finished_work_result_accepts_files_actions_without_header() -> None:
     follow = build_continue_run_prompt()
     assert "Не начинай сначала" in follow
     assert "не читай их снова" in follow
+    assert "не вызывай excel.create_workbook снова" in follow
+
+
+def test_slow_excel_timeout_recovers_file_already_on_disk(tmp_path: Path) -> None:
+    target = tmp_path / "Последние_10_внешних_заказов.xlsx"
+    target.write_bytes(b"PK")
+    found = _file_already_written(
+        "excel.create_workbook",
+        {"filename": "Последние_10_внешних_заказов"},
+        str(tmp_path),
+    )
+    assert found is not None
+    assert found["filename"] == target.name
+    assert _file_already_written("excel.create_workbook", {"filename": "нет.xlsx"}, str(tmp_path)) is None
 
 
 def test_strip_to_work_result_keeps_sentence_split_by_marker() -> None:

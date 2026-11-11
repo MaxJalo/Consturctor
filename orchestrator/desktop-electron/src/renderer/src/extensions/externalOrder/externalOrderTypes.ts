@@ -33,6 +33,14 @@ export type ExternalOrderBrief = {
   onec_number?: string
   onec_key?: string
   onec_tkp_key?: string
+  onec_tkp_number?: string
+  onec_order_number?: string
+  document_date?: string
+  amount?: string
+  manager?: string
+  owners?: Record<string, string>
+  onec_status?: string
+  source_kind?: string
   path_label?: string
   route?: string
   route_label?: string
@@ -90,6 +98,7 @@ export type ExternalOrderFinding = {
   owner_role: string
   owner_label?: string
   proposed_by?: string
+  batch_id?: string
   /** 'ai' — черновик подготовила модель Cursor. */
   filled_by?: string
   confidence?: string
@@ -106,6 +115,7 @@ export type ExternalOrderAiMark = {
   source: string
   quote: string
   confidence: string
+  batch_id?: string
   trace?: {
     document: string
     version: string

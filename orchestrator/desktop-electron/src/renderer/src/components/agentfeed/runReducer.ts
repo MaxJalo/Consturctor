@@ -278,10 +278,45 @@ export function pushUserMessage(items: FeedItem[], text: string): FeedItem[] {
  * assistant segment already streamed live), drop that message so the answer is
  * shown once, as a crisp result — the way Cursor keeps the last block separate.
  */
+function turnStart(items: FeedItem[]): number {
+  for (let index = items.length - 1; index >= 0; index -= 1) {
+    const item = items[index]
+    if (item.kind === 'message' && item.role === 'user') return index + 1
+  }
+  return 0
+}
+
+function sameSpoken(left: string, right: string): boolean {
+  if (left.length < 40 || right.length < 40) return false
+  if (left.includes(right) || right.includes(left)) return true
+  const size = Math.min(80, left.length, right.length)
+  return left.slice(0, size) === right.slice(0, size)
+}
+
 function pushResult(items: FeedItem[], text: string): FeedItem[] {
   const value = stripRunChrome(text)
   if (!value) return items
   const valuePlain = plainReply(value)
+  const drop = new Set<number>()
+  const spoken: string[] = []
+  for (let index = turnStart(items); index < items.length; index += 1) {
+    const item = items[index]
+    if (item.kind !== 'message' || item.role !== 'agent') continue
+    const part = plainReply(item.text)
+    if (!sameSpoken(part, valuePlain)) continue
+    spoken.push(part)
+    drop.add(index)
+  }
+  if (drop.size) {
+    const spokenPlain = spoken.join('')
+    // Поток уже показал весь итог. Второй блок не нужен.
+    if (spokenPlain.includes(valuePlain)) return items
+    // Итог длиннее потока на хвост. Оставляем один блок, а не поток и итог сразу.
+    return [
+      ...items.filter((_, index) => !drop.has(index)),
+      { kind: 'result', id: nextId('res'), text: value }
+    ]
+  }
   if (resultRepeatsTurn(valuePlain, items)) return items
   const last = items[items.length - 1]
   const lastPlain = last && last.kind === 'message' && last.role === 'agent' ? plainReply(last.text) : ''

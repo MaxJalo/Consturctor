@@ -200,11 +200,16 @@ def _date_in(text: str) -> date | None:
     if not match:
         return None
     try:
-        if match.group(1):
-            return date(int(match.group(3)), int(match.group(2)), int(match.group(1)))
-        return date(int(match.group(4)), int(match.group(5)), int(match.group(6)))
+        found = (
+            date(int(match.group(3)), int(match.group(2)), int(match.group(1)))
+            if match.group(1)
+            else date(int(match.group(4)), int(match.group(5)), int(match.group(6)))
+        )
     except ValueError:
         return None
+    if found.year < 1900:
+        return None
+    return found
 
 
 def _days_in(text: str) -> int:
@@ -833,8 +838,14 @@ def _safe_name(code: str, suffix: str = ".xml") -> str:
     return f"План работ {cleaned.strip() or 'заказ'}{suffix}"
 
 
-def _drop_drafts(order: ExternalOrder) -> None:
+def _drop_drafts(order: ExternalOrder, suffix: str) -> None:
+    """Снимает незатверждённый черновик того же формата. XML и .mpp живут рядом."""
+    wanted = (suffix or "").casefold()
+    if not wanted:
+        return
     for doc in [item for item in order.documents if item.kind == _PLAN_KIND and not item.approved]:
+        if not (doc.file_name or "").casefold().endswith(wanted):
+            continue
         path = Path(doc.stored_path) if doc.stored_path else None
         if path and path.is_file():
             path.unlink()
@@ -842,7 +853,7 @@ def _drop_drafts(order: ExternalOrder) -> None:
 
 
 def _store(db: Session, order: ExternalOrder, *, raw: bytes, filename: str, mime: str, note: str) -> str:
-    _drop_drafts(order)
+    _drop_drafts(order, Path(filename).suffix)
     doc_id = uuid4().hex
     folder = BACKEND_ROOT / "storage" / "external_orders" / order.id
     folder.mkdir(parents=True, exist_ok=True)
@@ -893,7 +904,7 @@ def build_work_plan(
     filled = [f"{item['label']}: {item['value']}" for item in model["conditions"] if not item["missing"]]
     parts = [f"План работ {order.code} записан в дело: {filename}."]
     parts.append(f"Сроки {datetime.fromisoformat(model['start']):%d.%m.%Y} – {datetime.fromisoformat(model['finish']):%d.%m.%Y} по производственному календарю.")
-    parts.append("Откройте файл в Project или соберите .mpp на ПК. Общий шаблон на диске не менялся.")
+    parts.append("XML записан. Файл .mpp собирается на этом компьютере в том же ходе. Общий шаблон на диске не менялся.")
     if model["contract_number"]:
         parts.append(f"Договор {model['contract_number']}.")
     if filled:
@@ -904,6 +915,8 @@ def build_work_plan(
     return {
         "ok": True,
         "summary": " ".join(parts),
+        "note": "Файл уже в файлах дела. Другого инструмента сохранения нет. Назови file_name и остановись.",
+        "order_id": order.id,
         "file_name": filename,
         "document_id": doc_id,
         "missing": missing,

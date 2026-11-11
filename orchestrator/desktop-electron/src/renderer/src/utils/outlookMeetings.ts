@@ -513,11 +513,31 @@ export async function ensureOutlookMeetings(
           allVisible: Boolean(options.allVisible)
         }
   )
-  if (!result.ok) return { ...result, cached: false }
-  publishCalendarStatus(result.calendars || [])
-  const baseStatus = baseCalendar ? calendarStatusFor(baseCalendar, result.calendars || []) : undefined
-  if (baseStatus?.hint && !result.meetings.length) {
-    return { ok: false, meetings: [], error: `Календарь «${baseCalendar}»: ${baseStatus.hint}`, cached: false }
+  if (!result.ok || result.meetings.length === 0) {
+    const cache = readCache()
+    if (cache && cache.owner === cacheOwner && cache.meetings.length) {
+      const meetings = dedupeMeetingEvents(
+        askOwners
+          ? cache.meetings
+          : cache.meetings.filter((item) => meetingInvolvesPerson(item, owner))
+      )
+      if (meetings.length) {
+        return { ok: true, meetings, error: result.ok ? '' : result.error || '', cached: true }
+      }
+    }
+    if (!result.ok) return { ...result, cached: false }
+    publishCalendarStatus(result.calendars || [])
+    const baseStatus = baseCalendar ? calendarStatusFor(baseCalendar, result.calendars || []) : undefined
+    if (baseStatus?.hint) {
+      return {
+        ok: false,
+        meetings: [],
+        error: `Календарь «${baseCalendar}»: ${baseStatus.hint}`,
+        cached: false
+      }
+    }
+  } else {
+    publishCalendarStatus(result.calendars || [])
   }
   writeCache({
     day: today,

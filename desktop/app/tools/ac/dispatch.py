@@ -27,9 +27,8 @@ from app.tools.ac.kpi_profile_tool import register_kpi_profile_tool
 from app.tools.ac.wait_tool import register_wait_tool
 from app.tools.ac.web_tools import register_web_tools
 from app.tools.ac.workers import com_availability
+from app.tools.ac.workers.com_gateway_client import GatewayComWorker
 from app.tools.ac.workers.onec_worker import OneCReadOnlyWorker
-from app.tools.ac.workers.outlook_com_worker import OutlookComWorker
-from app.tools.ac.workers.subprocess_com_worker import SubprocessComWorker
 
 
 class AcToolError(RuntimeError):
@@ -63,9 +62,8 @@ def _ensure_agent_id(arguments: dict[str, Any]) -> dict[str, Any]:
 def build_registry() -> ToolRegistry:
     registry = ToolRegistry()
     resolver = AgentWorkspaceResolver(_workspaces_root())
-    # Один процесс с открытым Outlook: subprocess поднимает второй экземпляр
-    # без профиля — GetDefaultFolder даёт MAPI_E_NOT_FOUND, Save — «Не выполнено».
-    outlook_gui = OutlookComWorker(safe_mode=True, allow_direct_com_calls=True)
+    # COM живёт в одном шлюзе. Реестр только сдаёт заявку по HTTP.
+    outlook_gui = GatewayComWorker("outlook")
     register_outlook_com_tools(registry, outlook_gui, outlook_gui)
     register_onec_readonly_tools(registry, _onec_com_worker())
     register_report_tools(registry, skip_existing=True)
@@ -91,9 +89,9 @@ _REGISTRY: ToolRegistry | None = None
 
 
 def _onec_com_worker():
-    """1С COM: 32-bit V83.COMConnector через cscript, не py -3.12-32."""
+    """1С COM идёт в шлюз, а не в новый процесс на каждый вызов."""
     if com_availability.is_onec_com_available():
-        return SubprocessComWorker()
+        return GatewayComWorker("onec")
     return OneCReadOnlyWorker()
 
 

@@ -31,6 +31,13 @@ from app.models.external_order import (
 )
 
 _ALLOWED = {".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document", ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", ".pdf": "application/pdf"}
+_ONEC_EXTRA = {
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".png": "image/png",
+    ".doc": "application/msword",
+    ".xls": "application/vnd.ms-excel",
+}
 _KINDS = {
     "tz",
     "tkp",
@@ -339,6 +346,106 @@ def store_file(
     if doc not in order.documents:
         order.documents.append(doc)
     return doc
+
+
+def _kind_from_filename(filename: str) -> str:
+    folded = Path(filename).stem.casefold().replace("ё", "е")
+    if "спецификац" in folded or folded.startswith("спец"):
+        return "specification"
+    if "договор" in folded:
+        return "contract"
+    if re.search(r"(^|[^a-zа-я])тз([^a-zа-я]|$)", folded) or ("техническ" in folded and "задан" in folded):
+        return "tz"
+    if "ткп" in folded or "коммерческ" in folded:
+        return "tkp"
+    return "other"
+
+
+def store_onec_bytes(
+    db: Session,
+    order: ExternalOrder,
+    *,
+    file_id: str,
+    filename: str,
+    raw: bytes,
+) -> ExternalOrderDocument | None:
+    """Кладёт файл из 1С в то же дело, что и ручная загрузка. Повтор по ключу или sha256 пропускает."""
+    marker = f"onec:{(file_id or '').strip()}"
+    if marker == "onec:":
+        return None
+    if any(marker in (item.note or "") for item in order.documents):
+        return None
+    if not raw or len(raw) > 12_000_000:
+        return None
+    digest = hashlib.sha256(raw).hexdigest()
+    if any(item.sha256 == digest for item in order.documents):
+        return None
+    suffix = Path(filename or "").suffix.casefold()
+    if suffix not in _ALLOWED and suffix not in _ONEC_EXTRA:
+        return None
+    kind = _kind_from_filename(filename)
+    doc_id = _new_id()
+    version = f"v{_next_number([item.version for item in order.documents if item.kind == kind], 'v')}"
+    safe = re.sub(r"[^\w.\-]+", "_", Path(filename).name)[:180] or f"file{suffix}"
+    folder = BACKEND_ROOT / "storage" / "external_orders" / order.id
+    folder.mkdir(parents=True, exist_ok=True)
+    path = folder / f"{doc_id}_{safe}"
+    path.write_bytes(raw)
+    doc = ExternalOrderDocument(
+        id=doc_id,
+        order_id=order.id,
+        kind=kind,
+        title=Path(filename).stem or kind,
+        version=version,
+        note=marker,
+        file_name=safe,
+        stored_path=str(path),
+        mime=_ALLOWED.get(suffix) or _ONEC_EXTRA.get(suffix) or "",
+        sha256=digest,
+        owner_role="ks",
+    )
+    db.add(doc)
+    db.flush()
+    if suffix in {".docx", ".xlsx"}:
+        try:
+            _extract(db, order, doc, raw, suffix)
+        except Exception:
+            pass
+    from app.services.external_orders import _audit
+
+    _audit(db, order, fio="система", role="it", action="file", detail=f"1С {doc.file_name}", after=safe)
+    if doc not in order.documents:
+        order.documents.append(doc)
+    return doc
+
+
+def fetch_onec_file_bytes(tkp_key: str, order_key: str) -> list[tuple[str, str, bytes]]:
+    """Список и байты присоединённых файлов. Ошибка каталога или файла не роняет карточку."""
+    from app.services.external_order_onec import OnecLinkError, attached_files
+    from app.services.onec_artifacts import ArtifactError, download_artifact_file
+
+    found: list[tuple[str, str, bytes]] = []
+    seen: set[str] = set()
+    for kind, key in (("tkp", tkp_key), ("order", order_key)):
+        if not (key or "").strip():
+            continue
+        try:
+            listed = attached_files(key, kind=kind)
+        except OnecLinkError:
+            continue
+        for item in listed:
+            file_id = str(item.get("file_id") or "").strip()
+            if not file_id or file_id in seen:
+                continue
+            seen.add(file_id)
+            try:
+                got = download_artifact_file(file_id)
+            except ArtifactError:
+                continue
+            name = got.filename or str(item.get("filename") or file_id)
+            if got.content:
+                found.append((file_id, name, got.content))
+    return found
 
 
 def approve_file(db: Session, order: ExternalOrder, document_id: str, *, role: str, fio: str) -> None:
@@ -1267,6 +1374,7 @@ def document_excerpt_shells(order: ExternalOrder) -> list[dict]:
                 "approved": bool(doc.approved),
                 "owner_role": doc.owner_role,
                 "anchor": file_anchor(doc),
+                "source": "1С" if str(doc.note or "").startswith("onec:") else "",
                 "links": outgoing.get(doc.id, []),
                 "backlinks": incoming.get(doc.id, []),
                 "effective": "дата действия в файле не указана",

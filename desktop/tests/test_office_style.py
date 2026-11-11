@@ -198,6 +198,30 @@ def test_export_document_append_needs_started_report(tmp_path: Path) -> None:
     assert result.error_type == "APPEND_WITHOUT_REPORT"
 
 
+def test_export_document_ignores_invented_transcript_path(tmp_path: Path, monkeypatch) -> None:
+    from app.tools.ac import document_tools
+
+    def fail_load(_path: str) -> str:
+        raise AssertionError("обычный docx не должен читать расшифровку")
+
+    monkeypatch.setattr(document_tools, "_load_transcript", fail_load)
+    result = ReportExportDocumentTool(AgentWorkspaceResolver(tmp_path)).execute(
+        {
+            "workflow_id": "wf-docx",
+            "filename": "_probe_transcript",
+            "format": "md",
+            "title": "Записка",
+            "sections": [{"heading": "Текст", "body": "Содержание документа."}],
+            "transcript_path": "_probe_transcript",
+        }
+    )
+    assert result.ok
+    assert result.output_data["transcript_lines"] == 0
+    text = Path(result.output_data["path"]).read_text(encoding="utf-8")
+    assert "Содержание документа." in text
+    assert "Расшифровка" not in text
+
+
 def test_export_document_inserts_full_transcript(tmp_path: Path, monkeypatch) -> None:
     from app.tools.ac import document_tools
 

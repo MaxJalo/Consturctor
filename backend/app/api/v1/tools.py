@@ -151,7 +151,7 @@ def _dispatch_server_tool(
         elif tool_name == "external_order.case":
             from app.services.external_orders import invoke_tool as invoke_external_order
 
-            result = invoke_external_order(arguments, fio=auth.fio or "")
+            result = invoke_external_order(arguments, fio=auth.fio or "", user_id=auth.user_id or "")
         elif tool_name in MEETING_PLANNER_TOOLS:
             if tool_name in MEETING_PLANNER_WRITE_TOOLS:
                 _require_meeting_planner_writer(auth)

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from collections.abc import Callable
 from typing import Any
 
@@ -14,6 +15,7 @@ from app.tools.ac.tooling import (
     ToolSideEffectLevel,
 )
 from app.tools.ac.workers import msproject_com_actions
+from app.tools.ac.workers.com_gateway_client import GatewayError, call
 
 BUILD_PLAN_TOOL_NAME = "msproject.build_plan"
 TEMPLATE_OUTLINE_TOOL_NAME = "msproject.template_outline"
@@ -26,8 +28,19 @@ class MsProjectTool(BaseTool):
         self._action = action
 
     def execute(self, input_data: dict) -> ToolCallResult:
+        payload = input_data if isinstance(input_data, dict) else {}
         try:
-            output = self._action(input_data if isinstance(input_data, dict) else {})
+            if os.environ.get("COM_GATEWAY_OWNER") == "1":
+                output = self._action(payload)
+            else:
+                output = call("project", self.definition.name, payload, float(self.definition.timeout_seconds))
+        except GatewayError as exc:
+            return ToolCallResult(
+                ok=False,
+                tool_name=self.definition.name,
+                error_type=exc.error_type,
+                error_message=str(exc),
+            )
         except Exception as exc:  # noqa: BLE001
             return ToolCallResult(
                 ok=False,

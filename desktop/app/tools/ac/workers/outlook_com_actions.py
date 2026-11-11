@@ -14,6 +14,12 @@ from datetime import datetime, timedelta
 from typing import Any, Callable
 
 from app.tools.ac.workers import com_availability
+from app.tools.ac.workers.com_hot_store import (
+    calendar_query_key,
+    kept_after_error,
+    mail_query_key,
+    retain_list,
+)
 from app.tools.ac.workers.outlook_com_errors import (
     ComUnavailableError,
     DangerousOutlookActionBlockedError,
@@ -370,6 +376,10 @@ def _outlook_session_main() -> None:
 
 
 def _run_com_read_locked(operation: Callable[[Any], dict], access_error_prefix: str) -> dict:
+    return _outlook_com_operation(operation, access_error_prefix)
+
+
+def _outlook_com_operation(operation: Callable[[Any], dict], access_error_prefix: str) -> dict:
     global _com_initialized
     pythoncom, win32com_client = _load_pywin32_modules()
     _log_progress("step=load_pywin32 ok")
@@ -1936,7 +1946,15 @@ def search_mail(input_data: dict) -> dict:
             )
         return payload
 
-    return _run_com_read(_read, "Ошибка доступа к Outlook или MAPI")
+    key = mail_query_key(input_data)
+    try:
+        payload = _run_com_read(_read, "Ошибка доступа к Outlook или MAPI")
+    except (OutlookAccessError, OutlookComError, ComUnavailableError) as exc:
+        kept = kept_after_error("mail", key, exc)
+        if kept is None:
+            raise
+        return kept
+    return retain_list("mail", key, payload, "messages")
 
 
 def read_calendar(input_data: dict) -> dict:
@@ -2302,7 +2320,15 @@ def read_calendar(input_data: dict) -> dict:
             "range_end": end_at.isoformat(),
         }
 
-    return _run_com_read(_read, "Ошибка доступа к Outlook Calendar")
+    key = calendar_query_key(input_data)
+    try:
+        payload = _run_com_read(_read, "Ошибка доступа к Outlook Calendar")
+    except (OutlookAccessError, OutlookComError, ComUnavailableError) as exc:
+        kept = kept_after_error("calendar", key, exc)
+        if kept is None:
+            raise
+        return kept
+    return retain_list("calendar", key, payload, "events")
 
 
 AI_AGENT_SUBJECT_PREFIX = "[ИИ-агент] "

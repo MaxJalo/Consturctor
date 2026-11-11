@@ -1,10 +1,11 @@
 from __future__ import annotations
 
+import logging
 import threading
 import time
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
@@ -14,8 +15,10 @@ from app.db.session import SessionLocal, get_db, pool_is_saturated
 from app.services.external_orders import (
     ExternalOrderError,
     accept_finding,
+    accept_finding_batch,
     accept_plan,
     accept_role_findings,
+    answer_service_gap,
     add_baseline,
     add_decision,
     add_document,
@@ -40,6 +43,9 @@ from app.services.external_orders import (
     publish_order_plan,
     recent_onec_orders,
     refresh_onec,
+    refresh_stored_onec,
+    sync_order_registry,
+    take_order,
     correct_finding,
     reject_finding,
     run_copilot,
@@ -228,12 +234,15 @@ def get_meta(
 
 
 @router.get("")
-def get_orders(auth: AuthContext = Depends(get_current_user)) -> dict:
+def get_orders(auth: AuthContext = Depends(get_current_user)) -> Response:
     _ = auth
-    from app.services.external_orders import order_briefs
+    from app.services.external_orders import order_briefs_body
 
-    items = _call(order_briefs)
-    return {"count": len(items), "orders": items}
+    try:
+        body = order_briefs_body()
+    except ExternalOrderError as exc:
+        raise HTTPException(status_code=exc.status, detail=exc.detail) from exc
+    return Response(content=body, media_type="application/json")
 
 
 @router.post("/register")
@@ -409,6 +418,92 @@ def get_onec_recent(
     }
     kind = "orders" if source == "orders" else "tkp"
     return _call(lambda: recent_onec_orders(skip=skip, top=top, filters=filters, refresh=refresh, source=kind))
+
+
+@router.post("/onec/sync")
+def post_onec_sync(
+    as_role: str = Query(default=""),
+    refresh: bool = Query(default=False),
+    skip: int = Query(default=0, ge=0),
+    top: int = Query(default=50, ge=1, le=50),
+    auth: AuthContext = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> dict:
+    return _call(
+        lambda: sync_order_registry(
+            db,
+            role=_role(auth, as_role, db),
+            fio=auth.fio or "",
+            refresh=refresh,
+            skip=skip,
+            top=top,
+        )
+    )
+
+
+@router.post("/{order_id}/take")
+def post_take(
+    order_id: str,
+    as_role: str = Query(default=""),
+    auth: AuthContext = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> dict:
+    body = _call(
+        lambda: take_order(
+            db,
+            order_id,
+            role=_role(auth, as_role, db),
+            fio=auth.fio or "",
+        )
+    )
+    _detail_cache[order_id] = (time.monotonic(), body)
+    return body
+
+
+_onec_jobs: set[str] = set()
+_onec_jobs_lock = threading.Lock()
+
+
+def _refresh_onec_later(order_id: str, role: str, fio: str) -> None:
+    db = SessionLocal()
+    try:
+        body = refresh_stored_onec(db, order_id, role=role, fio=fio)
+        _detail_cache[order_id] = (time.monotonic(), body)
+    except Exception:
+        logging.getLogger("app.external_orders").warning("stored 1C refresh failed for %s", order_id, exc_info=True)
+    finally:
+        db.close()
+        with _onec_jobs_lock:
+            _onec_jobs.discard(order_id)
+
+
+@router.post("/{order_id}/onec/stored")
+def post_onec_stored(
+    order_id: str,
+    as_role: str = Query(default=""),
+    auth: AuthContext = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> dict:
+    """Карточка сразу. Чтение 1С дописывает её следом и не держит этот запрос."""
+    role = _role(auth, as_role, db)
+    fio = auth.fio or ""
+    try:
+        body = get_order(db, order_id)
+    except ExternalOrderError as exc:
+        raise HTTPException(status_code=exc.status, detail=exc.detail) from exc
+    with _onec_jobs_lock:
+        start = order_id not in _onec_jobs
+        if start:
+            _onec_jobs.add(order_id)
+    if start:
+        threading.Thread(
+            target=_refresh_onec_later,
+            args=(order_id, role, fio),
+            name="onec-refresh",
+            daemon=True,
+        ).start()
+    _detail_cache[order_id] = (time.monotonic(), body)
+    return body
 
 
 @router.post("/onec/import-tkp")
@@ -988,6 +1083,58 @@ def post_copilot(
             answers=payload.answers,
             auto_prepare=payload.auto_prepare,
             use_ai=payload.use_ai,
+        )
+    )
+
+
+class GapAnswerIn(BaseModel):
+    question_id: str = ""
+    value: str = ""
+    batch_id: str = ""
+    document_id: str = ""
+
+
+class AcceptBatchIn(BaseModel):
+    batch_id: str = ""
+
+
+@router.post("/{order_id}/gaps/answer")
+def post_gap_answer(
+    order_id: str,
+    body: GapAnswerIn,
+    as_role: str = Query(default=""),
+    auth: AuthContext = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> dict:
+    return _call(
+        lambda: answer_service_gap(
+            db,
+            order_id,
+            role=_role(auth, as_role, db),
+            fio=auth.fio or "",
+            question_id=body.question_id,
+            value=body.value,
+            batch_id=body.batch_id,
+            document_id=body.document_id,
+        )
+    )
+
+
+@router.post("/{order_id}/findings/accept-batch")
+def post_accept_batch(
+    order_id: str,
+    body: AcceptBatchIn,
+    as_role: str = Query(default=""),
+    auth: AuthContext = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> dict:
+    return _call(
+        lambda: accept_finding_batch(
+            db,
+            order_id,
+            body.batch_id,
+            role=_role(auth, as_role, db),
+            fio=auth.fio or "",
         )
     )
 

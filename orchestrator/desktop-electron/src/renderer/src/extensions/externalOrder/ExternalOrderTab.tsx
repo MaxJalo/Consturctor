@@ -1,5 +1,5 @@
-import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { Paperclip } from 'lucide-react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { ChevronDown, Paperclip } from 'lucide-react'
 import type { UserProfile } from '../../api/types'
 import { ApiError } from '../../api/types'
 import { api } from '../../api/client'
@@ -33,9 +33,7 @@ import {
 import type {
   CopilotAiResult,
   CopilotQuestion,
-  ExternalOnecFilters,
   ExternalOnecSearch,
-  ExternalOnecTkp,
   ExternalOrder,
   ExternalOrderBrief,
   ExternalOrderMeta,
@@ -336,6 +334,32 @@ function roleNames(roles?: string[]): string {
   return (roles || []).map((item) => ROLE_NAME[item] || item).join(', ')
 }
 
+function documentTitle(item: Brief): string {
+  const tkp = item.onec_tkp_number || ''
+  const sale = item.onec_order_number || item.onec_number || ''
+  if (tkp && sale && tkp !== sale) return `${tkp} · ${sale}`
+  return tkp || sale || item.code
+}
+
+function samePerson(left: string, right: string): boolean {
+  const norm = (value: string) => value.trim().toLocaleLowerCase().replace(/ё/g, 'е').replace(/\s+/g, ' ')
+  const a = norm(left)
+  const b = norm(right)
+  if (!a || !b) return false
+  if (a === b || a.includes(b) || b.includes(a)) return true
+  const ap = a.split(' ')
+  const bp = b.split(' ')
+  if (ap[0] !== bp[0] || ap[0].length < 4) return false
+  const shorter = ap.length <= bp.length ? ap : bp
+  const longer = ap.length <= bp.length ? bp : ap
+  return shorter.every((part) => longer.some((token) => token.startsWith(part) || part.startsWith(token)))
+}
+
+function isMyOrder(item: Brief, fio: string): boolean {
+  if (samePerson(item.manager || '', fio)) return true
+  return Object.values(item.owners || {}).some((name) => samePerson(name, fio))
+}
+
 function activePassport(passports: StagePassport[]): StagePassport | null {
   return passports.find((item) => item.state === 'current' || item.state === 'blocked') || passports[0] || null
 }
@@ -345,7 +369,7 @@ function agentBrief(order: Order, role: string, step?: SimplifiedStep, extra = '
   const passport = activePassport(buildStagePassports(order))
   const question = (extra || step?.prompt || '').trim()
   return [
-    `Заказ ${order.code} (order_id=${order.id}), заказчик ${order.customer}.`,
+    `Заказ ${documentTitle(order)} (order_id=${order.id}), заказчик ${order.customer}.`,
     `Служба: ${ROLE_NAME[role] || role} (role=${role}). Этап: ${passport?.label || order.status_label}.`,
     question || 'Что уже есть по службе, какой черновик подготовить и что осталось пустым.',
     'Черновик не факт, пока его не приняли. Этап не переводи и ничего не отправляй.',
@@ -401,7 +425,7 @@ function chatContext(order: Order, role: string): AgentChatContext {
     stageLabels: Object.fromEntries(LINE.map((step) => [step.id, step.label])),
     order: {
       id: order.id,
-      code: order.code,
+      code: documentTitle(order),
       customer: order.customer,
       product: order.product,
       stage,
@@ -413,7 +437,7 @@ function chatContext(order: Order, role: string): AgentChatContext {
       )
     },
     caseBrief: briefFromLoadedOrder({
-      code: order.code,
+      code: documentTitle(order),
       customer: order.customer,
       product: order.product,
       stageLabel: passport?.label || order.status_label,
@@ -425,8 +449,18 @@ function chatContext(order: Order, role: string): AgentChatContext {
       paymentNote: order.payment_note || '',
       openChecks: (passport?.open_checks || []).map((item) => item.text),
       ...serviceLists(order, role)
-    })
+    }),
+    gaps: serviceGaps(order, role)
   }
+}
+
+function serviceGaps(order: Order, role: string) {
+  const drafted = new Set(
+    (order.findings || []).filter((item) => item.status === 'draft').flatMap((item) => [item.field, item.id])
+  )
+  return buildRoleQuestions(order, role)
+    .filter((item) => item.id && !drafted.has(item.field) && !drafted.has(item.id))
+    .map((item) => ({ id: item.id, field: item.field, prompt: item.prompt }))
 }
 
 function rememberReturn(intent: ReturnIntent): void {
@@ -471,8 +505,16 @@ function docflowValues(schema: DocflowKindSchema, draft: DocDraft): Record<strin
 function briefMatches(item: Brief, query: string): boolean {
   const needle = query.trim().toLowerCase()
   if (!needle) return true
-  return [item.code, item.customer, item.product, item.onec_number, item.path_label]
-    .some((value) => (value || '').toLowerCase().includes(needle))
+  return [
+    item.code,
+    item.customer,
+    item.product,
+    item.onec_number,
+    item.onec_tkp_number,
+    item.onec_order_number,
+    item.manager,
+    item.path_label
+  ].some((value) => (value || '').toLowerCase().includes(needle))
 }
 
 const DESK_ROLES: { id: string; label: string }[] = [
@@ -582,7 +624,6 @@ export function ExternalOrderTab({
   const [requestDraft, setRequestDraft] = useState<RequestDraft>(emptyRequest)
   const [evidence, setEvidence] = useState<Record<string, string>>({})
   const [deskOrder, setDeskOrder] = useState<Order | null>(null)
-  const [deskAll, setDeskAll] = useState(false)
   const [helper, setHelper] = useState<ExternalOrderReview | null>(null)
   const [helperFor, setHelperFor] = useState('')
   const [copilot, setCopilot] = useState<CopilotState>(NO_COPILOT)
@@ -590,12 +631,18 @@ export function ExternalOrderTab({
   const [agentBusy, setAgentBusy] = useState(false)
   const [search, setSearch] = useState('')
   const [stageFilter, setStageFilter] = useState('')
+  const [docFilter, setDocFilter] = useState('')
+  const [syncing, setSyncing] = useState(false)
+  const [syncMore, setSyncMore] = useState(false)
+  const syncedOnce = useRef(false)
+  const syncToken = useRef(0)
   const [routeFilter, setRouteFilter] = useState('')
   const [blockedOnly, setBlockedOnly] = useState(false)
   const [waitingFilter, setWaitingFilter] = useState('')
   const [draftsOnly, setDraftsOnly] = useState(false)
   const [registryTop, setRegistryTop] = useState(50)
   const [registrySkip, setRegistrySkip] = useState(0)
+  const [registrySort, setRegistrySort] = useState<RegistrySort>(null)
   const [auditOrders, setAuditOrders] = useState<Order[]>([])
   const [auditLoading, setAuditLoading] = useState(false)
   const [auditAction, setAuditAction] = useState('')
@@ -610,7 +657,13 @@ export function ExternalOrderTab({
   const [procedureNote, setProcedureNote] = useState('')
 
   const fail = (err: unknown): void => {
-    setError(err instanceof ApiError ? err.message : err instanceof Error ? err.message : 'Не удалось выполнить действие')
+    const message = err instanceof ApiError ? err.message : err instanceof Error ? err.message : 'Не удалось выполнить действие'
+    if (message.includes('занят другими запросами')) return
+    if (message.startsWith('Не удалось подключиться к backend')) {
+      setError('')
+      return
+    }
+    setError(message)
   }
 
   const reload = useCallback(async (role: string): Promise<void> => {
@@ -622,6 +675,41 @@ export function ExternalOrderTab({
     setOrders(list)
     setListReady(true)
   }, [])
+
+  const refreshRegistry = useCallback(async (refresh = false): Promise<void> => {
+    const token = ++syncToken.current
+    setSyncing(true)
+    setSyncMore(false)
+    let skip = 0
+    try {
+      while (token === syncToken.current) {
+        const result = await api.syncExternalOrders(asRole, refresh, skip)
+        if (token !== syncToken.current) return
+        if (result.orders) setOrders(result.orders)
+        setSyncing(false)
+        const next = Number(result.next_skip ?? skip)
+        if (!result.has_more || next <= skip) {
+          setSyncMore(false)
+          return
+        }
+        setSyncMore(true)
+        skip = next
+      }
+    } catch (err) {
+      if (token === syncToken.current) fail(err)
+    } finally {
+      if (token === syncToken.current) {
+        setSyncing(false)
+        setSyncMore(false)
+      }
+    }
+  }, [asRole])
+
+  useEffect(() => {
+    return () => {
+      syncToken.current += 1
+    }
+  }, [asRole])
 
   useEffect(() => {
     let cancelled = false
@@ -722,10 +810,41 @@ export function ExternalOrderTab({
     setDeskOrder((prev) => (prev?.id === order.id ? order : prev))
   }
 
+  function rememberOrder(id: string, order: Order): void {
+    setCurrent((prev) => (prev?.id === id ? order : prev))
+    setDeskOrder((prev) => (prev?.id === id ? order : prev))
+  }
+
+  useEffect(() => {
+    const id = current?.id
+    if (!id) return
+    const timer = window.setInterval(() => {
+      void api.externalOrder(id, asRole).then((fresh) => {
+        setCurrent((prev) =>
+          prev?.id === id && (prev.documents?.length || 0) !== (fresh.documents?.length || 0) ? fresh : prev
+        )
+        setDeskOrder((prev) =>
+          prev?.id === id && (prev.documents?.length || 0) !== (fresh.documents?.length || 0) ? fresh : prev
+        )
+      }).catch(() => undefined)
+    }, 8000)
+    return () => window.clearInterval(timer)
+  }, [current?.id, asRole])
+
+  function refreshStoredOnec(id: string, order: Order): void {
+    if (!order.onec_key && !order.onec_tkp_key) return
+    void api.refreshExternalOrderOnec(id, asRole).catch(() => undefined)
+    window.setTimeout(() => {
+      void api.externalOrder(id, asRole).then((fresh) => rememberOrder(id, fresh)).catch(() => undefined)
+    }, 4000)
+  }
+
   async function selectOrder(id: string): Promise<void> {
     setError('')
     try {
-      setDeskOrder(await api.externalOrder(id, asRole))
+      const order = await api.externalOrder(id, asRole)
+      setDeskOrder(order)
+      refreshStoredOnec(id, order)
     } catch (err) {
       fail(err)
     }
@@ -735,7 +854,9 @@ export function ExternalOrderTab({
     setError('')
     setReturnPage(page)
     try {
-      setCurrent(await api.externalOrder(id, asRole))
+      const order = await api.externalOrder(id, asRole)
+      setCurrent(order)
+      refreshStoredOnec(id, order)
     } catch (err) {
       fail(err)
     }
@@ -818,7 +939,7 @@ export function ExternalOrderTab({
           keys: {},
           tables: {},
           basis: null,
-          label: `Внешний заказ ${order.code}`,
+          label: `Заказ ${documentTitle(order)}`,
           copy: false
         }
       })
@@ -914,13 +1035,14 @@ export function ExternalOrderTab({
   const requestFilesRef = useRef<HTMLInputElement | null>(null)
   const canCreate = role === 'ks' || role === 'development'
   const canLoad = role === 'ks' || role === 'development' || role === 'finance' || role === 'it'
+  useEffect(() => {
+    if (!canLoad || !listReady || syncedOnce.current) return
+    syncedOnce.current = true
+    void refreshRegistry(false)
+  }, [canLoad, listReady, refreshRegistry])
   const moves = MOVES[role] || []
-  const waitingMine = orders.filter((item) => {
-    if (item.status === 'closed') return false
-    const step = LINE.find((entry) => entry.statuses.includes(item.status))
-    return Boolean(step?.owner_roles.includes(role))
-  })
-  const deskList = deskAll ? orders : waitingMine
+  const myOrders = orders.filter((item) => item.status !== 'closed' && isMyOrder(item, user.fio || ''))
+  const deskList = myOrders
   const deskPassport = deskOrder ? activePassport(buildStagePassports(deskOrder)) : null
   const registry = orders.filter((item) => {
     if (!briefMatches(item, search)) return false
@@ -929,10 +1051,18 @@ export function ExternalOrderTab({
     if (blockedOnly && !(item.blocks || []).length) return false
     if (waitingFilter && !(item.waiting_roles || []).includes(waitingFilter)) return false
     if (draftsOnly && !(item.draft_findings_count || 0)) return false
+    if (!item.source_kind && !item.onec_key && !item.onec_tkp_key) return false
+    if (docFilter === 'tkp' && item.source_kind !== 'tkp') return false
+    if (docFilter === 'order' && item.source_kind !== 'order' && item.source_kind !== 'both') return false
     return true
   })
-  const registryStart = registrySkip < registry.length ? registrySkip : 0
-  const registryPage = registry.slice(registryStart, registryStart + registryTop)
+  const registrySorted = sortRegistry(registry, registrySort)
+  const registryStart = registrySkip < registrySorted.length ? registrySkip : 0
+  const registryPage = registrySorted.slice(registryStart, registryStart + registryTop)
+  function chooseRegistrySort(key: RegistrySortKey): void {
+    setRegistrySort((current) => toggleRegistrySort(current, key))
+    setRegistrySkip(0)
+  }
   const reconcileOrders = [...orders].sort((a, b) => (b.open_diffs_count || 0) - (a.open_diffs_count || 0))
 
   const auditRows = useMemo(
@@ -978,20 +1108,20 @@ export function ExternalOrderTab({
       {current ? (
         <div className="eo-work">
           <aside className="eo-work-queue">
-            <h3>Ждут меня · {waitingMine.length}</h3>
+            <h3>Мои заказы · {myOrders.length}</h3>
             <div className="eo-work-list">
-              {waitingMine.length ? waitingMine.map((item) => (
+              {myOrders.length ? myOrders.map((item) => (
                 <button
                   key={item.id}
                   type="button"
                   className={item.id === current.id ? 'eo-queue-item is-active' : 'eo-queue-item'}
                   onClick={() => void openOrder(item.id)}
                 >
-                  <b>{item.code}</b>
+                  <b>{documentTitle(item)}</b>
                   <span>{item.customer}</span>
                   <small>{attentionLine(item, role) || item.status_label}</small>
                 </button>
-              )) : <p className="eo-muted">Сейчас от вашей службы ничего не ждут.</p>}
+              )) : <p className="eo-muted">Вам пока не дали заказов и вы ничего не взяли.</p>}
             </div>
             <button type="button" className="eo-queue-all" onClick={() => setCurrent(null)}>Вся очередь</button>
           </aside>
@@ -1033,20 +1163,20 @@ export function ExternalOrderTab({
             </div>
             <div className="eo-tiles">
               <div className="eo-tile">
-                <small>Ждут моей службы</small>
-                <b>{waitingMine.length}</b>
+                <small>Мои заказы</small>
+                <b>{myOrders.length}</b>
               </div>
               <div className="eo-tile">
                 <small>Открытые пункты в этих заказах</small>
-                <b>{sumBy(waitingMine, 'open_checks_count')}</b>
+                <b>{sumBy(myOrders, 'open_checks_count')}</b>
               </div>
               <div className="eo-tile">
                 <small>Черновики ИИ на подтверждение</small>
-                <b>{sumBy(waitingMine, 'draft_findings_count')}</b>
+                <b>{sumBy(myOrders, 'draft_findings_count')}</b>
               </div>
-              <div className={waitingMine.some((item) => (item.blocks || []).length) ? 'eo-tile is-stop' : 'eo-tile'}>
+              <div className={myOrders.some((item) => (item.blocks || []).length) ? 'eo-tile is-stop' : 'eo-tile'}>
                 <small>Блокировки переходов</small>
-                <b>{waitingMine.filter((item) => (item.blocks || []).length).length}</b>
+                <b>{myOrders.filter((item) => (item.blocks || []).length).length}</b>
               </div>
             </div>
           </section>
@@ -1208,19 +1338,11 @@ export function ExternalOrderTab({
           ) : null}
           <section className="eo-window eo-window-main">
             <div className="eo-window-head">
-              <h3>{deskAll ? 'Все заказы' : 'Ждут действия моей службы'}</h3>
-              <div className="eo-kind-tabs">
-                <button type="button" className={deskAll ? '' : 'is-active'} onClick={() => setDeskAll(false)}>
-                  Ждут меня ({waitingMine.length})
-                </button>
-                <button type="button" className={deskAll ? 'is-active' : ''} onClick={() => setDeskAll(true)}>
-                  Все ({orders.length})
-                </button>
-              </div>
+              <h3>Мои заказы</h3>
             </div>
             {!listReady && !orders.length ? <p>Загружаю заказы…</p> : null}
             {listReady && !deskList.length ? (
-              <p className="eo-muted">{deskAll ? 'Заказов нет.' : 'Сейчас от вашей службы ничего не ждут.'}</p>
+              <p className="eo-muted">Вам пока не дали заказов и вы ничего не взяли. Возьмите заказ в реестре.</p>
             ) : null}
             {deskList.length ? (
               <OrderTable
@@ -1235,7 +1357,7 @@ export function ExternalOrderTab({
           {deskOrder ? (
             <section className="eo-window eo-window-work">
               <div className="eo-window-head">
-                <h3>{deskOrder.code} · {deskOrder.customer}</h3>
+                <h3>{documentTitle(deskOrder)} · {deskOrder.customer}</h3>
                 <span className={deskPassport?.blocker ? 'eo-tag is-stop' : 'eo-tag'}>
                   {deskPassport ? `${deskPassport.label} · ${deskPassport.checks_done}/${deskPassport.checks_total}` : deskOrder.status_label}
                 </span>
@@ -1284,8 +1406,17 @@ export function ExternalOrderTab({
         <div className="eo-windows">
           <section className="eo-window eo-window-main">
             <div className="eo-window-head">
-              <h3>Реестр внешних заказов</h3>
-              <span className="eo-status">{registry.length} из {orders.length}</span>
+              <h3>Реестр заказов</h3>
+              <div className="eo-head-actions">
+                <span className="eo-status">
+                  {syncing ? 'Читаю 1С…' : syncMore ? `Подгружаю ещё из 1С… ${registry.length}` : `${registry.length} из ${orders.length}`}
+                </span>
+                {canLoad ? (
+                  <button className="eo-btn" type="button" disabled={syncing} onClick={() => void refreshRegistry(true)}>
+                    Обновить из 1С
+                  </button>
+                ) : null}
+              </div>
             </div>
             <div className="eo-filters">
               <input
@@ -1319,11 +1450,26 @@ export function ExternalOrderTab({
                 <input type="checkbox" checked={draftsOnly} onChange={(event) => setDraftsOnly(event.target.checked)} />
                 Есть черновики ИИ
               </label>
+              <select value={docFilter} aria-label="Документ 1С" onChange={(event) => setDocFilter(event.target.value)}>
+                <option value="">ТКП и заказы</option>
+                <option value="tkp">Только ТКП</option>
+                <option value="order">Есть заказ клиента</option>
+              </select>
             </div>
             {!listReady && !orders.length ? <p>Загружаю заказы…</p> : null}
             {listReady && !registry.length ? <p className="eo-muted">Под фильтр заказы не попали.</p> : null}
             {registry.length ? (
-              <OrderTable full rows={registryPage} selectedId="" onSelect={(id) => void openOrder(id)} onOpen={(id) => void openOrder(id)} />
+              <OrderTable
+                full
+                rows={registryPage}
+                selectedId=""
+                sort={registrySort}
+                onSort={chooseRegistrySort}
+                onSelect={(id) => void openOrder(id)}
+                onOpen={(id) => void openOrder(id)}
+                onTake={role === 'viewer' ? undefined : (id) => void run(() => api.takeExternalOrder(id, asRole))}
+                mine={(item) => isMyOrder(item, user.fio || '')}
+              />
             ) : null}
             {registry.length > ONEC_PAGE_SIZES[0] ? (
               <div className="eo-pager">
@@ -1361,21 +1507,6 @@ export function ExternalOrderTab({
               </div>
             ) : null}
           </section>
-          {canLoad ? (
-            <OnecImport
-              orders={orders}
-              onError={fail}
-              onImport={(key, kind) =>
-                void run(async () => {
-                  const created = kind === 'order'
-                    ? await api.importExternalOnec(key, asRole)
-                    : await api.importExternalTkp(key, asRole)
-                  setCurrent(created)
-                  return created
-                })
-              }
-            />
-          ) : null}
         </div>
       ) : view === 'reconcile' ? (
         <div className="eo-windows">
@@ -1383,18 +1514,11 @@ export function ExternalOrderTab({
             <div className="eo-window-head">
               <h3>Сверка ТКП и договора / спецификации</h3>
               <div className="eo-actions">
-                <select
+                <OrderPick
+                  orders={reconcileOrders}
                   value={deskOrder?.id || ''}
-                  aria-label="Заказ"
-                  onChange={(event) => (event.target.value ? void selectOrder(event.target.value) : setDeskOrder(null))}
-                >
-                  <option value="">Выберите заказ</option>
-                  {reconcileOrders.map((item) => (
-                    <option key={item.id} value={item.id}>
-                      {item.code} · {item.customer}{item.open_diffs_count ? ` · ${item.open_diffs_count} расх.` : ''}
-                    </option>
-                  ))}
-                </select>
+                  onChange={(id) => void selectOrder(id)}
+                />
                 {deskOrder ? (
                   <button className="eo-btn" type="button" onClick={() => void openOrder(deskOrder.id)}>Открыть карточку</button>
                 ) : null}
@@ -1544,39 +1668,226 @@ function attentionLine(item: Brief, role: string): string {
     .join(' · ')
 }
 
+type RegistrySortKey = 'number' | 'date' | 'party' | 'amount' | 'manager' | 'status' | 'link' | 'stage' | 'block'
+type RegistrySort = { key: RegistrySortKey; dir: 'asc' | 'desc' } | null
+
+function toggleRegistrySort(current: RegistrySort, key: RegistrySortKey): RegistrySort {
+  if (!current || current.key !== key) return { key, dir: 'asc' }
+  if (current.dir === 'asc') return { key, dir: 'desc' }
+  return null
+}
+
+function registryNumber(item: Brief): string {
+  return item.onec_tkp_number || item.onec_order_number || item.onec_number || item.code
+}
+
+function registryDateValue(value?: string): number {
+  const raw = (value || '').trim()
+  if (!raw) return Number.NaN
+  const local = raw.match(/^(\d{2})\.(\d{2})\.(\d{4})(?:\s+(\d{2}):(\d{2}))?/)
+  if (local) {
+    return Date.UTC(Number(local[3]), Number(local[2]) - 1, Number(local[1]), Number(local[4] || 0), Number(local[5] || 0))
+  }
+  const iso = Date.parse(raw)
+  return Number.isNaN(iso) ? Number.NaN : iso
+}
+
+function registryAmountValue(value?: string): number {
+  const raw = (value || '').replace(/\s/g, '').replace(',', '.')
+  if (!raw || raw === '—') return Number.NaN
+  const parsed = Number(raw.replace(/[^\d.-]/g, ''))
+  return Number.isFinite(parsed) ? parsed : Number.NaN
+}
+
+function registrySortValue(item: Brief, key: RegistrySortKey): number | string {
+  switch (key) {
+    case 'number':
+      return registryNumber(item)
+    case 'date':
+      return registryDateValue(item.document_date)
+    case 'party':
+      return item.customer || ''
+    case 'amount':
+      return registryAmountValue(item.amount)
+    case 'manager':
+      return item.manager || ''
+    case 'status':
+      return item.onec_status || ''
+    case 'link': {
+      const related = relatedDocument(item)
+      return related === '—' ? '' : related
+    }
+    case 'stage': {
+      const index = LINE.findIndex((step) => step.id === item.stage)
+      return index < 0 ? Number.NaN : index
+    }
+    case 'block':
+      return (item.blocks || []).length
+    default: {
+      const unreachable: never = key
+      return unreachable
+    }
+  }
+}
+
+function compareRegistry(left: number | string, right: number | string, dir: 'asc' | 'desc'): number {
+  const emptyLeft = left === '' || (typeof left === 'number' && Number.isNaN(left))
+  const emptyRight = right === '' || (typeof right === 'number' && Number.isNaN(right))
+  if (emptyLeft !== emptyRight) return emptyLeft ? 1 : -1
+  if (emptyLeft && emptyRight) return 0
+  const diff = typeof left === 'number' && typeof right === 'number'
+    ? left - right
+    : String(left).localeCompare(String(right), 'ru', { numeric: true, sensitivity: 'base' })
+  return dir === 'asc' ? diff : -diff
+}
+
+function sortRegistry(rows: Brief[], sort: RegistrySort): Brief[] {
+  if (!sort) return rows
+  return [...rows].sort((left, right) =>
+    compareRegistry(registrySortValue(left, sort.key), registrySortValue(right, sort.key), sort.dir)
+  )
+}
+
+function sortAction(active: boolean, dir?: 'asc' | 'desc'): string {
+  if (!active) return 'Сортировать по возрастанию'
+  return dir === 'asc' ? 'Сортировать по убыванию' : 'Сбросить сортировку'
+}
+
+function registryWhen(value?: string): string {
+  const raw = (value || '').trim()
+  const match = raw.match(/^(\d{4})-(\d{2})-(\d{2})(?:[T\s](\d{2}):(\d{2}))?/)
+  if (!match) return raw
+  const clock = match[4] ? ` ${match[4]}:${match[5]}` : ''
+  return `${match[3]}.${match[2]}.${match[1]}${clock}`
+}
+
+function relatedDocument(item: Brief): string {
+  const tkp = item.onec_tkp_number || ''
+  const order = item.onec_order_number || item.onec_number || ''
+  if (item.source_kind === 'tkp') return order ? `заказ ${order}` : '—'
+  if (item.source_kind === 'order') return tkp ? `ТКП ${tkp}` : '—'
+  if (tkp && order && tkp !== order) return `ТКП ${tkp} · заказ ${order}`
+  return '—'
+}
+
+function RegistrySortButton({
+  label,
+  sortKey,
+  sort,
+  onSort,
+  align = 'start'
+}: {
+  label: string
+  sortKey: RegistrySortKey
+  sort: RegistrySort
+  onSort: (key: RegistrySortKey) => void
+  align?: 'start' | 'end'
+}): React.JSX.Element {
+  const active = sort?.key === sortKey
+  const action = sortAction(active, active ? sort?.dir : undefined)
+  return (
+    <button
+      type="button"
+      className={`eo-sort-btn${align === 'end' ? ' is-end' : ''}${active ? ' is-sorted' : ''}`}
+      title={action}
+      aria-label={`${label}. ${action}`}
+      onClick={() => onSort(sortKey)}
+    >
+      <span>{label}</span>
+      <ChevronDown
+        size={13}
+        aria-hidden
+        className={`eo-sort-ico${active ? ' is-active' : ''}${active && sort?.dir === 'asc' ? ' is-asc' : ''}`}
+      />
+    </button>
+  )
+}
+
 function OrderTable({
   rows,
   selectedId,
   full = false,
   role = '',
+  sort = null,
+  onSort,
   onSelect,
-  onOpen
+  onOpen,
+  onTake,
+  mine
 }: {
   rows: Brief[]
   selectedId: string
   full?: boolean
   role?: string
+  sort?: RegistrySort
+  onSort?: (key: RegistrySortKey) => void
   onSelect: (id: string) => void
   onOpen: (id: string) => void
+  onTake?: (id: string) => void
+  mine?: (item: Brief) => boolean
 }): React.JSX.Element {
+  const sortHeader = onSort
+    ? (label: string, key: RegistrySortKey, className: string, align?: 'start' | 'end') => (
+        <th
+          className={`${className}${sort?.key === key ? ' is-sorted' : ''}`}
+          aria-sort={sort?.key === key ? (sort.dir === 'asc' ? 'ascending' : 'descending') : 'none'}
+        >
+          <RegistrySortButton label={label} sortKey={key} sort={sort} onSort={onSort} align={align} />
+        </th>
+      )
+    : null
   return (
-    <div className="eo-table-scroll">
-      <table className="eo-table eo-orders-table">
+    <div className={full ? 'eo-table-scroll eo-registry-scroll' : 'eo-table-scroll'}>
+      <table className={full ? 'eo-table eo-orders-table is-registry' : 'eo-table eo-orders-table'}>
         <thead>
           <tr>
-            <th className="eo-col-code">Заказ</th>
-            <th className="eo-col-customer">Заказчик</th>
-            <th className="eo-col-product">Продукт</th>
-            <th className="eo-col-stage">Этап</th>
-            <th className="eo-col-status">Статус</th>
-            {full ? <th className="eo-col-route">Маршрут</th> : null}
-            <th className="eo-col-path">Путь в 1С</th>
-            {full ? <th className="eo-col-num">Пункты</th> : null}
-            {full ? <th className="eo-col-num">Расхождения</th> : null}
-            {full ? <th className="eo-col-num">Черновики ИИ</th> : null}
-            <th className="eo-col-wait">Ждут</th>
-            {role ? <th>Почему в очереди</th> : null}
-            <th className="eo-col-open"></th>
+            {full && sortHeader ? (
+              <>
+                <th
+                  className="eo-col-reg-num"
+                  aria-sort={
+                    sort?.key === 'number' || sort?.key === 'date'
+                      ? (sort.dir === 'asc' ? 'ascending' : 'descending')
+                      : 'none'
+                  }
+                >
+                  <div className="eo-sort-pair">
+                    <RegistrySortButton label="Номер" sortKey="number" sort={sort} onSort={onSort!} />
+                    <RegistrySortButton label="дата" sortKey="date" sort={sort} onSort={onSort!} />
+                  </div>
+                </th>
+                {sortHeader('Контрагент', 'party', 'eo-col-reg-party')}
+                {sortHeader('Сумма', 'amount', 'eo-col-reg-amount', 'end')}
+                {sortHeader('Менеджер', 'manager', 'eo-col-reg-manager')}
+                {sortHeader('Статус 1С', 'status', 'eo-col-reg-status')}
+                {sortHeader('Связанный документ', 'link', 'eo-col-reg-link')}
+                {sortHeader('Этап', 'stage', 'eo-col-reg-stage')}
+                {sortHeader('Блокировки', 'block', 'eo-col-reg-block')}
+              </>
+            ) : full ? (
+              <>
+                <th className="eo-col-reg-num">Номер · дата</th>
+                <th className="eo-col-reg-party">Контрагент</th>
+                <th className="eo-col-reg-amount">Сумма</th>
+                <th className="eo-col-reg-manager">Менеджер</th>
+                <th className="eo-col-reg-status">Статус 1С</th>
+                <th className="eo-col-reg-link">Связанный документ</th>
+                <th className="eo-col-reg-stage">Этап</th>
+                <th className="eo-col-reg-block">Блокировки</th>
+              </>
+            ) : (
+              <>
+                <th className="eo-col-code">Заказ</th>
+                <th className="eo-col-customer">Заказчик</th>
+                <th className="eo-col-product">Продукт</th>
+                <th className="eo-col-stage">Этап</th>
+                <th className="eo-col-status">Статус</th>
+                <th className="eo-col-path">Путь в 1С</th>
+                <th className="eo-col-wait">Ждут</th>
+                {role ? <th>Почему в очереди</th> : null}
+              </>
+            )}
+            <th className={full ? 'eo-col-reg-open' : 'eo-col-open'}></th>
           </tr>
         </thead>
         <tbody>
@@ -1586,43 +1897,74 @@ function OrderTable({
               className={selectedId === item.id ? 'eo-table-row is-selected' : 'eo-table-row'}
               onClick={() => onSelect(item.id)}
             >
-              <td className="eo-col-code">{item.code}</td>
-              <td className="eo-col-customer">
-                <span className="eo-clip" title={item.customer}>{item.customer}</span>
-              </td>
-              <td className="eo-col-product">
-                <span className="eo-clip" title={item.product}>{item.product}</span>
-              </td>
-              <td className="eo-col-stage">{item.stage_label}</td>
-              <td className="eo-col-status">
-                <span className="eo-clip" title={[item.status_label, ...(item.blocks || [])].filter(Boolean).join('. ')}>
-                  {item.status_label}
-                  {(item.blocks || []).length ? <small className="eo-danger">{item.blocks[0]}</small> : null}
-                </span>
-              </td>
-              {full ? <td className="eo-col-route">{item.route_label || ROUTES.find((route) => route.id === item.route)?.label || '—'}</td> : null}
-              <td className="eo-col-path">
-                <span className="eo-clip" title={item.path_label || item.onec_number || ''}>
-                  {item.path_label || item.onec_number || '—'}
-                </span>
-              </td>
-              {full ? <td className="eo-col-num">{item.open_checks_count ?? '—'}</td> : null}
-              {full ? <td className="eo-col-num">{item.open_diffs_count ?? '—'}</td> : null}
-              {full ? <td className="eo-col-num">{item.draft_findings_count ?? '—'}</td> : null}
-              <td className="eo-col-wait">
-                <span className="eo-clip" title={roleNames(item.waiting_roles)}>
-                  {roleNames(item.waiting_roles) || '—'}
-                </span>
-              </td>
-              {role ? (
-                <td>
-                  <span className="eo-clip" title={attentionLine(item, role)}>{attentionLine(item, role) || '—'}</span>
-                </td>
-              ) : null}
-              <td className="eo-col-open">
-                <button className="eo-btn" type="button" onClick={(event) => { event.stopPropagation(); onOpen(item.id) }}>
-                  Карточка
-                </button>
+              {full ? (
+                <>
+                  <td className="eo-col-reg-num">
+                    <b>{registryNumber(item)}</b>
+                    <small>{registryWhen(item.document_date) || '—'}</small>
+                  </td>
+                  <td className="eo-col-reg-party">
+                    <span className="eo-clip" title={[item.customer, item.product].filter(Boolean).join(' · ')}>{item.customer}</span>
+                  </td>
+                  <td className="eo-col-reg-amount">{item.amount || '—'}</td>
+                  <td className="eo-col-reg-manager">
+                    <span className="eo-clip" title={item.manager || ''}>{item.manager || '—'}</span>
+                  </td>
+                  <td className="eo-col-reg-status">
+                    <span className="eo-clip" title={item.onec_status || ''}>{item.onec_status || '—'}</span>
+                  </td>
+                  <td className="eo-col-reg-link">{relatedDocument(item)}</td>
+                  <td className="eo-col-reg-stage">{item.stage_label}</td>
+                  <td className="eo-col-reg-block">
+                    {(item.blocks || []).length ? (
+                      <span className="eo-tag is-stop" title={(item.blocks || []).join('. ')}>Блок</span>
+                    ) : '—'}
+                  </td>
+                </>
+              ) : (
+                <>
+                  <td className="eo-col-code">{registryNumber(item)}</td>
+                  <td className="eo-col-customer">
+                    <span className="eo-clip" title={item.customer}>{item.customer}</span>
+                  </td>
+                  <td className="eo-col-product">
+                    <span className="eo-clip" title={item.product}>{item.product}</span>
+                  </td>
+                  <td className="eo-col-stage">{item.stage_label}</td>
+                  <td className="eo-col-status">
+                    <span className="eo-clip" title={[item.status_label, ...(item.blocks || [])].filter(Boolean).join('. ')}>
+                      {item.status_label}
+                      {(item.blocks || []).length ? <small className="eo-danger">{item.blocks[0]}</small> : null}
+                    </span>
+                  </td>
+                  <td className="eo-col-path">
+                    <span className="eo-clip" title={item.path_label || item.onec_number || ''}>
+                      {item.path_label || item.onec_number || '—'}
+                    </span>
+                  </td>
+                  <td className="eo-col-wait">
+                    <span className="eo-clip" title={roleNames(item.waiting_roles)}>
+                      {roleNames(item.waiting_roles) || '—'}
+                    </span>
+                  </td>
+                  {role ? (
+                    <td>
+                      <span className="eo-clip" title={attentionLine(item, role)}>{attentionLine(item, role) || '—'}</span>
+                    </td>
+                  ) : null}
+                </>
+              )}
+              <td className={full ? 'eo-col-reg-open' : 'eo-col-open'}>
+                <div className={full ? 'eo-row-actions' : undefined}>
+                  {onTake && !mine?.(item) ? (
+                    <button className="eo-btn" type="button" onClick={(event) => { event.stopPropagation(); onTake(item.id) }}>
+                      Взять
+                    </button>
+                  ) : null}
+                  <button className="eo-btn" type="button" onClick={(event) => { event.stopPropagation(); onOpen(item.id) }}>
+                    Карточка
+                  </button>
+                </div>
               </td>
             </tr>
           ))}
@@ -1753,276 +2095,6 @@ function PassportView({
 
 const ONEC_PAGE_SIZES = [50, 100, 200]
 
-const ONEC_DETAILS: { key: keyof ExternalOnecTkp; label: string }[] = [
-  { key: 'client', label: 'Клиент' },
-  { key: 'contract', label: 'Договор' },
-  { key: 'organization', label: 'Организация' },
-  { key: 'agreement', label: 'Соглашение' },
-  { key: 'valid_until', label: 'Срок действия' },
-  { key: 'delivery_days', label: 'Срок поставки' },
-  { key: 'payment_form', label: 'Форма оплаты' },
-  { key: 'delivery', label: 'Доставка' },
-  { key: 'vat', label: 'НДС' },
-  { key: 'agreed', label: 'Согласовано с клиентом' },
-  { key: 'operation', label: 'Операция' },
-  { key: 'product', label: 'Состав' },
-  { key: 'comment', label: 'Комментарий' },
-  { key: 'order_subject', label: 'Заказ клиента' }
-]
-
-function OnecImport({
-  orders,
-  onError,
-  onImport
-}: {
-  orders: ExternalOrderBrief[]
-  onError: (err: unknown) => void
-  onImport: (key: string, kind: 'tkp' | 'order') => void
-}): React.JSX.Element {
-  const [data, setData] = useState<ExternalOnecSearch | null>(null)
-  const [loading, setLoading] = useState(false)
-  const [skip, setSkip] = useState(0)
-  const [top, setTop] = useState(50)
-  const [query, setQuery] = useState('')
-  const [filters, setFilters] = useState<ExternalOnecFilters>({})
-  const [open, setOpen] = useState('')
-  const [source, setSource] = useState<'tkp' | 'orders'>('tkp')
-
-  const requestRef = useRef(0)
-  const loadedKey = useRef('')
-
-  async function load(refresh = false): Promise<void> {
-    const request = ++requestRef.current
-    setLoading(true)
-    try {
-      const page = await api.recentExternalOnec({ skip, top, refresh }, filters, source)
-      if (request === requestRef.current) setData(page)
-    } catch (err) {
-      if (request === requestRef.current) onError(err)
-    } finally {
-      if (request === requestRef.current) setLoading(false)
-    }
-  }
-
-  useEffect(() => {
-    const text = query.trim()
-    if ((filters.q || '') === text) return
-    const timer = window.setTimeout(() => {
-      setSkip(0)
-      setFilters((prev) => ({ ...prev, q: text }))
-    }, 450)
-    return () => window.clearTimeout(timer)
-  }, [query, filters.q])
-
-  useEffect(() => {
-    const key = JSON.stringify({ skip, top, source, filters })
-    if (loadedKey.current === key) return
-    loadedKey.current = key
-    void load()
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [skip, top, filters, source])
-
-  function switchSource(next: 'tkp' | 'orders'): void {
-    if (next === source) return
-    setSkip(0)
-    setOpen('')
-    setData(null)
-    setFilters((prev) => ({ ...prev, status: '', manager: '' }))
-    setSource(next)
-  }
-
-  function setFilter(patch: ExternalOnecFilters): void {
-    setSkip(0)
-    setFilters((prev) => ({ ...prev, ...patch }))
-  }
-
-  const rows = data?.orders || []
-  const text = (value?: string): string => (value || '').trim() || '—'
-  const shownTo = skip + rows.length
-
-  return (
-    <section className="eo-window eo-window-main">
-      <div className="eo-window-head">
-        <h3>{source === 'orders' ? 'Заказы клиентов из 1С' : 'ТКП из 1С ERP'}</h3>
-        <div className="eo-actions">
-          <button type="button" className={source === 'tkp' ? 'eo-btn is-primary' : 'eo-btn'} onClick={() => switchSource('tkp')}>
-            ТКП
-          </button>
-          <button type="button" className={source === 'orders' ? 'eo-btn is-primary' : 'eo-btn'} onClick={() => switchSource('orders')}>
-            Заказы клиентов
-          </button>
-        </div>
-        <span className="eo-status">
-          {loading ? 'Читаю 1С…' : rows.length ? `строки ${skip + 1}–${shownTo}${data?.has_more ? ', есть ещё' : ''}` : ''}
-        </span>
-        {data?.has_more ? (
-          <button type="button" className="eo-btn" disabled={loading} onClick={() => setSkip(skip + top)}>
-            Следующие {top}
-          </button>
-        ) : null}
-        <button className="eo-btn" type="button" disabled={loading} onClick={() => void load(true)}>
-          {loading ? 'Загрузка…' : 'Обновить из 1С'}
-        </button>
-      </div>
-      <div className="eo-filters">
-        <input
-          value={query}
-          placeholder="Номер, контрагент, комментарий, предмет"
-          onChange={(event) => setQuery(event.target.value)}
-        />
-        <select value={filters.status || ''} aria-label="Статус" onChange={(event) => setFilter({ status: event.target.value })}>
-          <option value="">Все статусы</option>
-          {(data?.statuses || []).map((item) => (
-            <option key={item} value={item}>{item}</option>
-          ))}
-        </select>
-        <select value={filters.manager || ''} aria-label="Менеджер" onChange={(event) => setFilter({ manager: event.target.value })}>
-          <option value="">Все менеджеры</option>
-          {(data?.managers || []).map((item) => (
-            <option key={item} value={item}>{item}</option>
-          ))}
-        </select>
-        <select
-          value={filters.has_order || ''}
-          aria-label="Заказ клиента"
-          onChange={(event) => setFilter({ has_order: event.target.value as ExternalOnecFilters['has_order'] })}
-        >
-          <option value="">С заказом и без</option>
-          <option value="yes">Есть заказ клиента</option>
-          <option value="no">Без заказа клиента</option>
-        </select>
-        <label className="eo-filter-date">
-          с
-          <input type="date" value={filters.date_from || ''} onChange={(event) => setFilter({ date_from: event.target.value })} />
-        </label>
-        <label className="eo-filter-date">
-          по
-          <input type="date" value={filters.date_to || ''} onChange={(event) => setFilter({ date_to: event.target.value })} />
-        </label>
-      </div>
-      {loading && !data ? <p>Читаю проведённые ТКП из 1С…</p> : null}
-      {data && !rows.length ? (
-        <p className="eo-muted">{source === 'orders' ? 'Под фильтр заказы клиента не попали.' : 'Под фильтр ТКП не попали.'}</p>
-      ) : null}
-      {rows.length ? (
-        <div className="eo-tkp-scroll">
-          <table className="eo-table eo-tkp is-compact">
-            <thead>
-              <tr>
-                <th>Номер · дата</th>
-                <th>Контрагент · конечный заказчик</th>
-                <th>Сумма</th>
-                <th>Менеджер</th>
-                <th>Статус</th>
-                <th>Заказ · сделка</th>
-                <th></th>
-              </tr>
-            </thead>
-            <tbody>
-              {rows.map((item) => {
-                const taken = item.kind === 'order'
-                  ? orders.some((order) => order.onec_key === item.key)
-                  : orders.some((order) => order.onec_tkp_key === item.key)
-                const expanded = open === item.key
-                return (
-                  <Fragment key={item.key}>
-                    <tr className={expanded ? 'is-open' : ''} onClick={() => setOpen(expanded ? '' : item.key)}>
-                      <td>
-                        <b>{item.number || 'без номера'}</b>
-                        <small>{text(item.date)}</small>
-                      </td>
-                      <td>
-                        {text(item.counterparty)}
-                        {item.end_customer && item.end_customer !== item.counterparty ? (
-                          <small>для {item.end_customer}</small>
-                        ) : null}
-                        {item.product ? <small>{item.product}</small> : null}
-                        {item.comment ? <small>{item.comment}</small> : null}
-                        {item.order_subject && item.order_subject !== item.comment ? (
-                          <small>заказ: {item.order_subject}</small>
-                        ) : null}
-                      </td>
-                      <td className="eo-num">
-                        {text(item.amount)}
-                        <small>{item.currency || ''}</small>
-                      </td>
-                      <td>{text(item.manager)}</td>
-                      <td>
-                        {text(item.status)}
-                        <small>{item.approved === 'да' ? 'согласован' : 'не согласован'}</small>
-                      </td>
-                      <td>
-                        {text(item.order_number)}
-                        {item.deal ? <small>{item.deal}</small> : null}
-                      </td>
-                      <td onClick={(event) => event.stopPropagation()}>
-                        {taken ? (
-                          <span className="eo-muted">в деле</span>
-                        ) : (
-                          <button
-                            className="eo-btn is-primary"
-                            type="button"
-                            onClick={() => onImport(item.key, item.kind === 'order' ? 'order' : 'tkp')}
-                          >
-                            Открыть путь
-                          </button>
-                        )}
-                      </td>
-                    </tr>
-                    {expanded ? (
-                      <tr className="eo-tkp-more">
-                        <td colSpan={7}>
-                          <dl>
-                            {ONEC_DETAILS.map((field) => (
-                              <div key={field.key}>
-                                <dt>{field.label}</dt>
-                                <dd>{text(item[field.key])}</dd>
-                              </div>
-                            ))}
-                          </dl>
-                        </td>
-                      </tr>
-                    ) : null}
-                  </Fragment>
-                )
-              })}
-            </tbody>
-          </table>
-        </div>
-      ) : null}
-      {data && (rows.length || skip > 0) ? (
-        <div className="eo-pager">
-          <button type="button" className="eo-btn" disabled={loading || skip <= 0} onClick={() => setSkip(Math.max(0, skip - top))}>
-            ← Назад
-          </button>
-          <span>
-            Страница {Math.floor(skip / top) + 1} · строки {rows.length ? `${skip + 1}–${shownTo}` : '—'}
-          </span>
-          <button
-            type="button"
-            className="eo-btn"
-            disabled={loading || !data.has_more}
-            onClick={() => setSkip(skip + top)}
-          >
-            Дальше →
-          </button>
-          <select
-            value={top}
-            aria-label="Строк на странице"
-            onChange={(event) => {
-              setSkip(0)
-              setTop(Number(event.target.value))
-            }}
-          >
-            {ONEC_PAGE_SIZES.map((size) => (
-              <option key={size} value={size}>по {size}</option>
-            ))}
-          </select>
-        </div>
-      ) : null}
-    </section>
-  )
-}
 
 /** Карточка целиком: поля других служб с черновиками ИИ. Принимает только владелец раздела. */
 function OtherServiceFields({ order, role }: { order: Order; role: string }): React.JSX.Element | null {
@@ -2145,13 +2217,15 @@ function RoleWork({
                         : ''}
                     </small>
                     <div className="eo-actions">
-                      <button
-                        type="button"
-                        className="is-primary"
-                        onClick={() => void onRun(() => api.acceptExternalFinding(order.id, mark.finding_id, asRole))}
-                      >
-                        Принять
-                      </button>
+                      {mark.batch_id ? null : (
+                        <button
+                          type="button"
+                          className="is-primary"
+                          onClick={() => void onRun(() => api.acceptExternalFinding(order.id, mark.finding_id, asRole))}
+                        >
+                          Принять
+                        </button>
+                      )}
                       <button type="button" onClick={() => setDraft({ ...draft, [id]: mark.value })}>
                         Взять в правку
                       </button>
@@ -2283,6 +2357,72 @@ function RoleWork({
         )) : <p className="eo-muted">Открытых пробелов нет.</p>}
       </div>
       </>
+      ) : null}
+    </div>
+  )
+}
+
+function OrderPick({
+  orders,
+  value,
+  onChange
+}: {
+  orders: Brief[]
+  value: string
+  onChange: (id: string) => void
+}): React.JSX.Element {
+  const [open, setOpen] = useState(false)
+  const [query, setQuery] = useState('')
+  const rootRef = useRef<HTMLDivElement | null>(null)
+  const chosen = orders.find((item) => item.id === value)
+  const label = chosen
+    ? `${documentTitle(chosen)} · ${chosen.customer}${chosen.open_diffs_count ? ` · ${chosen.open_diffs_count} расх.` : ''}`
+    : 'Выберите заказ'
+  const needle = query.trim().toLowerCase()
+  const ranked = [...orders].sort((a, b) => (b.open_diffs_count || 0) - (a.open_diffs_count || 0))
+  const shown = (needle
+    ? ranked.filter((item) => `${documentTitle(item)} ${item.code} ${item.customer}`.toLowerCase().includes(needle))
+    : ranked.filter((item) => (item.open_diffs_count || 0) > 0 || item.id === value)
+  ).slice(0, 30)
+  useEffect(() => {
+    if (!open) return
+    const close = (event: MouseEvent): void => {
+      if (!rootRef.current?.contains(event.target as Node)) setOpen(false)
+    }
+    document.addEventListener('mousedown', close)
+    return () => document.removeEventListener('mousedown', close)
+  }, [open])
+  return (
+    <div className="eo-order-pick" ref={rootRef}>
+      <button type="button" className="eo-order-pick-btn" aria-expanded={open} onClick={() => setOpen((prev) => !prev)}>
+        <span>{label}</span>
+        <ChevronDown size={16} aria-hidden />
+      </button>
+      {open ? (
+        <div className="eo-order-pick-menu" role="listbox">
+          <input
+            autoFocus
+            value={query}
+            placeholder="Номер или заказчик"
+            onChange={(event) => setQuery(event.target.value)}
+          />
+          {shown.length ? shown.map((item) => (
+            <button
+              key={item.id}
+              type="button"
+              role="option"
+              aria-selected={item.id === value}
+              onClick={() => {
+                onChange(item.id)
+                setOpen(false)
+                setQuery('')
+              }}
+            >
+              {documentTitle(item)} · {item.customer}
+              {item.open_diffs_count ? ` · ${item.open_diffs_count} расх.` : ''}
+            </button>
+          )) : <p>Ничего не найдено</p>}
+        </div>
       ) : null}
     </div>
   )
@@ -2683,6 +2823,7 @@ function Card({
   ].filter((group) => group.docs.length)
   const [linkDraft, setLinkDraft] = useState<Record<string, { target: string; relation: string }>>({})
   const [fileOffer, setFileOffer] = useState('')
+  const [filesHelperOpen, setFilesHelperOpen] = useState(false)
   const [projectDraft, setProjectDraft] = useState({ title: '', text: '', target: '', relation: 'attachment', kind: 'correspondence' })
   const fileRef = useRef<HTMLInputElement>(null)
 
@@ -2784,6 +2925,9 @@ function Card({
     onPageChange(page)
     savePage(page)
   }, [page, onPageChange])
+  useEffect(() => {
+    if (fileOffer) setFilesHelperOpen(true)
+  }, [fileOffer])
 
   async function lookup(counterparty = ''): Promise<void> {
     setLookupError('')
@@ -2895,7 +3039,7 @@ function Card({
       <header className="eo-wide eo-head">
         <div>
           <button type="button" className="eo-back" onClick={onBack}>К списку</button>
-          <h2>{order.code} · {order.customer}</h2>
+          <h2>{documentTitle(order)} · {order.customer}</h2>
           <p className="eo-muted">{order.product}. Шаг {currentIndex + 1} из {LINE.length}: {order.status_label}.</p>
           <p className="eo-case-line">
             Дальше: {passports[currentIndex + 1]?.label || 'закрытие'}.
@@ -2906,6 +3050,11 @@ function Card({
           </p>
         </div>
         <div className="eo-actions">
+          {role !== 'viewer' && !isMyOrder(order, user.fio || '') ? (
+            <button type="button" onClick={() => void onRun(() => api.takeExternalOrder(order.id, ''))}>
+              Взять себе
+            </button>
+          ) : null}
           <button type="button" disabled={pathBusy === 'purchase'} onClick={() => void openPurchaseAgent()}>
             {pathBusy === 'purchase' ? 'Закупка…' : 'Помощник по закупке'}
           </button>
@@ -3353,6 +3502,7 @@ function Card({
                             <TodayFileIcon name={doc.file_name || doc.title || 'файл.docx'} size={34} />
                             <b>{doc.title || doc.file_name || 'файл'}</b>
                             <small>
+                              {(doc.note || '').startsWith('onec:') ? '1С · ' : ''}
                               {doc.version || '—'} · {doc.approved ? 'утверждён' : 'черновик'}
                               {links ? ` · связей ${links}` : ''}
                             </small>
@@ -3375,6 +3525,7 @@ function Card({
                       <div>
                         <b>{item.title || item.file_name || 'файл'}</b>
                         <small>
+                          {(item.note || '').startsWith('onec:') ? '1С · ' : ''}
                           {kindLabel(item.kind)} · {item.version || '—'} · {item.approved ? 'утверждён' : 'черновик'}
                         </small>
                       </div>
@@ -3555,7 +3706,11 @@ function Card({
               })() : null}
             </div>
             {role !== 'viewer' ? (
-            <details className="eo-files-more" open={Boolean(fileOffer)}>
+            <details
+              className="eo-files-more"
+              open={filesHelperOpen}
+              onToggle={(event) => setFilesHelperOpen((event.currentTarget as HTMLDetailsElement).open)}
+            >
               <summary>Помощник по файлам и проект из разговора</summary>
             <div className="eo-vault">
               {fileOffer && role !== 'viewer' ? (
@@ -3750,6 +3905,20 @@ function Card({
             <div className="eo-journal-bar">
               <h3>Выводы и черновики агента</h3>
               <span className="eo-status">{order.findings.length}</span>
+              {[...new Set(
+                order.findings
+                  .filter((item) => item.status === 'draft' && item.owner_role === role && item.batch_id)
+                  .map((item) => item.batch_id as string)
+              )].map((batchId) => (
+                <button
+                  key={batchId}
+                  type="button"
+                  className="is-primary"
+                  onClick={() => void onRun(() => api.acceptExternalFindingBatch(order.id, batchId, asRole))}
+                >
+                  Принять черновик
+                </button>
+              ))}
             </div>
             <div className="eo-journal-scroll">
               <table className="eo-journal-table">
@@ -3777,7 +3946,7 @@ function Card({
                         </td>
                         <td>
                           <div className="eo-journal-actions">
-                            {item.status === 'draft' && role === item.owner_role ? (
+                            {item.status === 'draft' && role === item.owner_role && !item.batch_id ? (
                               <button type="button" onClick={() => void onRun(() => api.acceptExternalFinding(order.id, item.id, asRole))}>
                                 Принять
                               </button>

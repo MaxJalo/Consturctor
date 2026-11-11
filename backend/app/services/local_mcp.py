@@ -1311,6 +1311,8 @@ def _desktop_ac_tools() -> list[dict[str, Any]]:
             "Дело внешнего заказа. action=read — сводка дела и паспорта этапа. "
             "action=read_full — полная структурированная выжимка дела, разделов, текстов документов, сверки B01–B35 и вопросов по пробелам. "
             "action=auto_prepare — детерминированная авто-подготовка дела (синхронизация 1С, черновики полей, чек-листов, базовой версии и 1С ДО). "
+            "action=offer — варианты ответов по id вопросов службы. Текст варианта бери дословно из known, "
+            "цену, НДС и срок не выдумывай. "
             "action=propose — записать черновики выводов из документов (findings), полей разделов (section_proposals), "
             "доказательств чек-листа (check_proposals), базовой версии (baseline_proposal), рисков (risk_proposals) и сверки (diffs); "
             "фактом они становятся только после принятия владельцем. "
@@ -1318,12 +1320,14 @@ def _desktop_ac_tools() -> list[dict[str, Any]]:
             "action=search_1c — поиск ТКП и Заказов клиента в 1С ERP. "
             "action=plan_preview — проверить план работ без записи: задачи, сроки по производственному календарю, "
             "службы, условия договора и предупреждения (warnings). "
-            "action=plan — записать черновик плана работ в дело (XML для Project) с теми же overrides; общий шаблон не правится. "
-            "Базовый план этим действием не утверждается: утверждает руководитель проекта.",
+            "action=plan — это и есть запись файла плана в файлы дела (XML для Project). "
+            "Отдельного действия «сохранить в файлы» нет. Если в ответе есть file_name, файл уже в деле: "
+            "назови его и остановись, не ищи другой инструмент и не пиши, что его нет. "
+            "Общий шаблон не правится. Базовый план утверждает руководитель проекта.",
             {
                 "action": _prop(
                     "string",
-                    "read | read_full | auto_prepare | propose | draft_1c | search_1c | plan_preview | plan",
+                    "read | read_full | auto_prepare | offer | propose | draft_1c | search_1c | plan_preview | plan",
                     default="read",
                 ),
                 "overrides": _prop(
@@ -1335,6 +1339,10 @@ def _desktop_ac_tools() -> list[dict[str, Any]]:
                 "order_id": _prop("string", "id или код карточки внешнего заказа"),
                 "role": _prop("string", "Роль службы (ks, development, rp, committee, kb, omto, finance, production, legal, it)"),
                 "step_id": _prop("string", "Код шага пути (zpr, tech, analysis, committee, passport, tkp, contract, linked, start, plan)"),
+                "offers": _prop(
+                    "array",
+                    "Для offer: [{id, options}]. options — дословные фрагменты из known, не догадки",
+                ),
                 "findings": _prop(
                     "array",
                     "Черновики выводов из документов: {field, value, source_ref, location, confidence, owner_role}. "

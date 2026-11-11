@@ -35,9 +35,20 @@ function text(value: unknown, limit = 500): string {
   return raw.length > limit ? `${raw.slice(0, limit - 1)}…` : raw
 }
 
+function documentCode(payload: Record<string, unknown>): string {
+  const tkp = text(payload.onec_tkp_number, 64)
+  const sale = text(payload.onec_order_number || payload.onec_number, 64)
+  if (tkp && sale && tkp !== sale) return text(`${tkp} · ${sale}`, 80)
+  return sale || tkp || text(payload.code, 40)
+}
+
+function isBlankOnecDate(value: string): boolean {
+  return /0001-01-01|01\.01\.0001/.test(value)
+}
+
 function factLines(value: unknown): string[] {
   if (Array.isArray(value)) {
-    return value.map((item) => text(item, 220)).filter(Boolean).slice(0, 8)
+    return value.map((item) => text(item, 220)).filter((item) => item && !isBlankOnecDate(item)).slice(0, 8)
   }
   const raw = text(value, 2500)
   if (!raw || /^пусто:/i.test(raw)) return []
@@ -270,7 +281,7 @@ export function latestOrderCase(items: FeedItem[]): OrderCaseBrief | null {
         payload.role_proposals_count == null ? null : Number(payload.role_proposals_count)
     })
     const brief: OrderCaseBrief = {
-      code: text(payload.code, 40),
+      code: documentCode(payload),
       customer: text(payload.customer, 120),
       product: text(payload.product, 160),
       summary,
@@ -293,6 +304,12 @@ export function latestOrderCase(items: FeedItem[]): OrderCaseBrief | null {
 
 const NOISE = /unboundlocalerror|traceback|work_result|tests:\s*pass|сначала\s*(сниму|открою|посмотрю)|дочитыва|сводка\s+короткая|подготовка\s+оборвал|беру\s+карточку|вызываю\s+подготовк|инструменты\s+constructor|инструменты\s+подключены|если ответа нет ни в деле|ход мыслей в чат|первый ход:/i
 const SDK_DEAD = /cursor sdk не отвечает/i
+
+/** Уже открытый разговор не перезапускаем. Новый сценарий по файлам — отдельный ход. */
+export function orderTurnAlreadyOpen(message: string, historyCount: number): boolean {
+  if (historyCount <= 0) return false
+  return !/сценарий дела:/i.test(message || '')
+}
 
 /** Внутренняя подсказка агенту, а не реплика сотрудника. */
 export function isOrderPrompt(text: string): boolean {
@@ -325,6 +342,83 @@ export function factAlreadySaid(summary: string, fact: string): boolean {
   if (folded.includes(raw.toLowerCase())) return true
   const value = (raw.includes(':') ? raw.slice(raw.indexOf(':') + 1) : raw).trim().replace(/\.$/, '')
   return value.length > 3 && folded.includes(value.toLowerCase())
+}
+
+/** Убирает пустую дату 1С и вторую фразу про тот же факт. */
+const PROCESS_LINE =
+  /^(?:вызов вернул|ищу сводк|ищу снимок|карточка(?: в этом ходе)? уже открыта|смотрю,?\s+какие факты|следующий шаг|сейчас передам|дело уже открыто|данные получены)\b/i
+const GAP_LINE =
+  /пусты[ейяю]|зафиксированных ответов|подтвержд[её]нных ответов|открыты\s+\S+\s+пункт|четыре пустых пункта|нет ни цены|пока эти пункты пустые|ответов на проверки|^(?:нужно подтвердить|сотруднику нужно подтвердить|подтвердите эти)\b/i
+
+/** Ход работы и пересказ «пропуски есть» в чат не попадают: пропуски уже на вкладке «Вопросы». */
+export function dropOrderGapTalk(value: string): string {
+  const kept = (value || '')
+    .split(/(?<=[.!?])\s+|\n+/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .filter((line) => {
+      const folded = line.toLowerCase().replace(/ё/g, 'е')
+      return !PROCESS_LINE.test(folded) && !GAP_LINE.test(folded)
+    })
+  return kept.join('\n\n').trim()
+}
+
+export function collapseRepeatedOrderAnswer(value: string): string {
+  const kept: string[] = []
+  let saidNoOrder = false
+  let saidDate = false
+  for (const raw of value.split('\n')) {
+    const line = raw.trim()
+    if (!line) {
+      if (kept.length && kept[kept.length - 1] !== '') kept.push('')
+      continue
+    }
+    if (isBlankOnecDate(line)) continue
+    const folded = line.toLowerCase().replace(/^[\s•\-*]+/, '')
+    if (/заказ\w* клиент/.test(folded) && /нет|отсутств/.test(folded)) {
+      if (saidNoOrder) continue
+      saidNoOrder = true
+    }
+    if (/тот же срок/.test(folded)) continue
+    if (/дата не заполнена/.test(folded) && saidDate) continue
+    if (/\d{2}\.\d{2}\.\d{4}/.test(folded) || /срок/.test(folded)) saidDate = true
+    const plain = folded.replace(/[.«»"—–-]/g, '').replace(/\s+/g, ' ')
+    if (kept.some((item) => item.toLowerCase().replace(/\s+/g, ' ').includes(plain) && plain.length > 24)) continue
+    kept.push(line)
+  }
+  return kept.join('\n').replace(/\n{3,}/g, '\n\n').trim()
+}
+
+function plainOrderText(value: string): string {
+  return (value || '').replace(/[*_`#]/g, '').replace(/\s+/g, '').toLowerCase()
+}
+
+/** Две реплики одного хода говорят одно и то же. */
+export function orderTextsRepeat(left: string, right: string): boolean {
+  const a = plainOrderText(left)
+  const b = plainOrderText(right)
+  if (a.length < 40 || b.length < 40) return false
+  if (a.includes(b) || b.includes(a)) return true
+  const size = Math.min(80, a.length, b.length)
+  return a.slice(0, size) === b.slice(0, size)
+}
+
+const LOST_ORDER_ANSWER =
+  /cursor sdk не отвечает|не удалось связаться с cursor|сеть оборвалась|network request failed|без итога|модель cursor сейчас недоступна|ответ не получен/i
+
+const CARD_STUB =
+  /^реквизиты уже на карточке\.\s*ниже пункты, которые служба ещ[её] не закрыла\.?$/i
+
+/** Обрыв модели не оставляем пустой строкой: в чат встаёт сводка уже открытой карточки. */
+export function recoverLostOrderAnswer(text: string, brief: OrderCaseBrief | null): string {
+  const value = (text || '').trim()
+  const spoken = employeeDialogText(value, brief?.code || '')
+  const lost = LOST_ORDER_ANSWER.test(value) || LOST_ORDER_ANSWER.test(spoken) || CARD_STUB.test(spoken)
+  if (!lost) return spoken
+  const summary = (brief?.summary || '').trim()
+  if (!summary) return 'Ответ не получен. Черновики на карточке остаются.'
+  const questions = (brief?.questions || []).filter((item) => item && !summary.includes(item)).slice(0, 3)
+  return questions.length ? `${summary}\n\n${questions.join('\n')}` : summary
 }
 
 /** Что показать в чате вместо сырого отказа SDK и текста инструкции. */

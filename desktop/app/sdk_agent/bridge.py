@@ -54,6 +54,34 @@ EXTERNALIZED_NEXT_STEP = (
 )
 
 
+_WRITE_FILE_TOOLS = frozenset(
+    {"excel.create_workbook", "excel.edit_workbook", "report.export_document", "office.format_document"}
+)
+
+
+def _file_already_written(tool: str, args: dict[str, Any], cwd: str) -> dict[str, Any] | None:
+    """A slow export often finishes on disk after the wait expires."""
+    if tool not in _WRITE_FILE_TOOLS:
+        return None
+    raw = str(args.get("filename") or args.get("file_name") or args.get("name") or "").strip()
+    if not raw:
+        return None
+    name = Path(raw.replace("\\", "/")).name
+    if tool.startswith("excel.") and not name.lower().endswith((".xlsx", ".xlsm")):
+        name = f"{Path(name).stem}.xlsx"
+    root = Path(cwd)
+    for folder in (root, root / "materials", root / "materials" / "attachments"):
+        path = folder / name
+        if path.is_file() and path.stat().st_size > 0:
+            return {
+                "ok": True,
+                "filename": path.name,
+                "path": str(path),
+                "note": "Файл уже записан. Повторно книгу не создавай.",
+            }
+    return None
+
+
 class CursorSdkError(RuntimeError):
     pass
 
@@ -1046,12 +1074,20 @@ class CursorSdkBridge:
                 elapsed = time.monotonic() - started_at
                 limit = max(tool_limit, 600.0)
             if elapsed >= limit:
+                # The workbook is often already on disk when the call is slow.
+                # Wait briefly for that result instead of telling the agent to start over.
+                if done.wait(timeout=15):
+                    break
+                recovered = _file_already_written(tool, args, cwd)
                 send_result(
                     {
                         "type": "tool_result",
                         "requestId": request_id,
-                        "ok": False,
-                        "error": f"Инструмент {tool} не ответил за {int(limit)} с",
+                        "ok": recovered is not None,
+                        "result": recovered,
+                        "error": None
+                        if recovered is not None
+                        else f"Инструмент {tool} не ответил за {int(limit)} с",
                     }
                 )
                 self._clear_active(request_id)

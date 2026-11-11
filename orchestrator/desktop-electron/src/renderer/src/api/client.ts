@@ -2531,17 +2531,41 @@ export class ApiClient {
   }
 
   async externalOrders(asRole = ''): Promise<ExternalOrderBrief[]> {
-    const data = await this.request<{ orders?: ExternalOrderBrief[] }>('GET', '/api/v1/external-orders', {
-      params: asRole ? { as_role: asRole } : undefined,
-      timeoutMs: 20_000
-    })
-    return Array.isArray(data.orders) ? data.orders : []
+    let last: unknown
+    for (let attempt = 0; attempt < 4; attempt += 1) {
+      try {
+        const data = await this.request<{ orders?: ExternalOrderBrief[] }>('GET', '/api/v1/external-orders', {
+          params: asRole ? { as_role: asRole } : undefined,
+          timeoutMs: 60_000
+        })
+        return Array.isArray(data.orders) ? data.orders : []
+      } catch (err) {
+        last = err
+        const busy = err instanceof ApiError && err.message.includes('занят другими запросами')
+        if (!busy || attempt === 3) throw err
+        await new Promise((resolve) => setTimeout(resolve, 700 * (attempt + 1)))
+      }
+    }
+    throw last
   }
 
   async externalOrder(id: string, asRole = ''): Promise<ExternalOrder> {
     return this.request('GET', `/api/v1/external-orders/${encodeURIComponent(id)}`, {
       params: asRole ? { as_role: asRole } : undefined,
       timeoutMs: 20_000
+    })
+  }
+
+  async takeExternalOrder(id: string, asRole = ''): Promise<ExternalOrder> {
+    return this.request('POST', `/api/v1/external-orders/${encodeURIComponent(id)}/take`, {
+      params: asRole ? { as_role: asRole } : undefined
+    })
+  }
+
+  async refreshExternalOrderOnec(id: string, asRole = ''): Promise<ExternalOrder> {
+    return this.request('POST', `/api/v1/external-orders/${encodeURIComponent(id)}/onec/stored`, {
+      params: asRole ? { as_role: asRole } : undefined,
+      timeoutMs: 120_000
     })
   }
 
@@ -2689,6 +2713,26 @@ export class ApiClient {
     )
   }
 
+  async answerExternalGap(
+    id: string,
+    body: { question_id: string; value: string; batch_id?: string; document_id?: string },
+    asRole = ''
+  ): Promise<ExternalOrder & { batch_id?: string }> {
+    return this.request('POST', `/api/v1/external-orders/${encodeURIComponent(id)}/gaps/answer`, {
+      body,
+      params: asRole ? { as_role: asRole } : undefined,
+      timeoutMs: 30_000
+    })
+  }
+
+  async acceptExternalFindingBatch(id: string, batchId: string, asRole = ''): Promise<ExternalOrder> {
+    return this.request('POST', `/api/v1/external-orders/${encodeURIComponent(id)}/findings/accept-batch`, {
+      body: { batch_id: batchId },
+      params: asRole ? { as_role: asRole } : undefined,
+      timeoutMs: 30_000
+    })
+  }
+
   async acceptAllExternalFindings(id: string, asRole = ''): Promise<ExternalOrder> {
     return this.request(
       'POST',
@@ -2715,6 +2759,21 @@ export class ApiClient {
     return this.request('GET', `/api/v1/external-orders/${encodeURIComponent(id)}/review`, {
       params: asRole ? { as_role: asRole } : undefined,
       timeoutMs: 20_000
+    })
+  }
+
+  async syncExternalOrders(
+    asRole = '',
+    refresh = false,
+    skip = 0
+  ): Promise<{ orders?: ExternalOrderBrief[]; created?: number; has_more?: boolean; next_skip?: number; top?: number }> {
+    return this.request('POST', '/api/v1/external-orders/onec/sync', {
+      params: {
+        ...(asRole ? { as_role: asRole } : {}),
+        ...(refresh ? { refresh: 'true' } : {}),
+        skip: String(skip || 0)
+      },
+      timeoutMs: 300_000
     })
   }
 

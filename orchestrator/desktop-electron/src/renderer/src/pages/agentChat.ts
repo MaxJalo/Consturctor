@@ -1,5 +1,12 @@
 import type { OrderCaseBrief } from './orderCaseBrief'
 
+/** Один пробел службы: пустое поле, пункт чек-листа или открытый пробел. */
+export interface ServiceGap {
+  id: string
+  field: string
+  prompt: string
+}
+
 /** Заказ, по которому идёт разговор с помощником службы (правая панель чата). */
 export interface AgentChatOrder {
   id: string
@@ -24,6 +31,8 @@ export interface AgentChatContext {
   readOnly?: boolean
   /** Сводка уже открытой карточки. Видна до ответа агента. */
   caseBrief?: OrderCaseBrief
+  /** Свои незакрытые пробелы. Кнопки рисует экран, не текст агента. */
+  gaps?: ServiceGap[]
   /** Итог скрипта службы. Старая переписка его не подменяет. */
   outcome?: string
   /** Задание модели: пояснить готовый итог. В ленте не показывается. */

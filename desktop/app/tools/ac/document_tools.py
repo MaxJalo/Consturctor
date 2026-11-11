@@ -102,9 +102,10 @@ class ReportExportDocumentTool(BaseTool):
                         "transcript_path": {
                             "type": "string",
                             "description": (
-                                "transcript_path из audio.transcribe: инструмент сам добавит "
-                                "в конец раздел «Расшифровка» со ВСЕМИ репликами и таймкодами. "
-                                "Текст расшифровки в sections не передавай."
+                                "Только путь .txt, который в этом же запуске вернул audio.transcribe. "
+                                "Тогда в конец добавится раздел «Расшифровка». "
+                                "Для обычного Word поле оставь пустым и пиши текст в sections. "
+                                "Имя файла и выдуманный путь сюда не подставляй."
                             ),
                         },
                         "append": {
@@ -137,6 +138,8 @@ class ReportExportDocumentTool(BaseTool):
         want = str(input_data.get("format") or "docx").strip().lower()
         transcript_path = str(input_data.get("transcript_path") or "").strip()
         transcript_lines = 0
+        if transcript_path and not _looks_like_transcript(transcript_path):
+            transcript_path = ""
         if transcript_path:
             try:
                 transcript = _load_transcript(transcript_path)
@@ -281,6 +284,11 @@ class ReportExportDocumentTool(BaseTool):
             error_type=error_type,
             error_message=message,
         )
+
+
+def _looks_like_transcript(transcript_path: str) -> bool:
+    """Поле для обычного Word модель часто заполняет именем файла. Это не расшифровка."""
+    return Path(transcript_path).suffix.lower() == ".txt"
 
 
 def _load_transcript(transcript_path: str) -> str:

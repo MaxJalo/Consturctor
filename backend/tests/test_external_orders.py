@@ -22,6 +22,7 @@ from app.models.external_order import (
     ExternalOrderRisk,
     ExternalOrderTask,
 )
+import app.services.external_orders as external_orders_module
 from app.services.external_order_matrix import evaluate_matrix, review_checklist
 from app.services.external_order_strategy import link_strategy
 from app.services.external_orders import (
@@ -37,6 +38,9 @@ from app.services.external_orders import (
     delete_order_file,
     import_onec_order,
     import_tkp_order,
+    refresh_stored_onec,
+    sync_order_registry,
+    take_order,
     can_test_external_order,
     is_shared_external_order_agent,
     is_zhalybin,
@@ -45,6 +49,7 @@ from app.services.external_orders import (
     link_onec,
     link_order_file,
     list_orders,
+    _forget_briefs,
     save_order_text,
     unlink_order_file,
     make_plan,
@@ -269,6 +274,7 @@ def test_rp_cannot_change_price():
 def test_only_zhalybin_can_switch_role():
     assert is_zhalybin("Жалыбин Максим Дмитриевич")
     assert not is_zhalybin("Жалыбин Пётр Иванович")
+    assert can_test_external_order("Тест Пользователь")
     assert can_test_external_order("Рамазанов Роман")
     assert can_test_external_order("Рамазанов Роман Иванович")
     assert not can_test_external_order("Рамазанов Пётр")
@@ -821,6 +827,15 @@ def test_queue_names_the_change_and_a_project_becomes_a_linked_file():
     assert any("Просим подтвердить" in paragraph for paragraph in excerpt["paragraphs"])
 
 
+def test_stale_list_stays_available_while_it_is_rebuilt():
+    external_orders_module._briefs_cache = (1.0, [{"id": "kept"}])
+    _forget_briefs()
+    assert external_orders_module._briefs_cache is not None
+    assert external_orders_module._briefs_cache[0] == 0.0
+    assert external_orders_module._briefs_cache[1] == [{"id": "kept"}]
+    external_orders_module._briefs_cache = None
+
+
 def test_condition_without_owner_document_is_rejected(monkeypatch):
     monkeypatch.setattr("app.services.turboproject.turboproject_configured", lambda: False)
     db = _db()
@@ -992,6 +1007,332 @@ def test_import_tkp_reflects_path_and_does_not_duplicate(monkeypatch):
     second = import_tkp_order(db, role="it", fio="Жалыбин", ref_key=key)
     assert second["id"] == first["id"]
     assert db.query(ExternalOrder).count() == 1
+    stored = db.query(ExternalOrder).one()
+    assert stored.onec_tkp_key == key
+    assert stored.onec_order_key == "aabb8097-84c3-11f1-9848-6cb31113810e"
+    assert stored.source_kind == "both"
+
+
+def test_customer_order_and_tkp_share_one_card(monkeypatch):
+    order_key = "aabb8097-84c3-11f1-9848-6cb31113810e"
+    tkp_key = "15496a03-7956-4a03-8e57-3192c20f1808"
+
+    def fake_read(ref_key: str) -> dict:
+        return {
+            "order_key": ref_key,
+            "order_number": "ЗК-9",
+            "order_date": "2026-10-02",
+            "amount": "500.00",
+            "payment_percent": "0",
+            "counterparty": "ООО Ромашка",
+            "product": "ГРС",
+        }
+
+    def fake_trace(ref_key: str) -> dict:
+        return {
+            "tkp_key": ref_key,
+            "tkp_number": "НП-1",
+            "tkp_date": "2026-10-01",
+            "order_key": order_key,
+            "order_number": "ЗК-9",
+            "counterparty": "ООО Ромашка",
+            "comment": "ГРС",
+            "amount": "500.00",
+            "payment_percent": "0",
+            "suggested_stage": "payment",
+            "suggested_status": "awaiting_payment",
+        }
+
+    monkeypatch.setattr("app.services.external_order_onec.read_order", fake_read)
+    monkeypatch.setattr("app.services.external_order_onec.tkp_key_for_order", lambda _key: "")
+    monkeypatch.setattr("app.services.external_order_onec.trace_tkp", fake_trace)
+    db = _db()
+    created = import_onec_order(db, role="it", fio="Жалыбин", ref_key=order_key)
+    attached = import_tkp_order(db, role="ks", fio="Ильченко", ref_key=tkp_key, keep_stage=True)
+    assert attached["id"] == created["id"]
+    assert db.query(ExternalOrder).count() == 1
+    row = db.query(ExternalOrder).one()
+    assert row.stage == "request"
+    assert row.source_kind == "both"
+    assert row.onec_tkp_number == "НП-1"
+
+
+def test_sync_registry_keeps_new_cards_on_request(monkeypatch):
+    key = "15496a03-7956-4a03-8e57-3192c20f1808"
+
+    def fake_trace(ref_key: str) -> dict:
+        return {
+            "tkp_key": ref_key,
+            "tkp_number": "НП-2",
+            "tkp_date": "2026-11-01",
+            "counterparty": "ООО Поле",
+            "comment": "Клапан",
+            "amount": "10.00",
+            "payment_percent": "0",
+            "suggested_stage": "payment",
+            "suggested_status": "awaiting_payment",
+        }
+
+    monkeypatch.setattr("app.services.external_order_onec.trace_tkp", fake_trace)
+    monkeypatch.setattr(
+        "app.services.external_order_onec.recent_tkp_page",
+        lambda **_kwargs: {
+            "orders": [
+                {
+                    "key": key,
+                    "kind": "tkp",
+                    "number": "НП-2",
+                    "date": "2026-11-01",
+                    "manager": "Иванов",
+                    "amount": "10.00",
+                    "status": "Согласовано",
+                }
+            ]
+        },
+    )
+    monkeypatch.setattr("app.services.external_order_onec.recent_sale_orders_page", lambda **_kwargs: {"orders": []})
+    db = _db()
+    result = sync_order_registry(db, role="it", fio="Жалыбин", refresh=True)
+    assert result["created"] == 1
+    row = db.query(ExternalOrder).one()
+    assert row.stage == "request"
+    assert row.source_kind == "tkp"
+    assert row.manager == "Иванов"
+    assert row.onec_status == "Согласовано"
+    brief = result["orders"][0]
+    assert brief["source_kind"] == "tkp"
+    assert brief["manager"] == "Иванов"
+    assert row.onec_synced_at is None
+
+
+def test_sync_registry_continues_from_the_next_page(monkeypatch):
+    first_key = "15496a03-7956-4a03-8e57-3192c20f1808"
+    second_key = "aabb8097-84c3-11f1-9848-6cb31113810e"
+    seen: list[int] = []
+
+    def fake_tkp(**kwargs):
+        skip = int(kwargs.get("skip") or 0)
+        seen.append(skip)
+        if skip == 0:
+            return {
+                "orders": [{"key": first_key, "kind": "tkp", "number": "НП-1", "date": "2026-11-01", "counterparty": "ООО Поле"}],
+                "has_more": True,
+            }
+        return {
+            "orders": [{"key": second_key, "kind": "tkp", "number": "НП-2", "date": "2026-10-01", "counterparty": "ООО Дальше"}],
+            "has_more": False,
+        }
+
+    monkeypatch.setattr("app.services.external_order_onec.recent_tkp_page", fake_tkp)
+    monkeypatch.setattr("app.services.external_order_onec.recent_sale_orders_page", lambda **_kwargs: {"orders": [], "has_more": False})
+    db = _db()
+    first = sync_order_registry(db, role="it", fio="Жалыбин", skip=0)
+    assert first["created"] == 1
+    assert first["has_more"] is True
+    assert first["next_skip"] == 50
+    second = sync_order_registry(db, role="it", fio="Жалыбин", skip=first["next_skip"])
+    assert seen == [0, 50]
+    assert second["created"] == 1
+    assert second["has_more"] is False
+    numbers = {row.onec_tkp_number for row in db.query(ExternalOrder).all()}
+    assert numbers == {"НП-1", "НП-2"}
+
+
+def test_sync_attaches_sale_order_to_tkp_by_number(monkeypatch):
+    tkp_key = "15496a03-7956-4a03-8e57-3192c20f1808"
+    order_key = "aabb8097-84c3-11f1-9848-6cb31113810e"
+    monkeypatch.setattr(
+        "app.services.external_order_onec.recent_tkp_page",
+        lambda **_kwargs: {
+            "orders": [
+                {
+                    "key": tkp_key,
+                    "kind": "tkp",
+                    "number": "НП-3",
+                    "date": "2026-11-01",
+                    "order_number": "00-10",
+                    "counterparty": "ООО Поле",
+                    "product": "Клапан",
+                    "status": "Согласовано",
+                }
+            ]
+        },
+    )
+    monkeypatch.setattr(
+        "app.services.external_order_onec.recent_sale_orders_page",
+        lambda **_kwargs: {
+            "orders": [
+                {
+                    "key": order_key,
+                    "kind": "order",
+                    "number": "00-10",
+                    "date": "2026-11-02",
+                    "counterparty": "ООО Поле",
+                    "product": "Клапан",
+                    "amount": "15.00",
+                    "status": "К выполнению",
+                }
+            ]
+        },
+    )
+    db = _db()
+    result = sync_order_registry(db, role="it", fio="Жалыбин", refresh=True)
+    assert result["created"] == 1
+    assert result["linked"] == 1
+    row = db.query(ExternalOrder).one()
+    assert row.onec_tkp_key == tkp_key
+    assert row.onec_order_key == order_key
+    assert row.source_kind == "both"
+    assert row.amount == "15.00"
+    assert row.stage == "request"
+
+
+def test_refresh_writes_onec_and_keeps_the_work_stage(monkeypatch):
+    key = "15496a03-7956-4a03-8e57-3192c20f1808"
+    amounts = iter(["10.00", "12.00"])
+
+    def fake_trace(ref_key: str) -> dict:
+        return {
+            "tkp_key": ref_key,
+            "tkp_number": "НП-9",
+            "counterparty": "ООО Поле",
+            "comment": "Клапан",
+            "amount": next(amounts),
+            "payment_percent": "0",
+            "suggested_stage": "payment",
+            "suggested_status": "awaiting_payment",
+        }
+
+    monkeypatch.setattr("app.services.external_order_onec.trace_tkp", fake_trace)
+    monkeypatch.setattr("app.services.external_order_case.fetch_onec_file_bytes", lambda tkp_key, order_key: [])
+    db = _db()
+    order = _create(db)
+    row = db.get(ExternalOrder, order["id"])
+    assert row is not None
+    row.onec_tkp_key = key
+    row.stage = "calc"
+    row.status = "calculating"
+    db.commit()
+
+    first = refresh_stored_onec(db, order["id"], role="ks", fio="Коммерция")
+    assert first["stage"] == "calc"
+    assert first["status"] == "calculating"
+    stored = db.get(ExternalOrder, order["id"])
+    assert stored is not None
+    assert stored.amount == "10.00"
+    assert stored.customer == "ООО Поле"
+    assert stored.onec_synced_at is not None
+    assert stored.stage == "calc"
+
+    second = refresh_stored_onec(db, order["id"], role="ks", fio="Коммерция")
+    assert second["stage"] == "calc"
+    stored = db.get(ExternalOrder, order["id"])
+    assert stored is not None
+    assert stored.amount == "12.00"
+    assert stored.stage == "calc"
+    assert stored.status == "calculating"
+
+
+def test_refresh_saves_onec_files_once_and_names_them_for_the_agent(monkeypatch):
+    pdf_id = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+    docx_id = "bbbbbbbb-cccc-dddd-eeee-ffffffffffff"
+    tkp_key = "15496a03-7956-4a03-8e57-3192c20f1808"
+    order_key = "aabb8097-84c3-11f1-9848-6cb31113810e"
+
+    def fake_attached(owner_key: str, *, kind: str) -> list[dict]:
+        if kind == "tkp" and owner_key == tkp_key:
+            return [{"file_id": pdf_id, "filename": "Договор.pdf"}]
+        if kind == "order" and owner_key == order_key:
+            return [{"file_id": docx_id, "filename": "ТЗ.docx"}]
+        return []
+
+    def fake_download(file_id: str, entity: str = ""):
+        from app.services.onec_artifacts import ArtifactDownload
+
+        if file_id == pdf_id:
+            return ArtifactDownload(
+                file_id=file_id,
+                filename="Договор.pdf",
+                content_type="application/pdf",
+                content=b"%PDF-1.4 test",
+                source_entity="",
+                method="test",
+            )
+        return ArtifactDownload(
+            file_id=file_id,
+            filename="ТЗ.docx",
+            content_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            content=b"PK\x03\x04docx",
+            source_entity="",
+            method="test",
+        )
+
+    monkeypatch.setattr("app.services.external_order_onec.attached_files", fake_attached)
+    monkeypatch.setattr("app.services.onec_artifacts.download_artifact_file", fake_download)
+    monkeypatch.setattr(
+        "app.services.external_order_onec.trace_tkp",
+        lambda ref_key: {
+            "tkp_key": ref_key,
+            "tkp_number": "НП-1",
+            "counterparty": "ООО Файл",
+            "comment": "Насос",
+            "amount": "1.00",
+            "payment_percent": "0",
+        },
+    )
+    db = _db()
+    order = _create(db)
+    row = db.get(ExternalOrder, order["id"])
+    assert row is not None
+    row.onec_tkp_key = tkp_key
+    row.onec_order_key = order_key
+    db.commit()
+
+    first = refresh_stored_onec(db, order["id"], role="ks", fio="Коммерция")
+    names = {item["file_name"] for item in first["documents"]}
+    assert "Договор.pdf" in names
+    assert "ТЗ.docx" in names
+    assert {item["note"] for item in first["documents"]} == {f"onec:{pdf_id}", f"onec:{docx_id}"}
+
+    second = refresh_stored_onec(db, order["id"], role="ks", fio="Коммерция")
+    assert len(second["documents"]) == 2
+
+    from app.services.external_order_case import document_excerpt_shells
+
+    stored = db.get(ExternalOrder, order["id"])
+    assert stored is not None
+    shells = document_excerpt_shells(stored)
+    named = [item for item in shells if item["file_name"] == "ТЗ.docx"]
+    assert named and named[0]["source"] == "1С"
+    assert "ТЗ" in named[0]["anchor"]
+
+
+def test_take_order_records_the_user_and_import_does_not(monkeypatch):
+    key = "15496a03-7956-4a03-8e57-3192c20f1808"
+
+    def fake_trace(ref_key: str) -> dict:
+        return {
+            "tkp_key": ref_key,
+            "tkp_number": "НП-4",
+            "counterparty": "ООО Поле",
+            "comment": "Клапан",
+            "amount": "10.00",
+            "payment_percent": "0",
+        }
+
+    monkeypatch.setattr("app.services.external_order_onec.trace_tkp", fake_trace)
+    db = _db()
+    imported = import_tkp_order(db, role="ks", fio="Коммерция", ref_key=key)
+    assert imported["owners"].get("ks", "") == ""
+    assert imported["owners"].get("taken", "") == ""
+    taken = take_order(db, imported["id"], role="ks", fio="Жалыбин Максим Дмитриевич")
+    assert taken["owners"]["taken"] == "Жалыбин Максим Дмитриевич"
+    try:
+        take_order(db, imported["id"], role="viewer", fio="Зритель")
+    except ExternalOrderError as exc:
+        assert exc.status == 403
+    else:
+        raise AssertionError("просмотр забрал заказ")
 
 
 def test_strategy_link_stores_turboproject_without_writing_tasks(monkeypatch):
@@ -1243,6 +1584,31 @@ def test_agent_case_read_fits_in_the_tool_result():
     assert "result_file не открывай" in body["agent_limits"]
 
 
+def test_chat_title_number_finds_the_same_order():
+    from app.services.external_orders import get_order
+
+    db = _db()
+    created = _create(db)
+    row = db.get(ExternalOrder, created["id"])
+    row.onec_tkp_number = "НП00-004334"
+    row.onec_order_number = "ЗК00-000221"
+    db.commit()
+    assert get_order(db, "НП00-004334")["id"] == created["id"]
+    assert get_order(db, "ЗК00-000221")["id"] == created["id"]
+    assert get_order(db, "НП00-004334 · ЗК00-000221")["id"] == created["id"]
+    assert get_order(db, created["code"])["id"] == created["id"]
+    row.onec_tkp_number = ""
+    row.sections_json = json.dumps({"onec": {"tkp_number": "НП00-009999"}}, ensure_ascii=False)
+    db.commit()
+    assert get_order(db, "НП00-009999")["id"] == created["id"]
+    try:
+        get_order(db, "нет такого")
+    except ExternalOrderError as exc:
+        assert exc.status == 404
+    else:
+        raise AssertionError("unknown number must stay missing")
+
+
 def test_production_plan_puts_contract_conditions_in_the_file(tmp_path, monkeypatch):
     from pathlib import Path
 
@@ -1272,6 +1638,7 @@ def test_production_plan_puts_contract_conditions_in_the_file(tmp_path, monkeypa
     )
     db.commit()
     result = build_work_plan(db, created["id"], fio="Производство")
+    assert result["order_id"] == created["id"]
     assert result["file_name"].endswith(".xml")
     assert "Цена" not in result["missing"]
     assert "НДС" in result["missing"]
@@ -1424,7 +1791,7 @@ def test_plan_uses_template_outline_cache(tmp_path, monkeypatch):
     assert not any(item["code"] == "template_missing" for item in model["warnings"])
 
 
-def test_plan_mpp_upload_replaces_xml_draft(tmp_path, monkeypatch):
+def test_plan_mpp_upload_keeps_xml_draft(tmp_path, monkeypatch):
     import base64
 
     from app.services.external_order_plan import build_work_plan, store_mpp
@@ -1442,7 +1809,28 @@ def test_plan_mpp_upload_replaces_xml_draft(tmp_path, monkeypatch):
     db.commit()
     db.refresh(row)
     docs = [item for item in row.documents if item.kind == "plan"]
-    assert len(docs) == 1 and docs[0].file_name.endswith(".mpp")
+    names = {item.file_name for item in docs}
+    assert any(name.endswith(".xml") for name in names)
+    assert any(name.endswith(".mpp") for name in names)
+
+
+def test_workflow_id_resolves_to_the_open_order(monkeypatch):
+    from app.services.external_orders import _tool_order_id
+
+    db = _db()
+    order = _create(db)
+    monkeypatch.setattr(
+        "app.services.external_orders._order_from_latest_brief",
+        lambda _session, user_id: db.get(ExternalOrder, order["id"]) if user_id == "user-1" else None,
+    )
+    assert _tool_order_id(db, "2e668115-76e9-4cf5-9716-c07eabeda015", user_id="user-1") == order["id"]
+    assert _tool_order_id(db, "current", user_id="user-1") == order["id"]
+    try:
+        _tool_order_id(db, "НП00-009999", user_id="user-1")
+    except ExternalOrderError as exc:
+        assert exc.status == 404
+    else:
+        raise AssertionError("чужой номер подменился открытым заказом")
 
 
 def test_invoke_tool_plan_preview_returns_questions(tmp_path, monkeypatch):
@@ -1780,6 +2168,23 @@ def test_invoke_tool_read_full_auto_prepare_propose_and_draft_1c(monkeypatch, tm
     assert directive_finding["prefill"]["customer"] == "Заказчик"
 
 
+def test_blank_onec_date_is_not_a_deal_term():
+    from app.services.external_orders import known_facts
+
+    db = _db()
+    created = _create(db)
+    row = db.get(ExternalOrder, created["id"])
+    row.sections_json = json.dumps(
+        {"onec": {"deal_start": "0001-01-01", "deal_finish": "0001-01-01T00:00:00", "order_date": "0001-01-01"}},
+        ensure_ascii=False,
+    )
+    db.commit()
+    db.refresh(row)
+    known = " ".join(known_facts(row))
+    assert "0001" not in known
+    assert "Срок сделки" not in known
+
+
 def test_known_path_and_survey_are_not_asked_again(tmp_path):
     from openpyxl import Workbook
 
@@ -2093,7 +2498,19 @@ def test_order_list_does_not_wait_on_a_busy_pool(monkeypatch) -> None:
         def query(self, _model):
             return self
 
-        def order_by(self, _column):
+        def options(self, *_args):
+            return self
+
+        def order_by(self, *_columns):
+            return self
+
+        def filter(self, *_criteria):
+            return self
+
+        def group_by(self, *_columns):
+            return self
+
+        def distinct(self):
             return self
 
         def all(self):
@@ -2108,9 +2525,10 @@ def test_order_list_does_not_wait_on_a_busy_pool(monkeypatch) -> None:
     try:
         orders._briefs_cache = None
         assert orders.order_briefs() == []
-        assert calls["n"] == 1
+        assert calls["n"] >= 1
+        first_read = calls["n"]
         assert orders.order_briefs() == []
-        assert calls["n"] == 1
+        assert calls["n"] == first_read
         orders._briefs_cache = (time.monotonic() - 40, [{"code": "ВЗ-кэш"}])
         monkeypatch.setattr("app.db.session.pool_is_saturated", lambda: True)
 
@@ -2242,4 +2660,94 @@ def test_order_onec_stops_when_the_budget_is_spent() -> None:
         assert "карточке" in exc.detail
     else:
         raise AssertionError("запрос в 1С не остановился")
+
+
+def test_service_gaps_share_one_draft_and_drop_invented_options():
+    from app.services.external_orders import (
+        _agent_prepare_payload,
+        accept_finding_batch,
+        answer_service_gap,
+        grounded_options,
+        offer_gap_options,
+        propose,
+    )
+
+    assert grounded_options(["Заказчик", "скидка 15%"], ["Заказчик: Завод"]) == ["Заказчик"]
+    payload = _agent_prepare_payload(
+        {
+            "order": {"known": ["НДС: 20%"]},
+            "role": "ks",
+            "summary": "",
+            "questions": [
+                {"id": "section:commercial.vat", "field": "section:commercial.vat", "prompt": "НДС"},
+                {"id": "section:commercial.discount", "field": "section:commercial.discount", "prompt": "Скидка"},
+            ],
+            "proposals": [{"field": "section:commercial.vat", "status": "draft", "owner_role": "ks", "value": "20%"}],
+            "stage_passport": {},
+        }
+    )
+    assert [item["id"] for item in payload["questions"]] == ["section:commercial.discount"]
+
+    db = _db()
+    order = _create(db)
+    row = db.get(ExternalOrder, order["id"])
+    checks = [item for item in row.checks if item.owner_role == "omto"]
+    assert len(checks) >= 3
+    first = answer_service_gap(
+        db,
+        order["id"],
+        role="omto",
+        fio="Снабженец",
+        question_id=f"check:{checks[0].id}",
+        value="Цены из карточки актуальны",
+    )
+    batch = first["batch_id"]
+    second = answer_service_gap(
+        db,
+        order["id"],
+        role="omto",
+        fio="Снабженец",
+        question_id=f"check:{checks[1].id}",
+        value="Логистика по договору",
+        batch_id=batch,
+    )
+    assert second["batch_id"] == batch
+    packed = [item for item in second["findings"] if item["status"] == "draft" and item["batch_id"] == batch]
+    assert {item["field"] for item in packed} == {f"check:{checks[0].id}", f"check:{checks[1].id}"}
+
+    offered = offer_gap_options(
+        db,
+        order["id"],
+        role="omto",
+        offers=[{"id": f"check:{checks[2].id}", "options": ["Заказчик", "миллион рублей"]}],
+    )
+    left = [item["id"] for item in offered["questions"]]
+    assert f"check:{checks[0].id}" not in left
+    assert f"check:{checks[1].id}" not in left
+    assert f"check:{checks[2].id}" in left
+    by_id = {item["id"]: item["options"] for item in offered["offers"]}
+    assert by_id[f"check:{checks[2].id}"] == ["Заказчик"]
+
+    propose(
+        db,
+        order["id"],
+        fio="КС",
+        section_proposals=[
+            {
+                "section": "commercial",
+                "key": "discount",
+                "value": "0%",
+                "owner_role": "ks",
+                "source_ref": "тест",
+                "location": "карточка",
+            }
+        ],
+    )
+    accepted = accept_finding_batch(db, order["id"], batch, role="omto", fio="Снабженец")
+    done = {item["id"]: item["status"] for item in accepted["checks"]}
+    assert done[checks[0].id] == "done"
+    assert done[checks[1].id] == "done"
+    leftover = next(item for item in accepted["findings"] if item["field"] == "section:commercial.discount")
+    assert leftover["status"] == "draft"
+    assert not leftover["batch_id"]
 

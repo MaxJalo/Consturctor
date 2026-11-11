@@ -1,4 +1,21 @@
 services:
+  constructor-pg:
+    image: postgres:16-alpine
+    ports:
+      - "5435:5432"
+    environment:
+      POSTGRES_USER: constructor
+      POSTGRES_PASSWORD: constructor
+      POSTGRES_DB: constructor
+    volumes:
+      - constructor_pg:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U constructor -d constructor"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+
   constructor-redis:
     image: redis:7-alpine
     ports:
@@ -64,3 +81,6 @@ services:
       - constructor-redis
     command: celery -A app.celery_app beat --loglevel=info
     restart: unless-stopped
+
+volumes:
+  constructor_pg:

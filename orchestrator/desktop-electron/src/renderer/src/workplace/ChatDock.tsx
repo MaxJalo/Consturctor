@@ -82,13 +82,13 @@ function mirrorRun(items: FeedItem[], running: boolean): ChatLine[] {
       continue
     }
     if (item.kind === 'message' && item.role === 'agent') {
-      const text = item.text.trim()
-      if (text) out.push({ id: item.id, role: 'assistant', text })
+      const line = assistantReply(item.id, item.text)
+      if (line) out.push(line)
       continue
     }
     if (item.kind === 'result') {
-      const text = item.text.trim()
-      if (text) out.push({ id: item.id, role: 'assistant', text })
+      const line = assistantReply(item.id, item.text)
+      if (line) out.push(line)
       continue
     }
     if (item.kind === 'thinking') {
@@ -108,6 +108,15 @@ function mirrorRun(items: FeedItem[], running: boolean): ChatLine[] {
     }
   }
   return out
+}
+
+/** [[nav:раздел]] в ответе помощника становится кнопкой, а не сырым текстом. */
+function assistantReply(id: string, raw: string): ChatLine | null {
+  const parsed = takeMarkers(raw)
+  const text = parsed.text.trim()
+  const actions = mergeActions(parsed.actions, pageLinks(parsed.text))
+  if (!text && actions.length === 0) return null
+  return { id, role: 'assistant', text, actions }
 }
 
 function openInBrowser(url: string): void {
@@ -146,18 +155,22 @@ export function ChatDock({ userId, pageKey, onOpenSupport }: ChatDockProps): Rea
     ? lines.filter((line) => {
         const text = line.text.trim()
         if (!text || text === greeting) return false
-        return !mirrored.some((item) => item.text.trim() === text)
+        const cleaned = takeMarkers(text).text.trim()
+        return !mirrored.some((item) => {
+          const shown = item.text.trim()
+          return shown === text || shown === cleaned
+        })
       })
     : lines
   const shownLines = mirrored.length ? [...mirrored, ...extraLines] : lines
 
   useEffect(() => {
     return agentClient.onEvent((event) => {
-      if (event.type !== 'result') return
+      if (event.type !== 'result' && event.type !== 'chat_files') return
       if (event.workflowId && event.workflowId !== workflowId) return
-      const raw = (event as { files?: { name?: string; path?: string }[] }).files
+      const raw = event.files
       if (!Array.isArray(raw)) {
-        setMadeFiles([])
+        if (event.type === 'result') setMadeFiles([])
         return
       }
       setMadeFiles(
@@ -366,7 +379,7 @@ export function ChatDock({ userId, pageKey, onOpenSupport }: ChatDockProps): Rea
                 <MarkdownBody text={readableChatText(pending.question)} />
               </div>
             ) : null}
-            {madeFiles.length > 0 && !run?.state.running ? (
+            {madeFiles.length > 0 ? (
               <div className="chat-dock-line is-assistant">
                 <p>Файлы, которые подготовил помощник</p>
                 <div className="chat-dock-links">

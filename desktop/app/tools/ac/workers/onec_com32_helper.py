@@ -277,6 +277,12 @@ def _query_vbs() -> str:
 
 
 def _run_vbs(script: str, *, args: list[str] | None = None, timeout: int = 60) -> tuple[int, str, str]:
+    return _run_vbs_script(script, args=args, timeout=timeout)
+
+
+def _run_vbs_script(
+    script: str, *, args: list[str] | None = None, timeout: int = 60
+) -> tuple[int, str, str]:
     exe = cscript32()
     with tempfile.TemporaryDirectory(prefix="onec_com32_vbs_") as raw_dir:
         path = Path(raw_dir) / "run.vbs"

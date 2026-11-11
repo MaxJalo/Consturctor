@@ -690,6 +690,12 @@ export function buildStagePassports(order: ExternalOrder): StagePassport[] {
 /**
  * Детерминированный список вопросов по недостающим полям, открытым чек-листам и пробелам для выбранной роли.
  */
+function askSentence(text: string): string {
+  const clean = text.trim().replace(/\.+$/, '')
+  if (!clean) return 'Этот пункт ещё не подтверждён.'
+  return clean.endsWith('?') ? clean : `${clean}?`
+}
+
 export function buildRoleQuestions(order: ExternalOrder, role: string): CopilotQuestion[] {
   const fromRoleMap = order.role_questions?.[role]
   if (Array.isArray(fromRoleMap)) return fromRoleMap
@@ -711,7 +717,7 @@ export function buildRoleQuestions(order: ExternalOrder, role: string): CopilotQ
           field: `${form.section}.${field.key}`,
           section: form.section,
           key: field.key,
-          prompt: `Укажите «${field.label}» в разделе «${form.title}»`,
+          prompt: `Укажите ${field.label.toLowerCase()}.`,
           placeholder: `Введите ${field.label.toLowerCase()}…`,
           current_value: '',
           owner_role: role,
@@ -729,7 +735,7 @@ export function buildRoleQuestions(order: ExternalOrder, role: string): CopilotQ
       id: `gap:${gap.id}`,
       field: gap.field,
       gap_id: gap.id,
-      prompt: `Закройте пробел «${gap.field}»: ${gap.detail}`,
+      prompt: (gap.detail || '').trim() || `Не заполнено: ${gap.field}.`,
       placeholder: 'Значение и ссылка на источник (пункт договора / ТЗ / 1С)…',
       current_value: '',
       owner_role: gap.owner_role,
@@ -748,7 +754,7 @@ export function buildRoleQuestions(order: ExternalOrder, role: string): CopilotQ
       id: `check:${check.id}`,
       field: check.text,
       check_id: check.id,
-      prompt: `Подтвердите пункт «${check.text}» (${GATES[check.gate] || check.gate})`,
+      prompt: askSentence(check.text),
       placeholder: 'Основание / ссылка на расчёт, документ или номер в 1С…',
       current_value: check.evidence || '',
       owner_role: check.owner_role,

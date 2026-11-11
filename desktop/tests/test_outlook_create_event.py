@@ -56,15 +56,16 @@ def test_outlook_com_timeout_allows_slow_calendar() -> None:
     assert OutlookCreateEventComTool(worker).definition.timeout_seconds >= 180
 
 
-def test_outlook_create_runs_in_gui_process() -> None:
+def test_outlook_and_onec_go_through_the_com_gateway() -> None:
     from app.tools.ac.dispatch import build_registry
-    from app.tools.ac.workers.outlook_com_worker import OutlookComWorker
+    from app.tools.ac.workers.com_gateway_client import GatewayComWorker
 
     registry = build_registry()
     create = registry.get("outlook.create_event")
     read = registry.get("outlook.read_calendar")
-    assert isinstance(create._worker, OutlookComWorker)
-    assert isinstance(read._worker, OutlookComWorker)
+    assert isinstance(create._worker, GatewayComWorker)
+    assert isinstance(read._worker, GatewayComWorker)
+    assert create._worker._lane == "outlook"
 
 
 class _FakeWinreg:
