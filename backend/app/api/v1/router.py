@@ -2,6 +2,7 @@ from fastapi import APIRouter
 
 from app.api.v1 import (
     admin,
+    agent_skills,
     admin_finance,
     agents,
     assignment_reviews,
@@ -34,6 +35,7 @@ api_router.include_router(admin_finance.router, prefix="/api/v1")
 api_router.include_router(llm.router, prefix="/api/v1")
 api_router.include_router(regulations.router, prefix="/api/v1")
 api_router.include_router(agents.router, prefix="/api/v1")
+api_router.include_router(agent_skills.router, prefix="/api/v1")
 api_router.include_router(assignment_reviews.router, prefix="/api/v1")
 api_router.include_router(external_orders.router, prefix="/api/v1")
 api_router.include_router(regulation_creation.router, prefix="/api/v1")

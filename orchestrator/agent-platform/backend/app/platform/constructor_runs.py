@@ -35,6 +35,19 @@ def _base_url() -> str:
     return (settings.constructor_api_url or "").strip().rstrip("/")
 
 
+def fetch_agent_skill_markdown(skill_id: str) -> str:
+    """Текст умения из общего банка. Пустая строка, если записи нет или нет доступа."""
+    headers = _headers()
+    base = _base_url()
+    if not headers or not base:
+        return ""
+    response = httpx.get(f"{base}/api/v1/agent-skills/{skill_id}", headers=headers, timeout=15)
+    if response.status_code != 200:
+        return ""
+    payload = response.json()
+    return str(payload.get("content") or "") if isinstance(payload, dict) else ""
+
+
 def _tool_name(event: SessionEvent) -> str:
     if event.name != "mcp":
         return event.name

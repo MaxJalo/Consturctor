@@ -20,6 +20,13 @@ def test_real_hitl_blocks_writes_and_allows_reads_and_case_tool() -> None:
 
     assert classify("read", {"path": "foo.txt"}) is None
     assert classify("shell", {"command": "ls -la"}) is None
+    assert (
+        classify(
+            "shell",
+            {"command": "python -c \"import json; d=json.load(open(r'tool_results/result_1.json', encoding='utf-8')); print(list(d))\""},
+        )
+        is None
+    )
     assert classify("mcp:custom-user-tools/ask_user", {"questions": []}) is None
     assert (
         classify(

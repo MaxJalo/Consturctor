@@ -247,6 +247,18 @@ def start_turn(
     ).start()
 
 
+def _write_cancel(session_id: str, turn: _Turn, *, keep_queue: bool) -> None:
+    """Запись в stdin не должна держать HTTP: если раннер не читает канал, write блокируется."""
+    try:
+        with turn.lock:
+            assert turn.process.stdin is not None
+            turn.process.stdin.write(b'{"type":"cancel"}\n')
+            turn.process.stdin.flush()
+        store.trace(session_id, "platform→runner", "stdin: отмена", data={"type": "cancel", "steer": keep_queue})
+    except OSError:
+        pass
+
+
 def cancel_turn(session_id: str, *, keep_queue: bool = False) -> bool:
     with _turns_lock:
         turn = _turns.get(session_id)
@@ -259,18 +271,17 @@ def cancel_turn(session_id: str, *, keep_queue: bool = False) -> bool:
     if not keep_queue:
         store.clear_queue(session_id)
     if turn is None or turn.process.poll() is not None:
+        if not keep_queue:
+            store.release(session_id)
+            store.finish(session_id, "cancelled")
         return False
     if keep_queue:
         store.hold(session_id)
-    try:
-        with turn.lock:
-            assert turn.process.stdin is not None
-            turn.process.stdin.write(b'{"type":"cancel"}\n')
-            turn.process.stdin.flush()
-        store.trace(session_id, "platform→runner", "stdin: отмена", data={"type": "cancel", "steer": keep_queue})
-    except OSError:
-        pass
+    # Таймер убийства ставится до записи в stdin: забитый канал не должен отменять остановку.
     threading.Timer(CANCEL_GRACE_SECONDS, _kill, args=(session_id, turn)).start()
+    threading.Thread(
+        target=_write_cancel, args=(session_id, turn), kwargs={"keep_queue": keep_queue}, daemon=True
+    ).start()
     return True
 
 
@@ -392,7 +403,7 @@ def _read_stdout(session_id: str, turn: _Turn) -> None:
         store.hold(session_id)
     if code and not steered:
         store.release(session_id)
-    final_status = "cancelled" if steered else ("error" if code else "finished")
+    final_status = "cancelled" if steered or explicit_stop else ("error" if code else "finished")
     store.finish(session_id, final_status, message if (code and not steered) else "")
     session_after = store.get(session_id)
     if session_after is not None and turn.constructor_run_id:

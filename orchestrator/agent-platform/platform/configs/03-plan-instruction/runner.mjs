@@ -433,8 +433,12 @@ async function main() {
           emit({ type: "status", text: "Отменяю запуск…" });
           if (run.supports("cancel")) {
             trace("runner→sdk", "run.cancel", { runId: run.id });
-            await run.cancel().catch(() => undefined);
+            await Promise.race([
+              run.cancel().catch(() => undefined),
+              new Promise((resolve) => setTimeout(resolve, 2000)),
+            ]);
           }
+          process.exit(0);
         }
       }
     })();

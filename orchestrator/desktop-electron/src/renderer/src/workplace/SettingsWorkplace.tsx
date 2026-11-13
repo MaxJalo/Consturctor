@@ -106,7 +106,7 @@ function AlwaysAllowSetting(): React.JSX.Element {
         aria-pressed={on}
         onClick={() => writeAlwaysAllowActions(!on)}
       >
-        {on ? 'Всегда разрешать' : 'Спрашивать каждый раз'}
+        {on ? 'Сейчас: всегда разрешать' : 'Сейчас: спрашивать каждый раз'}
       </button>
     </section>
   )

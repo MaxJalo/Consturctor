@@ -40,6 +40,7 @@ def pool_is_saturated() -> bool:
 def init_db() -> None:
     # Import models so metadata is populated.
     from app.models import agent_run as _agent_run  # noqa: F401
+    from app.models import agent_skill as _agent_skill  # noqa: F401
     from app.models import assignment_review as _assignment_review  # noqa: F401
     from app.models import external_order as _external_order  # noqa: F401
     from app.models import calendar_overlay as _calendar_overlay  # noqa: F401

@@ -437,6 +437,10 @@ export function AgentSession({
   const [mentionStart, setMentionStart] = useState<number>(-1)
   const [mentionIndex, setMentionIndex] = useState(0)
   const [skillPickerOpen, setSkillPickerOpen] = useState(false)
+  const [bankSkills, setBankSkills] = useState<{ id: string; title: string }[]>([])
+  const [creatingSkill, setCreatingSkill] = useState(false)
+  const [skillTitle, setSkillTitle] = useState('')
+  const [skillText, setSkillText] = useState('')
   const [enabledSkillIds, setEnabledSkillIds] = useState<string[]>([])
 
   const shownAgentRef = useRef<string | null>(null)
@@ -463,6 +467,26 @@ export function AgentSession({
   useEffect(() => {
     setShowOrderStart(isOrderChat)
   }, [isOrderChat, orderConversationKey])
+
+  useEffect(() => {
+    const role = orderChat?.order.role
+    if (!role) {
+      setBankSkills([])
+      return
+    }
+    let alive = true
+    void api
+      .agentSkills(role)
+      .then((items) => {
+        if (alive) setBankSkills(items.map((item) => ({ id: item.id, title: item.title })))
+      })
+      .catch(() => {
+        if (alive) setBankSkills([])
+      })
+    return () => {
+      alive = false
+    }
+  }, [orderChat?.order.role])
 
   const grokModels = useMemo(() => {
     const allowed = ['grok-4.7', 'grok-4.6']
@@ -892,11 +916,39 @@ export function AgentSession({
     }
   }
 
+  async function saveBankSkill(): Promise<void> {
+    const role = orderChat?.order.role
+    const title = skillTitle.trim()
+    const instruction = skillText.trim()
+    if (!role || !title || !instruction || sending) return
+    setSending(true)
+    setNotice('')
+    try {
+      const created = await api.createAgentSkill({ title, instruction, role })
+      setBankSkills((current) => (current.some((item) => item.id === created.id) ? current : [...current, { id: created.id, title: created.title }]))
+      setSkillTitle('')
+      setSkillText('')
+      setCreatingSkill(false)
+    } catch (reason) {
+      setNotice(reason instanceof Error ? reason.message : 'Не удалось сохранить умение')
+    } finally {
+      setSending(false)
+    }
+  }
+
   async function stop(): Promise<void> {
     if (!sessionId || stopping) return
     setStopping(true)
+    const currentId = sessionId
     try {
-      await apiPost(`/api/v1/platform/sessions/${encodeURIComponent(sessionId)}/cancel`, {})
+      await Promise.race([
+        apiPost(`/api/v1/platform/sessions/${encodeURIComponent(currentId)}/cancel`, {}),
+        new Promise((resolve) => window.setTimeout(resolve, 8000))
+      ])
+      const data = await apiGet<PlatformSessionDetail>(
+        `/api/v1/platform/sessions/${encodeURIComponent(currentId)}`
+      )
+      setSession(data.session)
       setWake((value) => value + 1)
     } catch (reason) {
       setStopping(false)
@@ -1051,8 +1103,8 @@ export function AgentSession({
   const placeholder = running
     ? 'Напишите следующее сообщение (Enter — в очередь, Ctrl+Enter — перехватить)…'
     : mode === 'chat'
-      ? 'Напишите в чат (поиск, общение, скиллы и инструменты по правилам)…'
-      : 'Напишите агенту (@ для контекста и скиллов, Ctrl+V — фото)…'
+      ? 'Напишите в чат (поиск, общение, умения и инструменты по правилам)…'
+      : 'Напишите агенту (@ для контекста и умений, Ctrl+V — фото)…'
 
   const compact = variant === 'compact'
 
@@ -1194,7 +1246,7 @@ export function AgentSession({
                   <p>
                     {planned && mode === 'chat'
                       ? 'В режиме Chat агент работает в безопасном контуре: поиск, общение и регламентные инструменты.'
-                      : 'Агент приступит сразу с доступом к инструментам и скиллам.'}
+                      : 'Агент приступит сразу с доступом к инструментам и умениям.'}
                   </p>
                   {config && !config.runnable ? (
                     <p className="agent-error">{config.error || 'Эту конфигурацию нельзя запустить.'}</p>
@@ -1324,7 +1376,7 @@ export function AgentSession({
               onDrop={onDrop}
             >
               {mentionQuery !== null && mentionItems.length > 0 ? (
-                <div className="sess-mentions" role="listbox" aria-label="Упоминания и скиллы">
+                <div className="sess-mentions" role="listbox" aria-label="Упоминания и умения">
                   {mentionItems.map((item, idx) => (
                     <button
                       key={item.id}
@@ -1421,10 +1473,10 @@ export function AgentSession({
                       onClick={() => setSkillPickerOpen((value) => !value)}
                       aria-expanded={skillPickerOpen}
                     >
-                      Скиллы
+                      Умения
                     </button>
                     {skillPickerOpen ? (
-                      <div className="sess-skills-menu" role="listbox" aria-label="Выбор скиллов">
+                      <div className="sess-skills-menu" role="listbox" aria-label="Выбор умений">
                         {orderChat
                           ? startActions.map((action) => (
                               <button
@@ -1437,7 +1489,59 @@ export function AgentSession({
                                 <strong>{action.title}</strong>
                               </button>
                             ))
-                          : pickerSkills.map((skill) => {
+                          : null}
+                        {orderChat
+                          ? bankSkills.map((skill) => (
+                              <button
+                                key={skill.id}
+                                type="button"
+                                className="sess-skill-item sess-skill-action"
+                                disabled={sending || !sessionId}
+                                onClick={() =>
+                                  void startOrderAction({
+                                    id: skill.id,
+                                    skillId: skill.id,
+                                    title: skill.title,
+                                    prompt: `Примени умение «${skill.title}».`
+                                  })
+                                }
+                              >
+                                <strong>{skill.title}</strong>
+                              </button>
+                            ))
+                          : null}
+                        {orderChat ? (
+                          creatingSkill ? (
+                            <form
+                              className="sess-skill-create"
+                              onSubmit={(event) => {
+                                event.preventDefault()
+                                void saveBankSkill()
+                              }}
+                            >
+                              <input
+                                value={skillTitle}
+                                placeholder="Название"
+                                aria-label="Название умения"
+                                onChange={(event) => setSkillTitle(event.target.value)}
+                              />
+                              <textarea
+                                value={skillText}
+                                rows={4}
+                                placeholder="Текст инструкции"
+                                aria-label="Текст инструкции"
+                                onChange={(event) => setSkillText(event.target.value)}
+                              />
+                              <button type="submit" disabled={sending || !skillTitle.trim() || !skillText.trim()}>
+                                Сохранить
+                              </button>
+                            </form>
+                          ) : (
+                            <button type="button" className="sess-skill-create-btn" onClick={() => setCreatingSkill(true)}>
+                              Создать умение
+                            </button>
+                          )
+                        ) : pickerSkills.map((skill) => {
                           const checked = enabledSkillIds.includes(skill.id)
                           return (
                             <label key={skill.id} className="sess-skill-item">
@@ -1463,7 +1567,7 @@ export function AgentSession({
                   <button
                     type="button"
                     className="icon-button"
-                    title="Упомянуть заказ, файл или скилл (@)"
+                    title="Упомянуть заказ, файл или умение (@)"
                     aria-label="Упомянуть (@)"
                     onClick={() => {
                       const pos = inputRef.current?.selectionStart ?? prompt.length

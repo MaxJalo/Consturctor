@@ -2537,6 +2537,19 @@ export class ApiClient {
     })
   }
 
+  async agentSkills(role: string): Promise<{ id: string; title: string; role: string }[]> {
+    const data = await this.request<{ items?: { id: string; title: string; role: string }[] }>(
+      'GET',
+      '/api/v1/agent-skills',
+      { params: { role }, timeoutMs: 20_000 }
+    )
+    return Array.isArray(data.items) ? data.items : []
+  }
+
+  async createAgentSkill(body: { title: string; instruction: string; role: string }): Promise<{ id: string; title: string; role: string }> {
+    return this.request('POST', '/api/v1/agent-skills', { body, timeoutMs: 20_000 })
+  }
+
   async externalOrders(asRole = ''): Promise<ExternalOrderBrief[]> {
     let last: unknown
     for (let attempt = 0; attempt < 4; attempt += 1) {

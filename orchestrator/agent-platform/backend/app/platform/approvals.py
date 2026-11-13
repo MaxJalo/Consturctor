@@ -69,11 +69,33 @@ def _first_words(segment: str) -> list[str]:
     return segment.strip().lstrip("(&.").strip().lower().split()
 
 
+_PY_DANGER = re.compile(
+    r"(?i)(?:subprocess|os\s*\.\s*(?:system|remove|unlink|rmdir|rename|popen)|shutil|socket|urllib|requests|"
+    r"eval\s*\(|exec\s*\(|compile\s*\(|write\s*\(|writelines\s*\(|"
+    r"open\s*\([^)]*['\"][wax+])"
+)
+
+
+def _readonly_python(command: str) -> bool:
+    """python -c, который только читает JSON и печатает его. Запись и сеть не проходят."""
+    text = command.strip()
+    head = text.lower()
+    if not (head.startswith("python") or head.startswith("py ") or head.startswith("py.exe")):
+        return False
+    if not re.search(r"(?i)(?:^|\s)-c(?:\s|$)", text):
+        return False
+    if _PY_DANGER.search(text):
+        return False
+    return True
+
+
 def read_only_command(command: str) -> bool:
     """Команда только читает: каждое звено цепочки — читающая команда, без перенаправлений в файл."""
     text = command.strip()
     if not text or ">" in text or _MUTATING.search(text):
         return False
+    if _readonly_python(text):
+        return True
     for segment in _SEGMENTS.split(text):
         words = _first_words(segment)
         if not words:
