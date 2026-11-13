@@ -57,6 +57,7 @@ from app.services.external_orders import (
     propose,
     publish_order_plan,
     resolve_role,
+    registry_route,
     role_from_profile,
     transition,
     upload_order_file,
@@ -301,6 +302,8 @@ def test_only_zhalybin_can_switch_role():
     assert tester == "it"
     assert role_from_profile("Инженер-тестировщик 1 категории", "Сектор качества разработки") == "viewer"
     assert role_from_profile("Мастер", "Производство качество и сервис") == "production"
+    assert registry_route("") == "full"
+    assert registry_route("accelerated") == "accelerated"
     stored = testing_profile(
         fio="",
         position="",

@@ -443,8 +443,15 @@ def _materialize_file(
         return None
     filename = _safe_filename(item.filename or f"file-{index}")
     target = materials / f"{index:03d}_{filename}"
-    api.download_workflow_file_to(workflow_id, item.id, target)
-    text_payload = api.workflow_file_text(workflow_id, item.id)
+    expected = int(item.size or 0)
+    fresh = target.is_file() and (expected <= 0 or target.stat().st_size == expected)
+    if not fresh:
+        api.download_workflow_file_to(workflow_id, item.id, target)
+    extracted = target.with_suffix(target.suffix + ".txt")
+    if fresh and extracted.is_file():
+        text_payload = {"text": extracted.read_text(encoding="utf-8"), "summary": item.summary or ""}
+    else:
+        text_payload = api.workflow_file_text(workflow_id, item.id)
     text = str(text_payload.get("text") or "").strip()
     text_path = ""
     if text:

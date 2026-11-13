@@ -1089,6 +1089,7 @@ async function runAgent(command: RunCommand): Promise<void> {
       );
     }
     emit({ type: "status", text: "Агент работает на этом компьютере..." });
+    let streamFailure = "";
     liveCancel = () => {
       void settleRun(run);
     };
@@ -1180,12 +1181,25 @@ async function runAgent(command: RunCommand): Promise<void> {
               : "Агент обновил состояние запуска.",
           ...(listed.length ? { tools: listed } : {}),
         });
+      } else if (event.type === "status") {
+        const note = stringFrom((event as { message?: unknown }).message);
+        const state = stringFrom((event as { status?: unknown }).status).toUpperCase();
+        if (state === "ERROR" && note) streamFailure = note;
       } else if ((event as { type: string }).type === "usage") {
         emit({ type: "usage", usage: (event as { usage?: unknown }).usage });
       }
     }
     const result = await run.wait();
     const status = String(result.status || "").toLowerCase();
+    const failureRecord = recordFrom((result as { error?: unknown }).error);
+    const failureText = [stringFrom(failureRecord.code), stringFrom(failureRecord.message)]
+      .filter(Boolean)
+      .join(": ") || streamFailure;
+    if (status === "error" && failureText) {
+      emit({ type: "error", id, message: failureText });
+      emit({ type: "done", id, status: "error", answer: failureText });
+      return;
+    }
     const okStatus =
       status === "finished" || status === "success" ? "ok" : status || "ok";
     // Prefer the structured "## WORK_RESULT" block when the model produced one

@@ -5,6 +5,7 @@ import { useRuns } from '../store/runs'
 import { isLiveRunState } from '../store/liveRun'
 import { PlatformRunDialog } from '../tabs/grid/PlatformRunDialog'
 import { decidePlatformApproval } from '../workplace/platformProtocolRun'
+import { isPersonalAgentWorkflowId } from '../workplace/personalAgent'
 import { readAlwaysAllowActions, writeAlwaysAllowActions, ALWAYS_ALLOW_EVENT } from '../workplace/alwaysAllowActions'
 import { agentWantsText } from './agentfeed/explainTool'
 import './activeAgentsStrip.css'
@@ -26,6 +27,7 @@ type StripItem = {
 /** Идущие запуски платформы агентов. Платформу не поднимает: опрашивает, только если её уже запустили. */
 function usePlatformLive(): PlatformLive[] {
   const [live, setLive] = useState<PlatformLive[]>([])
+  const sawRunning = useRef(false)
   useEffect(() => {
     let alive = true
     let timer = 0
@@ -34,6 +36,7 @@ function usePlatformLive(): PlatformLive[] {
         if (backendUrl()) {
           const list = await apiGet<{ items: PlatformSession[] }>('/api/v1/platform/sessions?limit=30')
           const running = list.items.filter((item) => item.status === 'running' && !item.ephemeral)
+          sawRunning.current = running.length > 0
           const details = await Promise.all(
             running.map((item) =>
               apiGet<PlatformSessionDetail>(
@@ -57,7 +60,8 @@ function usePlatformLive(): PlatformLive[] {
       } catch {
         if (alive) setLive([])
       }
-      if (alive) timer = window.setTimeout(() => void tick(), PLATFORM_POLL_MS)
+      const quiet = document.hidden || !sawRunning.current
+      if (alive) timer = window.setTimeout(() => void tick(), quiet ? 20_000 : PLATFORM_POLL_MS)
     }
     void tick()
     return () => {
@@ -93,7 +97,13 @@ export function ActiveAgentsStrip({
 
   const items = useMemo<StripItem[]>(() => {
     const local: StripItem[] = Object.values(runs.entries)
-      .filter((entry) => !entry.background && isLiveRunState(entry.state))
+      .filter(
+        (entry) =>
+          !entry.background &&
+          !entry.conversationKey &&
+          !isPersonalAgentWorkflowId(entry.workflowId) &&
+          isLiveRunState(entry.state)
+      )
       .map((entry) => {
         const hitl = entry.state.pendingHitl
         return {

@@ -24,6 +24,8 @@ from uuid import uuid4
 
 from pydantic import BaseModel
 
+from app.tools.registry import get_tool
+
 WAIT_SECONDS = 50.0
 MAX_WAIT_SECONDS = 30 * 60
 PREVIEW_CHARS = 6000
@@ -35,6 +37,10 @@ Outcome = Literal["waiting", "allowed", "denied", "cancelled", "expired"]
 _SAFE_TOOLS = {
     "read", "grep", "glob", "ls", "semsearch", "codebasesearch", "readlints", "websearch", "webfetch",
     "task", "updatetodos", "readtodos", "todowrite", "createplan", "switchmode", "await", "askquestion",
+}
+_CHAT_SAFE_TOOLS = {
+    "read", "grep", "glob", "ls", "semsearch", "codebasesearch", "readlints", "websearch", "webfetch",
+    "askquestion", "task", "updatetodos", "readtodos", "await", "createplan",
 }
 _WRITE_TOOLS = {"write", "edit", "strreplace", "multiedit", "editnotebook", "applyagentdiff", "applypatch"}
 _DELETE_TOOLS = {"delete"}
@@ -109,23 +115,53 @@ def _mcp_name(tool_name: str, tool_input: dict[str, Any]) -> str | None:
 
 def _catalog_tool(mcp: str) -> Any:
     """Карточка инструмента TurboTester по имени MCP: users__current ↔ users.current, с префиксом сервера или без."""
-    from app.tools.registry import get_tool
-
     name = re.split(r"[:/]", mcp)[-1].strip()
     name = re.sub(r"(?i)^(custom-user-tools|turbotester|constructor)[-_.]+", "", name)
     return get_tool(name.replace("__", ".")) or get_tool(name)
 
 
 def confirm_action(tool_name: str, tool_input: dict[str, Any]) -> bool:
-    """Единое подтверждение действия агента.
+    """Политика автоматического подтверждения.
 
-    Сюда попадает каждый запрос, который иначе остановил бы запуск и ждал человека
-    на экране сессии: команда, запись файла, вызов инструмента с побочным действием.
-    Сейчас такой запрос подтверждается сразу. Чтобы снова спрашивать человека,
-    функция должна вернуть False.
+    False — действие проходит через ApprovalBoard и показывается пользователю
+    в карточке SessionApproval (с возможностью запомнить на запуск или навсегда).
     """
     del tool_name, tool_input
-    return True
+    return False
+
+
+_SAFE_CASE_ACTIONS = {"read", "read_full", "scenario", "auto_prepare", "offer", "search_1c", "plan_preview", "propose", "plan", "draft_1c"}
+# В режиме chat эти вызовы не глушатся: их подтверждает карточка разрешения.
+_CHAT_CONFIRM_TOOLS = {"outlook.ews_create_meeting", "onec.meeting_protocol_write"}
+
+
+def chat_allowed(tool_name: str, tool_input: dict[str, Any]) -> bool:
+    """Строгий allowlist для режима chat: только чтение, общение и регламентные инструменты."""
+    key = re.sub(r"[\s_-]", "", tool_name).lower()
+    if key in _CHAT_SAFE_TOOLS:
+        return True
+    if key in _SHELL_TOOLS or key in _WRITE_TOOLS or key in _DELETE_TOOLS:
+        return False
+    mcp = _mcp_name(tool_name, tool_input)
+    if mcp is None:
+        return False
+    canonical = re.sub(r"(?i)^(custom-user-tools|turbotester|constructor)[-_.]+", "", re.split(r"[:/]", mcp)[-1].strip())
+    canonical = canonical.replace("__", ".")
+    if canonical in _CHAT_CONFIRM_TOOLS:
+        return True
+    lowered = mcp.lower()
+    if any(safe in lowered or safe in json.dumps(tool_input, ensure_ascii=False) for safe in _SAFE_MCP):
+        return True
+    args = tool_input.get("arguments", tool_input.get("args", tool_input))
+    if canonical == "external_order.case" and isinstance(args, dict):
+        action = str(args.get("action") or "read").strip().lower()
+        return action in _SAFE_CASE_ACTIONS
+    if canonical == "report.export_document":
+        return True
+    spec = _catalog_tool(mcp)
+    if spec is None:
+        return False
+    return spec.side_effect in {"read", "create_draft"} and not spec.requires_approval
 
 
 def classify(tool_name: str, tool_input: dict[str, Any]) -> ApprovalRequest | None:
@@ -169,6 +205,12 @@ def classify(tool_name: str, tool_input: dict[str, Any]) -> ApprovalRequest | No
         if spec is not None:
             mcp = spec.name
         args = tool_input.get("arguments", tool_input.get("args", tool_input))
+        if mcp == "external_order.case" and isinstance(args, dict):
+            action = str(args.get("action") or "read").strip().lower()
+            if action in _SAFE_CASE_ACTIONS:
+                return None
+        if spec is not None and spec.side_effect == "create_draft" and not spec.requires_approval:
+            return None
         return ApprovalRequest(
             id=uuid4().hex, kind="mcp", tool=tool_name,
             title=f"Вызвать инструмент {spec.title or mcp}" if spec is not None else f"Вызвать инструмент {mcp}",

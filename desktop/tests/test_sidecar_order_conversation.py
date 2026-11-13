@@ -128,7 +128,7 @@ def test_order_turn_with_questions_is_finished() -> None:
     assert _turn_answer_done(answer, hide_tests=False) is False
 
 
-def test_order_break_keeps_card_instead_of_empty_failure() -> None:
+def test_order_break_keeps_survey_and_names_a_silent_model() -> None:
     plan = "Сводка короткая, дочитываю карточку, чтобы назвать пустое поле по делу."
     events = [
         {
@@ -150,7 +150,7 @@ def test_order_break_keeps_card_instead_of_empty_failure() -> None:
         "Запуск завершился без итога — агент остановился после подготовительных шагов.",
         [],
         "",
-    ).startswith("Реквизиты уже на карточке")
+    ) == "Модель Cursor не ответила. Разбор заказа можно повторить."
 
 
 def test_order_agent_does_not_open_workspace_notes() -> None:

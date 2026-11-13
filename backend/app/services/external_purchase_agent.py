@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 from uuid import uuid4
 
 from sqlalchemy.orm import Session
@@ -118,6 +119,10 @@ def _apply(row: Workflow) -> None:
     flag_modified(row, "plan_json")
 
 
+def _agent_snapshot(row: Workflow) -> tuple:
+    return (row.title, row.phase, row.notes, copy.deepcopy(row.local_run), copy.deepcopy(row.plan_json))
+
+
 def ensure_agent(db: Session) -> Workflow | None:
     row = _existing(db)
     if row is None:
@@ -126,7 +131,11 @@ def ensure_agent(db: Session) -> Workflow | None:
             return None
         row = Workflow(id=str(uuid4()), user_id=owner.id, title=TITLE, phase="done", notes=GOAL)
         db.add(row)
+    before = None if row in db.new else _agent_snapshot(row)
     _apply(row)
-    db.commit()
-    db.refresh(row)
+    if before != _agent_snapshot(row):
+        db.commit()
+        db.refresh(row)
+    else:
+        db.expire(row)
     return row

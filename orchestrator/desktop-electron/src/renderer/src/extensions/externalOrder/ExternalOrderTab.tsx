@@ -47,7 +47,7 @@ import {
   orderConversationKey,
   orderConversationPrefix
 } from '../../pages/agentChat'
-import { briefFromLoadedOrder } from '../../pages/orderCaseBrief'
+import { briefFromLoadedOrder, rememberCardBrief } from '../../pages/orderCaseBrief'
 import './externalOrder.css'
 
 const ROLE_KEY = 'orch.external-order.role'
@@ -58,6 +58,10 @@ const ROUTES: { id: string; label: string }[] = [
   { id: 'simplified', label: 'Упрощённый' },
   { id: 'recalc', label: 'Пересчёт' }
 ]
+
+function registryRoute(item: { route?: string }): string {
+  return (item.route || '').trim() || 'full'
+}
 
 const MOVES: Record<string, { target: string; label: string }[]> = {
   ks: [
@@ -419,8 +423,24 @@ function serviceLists(order: Order, role: string): {
 function chatContext(order: Order, role: string): AgentChatContext {
   const passport = activePassport(buildStagePassports(order))
   const stage = passport?.id || order.status || 'none'
+  const conversationKey = orderConversationKey(order.id, role, stage)
+  const caseBrief = briefFromLoadedOrder({
+    code: documentTitle(order),
+    customer: order.customer,
+    product: order.product,
+    stageLabel: passport?.label || order.status_label,
+    checksDone: passport?.checks_done || 0,
+    checksTotal: passport?.checks_total || 0,
+    blocker: passport?.blocker || '',
+    draftCount: (order.findings || []).filter((item) => item.status === 'draft').length,
+    pathLabel: order.path_label || '',
+    paymentNote: order.payment_note || '',
+    openChecks: (passport?.open_checks || []).map((item) => item.text),
+    ...serviceLists(order, role)
+  })
+  rememberCardBrief(conversationKey, caseBrief)
   return {
-    conversationKey: orderConversationKey(order.id, role, stage),
+    conversationKey,
     conversationPrefix: orderConversationPrefix(order.id, role),
     stageLabels: Object.fromEntries(LINE.map((step) => [step.id, step.label])),
     order: {
@@ -436,20 +456,7 @@ function chatContext(order: Order, role: string): AgentChatContext {
         (item, index, all) => item && all.indexOf(item) === index
       )
     },
-    caseBrief: briefFromLoadedOrder({
-      code: documentTitle(order),
-      customer: order.customer,
-      product: order.product,
-      stageLabel: passport?.label || order.status_label,
-      checksDone: passport?.checks_done || 0,
-      checksTotal: passport?.checks_total || 0,
-      blocker: passport?.blocker || '',
-      draftCount: (order.findings || []).filter((item) => item.status === 'draft').length,
-      pathLabel: order.path_label || '',
-      paymentNote: order.payment_note || '',
-      openChecks: (passport?.open_checks || []).map((item) => item.text),
-      ...serviceLists(order, role)
-    }),
+    caseBrief,
     gaps: serviceGaps(order, role)
   }
 }
@@ -516,6 +523,14 @@ function briefMatches(item: Brief, query: string): boolean {
     item.path_label
   ].some((value) => (value || '').toLowerCase().includes(needle))
 }
+
+const orderListCache: { orders: Brief[] | null } = { orders: null }
+const orderMetaCache = new Map<string, ExternalOrderMeta>()
+const orderCardCache = new Map<string, Order>()
+const serviceCatalogCache: {
+  rows: { role: string; workflow_id: string; title: string; active: boolean; procedure: string }[] | null
+  purchase: { workflow_id: string; title: string } | null
+} = { rows: null, purchase: null }
 
 const DESK_ROLES: { id: string; label: string }[] = [
   { id: 'ks', label: 'Коммерческая служба' },
@@ -616,9 +631,9 @@ export function ExternalOrderTab({
   const cardPageRef = useRef<CardPage>(savedPage())
   const [returnPage, setReturnPage] = useState<CardPage | null>(null)
   const [asRole, setAsRole] = useState(savedRole)
-  const [meta, setMeta] = useState<ExternalOrderMeta | null>(null)
-  const [orders, setOrders] = useState<Brief[]>([])
-  const [listReady, setListReady] = useState(false)
+  const [meta, setMeta] = useState<ExternalOrderMeta | null>(orderMetaCache.get(savedRole()) ?? null)
+  const [orders, setOrders] = useState<Brief[]>(orderListCache.orders ?? [])
+  const [listReady, setListReady] = useState(orderListCache.orders !== null)
   const [current, setCurrent] = useState<Order | null>(null)
   const [error, setError] = useState('')
   const [requestDraft, setRequestDraft] = useState<RequestDraft>(emptyRequest)
@@ -636,6 +651,7 @@ export function ExternalOrderTab({
   const [syncMore, setSyncMore] = useState(false)
   const syncedOnce = useRef(false)
   const syncToken = useRef(0)
+  const cardPoll = useRef(false)
   const [routeFilter, setRouteFilter] = useState('')
   const [blockedOnly, setBlockedOnly] = useState(false)
   const [waitingFilter, setWaitingFilter] = useState('')
@@ -652,7 +668,7 @@ export function ExternalOrderTab({
   const [docNotice, setDocNotice] = useState<{ text: string; error: boolean } | null>(null)
   const [serviceAgents, setServiceAgents] = useState<
     { role: string; workflow_id: string; title: string; active: boolean; procedure: string }[]
-  >([])
+  >(serviceCatalogCache.rows ?? [])
   const [procedureDraft, setProcedureDraft] = useState('')
   const [procedureNote, setProcedureNote] = useState('')
 
@@ -671,6 +687,8 @@ export function ExternalOrderTab({
       api.externalOrderMeta(role),
       api.externalOrders(role)
     ])
+    orderMetaCache.set(role, nextMeta)
+    orderListCache.orders = list
     setMeta(nextMeta)
     setOrders(list)
     setListReady(true)
@@ -685,7 +703,10 @@ export function ExternalOrderTab({
       while (token === syncToken.current) {
         const result = await api.syncExternalOrders(asRole, refresh, skip)
         if (token !== syncToken.current) return
-        if (result.orders) setOrders(result.orders)
+        if (result.orders) {
+          orderListCache.orders = result.orders
+          setOrders(result.orders)
+        }
         setSyncing(false)
         const next = Number(result.next_skip ?? skip)
         if (!result.has_more || next <= skip) {
@@ -713,13 +734,24 @@ export function ExternalOrderTab({
 
   useEffect(() => {
     let cancelled = false
-    setListReady(false)
+    const cached = orderMetaCache.get(asRole)
+    if (cached) setMeta(cached)
     void api.externalOrderMeta(asRole).then((next) => {
+      orderMetaCache.set(asRole, next)
       if (!cancelled) setMeta(next)
     }).catch((err) => {
       if (!cancelled) fail(err)
     })
+    return () => {
+      cancelled = true
+    }
+  }, [asRole])
+
+  useEffect(() => {
+    let cancelled = false
+    if (!orderListCache.orders) setListReady(false)
     void api.externalOrders(asRole).then((list) => {
+      orderListCache.orders = list
       if (!cancelled) {
         setOrders(list)
         setListReady(true)
@@ -733,14 +765,26 @@ export function ExternalOrderTab({
     return () => {
       cancelled = true
     }
-  }, [asRole])
+    // Список не зависит от службы: смена роли только перефильтровывает уже загруженные строки.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  useEffect(() => {
+    if (!listReady) return
+    const timer = window.setTimeout(() => {
+      void loadDocflowCreateSchema(user).then(setCreateSchemas).catch(() => undefined)
+    }, 0)
+    return () => window.clearTimeout(timer)
+  }, [listReady, user])
 
   useEffect(() => {
     let cancelled = false
     void api
-      .externalServiceAgents()
-      .then((rows) => {
-        if (!cancelled) setServiceAgents(rows)
+      .externalServiceCatalog()
+      .then((catalog) => {
+        serviceCatalogCache.rows = catalog.agents
+        serviceCatalogCache.purchase = catalog.purchase
+        if (!cancelled) setServiceAgents(catalog.agents)
       })
       .catch(() => undefined)
     return () => {
@@ -783,10 +827,11 @@ export function ExternalOrderTab({
   useEffect(() => {
     if (view !== 'audit' || !listReady) return
     let cancelled = false
-    setAuditLoading(true)
-    void Promise.all(orders.slice(0, 40).map((item) => api.externalOrder(item.id, asRole).catch(() => null)))
+    const ids = orders.slice(0, 40).map((item) => item.id)
+    if (!auditOrders.length) setAuditLoading(true)
+    void api.externalOrderAuditFeed(ids)
       .then((list) => {
-        if (!cancelled) setAuditOrders(list.filter((item): item is Order => Boolean(item)))
+        if (!cancelled) setAuditOrders(list)
       })
       .finally(() => {
         if (!cancelled) setAuditLoading(false)
@@ -794,7 +839,7 @@ export function ExternalOrderTab({
     return () => {
       cancelled = true
     }
-  }, [view, listReady, orders, asRole])
+  }, [view, listReady, orders])
 
   function chooseRole(role: string): void {
     setAsRole(role)
@@ -811,6 +856,7 @@ export function ExternalOrderTab({
   }
 
   function rememberOrder(id: string, order: Order): void {
+    orderCardCache.set(id, order)
     setCurrent((prev) => (prev?.id === id ? order : prev))
     setDeskOrder((prev) => (prev?.id === id ? order : prev))
   }
@@ -819,46 +865,55 @@ export function ExternalOrderTab({
     const id = current?.id
     if (!id) return
     const timer = window.setInterval(() => {
+      if (document.hidden || cardPoll.current) return
+      cardPoll.current = true
       void api.externalOrder(id, asRole).then((fresh) => {
-        setCurrent((prev) =>
+        orderCardCache.set(id, fresh)
+        const changed = (prev: Order | null): Order | null =>
           prev?.id === id && (prev.documents?.length || 0) !== (fresh.documents?.length || 0) ? fresh : prev
-        )
-        setDeskOrder((prev) =>
-          prev?.id === id && (prev.documents?.length || 0) !== (fresh.documents?.length || 0) ? fresh : prev
-        )
-      }).catch(() => undefined)
+        setCurrent(changed)
+        setDeskOrder(changed)
+      }).catch(() => undefined).finally(() => {
+        cardPoll.current = false
+      })
     }, 8000)
     return () => window.clearInterval(timer)
   }, [current?.id, asRole])
 
   function refreshStoredOnec(id: string, order: Order): void {
-    if (!order.onec_key && !order.onec_tkp_key) return
-    void api.refreshExternalOrderOnec(id, asRole).catch(() => undefined)
-    window.setTimeout(() => {
-      void api.externalOrder(id, asRole).then((fresh) => rememberOrder(id, fresh)).catch(() => undefined)
-    }, 4000)
+    if (!order.onec_key && !order.onec_tkp_key || cardPoll.current) return
+    cardPoll.current = true
+    void api.refreshExternalOrderOnec(id, asRole).then((fresh) => rememberOrder(id, fresh)).catch(() => undefined).finally(() => {
+      cardPoll.current = false
+    })
   }
 
   async function selectOrder(id: string): Promise<void> {
     setError('')
+    const cached = orderCardCache.get(id)
+    if (cached) setDeskOrder(cached)
     try {
       const order = await api.externalOrder(id, asRole)
+      orderCardCache.set(id, order)
       setDeskOrder(order)
       refreshStoredOnec(id, order)
     } catch (err) {
-      fail(err)
+      if (!cached) fail(err)
     }
   }
 
   async function openOrder(id: string, page: CardPage = 'files'): Promise<void> {
     setError('')
     setReturnPage(page)
+    const cached = orderCardCache.get(id)
+    if (cached) setCurrent(cached)
     try {
       const order = await api.externalOrder(id, asRole)
+      orderCardCache.set(id, order)
       setCurrent(order)
       refreshStoredOnec(id, order)
     } catch (err) {
-      fail(err)
+      if (!cached) fail(err)
     }
   }
 
@@ -1041,13 +1096,16 @@ export function ExternalOrderTab({
     void refreshRegistry(false)
   }, [canLoad, listReady, refreshRegistry])
   const moves = MOVES[role] || []
-  const myOrders = orders.filter((item) => item.status !== 'closed' && isMyOrder(item, user.fio || ''))
+  const myOrders = useMemo(
+    () => orders.filter((item) => item.status !== 'closed' && isMyOrder(item, user.fio || '')),
+    [orders, user.fio]
+  )
   const deskList = myOrders
   const deskPassport = deskOrder ? activePassport(buildStagePassports(deskOrder)) : null
-  const registry = orders.filter((item) => {
+  const registry = useMemo(() => orders.filter((item) => {
     if (!briefMatches(item, search)) return false
     if (stageFilter && !LINE.find((step) => step.id === stageFilter)?.statuses.includes(item.status)) return false
-    if (routeFilter && item.route !== routeFilter) return false
+    if (routeFilter && registryRoute(item) !== routeFilter) return false
     if (blockedOnly && !(item.blocks || []).length) return false
     if (waitingFilter && !(item.waiting_roles || []).includes(waitingFilter)) return false
     if (draftsOnly && !(item.draft_findings_count || 0)) return false
@@ -1055,7 +1113,7 @@ export function ExternalOrderTab({
     if (docFilter === 'tkp' && item.source_kind !== 'tkp') return false
     if (docFilter === 'order' && item.source_kind !== 'order' && item.source_kind !== 'both') return false
     return true
-  })
+  }), [orders, search, stageFilter, routeFilter, blockedOnly, waitingFilter, draftsOnly, docFilter])
   const registrySorted = sortRegistry(registry, registrySort)
   const registryStart = registrySkip < registrySorted.length ? registrySkip : 0
   const registryPage = registrySorted.slice(registryStart, registryStart + registryTop)
@@ -1063,7 +1121,17 @@ export function ExternalOrderTab({
     setRegistrySort((current) => toggleRegistrySort(current, key))
     setRegistrySkip(0)
   }
-  const reconcileOrders = [...orders].sort((a, b) => (b.open_diffs_count || 0) - (a.open_diffs_count || 0))
+  const reconcileOrders = useMemo(
+    () => [...orders].sort((a, b) => (b.open_diffs_count || 0) - (a.open_diffs_count || 0)),
+    [orders]
+  )
+  const committeeGroups = useMemo(
+    () => COMMITTEE_AGENDA.map((group) => ({
+      ...group,
+      items: orders.filter((item) => group.statuses.includes(item.status))
+    })),
+    [orders]
+  )
 
   const auditRows = useMemo(
     () =>
@@ -1535,8 +1603,8 @@ export function ExternalOrderTab({
               <h3>Повестка Комитета</h3>
             </div>
             <div className="eo-agenda">
-              {COMMITTEE_AGENDA.map((group) => {
-                const items = orders.filter((item) => group.statuses.includes(item.status))
+              {committeeGroups.map((group) => {
+                const items = group.items
                 return (
                   <div key={group.id} className="eo-agenda-col">
                     <strong>{group.title} · {items.length}</strong>
@@ -2969,7 +3037,8 @@ function Card({
     setPathNote('')
     setPathBusy('purchase')
     try {
-      const agent = await api.externalPurchaseAgent()
+      const cachedPurchase = serviceCatalogCache.purchase
+      const agent = cachedPurchase?.workflow_id ? cachedPurchase : await api.externalPurchaseAgent()
       if (!agent.workflow_id) {
         setPathNote('Агент внешних закупок ещё не опубликован.')
         return

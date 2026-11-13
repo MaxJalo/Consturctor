@@ -31,6 +31,7 @@ import type { SpecMailRow, SpecProcessRow, SpecProjectRow, SpecTaskRow } from '.
 import { useWorkplaceData } from './WorkplaceBoard'
 import { summarizeDayLaunches } from './todayKpiLaunches'
 import { useGridDataRefreshContext } from './GridDataRefreshContext'
+import { GRID_DATA_TTL_MS } from './gridDataCache'
 import { useTrackedCalendarsVersion } from '../utils/trackedCalendars'
 import { useOwnMeetingsVersion } from './ownMeetings'
 import {
@@ -93,6 +94,7 @@ const EMPTY: SpecV04SourcesState = {
 }
 
 const PLATFORM_POLL_MS = 60_000
+const lastLiveOneCAt = new Map<string, number>()
 /** Исполненные и отклонённые задачи платформы видны ещё неделю — чтобы постановщик увидел итог. */
 const PLATFORM_CLOSED_KEEP_MS = 7 * 24 * 3600 * 1000
 
@@ -135,6 +137,7 @@ export function SpecV04SourcesProvider({
   const [projects, setProjects] = useState<SpecProjectRow[]>([])
   const [turboSource, setTurboSource] = useState('—')
   const [mailRows, setMailRows] = useState<SpecMailRow[]>([])
+  const [mailLoading, setMailLoading] = useState(false)
   const [mailSource, setMailSource] = useState('—')
   const [mailMailbox, setMailMailbox] = useState('')
   const [mailComError, setMailComError] = useState('')
@@ -150,6 +153,11 @@ export function SpecV04SourcesProvider({
   /** Выгрузка с диска: показываем её только если живая не дошла. */
   const cachedErpRef = useRef<OrchestratorErpLoad | null>(null)
   const [erpLivePending, setErpLivePending] = useState(false)
+  const pendingHardRefresh = useRef(false)
+
+  useEffect(() => {
+    pendingHardRefresh.current = takeHardRefresh()
+  }, [generation, comCredsRevision, takeHardRefresh])
 
   const publishErpLoad = useCallback(
     (load: OrchestratorErpLoad, userId: string): void => {
@@ -181,7 +189,7 @@ export function SpecV04SourcesProvider({
       setTurboTasksError('')
       setOneCAuthFailure(false)
       try {
-        const forced = takeHardRefresh()
+        const forced = pendingHardRefresh.current
         const bundle = await fetchOrchestratorCoreSources(user, erpFio, {
           forceRefresh: forced
         })
@@ -192,7 +200,8 @@ export function SpecV04SourcesProvider({
         setOneCAuthFailure(bundle.erp.oneCAuthFailure)
         // Список с диска показываем сразу. Живая выгрузка ДО идёт несколько минут
         // и подменяет строки, когда дойдёт; до этого таблица не стоит на «Загружаем…».
-        const liveRefreshPlanned = !forced && Boolean(erpFio) && !bundle.erp.oneCAuthFailure
+        const liveIsFresh = Date.now() - (lastLiveOneCAt.get(user.id) || 0) < GRID_DATA_TTL_MS
+        const liveRefreshPlanned = !forced && !liveIsFresh && Boolean(erpFio) && !bundle.erp.oneCAuthFailure
         publishErpLoad(bundle.erp, user.id)
         if (liveRefreshPlanned) {
           cachedErpRef.current = bundle.erp
@@ -238,7 +247,7 @@ export function SpecV04SourcesProvider({
     return () => {
       alive = false
     }
-  }, [user.id, erpFio, outlookMailbox, generation, comCredsRevision])
+  }, [user.id, erpFio, generation, comCredsRevision])
 
   // Живая выгрузка ДО идёт следом. Пока её нет, в таблице уже лежит список с диска.
   useEffect(() => {
@@ -252,6 +261,7 @@ export function SpecV04SourcesProvider({
         if (!alive) return
         const failed = fresh.oneCAuthFailure || Boolean(fresh.error.trim())
         if (!failed) {
+          lastLiveOneCAt.set(user.id, Date.now())
           publishErpLoad(fresh, user.id)
           return
         }
@@ -282,9 +292,10 @@ export function SpecV04SourcesProvider({
   useEffect(() => {
     if (!user.id) return
     let alive = true
+    setMailLoading(true)
     void loadOrchestratorMail(
       { dateFrom: mailPeriodFrom, dateTo: mailPeriodTo },
-      { forceOutlook: takeHardRefresh() }
+      { forceOutlook: pendingHardRefresh.current }
     ).then((mail) => {
       if (!alive) return
       setMailRows(mail.rows)
@@ -295,6 +306,9 @@ export function SpecV04SourcesProvider({
       setMailImapPrimary(Boolean(mail.imapPrimary))
       setMailImapStatus(mail.imapStatus || '')
       mailPeriodKeyRef.current = mailPeriodKey
+      setMailLoading(false)
+    }).catch(() => {
+      if (alive) setMailLoading(false)
     })
     return () => {
       alive = false
@@ -302,10 +316,14 @@ export function SpecV04SourcesProvider({
   }, [user.id, mailPeriodFrom, mailPeriodTo, mailPeriodKey, generation])
 
   useEffect(() => {
-    if (!user.id) return
+    if (!user.id) {
+      pendingHardRefresh.current = false
+      return
+    }
     let alive = true
     const today = new Date()
-    const force = outlookSync > 0 || meetingsGeneration.current !== generation
+    const force = pendingHardRefresh.current
+    pendingHardRefresh.current = false
     meetingsGeneration.current = generation
     void ensureOutlookMeetings('week', today, { owner: erpFio, force })
       .then((cal) => {
@@ -417,7 +435,7 @@ export function SpecV04SourcesProvider({
       projectCount: projects.length,
       mailRows,
       mailCount: mailRows.length,
-      mailLoading: sourcesLoading,
+      mailLoading,
       mailMailbox,
       mailImapPrimary,
       mailComError,

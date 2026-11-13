@@ -1283,18 +1283,18 @@ def _turn_answer_done(text: str, hide_tests: bool = False) -> bool:
     return hide_tests and len(_without_tests_label(text).strip()) >= _ORDER_TURN_MIN_CHARS
 
 
-_ORDER_CARD_STUB = "Реквизиты уже на карточке. Ниже пункты, которые служба ещё не закрыла."
+_ORDER_MODEL_SILENT = "Модель Cursor не ответила. Разбор заказа можно повторить."
 
 
 def _order_reply_or_card(answer: str, events: list[dict[str, Any]], cwd: str = "") -> str:
-    """Сводка дела вместо фразы «без итога», если модель оборвалась на подготовке."""
+    """Сводка прочитанного дела. Пустой ход без чтения дела — явный обрыв модели."""
     survey = _survey_from_events(events, cwd) or _service_reading_from_events(events, cwd)
     if survey:
         return survey
     clean = (answer or "").strip()
     if clean and "без итога" not in clean and not _order_answer_is_plan(clean):
         return clean
-    return _ORDER_CARD_STUB
+    return _ORDER_MODEL_SILENT
 
 
 def _with_order_brief(message: str, brief: str) -> str:
@@ -6263,11 +6263,15 @@ class Sidecar:
             if getattr(active, "hide_tests", False):
                 self._forward_events(active, events)({"type": "assistant", "text": "", "_order_flush": True})
                 answer = _order_turn_answer(answer, str(getattr(active, "answer_buf", "") or ""))
-                if not answer.strip() or _order_answer_is_plan(answer):
+                if not answer.strip() or _order_answer_is_plan(answer) or "без итога" in answer:
                     answer = _order_reply_or_card(answer, events, run_cwd)
+                    if answer.strip() == _ORDER_MODEL_SILENT:
+                        status = "error"
             if status == "ok" and not _turn_answer_done(self._order_seen_text(active, answer), getattr(active, "hide_tests", False)):
                 if getattr(active, "hide_tests", False):
                     answer = _order_reply_or_card(answer, events, run_cwd)
+                    if answer.strip() == _ORDER_MODEL_SILENT:
+                        status = "error"
                 else:
                     status = "error"
                     tail = answer.strip()
@@ -6283,9 +6287,14 @@ class Sidecar:
         except Exception as exc:  # noqa: BLE001
             log("run failed: " + repr(exc))
             if getattr(active, "hide_tests", False):
-                # Карточка уже открыта. Обрыв Cursor не должен затирать чат фразой про сеть.
-                answer = _order_reply_or_card(answer, events, run_cwd)
-                status = "ok"
+                # Чтение дела оставляем. Обрыв Cursor пишем как есть, без подмены «модель не ответила».
+                survey = _survey_from_events(events, run_cwd) or _service_reading_from_events(events, run_cwd)
+                if survey:
+                    answer = survey
+                    status = "ok"
+                else:
+                    answer = _user_facing_run_error(exc)
+                    status = "error"
             else:
                 status = "error"
                 answer = _with_closure_check(_user_facing_run_error(exc), run_cwd)
@@ -6469,125 +6478,9 @@ class Sidecar:
         active: ActiveRun,
         workflow_id: str,
     ) -> None:
-        active.workflow_id = workflow_id
-        active.kind = "run"
-        active.gate.bind(workflow_id=workflow_id, kind="run")
-        started_at = time.time()
-        active.chat_started_at = started_at
-        active.chat_files_sent = ()
-        active.chat_files_checked = 0.0
-        message = str(command.get("message") or "").strip()
-        app_context = str(command.get("appContext") or command.get("app_context") or "").strip()
-        source = str(command.get("source") or "chat").strip() or "chat"
-        autonomous = source == "trigger"
-        resume_agent_id = str(command.get("resumeAgentId") or "").strip()
-        if not resume_agent_id:
-            resume_agent_id = self._personal_agent_ids.get(workflow_id, "").strip()
-        bridge = active.bridge
-        bridge.check_ready()
-        run_cwd = bridge.workspace_cwd(workflow_id)
-        active.run_cwd = run_cwd
-        # Personal agent is not bound to a single workflow playbook.
-        bridge.bind_knowledge(None, "", run_cwd, active.run_id)
-        if app_context:
-            try:
-                materials = Path(run_cwd) / "materials"
-                materials.mkdir(parents=True, exist_ok=True)
-                (materials / "orchestrator_context.md").write_text(
-                    "# Контекст рабочего места\n\n" + app_context + "\n",
-                    encoding="utf-8",
-                )
-            except Exception as exc:  # noqa: BLE001
-                log("orchestrator context write failed: " + repr(exc))
-        file_paths = [str(p) for p in (command.get("filePaths") or []) if str(p).strip()]
-        attachment_paths = _copy_attachments(run_cwd, file_paths)
-        events = active.events
-        prompt = _build_personal_agent_prompt(message, app_context)
-        note = _attachments_note(attachment_paths)
-        if note:
-            prompt = prompt + "\n\n" + note
-        prompt = _with_run_journal_prompt(prompt, run_cwd, workflow_id)
-        status = "ok"
-        answer = ""
-        agent_id = resume_agent_id
-        try:
-            try:
-                result = self._bridge_run_with_retry(
-                    active,
-                    bridge,
-                    prompt=prompt,
-                    workflow_id=workflow_id,
-                    cwd=run_cwd,
-                    resume_agent_id=resume_agent_id,
-                    on_event=self._forward_events(active, events),
-                    on_question=active.gate.ask_question,
-                    should_stop=active.stop.is_set,
-                    confirm_writes=True,
-                )
-            except Exception as exc:  # noqa: BLE001
-                if resume_agent_id and self._is_missing_resume_agent_error(exc) and not active.stop.is_set():
-                    log(f"personal resume agent missing for {workflow_id}, retry fresh run")
-                    self._personal_agent_ids.pop(workflow_id, None)
-                    result = self._bridge_run_with_retry(
-                        active,
-                        bridge,
-                        prompt=prompt,
-                        workflow_id=workflow_id,
-                        cwd=run_cwd,
-                        resume_agent_id="",
-                        on_event=self._forward_events(active, events),
-                        on_question=active.gate.ask_question,
-                        should_stop=active.stop.is_set,
-                        confirm_writes=True,
-                    )
-                else:
-                    raise
-            answer = str(result.get("answer") or "").strip()
-            agent_id = str(result.get("agent_id") or resume_agent_id).strip()
-            if agent_id:
-                self._personal_agent_ids[workflow_id] = agent_id
-        except Exception as exc:  # noqa: BLE001
-            status = "error"
-            answer = _user_facing_run_error(exc)
-            try:
-                _append_run_journal(
-                    run_cwd,
-                    workflow_id=workflow_id,
-                    message=message,
-                    answer=answer,
-                    events=events,
-                    qa_history=active.gate.qa_history,
-                    status=status,
-                    run_ref=active.run_id,
-                )
-            except Exception as journal_exc:  # noqa: BLE001
-                log("run journal write failed: " + repr(journal_exc))
-            raise
-        try:
-            _append_run_journal(
-                run_cwd,
-                workflow_id=workflow_id,
-                message=message,
-                answer=answer,
-                events=events,
-                qa_history=active.gate.qa_history,
-                status=status,
-                run_ref=active.run_id,
-            )
-        except Exception as exc:  # noqa: BLE001
-            log("run journal write failed: " + repr(exc))
-        emit(
-            {
-                "type": "result",
-                "runId": active.run_id,
-                "kind": "run",
-                "workflowId": workflow_id,
-                "runRef": active.run_id,
-                "agentId": agent_id,
-                "status": status,
-                "answer": answer,
-                "files": _fresh_chat_files(run_cwd, started_at),
-            }
+        del command, active, workflow_id
+        raise RuntimeError(
+            "Чат личного помощника перенесён в единый движок agent-platform."
         )
 
     def _run_orchestrator(self, command: dict[str, Any], active: ActiveRun, kind: str) -> None:

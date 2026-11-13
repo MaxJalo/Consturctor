@@ -784,6 +784,8 @@ class CursorSdkBridge:
             raise CursorSdkUnavailable(
                 "Зависимости Cursor SDK не установлены. Выполните npm install в desktop/sdk-agent."
             )
+        if getattr(self, "_node_ok", False):
+            return
         try:
             result = subprocess.run(
                 [self._node, "--version"],
@@ -800,6 +802,7 @@ class CursorSdkBridge:
         major, minor = self._node_version(version)
         if major < 22 or (major == 22 and minor < 13):
             raise CursorSdkUnavailable("Для Cursor SDK нужен Node.js 22.13 или новее")
+        self._node_ok = True
 
     def check_ready(self) -> None:
         self._ensure_ready()

@@ -3,13 +3,14 @@ from __future__ import annotations
 import json
 import logging
 import re
+import time
 import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
-from sqlalchemy import select, text
+from sqlalchemy import select, text, update
 from sqlalchemy.exc import SQLAlchemyError
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, defer
 
 STALE_STARTED = timedelta(minutes=25)
 OVERLAP_CANCEL_ANSWER = "Агент уже выполняется"
@@ -250,35 +251,40 @@ def save_run_events(db: Session, *, run_id: str, events: list[dict[str, Any]]) -
     _notify_new_run_waits(db, row, previous=previous, current=row.events_json)
 
 
+_stale_checked_at: dict[str, float] = {}
+_STALE_CHECK_SECONDS = 60.0
+
+
 def fail_stale_started_runs(db: Session, *, user_id: str, notify: bool = True) -> int:
     """Close runs abandoned by a crashed desktop.
 
-    Read endpoints call this before serving, where `notify=False` avoids a live
-    board push that would recompute the very board being built.
+    Read endpoints call this before serving. The sweep is throttled and updates
+    status without reading the events blob. `notify` is kept for callers that
+    already pass False.
     """
+    _ = notify
+    now = time.monotonic()
+    if now - _stale_checked_at.get(user_id, 0.0) < _STALE_CHECK_SECONDS:
+        return 0
+    _stale_checked_at[user_id] = now
     cutoff = datetime.now(timezone.utc) - STALE_STARTED
-    rows = (
-        db.execute(
-            select(AgentRun).where(
-                AgentRun.user_id == user_id,
-                AgentRun.status == "started",
-                AgentRun.started_at < cutoff,
-            )
+    result = db.execute(
+        update(AgentRun)
+        .where(
+            AgentRun.user_id == user_id,
+            AgentRun.status == "started",
+            AgentRun.started_at < cutoff,
         )
-        .scalars()
-        .all()
-    )
-    for row in rows:
-        finish_agent_run(
-            db,
-            run_id=row.id,
+        .values(
             status="canceled",
             answer=STALE_STARTED_ANSWER,
-            events=row.events_json if isinstance(row.events_json, list) else [],
-            message=row.message or "",
-            notify=notify,
+            finished_at=datetime.now(timezone.utc),
         )
-    return len(rows)
+    )
+    changed = int(result.rowcount or 0)
+    if changed:
+        db.commit()
+    return changed
 
 
 def _normalize_run_status(status: str) -> str:
@@ -517,10 +523,14 @@ def list_agent_runs(
     workflow_id: str,
     conversation_key: str = "",
     conversation_prefix: str = "",
+    limit: int = 50,
+    include_events: bool = False,
 ) -> list[AgentRunOut]:
     fail_stale_started_runs(db, user_id=user_id, notify=False)
     _get_owned(db, user_id=user_id, workflow_id=workflow_id, allow_deleted=True, allow_shared=True)
     query = select(AgentRun).where(AgentRun.workflow_id == workflow_id, AgentRun.user_id == user_id)
+    if not include_events:
+        query = query.options(defer(AgentRun.events_json))
     key = (conversation_key or "").strip()
     prefix = (conversation_prefix or "").strip()
     if (key or prefix) and _conversation_ready(db):
@@ -532,14 +542,28 @@ def list_agent_runs(
             )
     elif key or prefix:
         return []
-    rows = db.execute(query.order_by(AgentRun.started_at.desc()).limit(50)).scalars().all()
-    tags = _conversation_of(db, [row.id for row in rows])
+    cap = max(1, min(50, int(limit or 50)))
+    rows = db.execute(query.order_by(AgentRun.started_at.desc()).limit(cap)).scalars().all()
     out = []
     for row in rows:
-        item = _to_out(row)
-        item.conversation_key, item.sdk_agent_id = tags.get(row.id, ("", ""))
+        read_events = include_events or (row.status or "") == "started"
+        item = _to_out(row, include_events=include_events, read_events=read_events)
+        item.conversation_key = str(getattr(row, "conversation_key", "") or "")
+        item.sdk_agent_id = str(getattr(row, "sdk_agent_id", "") or "")
         out.append(item)
     return out
+
+
+def assert_run_owner(db: Session, *, user_id: str, workflow_id: str, run_id: str) -> None:
+    found = db.execute(
+        select(AgentRun.id).where(
+            AgentRun.id == run_id,
+            AgentRun.workflow_id == workflow_id,
+            AgentRun.user_id == user_id,
+        )
+    ).first()
+    if found is None:
+        raise WorkflowError("Запуск не найден", status_code=404)
 
 
 def get_agent_run(db: Session, *, user_id: str, workflow_id: str, run_id: str) -> AgentRunOut:
@@ -549,7 +573,8 @@ def get_agent_run(db: Session, *, user_id: str, workflow_id: str, run_id: str) -
     if row is None or row.workflow_id != workflow_id or row.user_id != user_id:
         raise WorkflowError("Запуск не найден", status_code=404)
     out = _to_out(row, include_events=True)
-    out.conversation_key, out.sdk_agent_id = _conversation_of(db, [row.id]).get(row.id, ("", ""))
+    out.conversation_key = str(getattr(row, "conversation_key", "") or "")
+    out.sdk_agent_id = str(getattr(row, "sdk_agent_id", "") or "")
     out.metrics = read_run_metrics(db, row.id)
     out.calendar_meetings = _calendar_meetings_for(
         db, user_id=user_id, workflow_id=workflow_id
@@ -1152,8 +1177,8 @@ def _clip_json(value: Any, *, depth: int = 0) -> Any:
     return str(value)[:400]
 
 
-def _to_out(row: AgentRun, *, include_events: bool = False) -> AgentRunOut:
-    stored = row.events_json if isinstance(row.events_json, list) else []
+def _to_out(row: AgentRun, *, include_events: bool = False, read_events: bool = True) -> AgentRunOut:
+    stored = row.events_json if read_events and isinstance(row.events_json, list) else []
     events = stored if include_events else []
     in_flight = _row_in_flight(row)
     timing = compute_run_timing(

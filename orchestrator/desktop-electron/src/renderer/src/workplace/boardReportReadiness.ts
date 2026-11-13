@@ -3,6 +3,7 @@ import { api } from '../api/client'
 import type { UserProfile } from '../api/types'
 import { isPsdAssistant } from '../orchestrator/kpi'
 import { onecGatewayInvokeArgs } from './userContext'
+import { readGridCache, writeGridCache } from './gridDataCache'
 
 export type BoardReportTask = {
   text: string
@@ -90,9 +91,11 @@ export function useBoardReportReadiness(user: UserProfile | null): {
   readiness: BoardReportReadiness
 } {
   const enabled = isIlchenkoAccount(user)
-  const [loading, setLoading] = useState(enabled)
+  const cacheKey = `${user.id || ''}:board-report-readiness`
+  const cached = enabled ? readGridCache<BoardReportReadiness>(cacheKey) : undefined
+  const [loading, setLoading] = useState(enabled && !cached)
   const [error, setError] = useState('')
-  const [readiness, setReadiness] = useState<BoardReportReadiness>(EMPTY)
+  const [readiness, setReadiness] = useState<BoardReportReadiness>(cached ?? EMPTY)
 
   useEffect(() => {
     if (!enabled) {
@@ -102,11 +105,13 @@ export function useBoardReportReadiness(user: UserProfile | null): {
       return
     }
     let cancelled = false
-    setLoading(true)
+    if (!readGridCache<BoardReportReadiness>(cacheKey)) setLoading(true)
     setError('')
     void loadBoardReportReadiness(user)
       .then((next) => {
-        if (!cancelled) setReadiness(next)
+        if (cancelled) return
+        writeGridCache(cacheKey, next)
+        setReadiness(next)
       })
       .catch((err: unknown) => {
         if (!cancelled) setError(err instanceof Error ? err.message : 'Не удалось посчитать готовность')

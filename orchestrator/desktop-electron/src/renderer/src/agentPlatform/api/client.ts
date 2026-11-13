@@ -1,4 +1,4 @@
-import type { ListResponse } from './types'
+import type { ListResponse, PlatformSessionDetail } from './types'
 
 // Адрес локальной платформы агентов: Electron main запускает её на свободном порту.
 let base = ''
@@ -72,6 +72,66 @@ export function apiPost<T>(path: string, body: unknown): Promise<T> {
   return apiRequest<T>('POST', path, body)
 }
 
+export function apiDelete<T>(path: string): Promise<T> {
+  return apiRequest<T>('DELETE', path)
+}
+
 export function apiList<T>(path: string): Promise<T[]> {
   return apiGet<ListResponse<T>>(path).then((body) => body.items)
+}
+
+/** Потоковая подписка (SSE) на события сессии без задержки поллинга. */
+export function streamSession(
+  sessionId: string,
+  since: number,
+  onDetail: (detail: PlatformSessionDetail) => void,
+  onError?: (error: Error) => void
+): () => void {
+  const controller = new AbortController()
+  let active = true
+
+  void (async () => {
+    try {
+      const url = await platformUrl()
+      if (!active) return
+      const response = await fetch(
+        `${url}/api/v1/platform/sessions/${encodeURIComponent(sessionId)}/stream?since=${since}`,
+        { signal: controller.signal, headers: { Accept: 'text/event-stream' } }
+      )
+      if (!response.ok || !response.body) {
+        throw new Error(`HTTP ${response.status}`)
+      }
+      const reader = response.body.getReader()
+      const decoder = new TextDecoder()
+      let buffer = ''
+      while (active) {
+        const { done, value } = await reader.read()
+        if (done) break
+        buffer += decoder.decode(value, { stream: true })
+        const frames = buffer.split('\n\n')
+        buffer = frames.pop() ?? ''
+        for (const frame of frames) {
+          for (const line of frame.split('\n')) {
+            if (!line.startsWith('data:')) continue
+            const raw = line.slice(5).trim()
+            if (!raw) continue
+            try {
+              onDetail(JSON.parse(raw) as PlatformSessionDetail)
+            } catch {
+              /* ignore partial frame */
+            }
+          }
+        }
+      }
+      if (active && onError) onError(new Error('Stream closed'))
+    } catch (error) {
+      if (!active || controller.signal.aborted) return
+      if (onError) onError(error instanceof Error ? error : new Error(String(error)))
+    }
+  })()
+
+  return () => {
+    active = false
+    controller.abort()
+  }
 }

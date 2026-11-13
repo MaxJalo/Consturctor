@@ -12,9 +12,11 @@ from sqlalchemy.orm import Session
 from app.api.deps import get_current_user, require_admin_user
 from app.core.jwt import AuthContext
 from app.db.session import SessionLocal, get_db, pool_is_saturated
+from app.services.external_service_agents import schedule_grant_order_agents
 from app.services.external_orders import (
     ExternalOrderError,
     accept_finding,
+    audit_feed,
     accept_finding_batch,
     accept_plan,
     accept_role_findings,
@@ -230,12 +232,13 @@ def get_meta(
     db: Session = Depends(get_db),
 ) -> dict:
     fio, position, department = _people(auth, db)
+    schedule_grant_order_agents(auth.user_id)
     return meta_for(fio=fio, position=position, department=department, as_role=as_role)
 
 
 @router.get("")
 def get_orders(auth: AuthContext = Depends(get_current_user)) -> Response:
-    _ = auth
+    schedule_grant_order_agents(auth.user_id)
     from app.services.external_orders import order_briefs_body
 
     try:
@@ -314,9 +317,12 @@ _AGENTS_STALE = 180.0
 
 
 def _service_agent_catalog(db: Session) -> dict:
+    from app.services.external_purchase_agent import TITLE as PURCHASE_TITLE
+    from app.services.external_purchase_agent import ensure_agent as ensure_purchase
     from app.services.external_service_agents import ensure_agents, is_active, service_roles, title_for
 
     rows = {row.title: row for row in ensure_agents(db)}
+    purchase = ensure_purchase(db)
     agents = []
     for role in service_roles():
         row = rows.get(title_for(role))
@@ -330,13 +336,19 @@ def _service_agent_catalog(db: Session) -> dict:
                 "procedure": str(local.get("order_procedure") or ""),
             }
         )
-    return {"agents": agents}
+    return {
+        "agents": agents,
+        "purchase_agent": {
+            "workflow_id": purchase.id if purchase is not None else "",
+            "title": purchase.title if purchase is not None else PURCHASE_TITLE,
+        },
+    }
 
 
 @router.get("/service-agents")
 def get_service_agents(auth: AuthContext = Depends(get_current_user)) -> dict:
     """Каталог служб. Повтор и занятый пул не переписывают агентов и не ждут соединение."""
-    _ = auth
+    schedule_grant_order_agents(auth.user_id)
     global _agents_cache
     now = time.monotonic()
     cached = _agents_cache
@@ -441,6 +453,17 @@ def post_onec_sync(
     )
 
 
+@router.get("/audit-feed")
+def get_audit_feed(
+    ids: str = Query(default=""),
+    auth: AuthContext = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> dict:
+    _ = auth
+    order_ids = [part.strip() for part in ids.split(",") if part.strip()]
+    return {"orders": audit_feed(db, order_ids)}
+
+
 @router.post("/{order_id}/take")
 def post_take(
     order_id: str,
@@ -487,10 +510,15 @@ def post_onec_stored(
     """Карточка сразу. Чтение 1С дописывает её следом и не держит этот запрос."""
     role = _role(auth, as_role, db)
     fio = auth.fio or ""
-    try:
-        body = get_order(db, order_id)
-    except ExternalOrderError as exc:
-        raise HTTPException(status_code=exc.status, detail=exc.detail) from exc
+    cached = _detail_cache.get(order_id)
+    if cached is not None and time.monotonic() - cached[0] < _DETAIL_STALE:
+        body = cached[1]
+    else:
+        try:
+            body = get_order(db, order_id)
+        except ExternalOrderError as exc:
+            raise HTTPException(status_code=exc.status, detail=exc.detail) from exc
+        _detail_cache[order_id] = (time.monotonic(), body)
     with _onec_jobs_lock:
         start = order_id not in _onec_jobs
         if start:

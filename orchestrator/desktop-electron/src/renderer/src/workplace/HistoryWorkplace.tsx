@@ -22,9 +22,20 @@ import {
 } from './historyRunFilters'
 import { useHistoryKpiMetrics } from './useHistoryKpiMetrics'
 import { useGridRefreshGeneration } from './GridDataRefreshContext'
+import { readGridCache, writeGridCache } from './gridDataCache'
+import { isInFlightRunStatus } from '../store/liveRun'
 import { useRegisterGlobalSearch, type GlobalSearchEntry } from '../layout/globalSearch'
 
 const PAGE_SIZE_OPTIONS = [10, 20, 50] as const
+
+const HISTORY_CACHE_KEY = 'history-workplace'
+
+type HistoryCache = {
+  board: WorkflowBoard
+  titles: Record<string, string>
+  runs: AgentRunHistoryItem[]
+  stamps: Record<string, string>
+}
 
 const EMPTY_BOARD: WorkflowBoard = {
   stats: { activeAgents: 0, runsToday: 0, errorsToday: 0, needsAttention: 0, nextRunAt: '' },
@@ -100,10 +111,11 @@ export function HistoryWorkplace({
 }): React.JSX.Element {
   const today = todayDayKey()
   const { from: rangeFrom, to: rangeTo, setRange: setWorkplaceRange } = useWorkplacePeriod()
-  const [board, setBoard] = useState<WorkflowBoard>(EMPTY_BOARD)
-  const [titles, setTitles] = useState<Record<string, string>>({})
-  const [runs, setRuns] = useState<AgentRunHistoryItem[]>([])
-  const [loading, setLoading] = useState(true)
+  const historyCache = readGridCache<HistoryCache>(HISTORY_CACHE_KEY)
+  const [board, setBoard] = useState<WorkflowBoard>(historyCache?.board ?? EMPTY_BOARD)
+  const [titles, setTitles] = useState<Record<string, string>>(historyCache?.titles ?? {})
+  const [runs, setRuns] = useState<AgentRunHistoryItem[]>(historyCache?.runs ?? [])
+  const [loading, setLoading] = useState(!historyCache)
   const [error, setError] = useState('')
   const [query, setQuery] = useState('')
   const [agentId, setAgentId] = useState('')
@@ -168,15 +180,24 @@ export function HistoryWorkplace({
         if (!nextTitles[item.id]) nextTitles[item.id] = item.title || 'ИИ-агент'
       }
       setTitles(nextTitles)
+      const previous = readGridCache<HistoryCache>(HISTORY_CACHE_KEY)
+      const stamps: Record<string, string> = {}
+      const refreshIds: string[] = []
+      for (const id of Object.keys(nextTitles)) {
+        const agent = nextBoard.agents.find((item) => item.id === id)
+        const stamp = agent ? `${agent.lastRunAt}|${agent.lastRunStatus}` : ''
+        stamps[id] = stamp
+        const running = agent ? isInFlightRunStatus(agent.lastRunStatus) : false
+        if (!previous || previous.stamps[id] !== stamp || running) refreshIds.push(id)
+      }
       const lists = await Promise.all(
-        Object.keys(nextTitles).map((id) =>
-          api.listAgentRuns(id).catch(() => [] as AgentRunHistoryItem[])
-        )
+        refreshIds.map((id) => api.listAgentRuns(id).catch(() => [] as AgentRunHistoryItem[]))
       )
-      const items = lists
-        .flat()
+      const freshIds = new Set(refreshIds)
+      const items = [...lists.flat(), ...(previous?.runs ?? []).filter((item) => !freshIds.has(item.workflowId))]
         .filter((item) => item.runId)
         .sort((left, right) => (right.startedAt || '').localeCompare(left.startedAt || ''))
+      writeGridCache(HISTORY_CACHE_KEY, { board: nextBoard, titles: nextTitles, runs: items, stamps })
       setRuns(items)
       setError('')
     } catch (err) {
@@ -608,7 +629,7 @@ export function HistoryWorkplace({
             <select
               className="hist-select"
               value={status}
-              onChange={(e) => setStatus(e.target.value as StatusFilter)}
+              onChange={(e) => setStatus(e.target.value as HistoryStatusFilter)}
             >
               <option value="">Все</option>
               <option value="ok">Успешно</option>

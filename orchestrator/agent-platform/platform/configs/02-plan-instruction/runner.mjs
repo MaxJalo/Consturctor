@@ -50,8 +50,20 @@ const PREVIEW_STRING_CHARS = 12000;
 const PREVIEW_ITEMS = 200;
 const IMAGE_PREVIEW_CHARS = 4_000_000;
 
+const TURN_DONE_MARKER = "[[turn-done]]";
+const TURN_DONE_HINT =
+  "\n\n[Система]\nЗакончи видимый ответ отдельной последней строкой [[turn-done]]. Если писать нечего, сначала напиши «Готово.», затем маркер. Маркер не поясняй.";
+
 function emit(payload) {
   writeSync(1, `${JSON.stringify(payload)}\n`);
+}
+
+function trailingMarkerPrefix(text) {
+  for (let size = TURN_DONE_MARKER.length - 1; size > 0; size -= 1) {
+    const prefix = TURN_DONE_MARKER.slice(0, size);
+    if (text.endsWith(prefix)) return prefix;
+  }
+  return "";
 }
 
 function trace(dir, kind, data, extra = {}) {
@@ -311,7 +323,7 @@ async function answerToOpenQuestion(request, isCancelled) {
 function userMessage(request) {
   const prompt = String(request.prompt || "").trim();
   const attachments = Array.isArray(request.attachments) ? request.attachments : [];
-  if (!attachments.length) return { message: prompt, shown: { prompt } };
+  if (!attachments.length) return { message: `${prompt}${TURN_DONE_HINT}`, shown: { prompt } };
   const listing = attachments
     .map((item) => `- ${item.path}${item.image ? " (изображение, приложено к сообщению)" : ""}`)
     .join("\n");
@@ -319,8 +331,9 @@ function userMessage(request) {
   const images = attachments
     .filter((item) => item.image)
     .map((item) => ({ data: readFileSync(item.path).toString("base64"), mimeType: item.mime }));
+  const hinted = `${text}${TURN_DONE_HINT}`;
   return {
-    message: images.length ? { text, images } : text,
+    message: images.length ? { text: hinted, images } : hinted,
     shown: {
       prompt: text,
       images: attachments
@@ -365,7 +378,8 @@ async function main() {
     name: request.title || undefined,
     local: {
       cwd: request.cwd,
-      settingSources: hooks ? ["project"] : [],
+      ...(Array.isArray(request.dirs) && request.dirs.length ? { dirs: request.dirs } : {}),
+      settingSources: ["project", "user"],
       customTools: mcp.tools,
       // Хранилище SQLite по умолчанию на этой машине не открывает свою базу в конце хода
       // («unable to open database file»): ход не завершается, и SDK повторяет его по таймауту.
@@ -405,6 +419,7 @@ async function main() {
     let cancelled = false;
     let plan = null;
     let answer = "";
+    let streamFailure = "";
     (async () => {
       for await (const line of { [Symbol.asyncIterator]: () => iterator }) {
         let command;
@@ -425,7 +440,28 @@ async function main() {
     })();
 
     let result;
+    let rawAnswer = "";
+    let emittedClean = "";
+    const openCalls = new Set();
+    let finishNow = false;
+    const pushAssistant = (chunk) => {
+      rawAnswer += chunk;
+      const clean = rawAnswer.split(TURN_DONE_MARKER).join("");
+      const partial = trailingMarkerPrefix(rawAnswer);
+      const safe = partial && clean.endsWith(partial) ? clean.slice(0, -partial.length) : clean;
+      const visible = safe.startsWith(emittedClean) ? safe.slice(emittedClean.length) : safe;
+      emittedClean = safe;
+      if (visible) {
+        answer += visible;
+        emit({ type: "assistant", text: visible });
+      }
+      return rawAnswer.includes(TURN_DONE_MARKER) && openCalls.size === 0;
+    };
     for (;;) {
+      rawAnswer = "";
+      emittedClean = "";
+      openCalls.clear();
+      finishNow = false;
       trace("runner→sdk", "run.stream", { runId: run.id });
       for await (const event of run.stream()) {
         if (event.type === "assistant") {
@@ -441,15 +477,17 @@ async function main() {
 
         if (event.type === "assistant") {
           for (const block of event.message.content) {
-            if (block.type === "text" && block.text) {
-              answer += block.text;
-              emit({ type: "assistant", text: block.text });
-            }
+            if (block.type === "text" && block.text && pushAssistant(block.text)) finishNow = true;
           }
         } else if (event.type === "thinking" && event.text) {
           emit({ type: "thinking", text: event.text });
         } else if (event.type === "tool_call") {
           const done = event.status !== "running";
+          if (event.call_id) {
+            if (done) openCalls.delete(event.call_id);
+            else openCalls.add(event.call_id);
+          }
+          if (rawAnswer.includes(TURN_DONE_MARKER) && openCalls.size === 0) finishNow = true;
           if (event.name === "createPlan") plan = planFromArgs(event.args) ?? plan;
           emit({
             type: "tool_call",
@@ -469,9 +507,30 @@ async function main() {
           emit({ type: "status", text: event.text });
         } else if (event.type === "usage") {
           emit({ type: "usage", usage: event.usage });
-        } else if (event.type === "status" && event.message) {
-          emit({ type: "status", text: event.message });
+        } else if (event.type === "status") {
+          if (String(event.status || "").toUpperCase() === "ERROR" && event.message) {
+            streamFailure = String(event.message);
+          }
+          if (event.message) emit({ type: "status", text: event.message });
         }
+        if (finishNow) break;
+      }
+
+      if (finishNow && !cancelled) {
+        if (typeof run.supports === "function" && run.supports("cancel")) {
+          await Promise.race([
+            run.cancel().catch(() => undefined),
+            new Promise((resolve) => setTimeout(resolve, 2000)),
+          ]);
+        }
+        result = { status: "finished", result: emittedClean.trim() };
+        break;
+      }
+      const pending = rawAnswer.split(TURN_DONE_MARKER).join("").slice(emittedClean.length);
+      if (pending) {
+        answer += pending;
+        emittedClean += pending;
+        emit({ type: "assistant", text: pending });
       }
 
       trace("runner→sdk", "run.wait", { runId: run.id });
@@ -485,6 +544,15 @@ async function main() {
         result: result.result,
       });
       if (cancelled) break;
+      if (result.status === "error") {
+        const errObj = result.error && typeof result.error === "object" ? result.error : null;
+        const failure =
+          [errObj?.code, errObj?.message].filter(Boolean).join(": ") ||
+          streamFailure ||
+          "Cursor SDK завершил ход с ошибкой";
+        emit({ type: "error", text: failure });
+        break;
+      }
       const reply = await answerToOpenQuestion(request, () => cancelled);
       if (!reply) break;
       trace("runner→sdk", "agent.send", { prompt: reply, options: sendOptions }, { text: reply });
@@ -500,12 +568,15 @@ async function main() {
     emit({
       type: "done",
       status: cancelled ? "cancelled" : result.status,
-      result: typeof result.result === "string" ? result.result : undefined,
+      result: typeof result.result === "string" ? result.result.split(TURN_DONE_MARKER).join("").trim() : undefined,
       agentId: agent.agentId,
     });
   } finally {
     trace("runner→sdk", "agent.dispose", { agentId: agent.agentId });
-    await agent[Symbol.asyncDispose]().catch(() => undefined);
+    await Promise.race([
+      agent[Symbol.asyncDispose]().catch(() => undefined),
+      new Promise((resolve) => setTimeout(resolve, 4000)),
+    ]);
     mcp.close();
   }
 }

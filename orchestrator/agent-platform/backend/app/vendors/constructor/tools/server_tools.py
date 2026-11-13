@@ -124,6 +124,44 @@ _SERVER_TOOL_DEFS: list[tuple[str, str, dict[str, Any]]] = [
         ),
     ),
     (
+        "onec.position_holders",
+        (
+            "Кто сейчас занимает должность в подразделении по кадровой истории 1С erp_pm. "
+            "position — должность, department — подразделение. "
+            "Вернёт ФИО, код, дату назначения и число ставок. "
+            "Не включает уволенных, архивных, переведённых и отпуск по уходу за ребёнком. "
+            "Только чтение, сервер."
+        ),
+        _schema(
+            {
+                "position": _prop("string", "Должность как в 1С"),
+                "department": _prop("string", "Подразделение как в 1С"),
+                "as_of": _prop("string", "Дата среза YYYY-MM-DD. Пусто — сегодня по Москве"),
+            },
+            ["position", "department"],
+        ),
+    ),
+    (
+        "kpi.publish_position_result",
+        (
+            "Выгрузить на сервер Constructor итог расчёта KPI одной должности за сегодня. "
+            "Пишет только в кэш KPI Constructor, не в 1С. Подтверждение не нужно. Сервер."
+        ),
+        _schema(
+            {
+                "profile_id": _prop("string", "id методики должности из задачи"),
+                "month": _prop("string", "Месяц расчёта YYYY-MM"),
+                "status": _prop("string", "done или failed"),
+                "error": _prop("string", "Причина, если status=failed"),
+                "people": _prop(
+                    "array",
+                    "Сотрудники: {fio, status ok|failed|ambiguous, error, report_path, metrics}",
+                ),
+            },
+            ["profile_id", "status"],
+        ),
+    ),
+    (
         "onec.sql_query",
         "Только SELECT к ERP SQL (allowlist таблиц, сервер).",
         _schema(
@@ -546,6 +584,133 @@ _SERVER_TOOL_DEFS: list[tuple[str, str, dict[str, Any]]] = [
             ["user_id", "title"],
         ),
     ),
+    (
+        "meetings.memo_requests",
+        (
+            "Служебные записки 1С на тему «Организация совещаний (регл.)». Только чтение. Сервер."
+        ),
+        _schema(
+            {
+                "numbers": _prop("array", "Номера записок", items={"type": "string"}),
+                "date_from": _prop("string", "С какой даты записки, YYYY-MM-DD"),
+                "date_to": _prop("string", "По какую дату, YYYY-MM-DD"),
+                "only_open": _prop("boolean", "false — вместе с согласованными", default=True),
+                "max_results": _prop("integer", "Сколько записок вернуть", default=50),
+            }
+        ),
+    ),
+    (
+        "outlook.ews_availability",
+        (
+            "Занятость по Exchange: проверяет Амураля И.Б. (шеф) и участников. Только чтение. Сервер."
+        ),
+        _schema(
+            {
+                "start": _prop("string", "Проверяемое начало, YYYY-MM-DDTHH:MM"),
+                "end": _prop("string", "Окончание, YYYY-MM-DDTHH:MM"),
+                "duration_minutes": _prop("integer", "Длительность, минут", default=60),
+                "people": _prop("array", "ФИО или e-mail участников", items={"type": "string"}),
+                "place": _prop("string", "Место из служебной записки"),
+                "date_from": _prop("string", "Искать окна с даты, YYYY-MM-DD"),
+                "date_to": _prop("string", "Искать окна по дату, YYYY-MM-DD"),
+                "days": _prop("integer", "Сколько дней смотреть вперёд", default=5),
+                "max_suggestions": _prop("integer", "Сколько вариантов времени вернуть", default=8),
+            }
+        ),
+    ),
+    (
+        "outlook.ews_create_meeting",
+        (
+            "Создать совещание в общем календаре «Совещания» и разослать приглашения. "
+            "Запись: нужно подтверждение человека. Сервер."
+        ),
+        _schema(
+            {
+                "subject": _prop("string", "Тема совещания"),
+                "start": _prop("string", "Начало, YYYY-MM-DDTHH:MM"),
+                "end": _prop("string", "Окончание, YYYY-MM-DDTHH:MM"),
+                "duration_minutes": _prop("integer", "Длительность, минут", default=60),
+                "location": _prop("string", "Место"),
+                "attendees": _prop("array", "ФИО или e-mail участников", items={"type": "string"}),
+                "leader": _prop("string", "Руководитель совещания (ФИО)"),
+                "purpose": _prop("string", "Цель совещания"),
+                "agenda": _prop("array", "Пункты плана совещания", items={"type": "string"}),
+                "body": _prop("string", "Дополнительный текст приглашения"),
+                "memo_number": _prop("string", "Номер служебной записки"),
+                "memo_date": _prop("string", "Дата служебной записки, ДД.ММ.ГГГГ"),
+                "force": _prop("boolean", "Создать, даже если шеф занят"),
+            },
+            ["subject", "start", "attendees"],
+        ),
+    ),
+    (
+        "chat.send_direct",
+        (
+            "Личное сообщение в чат Constructor от имени владельца агента (с пометкой «[ИИ-агент]»). "
+            "Получатель — user_id из users.list или ФИО как в 1С/протоколе. Сервер."
+        ),
+        _schema(
+            {
+                "user_id": _prop("string", "id получателя из users.list"),
+                "fio": _prop("string", "ФИО получателя, если id нет"),
+                "text": _prop("string", "Текст сообщения"),
+            },
+            ["text"],
+        ),
+    ),
+    (
+        "external_order.case",
+        (
+            "Дело внешнего заказа. Инструмент есть в этом запуске. "
+            "action=auto_prepare — подготовка дела по order_id и role: путь 1С, опросный лист, черновики и чек-лист. "
+            "action=read — сводка дела. action=read_full — полная выжимка дела и файлов. "
+            "action=scenario — готовый расчёт кнопки сценария: changes, blockers, overdue, decisions, week, why, "
+            "missing, facts или проект документа letter, request, protocol, disagreements, memo, report. "
+            "action=offer — варианты по id вопросов: options копируй из known, цену и срок не выдумывай. "
+            "action=propose — черновики выводов, фактом они не становятся. "
+            "action=draft_1c — черновик 1С ДО (memo, assignment, directive, order, protocol) без записи в 1С. "
+            "action=search_1c — поиск ТКП и заказа клиента. "
+            "action=plan_preview — план без записи. "
+            "action=plan — это и есть запись файла плана в файлы дела: XML появляется в деле, в ответе file_name. "
+            "Отдельного действия «сохранить в файлы» нет. Если file_name уже есть, файл лежит в деле: "
+            "назови его и остановись, не пиши, что инструмента нет. Базовый план этим не утверждается. Сервер."
+        ),
+        _schema(
+            {
+                "action": _prop(
+                    "string",
+                    "read | read_full | scenario | auto_prepare | offer | propose | draft_1c | search_1c | plan_preview | plan",
+                    default="read",
+                ),
+                "scenario": _prop(
+                    "string",
+                    "Для scenario: changes | blockers | overdue | decisions | week | why | missing | facts | "
+                    "letter | request | protocol | disagreements | memo | report",
+                ),
+                "order_id": _prop(
+                    "string",
+                    "id карточки, код ВЗ-…, номер ТКП или номер заказа 1С. Номер из шапки чата подходит.",
+                ),
+                "role": _prop(
+                    "string",
+                    "Роль службы: ks, development, rp, committee, kb, omto, finance, production, legal, it",
+                ),
+                "step_id": _prop("string", "Код шага пути, если он есть в задаче"),
+                "query": _prop("string", "Для search_1c: номер ТКП, заказа клиента или контрагент"),
+                "offers": _prop(
+                    "array",
+                    "Для offer: [{id, options}]. options — дословные фрагменты из known, не догадки",
+                ),
+                "findings": _prop("array", "Черновики: {field, value, source_ref, location, confidence, owner_role}"),
+                "diffs": _prop("array", "Черновики сверки: {code, left_value, right_value, note}"),
+                "kind": _prop("string", "Для draft_1c: memo | assignment | directive | order | protocol"),
+                "title": _prop("string", "Заголовок черновика для 1С"),
+                "text": _prop("string", "Текст черновика для 1С"),
+                "start": _prop("string", "Для plan_preview и plan: дата начала YYYY-MM-DD, если её назвал человек"),
+            },
+            ["action", "order_id"],
+        ),
+    ),
 ]
 
 
@@ -563,12 +728,18 @@ SERVER_TOOL_NAMES: frozenset[str] = frozenset(
     name for name, _desc, _schema_ in _SERVER_TOOL_DEFS if name not in LOCAL_BACKEND_TOOL_NAMES
 )
 SERVER_TOOL_TIMEOUTS: dict[str, int] = {
+    "onec.position_holders": 180,
+    "kpi.publish_position_result": 120,
     "onec.download_artifact": 300,
     # Journal list + files: 1C OData, not a quick catalog ping.
     "onec.erp_assignments": 180,
+    "external_order.case": 180,
     "onec.meeting_protocols": 300,
     # faster-whisper small на CPU: ~8 минут на 25 минут аудио, берём запас.
-    "audio.transcribe": 3600,
+    "audio.transcribe": 7200,
+    "meetings.memo_requests": 180,
+    "outlook.ews_availability": 180,
+    "outlook.ews_create_meeting": 180,
 }
 
 

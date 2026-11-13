@@ -23,14 +23,18 @@ export interface TodayOutlookMailState {
 }
 
 /** Письма дня из Outlook этого компьютера (ящик его профиля). */
+function cachedTodayMail(dayKey: string): { error: string; source: string; rows: SpecMailRow[] } | undefined {
+  return readGridCache(`today-outlook-mail-inout:profile:${dayKey}`)
+}
+
 export function useTodayOutlookMail(periodDay: Date): TodayOutlookMailState {
   const generation = useGridRefreshGeneration()
-  const [loading, setLoading] = useState(true)
-  const [error, setError] = useState('')
-  const [source, setSource] = useState('')
-  const [rows, setRows] = useState<SpecMailRow[]>([])
-
   const dayKey = dayKeyFrom(periodDay)
+  const initial = cachedTodayMail(dayKey)
+  const [loading, setLoading] = useState(!initial)
+  const [error, setError] = useState(initial?.error ?? '')
+  const [source, setSource] = useState(initial?.source ?? '')
+  const [rows, setRows] = useState<SpecMailRow[]>(initial?.rows ?? [])
 
   useEffect(() => {
     let alive = true
@@ -45,7 +49,7 @@ export function useTodayOutlookMail(periodDay: Date): TodayOutlookMailState {
         return
       }
     }
-    setLoading(true)
+    if (!cachedTodayMail(dayKey)) setLoading(true)
     setError('')
     void (async () => {
       try {

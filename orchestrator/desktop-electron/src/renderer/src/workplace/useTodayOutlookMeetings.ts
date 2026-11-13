@@ -2,7 +2,6 @@ import { useEffect, useRef, useState } from 'react'
 import {
   dedupeMeetingEvents,
   ensureOutlookMeetings,
-  useOutlookSyncTick,
   type MeetingEvent
 } from '../utils/outlookMeetings'
 import { useOwnMeetingsVersion } from './ownMeetings'
@@ -37,16 +36,15 @@ export function useTodayOutlookMeetings(
   const dayKey = dayKeyFrom(periodDay)
   const trackedVersion = useTrackedCalendarsVersion()
   const ownMeetingsVersion = useOwnMeetingsVersion()
-  const outlookSync = useOutlookSyncTick()
   const seenGeneration = useRef(generation)
 
   useEffect(() => {
     let alive = true
-    const force = outlookSync > 0 || seenGeneration.current !== generation
+    const force = false
     seenGeneration.current = generation
     const cacheKey = `today-outlook-meetings:${userId}:${dayKey}:${readTrackedCalendars(fio).join('|')}:${ownMeetingsVersion}`
     const cached = readGridCache<{ meetings: MeetingEvent[]; error: string }>(cacheKey)
-    if (cached && !outlookSync) {
+    if (cached) {
       setMeetings(dedupeMeetingEvents(cached.meetings))
       setError(cached.error)
       setLoading(false)
@@ -82,7 +80,7 @@ export function useTodayOutlookMeetings(
     return () => {
       alive = false
     }
-  }, [dayKey, fio, generation, periodDay, userId, trackedVersion, ownMeetingsVersion, outlookSync])
+  }, [dayKey, fio, generation, periodDay, userId, trackedVersion, ownMeetingsVersion])
 
   const visible = dedupeMeetingEvents(meetings)
   return {

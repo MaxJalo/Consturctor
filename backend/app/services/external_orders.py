@@ -15,6 +15,8 @@ from uuid import uuid4
 from sqlalchemy import func, inspect, text
 from sqlalchemy.orm import Session, load_only, noload, object_session, selectinload
 
+from app.db.session import SessionLocal
+
 from app.models.external_order import (
     ExternalOrder,
     ExternalOrderAudit,
@@ -91,6 +93,12 @@ ROUTES = {
     "simplified": "Упрощённый",
     "recalc": "Пересчёт",
 }
+
+
+def registry_route(route: str) -> str:
+    """Пустой маршрут в реестре считается полным: чек-лист без выбора идёт по полному пути."""
+    text = (route or "").strip()
+    return text or "full"
 
 # Несерийный путь сверху вниз, без согласования руководства.
 # form — открытие списка в толстом клиенте 1С, file — шаблон на диске.
@@ -2207,8 +2215,8 @@ def _light_brief(
         "stage_label": STAGES.get(order.stage, order.stage),
         "status": order.status,
         "status_label": STATUSES.get(order.status, order.status),
-        "route": order.route,
-        "route_label": ROUTES.get(order.route, ""),
+        "route": registry_route(order.route),
+        "route_label": ROUTES.get(registry_route(order.route), ""),
         "payment_percent": order.payment_percent,
         "payment_note": _payment_note(order),
         "onec_number": str(getattr(order, "onec_order_number", "") or "") or _onec_number(order),
@@ -2561,15 +2569,124 @@ def _sync_passed_checks(row: ExternalOrder) -> int:
     return changed
 
 
+def _detail_options():
+    return (
+        selectinload(ExternalOrder.checks),
+        selectinload(ExternalOrder.diffs),
+        selectinload(ExternalOrder.risks),
+        selectinload(ExternalOrder.decisions),
+        selectinload(ExternalOrder.findings),
+        selectinload(ExternalOrder.documents),
+        selectinload(ExternalOrder.document_links),
+        selectinload(ExternalOrder.audit),
+        selectinload(ExternalOrder.gaps),
+        selectinload(ExternalOrder.baselines),
+        selectinload(ExternalOrder.tasks),
+        selectinload(ExternalOrder.lines),
+        selectinload(ExternalOrder.notices),
+    )
+
+
+def _load_detail_row(db: Session, order_id: str) -> ExternalOrder:
+    row = _order(db, order_id)
+    loaded = (
+        db.query(ExternalOrder)
+        .options(*_detail_options())
+        .filter(ExternalOrder.id == row.id)
+        .one()
+    )
+    return loaded
+
+
 def get_order(db: Session, order_id: str) -> dict:
     from app.services.external_order_case import refresh_overdue
 
-    row = _order(db, order_id)
+    row = _load_detail_row(db, order_id)
     refresh_overdue(db, row)
     _sync_passed_checks(row)
-    db.commit()
-    db.refresh(row)
+    if db.new or db.dirty:
+        db.commit()
+        row = _load_detail_row(db, row.id)
     return _detail(row)
+
+
+def audit_feed(db: Session, order_ids: list[str]) -> list[dict]:
+    """Журнал: аудит, уведомления и открытые пробелы пачкой, без полной карточки."""
+    ids = [item.strip() for item in order_ids if item and item.strip()][:40]
+    if not ids:
+        return []
+    rows = (
+        db.query(ExternalOrder)
+        .options(
+            load_only(ExternalOrder.id, ExternalOrder.code),
+            selectinload(ExternalOrder.audit),
+            selectinload(ExternalOrder.notices),
+            selectinload(ExternalOrder.gaps),
+            noload(ExternalOrder.checks),
+            noload(ExternalOrder.diffs),
+            noload(ExternalOrder.risks),
+            noload(ExternalOrder.decisions),
+            noload(ExternalOrder.findings),
+            noload(ExternalOrder.documents),
+            noload(ExternalOrder.baselines),
+            noload(ExternalOrder.tasks),
+            noload(ExternalOrder.lines),
+            noload(ExternalOrder.document_links),
+        )
+        .filter(ExternalOrder.id.in_(ids))
+        .all()
+    )
+    by_id = {row.id: row for row in rows}
+    body: list[dict] = []
+    for order_id in ids:
+        row = by_id.get(order_id)
+        if row is None:
+            continue
+        body.append(
+            {
+                "id": row.id,
+                "code": row.code,
+                "audit": [
+                    {
+                        "id": item.id,
+                        "actor_fio": item.actor_fio,
+                        "actor_role": item.actor_role,
+                        "action": item.action,
+                        "detail": item.detail,
+                        "before_value": item.before_value,
+                        "after_value": item.after_value,
+                        "created_at": item.created_at.isoformat() if item.created_at else "",
+                    }
+                    for item in row.audit
+                ],
+                "notices": [
+                    {
+                        "id": item.id,
+                        "kind": item.kind,
+                        "role": item.role,
+                        "title": item.title,
+                        "body": item.body,
+                        "mail_status": item.mail_status,
+                        "created_at": item.created_at.isoformat() if item.created_at else "",
+                    }
+                    for item in row.notices
+                ],
+                "gaps": [
+                    {
+                        "id": item.id,
+                        "field": item.field,
+                        "owner_role": item.owner_role,
+                        "owner_label": ROLES.get(item.owner_role, item.owner_role),
+                        "due_at": item.due_at.isoformat() if item.due_at else "",
+                        "status": item.status,
+                        "detail": item.detail,
+                    }
+                    for item in row.gaps
+                    if item.status == "open"
+                ],
+            }
+        )
+    return body
 
 
 def _line_value(line: str, *tokens: str) -> str:
@@ -5185,50 +5302,63 @@ def sync_order_registry(
 
     skip = max(0, int(skip or 0))
     top = max(1, min(50, int(top or 50)))
+    bind = db.get_bind()
+    # Postgres: вернуть соединение в пул на время HTTP 1С. sqlite-тесты держат
+    # базу в памяти одного соединения, его нельзя закрывать.
+    release = bind.dialect.name != "sqlite"
+    if release:
+        _release_db(db)
+        db.close()
     tkp_page = recent_tkp_page(skip=skip, top=top, refresh=refresh)
     sale_page = recent_sale_orders_page(skip=skip, top=top, refresh=refresh)
-    created = 0
-    linked = 0
-    skipped = 0
-    pages = list(tkp_page.get("orders") or []) + list(sale_page.get("orders") or [])
-    for item in pages:
-        if not isinstance(item, dict):
-            continue
-        key = str(item.get("key") or "").strip()
-        if not key:
-            continue
-        existing = _registry_row_for_page(db, item)
-        if existing is not None:
-            had_key = key in {_onec_key(existing), _tkp_key(existing)}
-            _merge_page(existing, item)
-            db.flush()
-            if not had_key:
-                linked += 1
-            continue
-        try:
-            _shell_for_page(db, item, role=role, fio=fio)
-            db.flush()
-        except ExternalOrderError:
-            skipped += 1
-            continue
-        created += 1
-    db.commit()
-    has_more = bool(tkp_page.get("has_more") or sale_page.get("has_more"))
-    orders: list[dict] | None = None
-    if with_orders and not has_more:
-        orders = _write_briefs(list_orders(db))
-    else:
-        _forget_briefs()
-    return {
-        "created": created,
-        "linked": linked,
-        "skipped": skipped,
-        "skip": skip,
-        "top": top,
-        "has_more": has_more,
-        "next_skip": skip + top if has_more else skip,
-        "orders": orders,
-    }
+    if release:
+        db = Session(bind=bind)
+    try:
+        created = 0
+        linked = 0
+        skipped = 0
+        pages = list(tkp_page.get("orders") or []) + list(sale_page.get("orders") or [])
+        for item in pages:
+            if not isinstance(item, dict):
+                continue
+            key = str(item.get("key") or "").strip()
+            if not key:
+                continue
+            existing = _registry_row_for_page(db, item)
+            if existing is not None:
+                had_key = key in {_onec_key(existing), _tkp_key(existing)}
+                _merge_page(existing, item)
+                db.flush()
+                if not had_key:
+                    linked += 1
+                continue
+            try:
+                _shell_for_page(db, item, role=role, fio=fio)
+                db.flush()
+            except ExternalOrderError:
+                skipped += 1
+                continue
+            created += 1
+        db.commit()
+        has_more = bool(tkp_page.get("has_more") or sale_page.get("has_more"))
+        orders: list[dict] | None = None
+        if with_orders and not has_more:
+            orders = _write_briefs(list_orders(db))
+        elif created or linked:
+            _forget_briefs()
+        return {
+            "created": created,
+            "linked": linked,
+            "skipped": skipped,
+            "skip": skip,
+            "top": top,
+            "has_more": has_more,
+            "next_skip": skip + top if has_more else skip,
+            "orders": orders,
+        }
+    finally:
+        if release:
+            db.close()
 
 
 def refresh_stored_onec(db: Session, order_id: str, *, role: str, fio: str) -> dict:

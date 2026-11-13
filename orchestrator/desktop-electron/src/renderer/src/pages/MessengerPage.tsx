@@ -17,6 +17,8 @@ import { triggerChipLabel } from './AgentSchedulePage'
 import { localizeStatusText } from '../utils/statusText'
 import './messengerActions.css'
 
+const messageCache = new Map<string, ChatMessage[]>()
+
 interface MessengerPageProps {
   thread: ChatThread
   me: UserProfile
@@ -275,7 +277,7 @@ export function MessengerPage({
   onThreadChange,
   onOpenAgent
 }: MessengerPageProps): React.JSX.Element {
-  const [messages, setMessages] = useState<ChatMessage[]>([])
+  const [messages, setMessages] = useState<ChatMessage[]>(() => messageCache.get(thread.id) ?? [])
   const [text, setText] = useState('')
   const [pendingFiles, setPendingFiles] = useState<string[]>([])
   const [busy, setBusy] = useState(false)
@@ -302,7 +304,8 @@ export function MessengerPage({
 
   useEffect(() => {
     let alive = true
-    setMessages([])
+    const cached = messageCache.get(thread.id)
+    setMessages(cached ?? [])
     setError('')
     setEditing(null)
     void loadUserAvatar({ id: thread.peerId, avatarUrl: thread.avatarUrl }).then((url) => {
@@ -312,7 +315,9 @@ export function MessengerPage({
       void api
         .listChatMessages(thread.id)
         .then((rows) => {
-          if (alive) setMessages(rows)
+          if (!alive) return
+          messageCache.set(thread.id, rows)
+          setMessages(rows)
         })
         .catch((err) => {
           if (alive) setError(err instanceof Error ? err.message : 'Не удалось загрузить чат')

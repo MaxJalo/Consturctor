@@ -16,12 +16,14 @@ from typing import Literal
 
 from app import tool_settings
 from app.config import settings
+from app.platform import constructor_runs
 from app.platform.approvals import approvals
 from app.platform.attachments import Attachment
-from app.platform.configs import PlatformConfig
+from app.platform.configs import PlatformConfig, find_config
 from app.platform.metrics import Sampler
 from app.platform.questions import questions
 from app.platform.sessions import store
+from app.skills.registry import materialize_skills
 
 logger = logging.getLogger(__name__)
 
@@ -38,17 +40,25 @@ class ConfigNotRunnable(RuntimeError):
 
 class _Turn:
     def __init__(
-        self, process: subprocess.Popen[bytes], turn: int, on_done: Callable[[], None] | None
+        self,
+        process: subprocess.Popen[bytes],
+        turn: int,
+        config: PlatformConfig,
+        on_done: Callable[[], None] | None,
     ) -> None:
         self.process = process
         self.turn = turn
+        self.config = config
         self.on_done = on_done
         self.stderr: deque[str] = deque(maxlen=_STDERR_TAIL_LINES)
         self.lock = threading.Lock()
+        self.constructor_run_id = ""
 
 
 _turns: dict[str, _Turn] = {}
 _turns_lock = threading.Lock()
+_explicit_stops: set[str] = set()
+_steered_stops: set[str] = set()
 
 
 def _active_turns() -> list[tuple[str, int, int]]:
@@ -114,7 +124,10 @@ def start_turn(
     title: str,
     attachments: list[Attachment] | None = None,
     *,
-    mode: Literal["agent", "plan"] = "agent",
+    mode: Literal["agent", "chat", "plan"] = "agent",
+    model: str = "",
+    model_params: list[dict[str, str]] | None = None,
+    skill_ids: list[str] | None = None,
     label: str = "",
     shown: str | None = None,
     on_done: Callable[[], None] | None = None,
@@ -122,10 +135,30 @@ def start_turn(
     """Запустить ход. on_done вызывается после выхода процесса — в нём можно начать следующий ход."""
     if not config.runnable:
         raise ConfigNotRunnable(config.error or f"У конфигурации {config.title} нет entry в config.json")
-    store.note_launch(session_id, model=config.model, entry=list(config.entry), config_path=config.path)
+    current = store.get(session_id)
+    chosen_model = (model or (current.model if current else "") or config.model).strip()
+    chosen_params = (
+        list(model_params)
+        if model_params is not None
+        else (
+            list(current.model_params)
+            if current and current.model_params
+            else [{"id": item.id, "value": item.value} for item in config.model_params]
+        )
+    )
+    chosen_skills = list(skill_ids) if skill_ids is not None else (list(current.skill_ids) if current else [])
+    store.set_turn_options(
+        session_id,
+        mode=mode,
+        model=chosen_model,
+        model_params=chosen_params,
+        skill_ids=chosen_skills,
+    )
+    store.note_launch(session_id, model=chosen_model, entry=list(config.entry), config_path=config.path)
     files = list(attachments or [])
     session = store.begin_turn(session_id, prompt, files, label=label, planning=mode == "plan", shown=shown)
     workspace = store.workspace(session_id)
+    materialize_skills(workspace, chosen_skills or None)
     request = {
         "type": "run",
         "sessionId": session_id,
@@ -136,8 +169,8 @@ def start_turn(
             for item in files
         ],
         "title": title,
-        "model": config.model,
-        "modelParams": [{"id": item.id, "value": item.value} for item in config.model_params],
+        "model": chosen_model,
+        "modelParams": chosen_params,
         "cwd": str(workspace),
         "resumeAgentId": session.sdk_agent_id,
         "python": sys.executable,
@@ -170,14 +203,25 @@ def start_turn(
             "cwd": config.path,
             "env": {
                 key: ("***" if key in _SECRET_ENV and environment.get(key) else environment.get(key, ""))
-                for key in ("CURSOR_API_KEY", "CONSTRUCTOR_DESKTOP_DIR", "CONSTRUCTOR_API_URL",
-                            "CONSTRUCTOR_USER_FIO", "CONSTRUCTOR_USER_PASSWORD", "TURBOTESTER_TEST_TOOL")
+                for key in (
+                    "CURSOR_API_KEY",
+                    "CONSTRUCTOR_DESKTOP_DIR",
+                    "CONSTRUCTOR_API_URL",
+                    "CONSTRUCTOR_USER_FIO",
+                    "CONSTRUCTOR_USER_PASSWORD",
+                    "TURBOTESTER_TEST_TOOL",
+                )
                 if key in environment
             },
         },
     )
-    turn = _Turn(process, session.turns, on_done)
+    turn = _Turn(process, session.turns, config, on_done)
+    if session.workflow_id and not session.ephemeral:
+        run_id = constructor_runs.start_run(session, shown if shown is not None else prompt)
+        turn.constructor_run_id = run_id
+        store.set_active_constructor_run(session_id, run_id)
     with _turns_lock:
+        _explicit_stops.discard(session_id)
         _turns[session_id] = turn
     assert process.stdin is not None
     try:
@@ -203,17 +247,27 @@ def start_turn(
     ).start()
 
 
-def cancel_turn(session_id: str) -> bool:
+def cancel_turn(session_id: str, *, keep_queue: bool = False) -> bool:
     with _turns_lock:
         turn = _turns.get(session_id)
+        if keep_queue:
+            _steered_stops.add(session_id)
+            _explicit_stops.discard(session_id)
+        else:
+            _explicit_stops.add(session_id)
+            _steered_stops.discard(session_id)
+    if not keep_queue:
+        store.clear_queue(session_id)
     if turn is None or turn.process.poll() is not None:
         return False
+    if keep_queue:
+        store.hold(session_id)
     try:
         with turn.lock:
             assert turn.process.stdin is not None
             turn.process.stdin.write(b'{"type":"cancel"}\n')
             turn.process.stdin.flush()
-        store.trace(session_id, "platform→runner", "stdin: отмена", data={"type": "cancel"})
+        store.trace(session_id, "platform→runner", "stdin: отмена", data={"type": "cancel", "steer": keep_queue})
     except OSError:
         pass
     threading.Timer(CANCEL_GRACE_SECONDS, _kill, args=(session_id, turn)).start()
@@ -232,8 +286,11 @@ def _kill(session_id: str, turn: _Turn) -> None:
         )
     else:
         turn.process.kill()
-    store.release(session_id)
-    store.finish(session_id, "cancelled")
+    with _turns_lock:
+        steered = session_id in _steered_stops
+    if not steered:
+        store.release(session_id)
+        store.finish(session_id, "cancelled")
 
 
 def _read_stderr(session_id: str, turn: _Turn) -> None:
@@ -264,6 +321,29 @@ def _route(session_id: str, event: dict[str, object]) -> None:
     if kind not in _FROM_SDK:
         store.trace(session_id, "runner→platform", kind, text=str(event.get("text") or ""), data=event)
     store.apply(session_id, event)
+
+
+def _drain_queue(session_id: str, default_config: PlatformConfig) -> None:
+    queued = store.pop_queued_message(session_id)
+    if queued is None:
+        return
+    session = store.get(session_id)
+    if session is None:
+        return
+    config = find_config(session.config_id) or default_config
+    store.release(session_id)
+    start_turn(
+        session_id,
+        config,
+        queued.prompt,
+        session.agent_title,
+        queued.attachments,
+        mode=queued.mode,
+        model=queued.model or session.model,
+        model_params=queued.model_params or session.model_params,
+        skill_ids=queued.skill_ids or session.skill_ids,
+        shown=queued.shown,
+    )
 
 
 def _read_stdout(session_id: str, turn: _Turn) -> None:
@@ -297,17 +377,44 @@ def _read_stdout(session_id: str, turn: _Turn) -> None:
         pass
     tail = "\n".join(list(turn.stderr)[-8:])
     message = f"Процесс конфигурации завершился с кодом {code}" + (f":\n{tail}" if tail else "")
-    if code:
-        store.release(session_id)
-    store.finish(session_id, "error" if code else "finished", message if code else "")
+
     with _turns_lock:
+        explicit_stop = session_id in _explicit_stops
+        _explicit_stops.discard(session_id)
+        steered = session_id in _steered_stops
+        _steered_stops.discard(session_id)
         if _turns.get(session_id) is turn:
             del _turns[session_id]
-    if turn.on_done is None:
-        return
-    try:
-        turn.on_done()
-    except Exception as exc:
-        logger.exception("platform follow-up failed for %s", session_id)
+
+    session_now = store.get(session_id)
+    has_queued = bool(session_now and session_now.queued_messages) and not explicit_stop
+    if steered or has_queued:
+        store.hold(session_id)
+    if code and not steered:
         store.release(session_id)
-        store.finish(session_id, "error", f"Не удалось продолжить запуск: {exc}")
+    final_status = "cancelled" if steered else ("error" if code else "finished")
+    store.finish(session_id, final_status, message if (code and not steered) else "")
+    session_after = store.get(session_id)
+    if session_after is not None and turn.constructor_run_id:
+        constructor_runs.finish_run(
+            session_after,
+            turn.constructor_run_id,
+            turn.turn,
+            session_after.status if not steered else "cancelled",
+            session_after.error if not steered else "",
+        )
+        store.set_active_constructor_run(session_id, "")
+
+    if turn.on_done is not None and not explicit_stop and not steered:
+        try:
+            turn.on_done()
+        except Exception as exc:
+            logger.exception("platform follow-up failed for %s", session_id)
+            store.release(session_id)
+            store.finish(session_id, "error", f"Не удалось продолжить запуск: {exc}")
+            return
+
+    if has_queued:
+        _drain_queue(session_id, turn.config)
+    else:
+        store.release(session_id)

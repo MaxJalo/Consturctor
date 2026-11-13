@@ -4,7 +4,6 @@ import {
   dedupeMeetingEvents,
   ensureOutlookMeetings,
   parseMeetingTime,
-  useOutlookSyncTick,
   type MeetingEvent
 } from '../utils/outlookMeetings'
 import { useOwnMeetingsVersion } from './ownMeetings'
@@ -234,16 +233,15 @@ export function useTodayPlanTimeline(
   const generation = useGridRefreshGeneration()
   const trackedVersion = useTrackedCalendarsVersion()
   const ownMeetingsVersion = useOwnMeetingsVersion()
-  const outlookSync = useOutlookSyncTick()
   const seenGeneration = useRef(generation)
 
   useEffect(() => {
     let alive = true
-    const force = outlookSync > 0 || seenGeneration.current !== generation
+    const force = false
     seenGeneration.current = generation
     const cacheKey = `today-plan-meetings:${userId}:${dayKey}:${readTrackedCalendars(fio).join('|')}:${ownMeetingsVersion}`
     const cached = readGridCache<{ meetings: MeetingEvent[]; error: string }>(cacheKey)
-    if (cached && !outlookSync) {
+    if (cached) {
       setMeetings(cached.meetings)
       setMeetingsError(cached.error)
       setMeetingsLoading(false)
@@ -277,7 +275,7 @@ export function useTodayPlanTimeline(
     return () => {
       alive = false
     }
-  }, [dayKey, fio, generation, periodDay, userId, trackedVersion, ownMeetingsVersion, outlookSync])
+  }, [dayKey, fio, generation, periodDay, userId, trackedVersion, ownMeetingsVersion])
 
   const stableMeetingsRef = useRef<TodayPlanBlock[]>([])
   const stableAiRef = useRef<TodayPlanBlock[]>([])

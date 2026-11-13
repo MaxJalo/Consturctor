@@ -1107,9 +1107,13 @@ export function useWorkplaceData(personal?: PersonalAgentSeed | null): {
   pause: (workflowId: string) => Promise<void>
   resume: (workflowId: string) => Promise<void>
 } {
-  const [board, setBoard] = useState<WorkflowBoard>(EMPTY_BOARD)
-  const [orch, setOrch] = useState<PositionOrchestrator | null>(null)
-  const [loading, setLoading] = useState(true)
+  const boardCacheKey = personal?.userId ? `workplace-board:${personal.userId}` : ''
+  const cachedBoard = boardCacheKey
+    ? readGridCache<{ board: WorkflowBoard; orch: PositionOrchestrator | null }>(boardCacheKey)
+    : undefined
+  const [board, setBoard] = useState<WorkflowBoard>(cachedBoard?.board ?? EMPTY_BOARD)
+  const [orch, setOrch] = useState<PositionOrchestrator | null>(cachedBoard?.orch ?? null)
+  const [loading, setLoading] = useState(!cachedBoard)
   const [error, setError] = useState('')
   const [flash, setFlash] = useState('')
   const reloadRef = useRef<() => Promise<void>>(async () => undefined)
@@ -1143,16 +1147,15 @@ export function useWorkplaceData(personal?: PersonalAgentSeed | null): {
       return
     }
     const cacheKey = `workplace-board:${personal.userId}`
-    if (!shouldRunGridFetch(cacheKey, generation)) {
-      const cached = readGridCache<{ board: WorkflowBoard; orch: PositionOrchestrator | null }>(cacheKey)
-      if (cached) {
-        setBoard(cached.board)
-        setOrch(cached.orch)
-        setLoading(false)
-      } else {
-        void reload()
-      }
+    const cached = readGridCache<{ board: WorkflowBoard; orch: PositionOrchestrator | null }>(cacheKey)
+    if (cached) {
+      setBoard(cached.board)
+      setOrch(cached.orch)
+      setLoading(false)
     } else {
+      setLoading(true)
+    }
+    if (!cached || shouldRunGridFetch(cacheKey, generation)) {
       // #region agent log
       fetch('http://127.0.0.1:7847/ingest/b2a622e9-6027-4fae-9a68-3d036eb3c49e',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'d8a6bb'},body:JSON.stringify({sessionId:'d8a6bb',runId:'pre-fix',hypothesisId:'H5',location:'WorkplaceBoard.tsx:reload',message:'workplace board fetch (generation or miss)',data:{generation,userId:personal.userId},timestamp:Date.now()})}).catch(()=>{})
       // #endregion

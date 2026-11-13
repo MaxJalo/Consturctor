@@ -44,6 +44,7 @@ from app.services.agent_runs import (
     cancel_overlapping_slot,
     finish_agent_run,
     get_agent_run,
+    assert_run_owner,
     list_agent_runs,
     save_run_context,
     save_run_events,
@@ -473,6 +474,8 @@ def read_agent_runs(
     workflow_id: str,
     conversation_key: str = "",
     conversation_prefix: str = "",
+    limit: int = 50,
+    include_events: bool = False,
     auth: AuthContext = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> list[AgentRunOut]:
@@ -483,6 +486,8 @@ def read_agent_runs(
             workflow_id=workflow_id,
             conversation_key=conversation_key,
             conversation_prefix=conversation_prefix,
+            limit=limit,
+            include_events=include_events,
         )
     except WorkflowError as exc:
         _raise(exc)
@@ -548,9 +553,9 @@ def update_local_agent_run_events(
     db: Session = Depends(get_db),
 ) -> AgentRunOut:
     try:
-        get_agent_run(db, user_id=auth.user_id, workflow_id=workflow_id, run_id=run_id)
+        assert_run_owner(db, user_id=auth.user_id, workflow_id=workflow_id, run_id=run_id)
         save_run_events(db, run_id=run_id, events=body.events)
-        return get_agent_run(db, user_id=auth.user_id, workflow_id=workflow_id, run_id=run_id)
+        return AgentRunOut(id=run_id, workflow_id=workflow_id)
     except WorkflowError as exc:
         _raise(exc)
         raise
@@ -565,9 +570,9 @@ def update_local_agent_run_metrics(
     db: Session = Depends(get_db),
 ) -> AgentRunOut:
     try:
-        get_agent_run(db, user_id=auth.user_id, workflow_id=workflow_id, run_id=run_id)
+        assert_run_owner(db, user_id=auth.user_id, workflow_id=workflow_id, run_id=run_id)
         save_run_metrics(db, run_id=run_id, metrics=body.metrics)
-        return get_agent_run(db, user_id=auth.user_id, workflow_id=workflow_id, run_id=run_id)
+        return AgentRunOut(id=run_id, workflow_id=workflow_id)
     except WorkflowError as exc:
         _raise(exc)
         raise
@@ -582,7 +587,7 @@ def update_local_agent_run_context(
     db: Session = Depends(get_db),
 ) -> dict[str, bool]:
     try:
-        get_agent_run(db, user_id=auth.user_id, workflow_id=workflow_id, run_id=run_id)
+        assert_run_owner(db, user_id=auth.user_id, workflow_id=workflow_id, run_id=run_id)
         save_run_context(db, run_id=run_id, context=body.context)
         return {"ok": True}
     except WorkflowError as exc:

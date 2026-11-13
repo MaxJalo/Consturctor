@@ -269,6 +269,7 @@ function AppShell(): React.JSX.Element {
   const seenRunNotifyRef = useRef<Map<string, 'started' | 'finished'>>(new Map())
   const [tabIntent, setTabIntent] = useState<WorkplaceTabIntent | null>(null)
   const runs = useRuns()
+  const inboxHydrateAt = useRef(0)
   useEffect(() => {
     document.title = booting ? APP_TITLE : windowTitle(view, Boolean(user))
   }, [booting, user, view])
@@ -441,6 +442,9 @@ function AppShell(): React.JSX.Element {
     const timer = setInterval(refresh, 20000)
     const unsub = window.api.onInboxChanged?.(() => {
       void refresh()
+      const now = Date.now()
+      if (now - inboxHydrateAt.current < 60_000) return
+      inboxHydrateAt.current = now
       void runs.hydrateLive()
     })
     return () => {
@@ -841,10 +845,10 @@ function AppShell(): React.JSX.Element {
       return <FilesPage ownerName={activeUser.fio || ''} initialWorkflowId={view.workflowId || ''} initialAgentTitle={view.title || ''} onOpenRun={(workflowId, runId) => void openAgentRun(workflowId, runId)} />
     }
     if (view.kind === 'agentrun') {
-      return <AgentRunRouter key={`${view.workflowId}:${view.chat?.conversationKey ?? ''}:${view.launch ?? ''}`} workflowId={view.workflowId} title={view.title} autoStart={view.autoStart} initialMessage={view.initialMessage} appContext={view.appContext} chat={view.chat} onBack={() => setView({ kind: 'tab', key: lastTab })} onOpenHistory={(workflowId, title) => setView({ kind: 'history', workflowId, title })} />
+      return <AgentRunRouter key={`${view.workflowId}:${view.chat?.conversationKey ?? ''}:${view.launch ?? ''}`} workflowId={view.workflowId} title={view.title} autoStart={view.autoStart} initialMessage={view.initialMessage} appContext={view.appContext} chat={view.chat} onBack={() => setView({ kind: 'tab', key: lastTab })} onOpenHistory={(workflowId, title) => setView({ kind: 'history', workflowId, title })} onNavigate={(key) => { setTabIntent(null); setLastTab(key); setView({ kind: 'tab', key }) }} />
     }
     if (view.kind === 'passport') {
-      return <AgentPassportPage workflowId={view.workflowId} title={view.title} initialTab={view.tab || 'info'} onBack={() => setView({ kind: 'tab', key: 'overview' })} onRun={(workflowId, title) => void openAgentRun(workflowId, '', true, title)} onOpenRun={(workflowId, title, runId) => void openAgentRun(workflowId, runId || '', false, title)} />
+      return <AgentPassportPage workflowId={view.workflowId} title={view.title} initialTab={view.tab || 'info'} onBack={() => setView({ kind: 'tab', key: lastTab })} onRun={(workflowId, title) => void openAgentRun(workflowId, '', true, title)} onOpenRun={(workflowId, title, runId) => void openAgentRun(workflowId, runId || '', false, title)} />
     }
     if (view.kind === 'history') {
       return (
@@ -1008,10 +1012,10 @@ function AppShell(): React.JSX.Element {
       return <FilesPage ownerName={activeUser.fio || ''} initialWorkflowId={view.workflowId || ''} initialAgentTitle={view.title || ''} onOpenRun={(workflowId, runId) => void openAgentRun(workflowId, runId)} />
     }
     if (view.kind === 'agentrun') {
-      return <AgentRunRouter key={`${view.workflowId}:${view.chat?.conversationKey ?? ''}:${view.launch ?? ''}`} workflowId={view.workflowId} title={view.title} autoStart={view.autoStart} initialMessage={view.initialMessage} appContext={view.appContext} chat={view.chat} onBack={() => setView({ kind: 'tab', key: lastTab })} onOpenHistory={(workflowId, title) => setView({ kind: 'history', workflowId, title })} />
+      return <AgentRunRouter key={`${view.workflowId}:${view.chat?.conversationKey ?? ''}:${view.launch ?? ''}`} workflowId={view.workflowId} title={view.title} autoStart={view.autoStart} initialMessage={view.initialMessage} appContext={view.appContext} chat={view.chat} onBack={() => setView({ kind: 'tab', key: lastTab })} onOpenHistory={(workflowId, title) => setView({ kind: 'history', workflowId, title })} onNavigate={(key) => { setTabIntent(null); setLastTab(key); setView({ kind: 'tab', key }) }} />
     }
     if (view.kind === 'passport') {
-      return <AgentPassportPage workflowId={view.workflowId} title={view.title} initialTab={view.tab || 'info'} onBack={() => setView({ kind: 'tab', key: 'today' })} onRun={(workflowId, title) => void openAgentRun(workflowId, '', true, title)} onOpenRun={(workflowId, title, runId) => void openAgentRun(workflowId, runId || '', false, title)} />
+      return <AgentPassportPage workflowId={view.workflowId} title={view.title} initialTab={view.tab || 'info'} onBack={() => setView({ kind: 'tab', key: lastTab })} onRun={(workflowId, title) => void openAgentRun(workflowId, '', true, title)} onOpenRun={(workflowId, title, runId) => void openAgentRun(workflowId, runId || '', false, title)} />
     }
     if (view.kind === 'history') {
       return (
@@ -1069,6 +1073,9 @@ function AppShell(): React.JSX.Element {
     !isWorkplaceTabKey(view.key) &&
     view.key !== 'settings'
   const content = adminShell ? renderAdminContent() : renderUserContent()
+  const mountWorkplace = !adminShell && (workplaceShellKey !== null || isWorkplaceTabKey(lastTab))
+  const hideWorkplace = mountWorkplace && workplaceShellKey === null
+  const shellTab: WorkplaceTabKey | null = workplaceShellKey ?? (isWorkplaceTabKey(lastTab) ? lastTab : null)
   const agentsStrip = adminShell ? null : (
     <ActiveAgentsStrip
       onOpenRun={(workflowId, title) =>
@@ -1092,33 +1099,34 @@ function AppShell(): React.JSX.Element {
             }}
           >
           <WithExtensionNav>
-            {(pinnedExtensionNav) =>
-              workplaceShellKey ? (
-          <div className="app-root orch-app-root">
-            <PageSearchProvider tabKey={workplaceShellKey}>
+            {(pinnedExtensionNav) => (
+              <>
+              {mountWorkplace && shellTab ? (
+          <div className="app-root orch-app-root" hidden={hideWorkplace || undefined}>
+            <PageSearchProvider tabKey={shellTab}>
             <OrchGridShell
-              activeKey={workplaceShellKey}
+              activeKey={shellTab}
               pinnedExtensionNav={pinnedExtensionNav}
               gridClassName={
-                workplaceShellKey === 'today'
+                shellTab === 'today'
                   ? 'orch-grid-today'
-                  : workplaceShellKey === 'kpi'
+                  : shellTab === 'kpi'
                     ? 'orch-grid-kpi'
-                    : workplaceShellKey === 'assignments_registry'
+                    : shellTab === 'assignments_registry'
                       ? 'orch-grid-registry'
-                      : workplaceShellKey === 'subordinate_tasks'
+                      : shellTab === 'subordinate_tasks'
                         ? 'orch-grid-subtasks'
-                      : workplaceShellKey === 'history'
+                      : shellTab === 'history'
                         ? 'orch-grid-history'
-                        : workplaceShellKey === 'extensions'
+                        : shellTab === 'extensions'
                           ? 'orch-grid-extensions'
-                          : workplaceShellKey === 'agent_library'
+                          : shellTab === 'agent_library'
                             ? 'orch-grid-agent-library'
-                            : workplaceShellKey === 'processes'
+                            : shellTab === 'processes'
                               ? 'orch-grid-processes'
-                              : workplaceShellKey === 'docflow' ||
-                                  workplaceShellKey === 'task_create' ||
-                                  workplaceShellKey === 'platform_task_create'
+                              : shellTab === 'docflow' ||
+                                  shellTab === 'task_create' ||
+                                  shellTab === 'platform_task_create'
                                 ? 'orch-grid-docflow'
                                 : ''
               }
@@ -1151,7 +1159,7 @@ function AppShell(): React.JSX.Element {
               toast={toast ? <div className="wp-toast">{toast}</div> : null}
               topStrip={agentsStrip}
             >
-              {renderWorkplaceGridTab(workplaceShellKey)}
+              {renderWorkplaceGridTab(shellTab)}
               {view.kind === 'agentrun' && view.chat ? (
                 <AgentRunRouter
                   key={`${view.workflowId}:${view.chat.conversationKey}:${view.launch ?? ''}`}
@@ -1163,10 +1171,16 @@ function AppShell(): React.JSX.Element {
                   chat={view.chat}
                   onBack={() => setView({ kind: 'tab', key: lastTab })}
                   onOpenHistory={(workflowId, title) => setView({ kind: 'history', workflowId, title })}
+                  onNavigate={(key) => {
+                    setTabIntent(null)
+                    setLastTab(key)
+                    setView({ kind: 'tab', key })
+                  }}
                 />
               ) : null}
             </OrchGridShell>
             </PageSearchProvider>
+            {hideWorkplace ? null : (
             <ChatDock
               userId={activeUser.id || ''}
               pageKey={view.kind === 'tab' ? view.key : lastTab}
@@ -1177,8 +1191,10 @@ function AppShell(): React.JSX.Element {
               }}
               onOpenSupport={openSupport}
             />
+            )}
           </div>
-              ) : (
+              ) : null}
+              {hideWorkplace || !mountWorkplace ? (
           <div className="app-root">
             <Sidebar
               active={activeKey}
@@ -1243,8 +1259,9 @@ function AppShell(): React.JSX.Element {
               onOpenSupport={openSupport}
             />
           </div>
-              )
-            }
+              ) : null}
+              </>
+            )}
           </WithExtensionNav>
           </GlobalSearchProvider>
         </SpecV04SourcesProvider>

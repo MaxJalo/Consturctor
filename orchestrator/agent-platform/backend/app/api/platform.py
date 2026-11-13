@@ -4,9 +4,10 @@ import urllib.request
 from pathlib import PurePosixPath
 from typing import Any, Literal
 
-from fastapi import APIRouter, HTTPException
-from fastapi.responses import FileResponse, Response
+from fastapi import APIRouter, HTTPException, Request
+from fastapi.responses import FileResponse, Response, StreamingResponse
 from pydantic import BaseModel, Field
+from starlette.concurrency import run_in_threadpool
 
 from app.config import settings
 from app.constructor.avatars import USER_ID_PATTERN
@@ -14,9 +15,9 @@ from app.constructor.brief import BriefError, ConstructorBrief, build_brief
 from app.constructor.catalog import constructor_catalog
 from app.constructor.db import fetch_agent_detail, fetch_agent_run
 from app.constructor.owners import agent_detail
-from app.platform import attachments, profile, shared
+from app.platform import attachments, constructor_runs, models as platform_models, profile, shared
 from app.platform.approvals import WAIT_SECONDS as APPROVAL_WAIT_SECONDS
-from app.platform.approvals import ApprovalError, approvals, classify, confirm_action, hook_reply
+from app.platform.approvals import ApprovalError, approvals, chat_allowed, classify, confirm_action, hook_reply
 from app.platform.attachments import Attachment, AttachmentError, AttachmentUpload, DecodedFile
 from app.platform.configs import PlatformConfig, configs_root, find_config, list_configs
 from app.platform.history import RemoteRun, machine, reader
@@ -42,11 +43,25 @@ class SessionCreate(BaseModel):
     title: str = ""
     constructor_agent_id: str = ""
     attachments: list[AttachmentUpload] = Field(default_factory=list)
+    mode: Literal["agent", "chat", "plan"] | None = None
+    model: str = ""
+    model_params: list[dict[str, str]] = Field(default_factory=list)
+    workflow_id: str = ""
+    conversation_key: str = ""
+    chat_kind: Literal["agent", "order", "personal"] = "agent"
+    skill_ids: list[str] = Field(default_factory=list)
+    shown: str | None = None
 
 
 class SessionMessage(BaseModel):
     prompt: str = ""
     attachments: list[AttachmentUpload] = Field(default_factory=list)
+    mode: Literal["agent", "chat", "plan"] | None = None
+    model: str | None = None
+    model_params: list[dict[str, str]] | None = None
+    skill_ids: list[str] | None = None
+    delivery: Literal["queue", "steer"] = "queue"
+    shown: str | None = None
 
 
 class AgentRun(BaseModel):
@@ -54,6 +69,31 @@ class AgentRun(BaseModel):
 
     prompt: str = ""
     attachments: list[AttachmentUpload] = Field(default_factory=list)
+    mode: Literal["agent", "chat", "plan"] = "agent"
+    model: str = ""
+    model_params: list[dict[str, str]] = Field(default_factory=list)
+    conversation_key: str = ""
+    skill_ids: list[str] = Field(default_factory=list)
+    shown: str | None = None
+
+
+class ChatOpenRequest(BaseModel):
+    """Открыть или возобновить единый тред чата (заказ, личный помощник, агент)."""
+
+    workflow_id: str
+    conversation_key: str = ""
+    chat_kind: Literal["agent", "order", "personal"] = "agent"
+    title: str = ""
+    prompt: str = ""
+    shown: str | None = None
+    attachments: list[AttachmentUpload] = Field(default_factory=list)
+    mode: Literal["agent", "chat", "plan"] = "agent"
+    model: str = ""
+    model_params: list[dict[str, str]] = Field(default_factory=list)
+    skill_ids: list[str] = Field(default_factory=list)
+    delivery: Literal["queue", "steer"] = "queue"
+    fresh: bool = False
+    send_if_empty: bool = False
 
 
 class AgentPublish(BaseModel):
@@ -81,6 +121,17 @@ class ToolUse(BaseModel):
 class ApprovalDecision(BaseModel):
     allow: bool
     remember: bool = False
+
+
+def _normalize_mode(mode: str | None) -> Literal["agent", "chat"] | None:
+    if mode is None:
+        return None
+    clean = mode.strip().lower()
+    if clean == "plan":
+        return "chat"
+    if clean == "chat":
+        return "chat"
+    return "agent"
 
 
 def _title_from(prompt: str) -> str:
@@ -263,6 +314,103 @@ def get_configs() -> dict[str, object]:
     }
 
 
+@router.get("/models")
+def get_models(refresh: bool = False) -> dict[str, object]:
+    return platform_models.list_models(refresh=refresh)
+
+
+@router.get("/chats")
+def get_chats(
+    prefix: str = "",
+    workflow_id: str = "",
+    chat_kind: str = "",
+    limit: int = 50,
+) -> dict[str, object]:
+    limit = max(1, min(limit, 200))
+    sessions = store.list_by_conversation_prefix(
+        prefix, workflow_id=workflow_id, chat_kind=chat_kind, limit=limit
+    )
+    return {"items": [s.summary() for s in sessions]}
+
+
+@router.post("/chats/open")
+def open_chat(body: ChatOpenRequest) -> dict[str, object]:
+    config = _runnable_config(CONSTRUCTOR_CONFIG_ID)
+    wf_id = body.workflow_id.strip()
+    conv_key = body.conversation_key.strip() or f"{body.chat_kind}:{wf_id}"
+    session = None if body.fresh else store.find_by_conversation(conv_key)
+    opened_mode = _normalize_mode(body.mode) or "agent"
+    if session is None and not body.fresh and constructor_runs.is_constructor_workflow(wf_id):
+        runs = constructor_runs.fetch_conversation_runs(wf_id, conv_key, limit=20)
+        if runs:
+            sdk_id = next((str(r.get("sdk_agent_id") or "").strip() for r in runs if r.get("sdk_agent_id")), "")
+            session = store.hydrate_conversation(
+                config_id=config.id,
+                config_title=config.title,
+                source="constructor" if body.chat_kind != "personal" else "custom",
+                agent_id=wf_id,
+                agent_title=body.title.strip() or "Чат с помощником",
+                workflow_id=wf_id,
+                conversation_key=conv_key,
+                chat_kind=body.chat_kind,
+                sdk_agent_id=sdk_id,
+                runs=runs,
+            )
+    if session is None:
+        title = body.title.strip() or ("Оркестратор" if body.chat_kind == "personal" else "Чат с помощником")
+        session = store.create_session(
+            config_id=config.id,
+            config_title=config.title,
+            source="constructor" if body.chat_kind != "personal" else "custom",
+            agent_id=wf_id or conv_key,
+            agent_title=title,
+            prompt=body.shown or body.prompt or title,
+            mode=opened_mode,
+            model=body.model,
+            model_params=body.model_params,
+            workflow_id=wf_id,
+            conversation_key=conv_key,
+            chat_kind=body.chat_kind,
+            skill_ids=body.skill_ids,
+            status="finished",
+        )
+
+    prompt = body.prompt.strip()
+    files = _decoded_attachments(config, body.attachments)
+    should_send = bool(prompt or files) and (not body.send_if_empty or session.turns == 0)
+    if should_send:
+        saved = attachments.save(store.workspace(session.id), files)
+        if session.status == "running" or not wait_idle(session.id, timeout=0.05):
+            steer = body.delivery == "steer"
+            store.enqueue_message(
+                session.id,
+                prompt=prompt,
+                shown=body.shown,
+                attachments=saved,
+                mode=opened_mode,
+                model=body.model,
+                model_params=body.model_params,
+                skill_ids=body.skill_ids,
+                steer=steer,
+            )
+            if steer:
+                cancel_turn(session.id, keep_queue=True)
+        else:
+            start_turn(
+                session.id,
+                config,
+                prompt,
+                session.agent_title,
+                saved,
+                mode=opened_mode,
+                model=body.model,
+                model_params=body.model_params or None,
+                skill_ids=body.skill_ids or None,
+                shown=body.shown,
+            )
+    return store.get(session.id).summary()  # type: ignore[union-attr]
+
+
 @router.get("/agents")
 def get_agents(config_id: str = "", stored: bool = False) -> dict[str, object]:
     """Без config_id — локальные агенты. С config_id плановой конфигурации — ещё и общие из базы.
@@ -339,6 +487,40 @@ def get_session(session_id: str, since: int = 0) -> dict[str, object]:
     return body
 
 
+@router.get("/sessions/{session_id}/stream")
+async def stream_session(session_id: str, request: Request, since: int = 0) -> StreamingResponse:
+    found = _source(session_id)
+    if isinstance(found, RemoteRun):
+        detail = get_session(session_id, since=since)
+
+        async def remote_gen():
+            yield f"data: {json.dumps(detail, ensure_ascii=False)}\n\n"
+
+        return StreamingResponse(remote_gen(), media_type="text/event-stream")
+
+    async def event_stream():
+        cursor = since
+        while True:
+            if await request.is_disconnected():
+                break
+            detail = get_session(session_id, since=cursor)
+            session_obj = detail["session"]
+            events = detail["events"]
+            rev = int(session_obj.get("rev") or 0)  # type: ignore[union-attr]
+            if rev > cursor or events or cursor == since:
+                cursor = max(cursor, rev)
+                yield f"data: {json.dumps(detail, ensure_ascii=False)}\n\n"
+            changed = await run_in_threadpool(store.wait_for_change, session_id, cursor, 15.0)
+            if not changed:
+                yield ": keepalive\n\n"
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
 @router.get("/sessions/{session_id}/trace")
 def get_trace(session_id: str, since: int = 0) -> dict[str, object]:
     found = _source(session_id)
@@ -398,6 +580,7 @@ def post_session(body: SessionCreate) -> dict[str, object]:
             request=prompt if planned else "",
             author=shared.author_name(),
         ).id
+    chosen_mode: Literal["agent", "chat"] = _normalize_mode(body.mode) or "agent"
     session = store.create_session(
         config_id=config.id,
         config_title=config.title,
@@ -405,13 +588,28 @@ def post_session(body: SessionCreate) -> dict[str, object]:
         agent_id=agent_id,
         agent_title=title,
         prompt=prompt,
+        mode=chosen_mode,
+        model=body.model,
+        model_params=body.model_params,
+        workflow_id=body.workflow_id,
+        conversation_key=body.conversation_key,
+        chat_kind=body.chat_kind,
+        skill_ids=body.skill_ids,
     )
     saved = attachments.save(store.workspace(session.id), files)
     try:
-        if _plan_agent(session, config):
-            _start_planning(session, config, prompt, saved)
-        else:
-            start_turn(session.id, config, prompt, title, saved)
+        start_turn(
+            session.id,
+            config,
+            prompt,
+            title,
+            saved,
+            mode=chosen_mode,
+            model=body.model,
+            model_params=body.model_params or None,
+            skill_ids=body.skill_ids or None,
+            shown=body.shown,
+        )
     except ConfigNotRunnable as exc:
         store.release(session.id)
         store.finish(session.id, "error", str(exc))
@@ -476,6 +674,7 @@ def _run_constructor_agent(brief: ConstructorBrief, body: AgentRun) -> dict[str,
     config = _runnable_config(CONSTRUCTOR_CONFIG_ID)
     files = _decoded_attachments(config, body.attachments)
     task = body.prompt.strip()
+    chosen_mode = _normalize_mode(body.mode) or "agent"
     session = store.create_session(
         config_id=config.id,
         config_title=config.title,
@@ -483,6 +682,12 @@ def _run_constructor_agent(brief: ConstructorBrief, body: AgentRun) -> dict[str,
         agent_id=brief.id,
         agent_title=brief.title,
         prompt=task or brief.plan,
+        mode=chosen_mode,
+        model=body.model,
+        model_params=body.model_params,
+        workflow_id=brief.id,
+        conversation_key=body.conversation_key,
+        skill_ids=body.skill_ids,
     )
     workspace = store.workspace(session.id)
     saved = attachments.save(workspace, files)
@@ -490,7 +695,19 @@ def _run_constructor_agent(brief: ConstructorBrief, body: AgentRun) -> dict[str,
     if task:
         prompt = f"{prompt}\n\n## Задача этого запуска\n{task}"
     try:
-        start_turn(session.id, config, prompt, brief.title, saved, label=LABEL_RUN, shown=task or None)
+        start_turn(
+            session.id,
+            config,
+            prompt,
+            brief.title,
+            saved,
+            mode=chosen_mode,
+            model=body.model,
+            model_params=body.model_params or None,
+            skill_ids=body.skill_ids or None,
+            label=LABEL_RUN,
+            shown=body.shown if body.shown is not None else (task or None),
+        )
     except ConfigNotRunnable as exc:
         store.finish(session.id, "error", str(exc))
     return store.get(session.id).summary()  # type: ignore[union-attr]
@@ -518,6 +735,7 @@ def post_agent_run(agent_id: str, body: AgentRun | None = None) -> dict[str, obj
     if not agent.instruction.strip():
         raise HTTPException(status_code=400, detail="У агента ещё нет инструкции — план не составлен")
     planned = config.plan_instruction
+    chosen_mode = _normalize_mode(payload.mode) or "agent"
     session = store.create_session(
         config_id=config.id,
         config_title=config.title,
@@ -525,6 +743,11 @@ def post_agent_run(agent_id: str, body: AgentRun | None = None) -> dict[str, obj
         agent_id=agent.id,
         agent_title=agent.title,
         prompt=(agent.request or agent.instruction) if planned else agent.instruction,
+        mode=chosen_mode,
+        model=payload.model,
+        model_params=payload.model_params,
+        conversation_key=payload.conversation_key,
+        skill_ids=payload.skill_ids,
     )
     if planned:
         prompt = run_prompt(agent.instruction, store.workspace(session.id), agent.last_run)
@@ -532,7 +755,19 @@ def post_agent_run(agent_id: str, body: AgentRun | None = None) -> dict[str, obj
     else:
         prompt, label = agent.instruction, ""
     remember = (lambda: _remember_run(session.id)) if config.plan_instruction else None
-    start_turn(session.id, config, prompt, agent.title, label=label, on_done=remember)
+    start_turn(
+        session.id,
+        config,
+        prompt,
+        agent.title,
+        mode=chosen_mode,
+        model=payload.model,
+        model_params=payload.model_params or None,
+        skill_ids=payload.skill_ids or None,
+        label=label,
+        shown=payload.shown,
+        on_done=remember,
+    )
     return store.get(session.id).summary()  # type: ignore[union-attr]
 
 
@@ -612,14 +847,92 @@ def post_message(session_id: str, body: SessionMessage) -> dict[str, object]:
     prompt = body.prompt.strip()
     if not prompt and not body.attachments:
         raise HTTPException(status_code=400, detail="Пустой промпт")
-    if session.status == "running" or not wait_idle(session_id):
-        raise HTTPException(status_code=409, detail="Агент ещё работает — дождитесь ответа или остановите")
     config = _runnable_config(session.config_id)
     files = _decoded_attachments(config, body.attachments)
     saved = attachments.save(store.workspace(session_id), files)
+    next_mode = _normalize_mode(body.mode) or ("chat" if session.mode == "plan" else session.mode)
+    next_model = body.model if body.model is not None else session.model
+    next_params = body.model_params if body.model_params is not None else session.model_params
+    next_skills = body.skill_ids if body.skill_ids is not None else session.skill_ids
+
+    if session.status == "running" or not wait_idle(session_id, timeout=0.05):
+        steer = body.delivery == "steer"
+        store.enqueue_message(
+            session_id,
+            prompt=prompt,
+            shown=body.shown,
+            attachments=saved,
+            mode=next_mode,
+            model=next_model,
+            model_params=next_params,
+            skill_ids=next_skills,
+            steer=steer,
+        )
+        if steer:
+            questions.cancel(session_id)
+            for dropped in approvals.cancel(session_id):
+                store.settle_approval(session_id, dropped.id, "cancelled")
+            cancel_turn(session_id, keep_queue=True)
+        return store.get(session_id).summary()  # type: ignore[union-attr]
+
     executing = session.plan_turn == 0 or bool(session.plan)
     remember = (lambda: _remember_run(session_id)) if _plan_agent(session, config) and executing else None
-    start_turn(session_id, config, prompt, session.agent_title, saved, on_done=remember)
+    start_turn(
+        session_id,
+        config,
+        prompt,
+        session.agent_title,
+        saved,
+        mode=next_mode,
+        model=next_model,
+        model_params=next_params,
+        skill_ids=next_skills,
+        shown=body.shown,
+        on_done=remember,
+    )
+    return store.get(session_id).summary()  # type: ignore[union-attr]
+
+
+@router.delete("/sessions/{session_id}/queue/{message_id}")
+def delete_queued_message(session_id: str, message_id: str) -> dict[str, object]:
+    session = store.get(session_id)
+    if session is None:
+        raise HTTPException(status_code=404, detail="Сессия не найдена")
+    removed = store.remove_queued_message(session_id, message_id)
+    if not removed:
+        raise HTTPException(status_code=404, detail="Сообщение в очереди не найдено")
+    return store.get(session_id).summary()  # type: ignore[union-attr]
+
+
+@router.post("/sessions/{session_id}/queue/{message_id}/steer")
+def steer_queued_message(session_id: str, message_id: str) -> dict[str, object]:
+    session = store.get(session_id)
+    if session is None:
+        raise HTTPException(status_code=404, detail="Сессия не найдена")
+    item = store.promote_queued_message(session_id, message_id)
+    if item is None:
+        raise HTTPException(status_code=404, detail="Сообщение в очереди не найдено")
+    if session.status == "running" or not wait_idle(session_id, timeout=0.05):
+        questions.cancel(session_id)
+        for dropped in approvals.cancel(session_id):
+            store.settle_approval(session_id, dropped.id, "cancelled")
+        cancel_turn(session_id, keep_queue=True)
+    else:
+        config = _runnable_config(session.config_id)
+        popped = store.pop_queued_message(session_id)
+        if popped is not None:
+            start_turn(
+                session_id,
+                config,
+                popped.prompt,
+                session.agent_title,
+                popped.attachments,
+                mode=popped.mode,
+                model=popped.model or session.model,
+                model_params=popped.model_params or session.model_params,
+                skill_ids=popped.skill_ids or session.skill_ids,
+                shown=popped.shown,
+            )
     return store.get(session_id).summary()  # type: ignore[union-attr]
 
 
@@ -653,6 +966,7 @@ def post_question(session_id: str, body: QuestionAsk) -> dict[str, object]:
     except QuestionError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     store.trace(session_id, "runner→platform", "вопрос человеку", text=body.title, data=question.model_dump())
+    store.notify_changed()
     return question.model_dump()
 
 
@@ -677,15 +991,25 @@ def post_answer(session_id: str, question_id: str, body: QuestionReply) -> dict[
     # В ленту ответ не пишем: его показывает карточка вопроса из результата ask_user / ask_choice,
     # а событие посреди хода разрезало бы ещё не дошедший текст агента.
     store.trace(session_id, "user→platform", "ответ на вопрос", text=text)
+    store.notify_changed()
     return {"ok": True}
 
 
-# Разрешения: хук preToolUse спрашивает платформу. confirm_action подтверждает запрос сразу.
+# Разрешения: хук preToolUse спрашивает платформу.
 @router.post("/sessions/{session_id}/approvals")
 def post_approval(session_id: str, body: ToolUse) -> dict[str, object]:
     session = store.get(session_id)
     if session is None:
         raise HTTPException(status_code=404, detail="Сессия не найдена")
+    if session.mode == "chat" and not chat_allowed(body.tool_name, body.tool_input):
+        store.trace(
+            session_id,
+            "platform→runner",
+            "отклонено политикой chat",
+            text=body.tool_name,
+            data={"tool_name": body.tool_name, "tool_input": body.tool_input},
+        )
+        return hook_reply("denied")
     request = classify(body.tool_name, body.tool_input)
     if request is None:
         return {"status": "allowed", "permission": "allow"}
@@ -694,7 +1018,7 @@ def post_approval(session_id: str, body: ToolUse) -> dict[str, object]:
     if approvals.remembered(session_id, request):
         store.trace(session_id, "platform→runner", "разрешено ранее", text=request.subject)
         return {"status": "allowed", "permission": "allow"}
-    if confirm_action(body.tool_name, body.tool_input):
+    if session.ephemeral or confirm_action(body.tool_name, body.tool_input):
         store.trace(session_id, "platform→runner", "подтверждено автоматически", text=request.subject)
         return {"status": "allowed", "permission": "allow"}
     approvals.ask(session_id, request)

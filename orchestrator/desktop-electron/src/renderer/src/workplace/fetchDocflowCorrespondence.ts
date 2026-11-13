@@ -266,6 +266,13 @@ async function loadFromOneC(
   return { rows, error: '' }
 }
 
+export function peekDocflowCorrespondenceSession(
+  user: UserProfile | null,
+  kind: CorrespondenceKind
+): SessionCache | null {
+  return sessionCache.get(cacheKey(user, kind)) ?? null
+}
+
 /** Один запрос в 1С на вид журнала за сессию программы. Период режется уже из кэша. */
 export function loadDocflowCorrespondenceSession(
   user: UserProfile | null,

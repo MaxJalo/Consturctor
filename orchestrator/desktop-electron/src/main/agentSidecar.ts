@@ -574,6 +574,14 @@ export class AgentSidecar {
   }
 
   private sendForceRun(command: AgentSidecarMessage): AgentSidecarSendResult {
+    // A finished turn does not need a new Python process. Killing it reimports
+    // the scientific stack before the next order message. Restart only when a
+    // run is still tracked or the sidecar is not accepting commands.
+    if (this.isReady && this.stdinOpen() && this.runMeta.size === 0) {
+      const next: AgentSidecarMessage = { ...command, forceRestart: false, force_restart: false }
+      this.enqueue(next)
+      return { ok: true, queued: true }
+    }
     this.hardRestartSidecar('forceRestart run')
     this.pending = []
     this.enqueue(command)

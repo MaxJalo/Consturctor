@@ -99,6 +99,34 @@ GROUPS: list[PassportGroup] = [
                 side_effect="write",
                 requires=["Desktop Constructor у получателя (winotify) для показа тоста"],
             ),
+            Passport(
+                "chat.send_direct",
+                summary=(
+                    "Отправляет личное сообщение в чат Constructor от имени владельца агента "
+                    "(по user_id или ФИО)."
+                ),
+                title="Личное сообщение в чат",
+                side_effect="write",
+            ),
+        ],
+    ),
+    PassportGroup(
+        id="external_orders",
+        title="Внешние заказы",
+        summary="Дело внешнего заказа: чтение, автоподготовка, черновики, план работ и черновики 1С ДО.",
+        requires=["Сессия Constructor"],
+        tools=[
+            Passport(
+                "external_order.case",
+                summary=(
+                    "Дело внешнего заказа: чтение карточки и файлов (read/read_full), автоподготовка "
+                    "(auto_prepare), сценарии (scenario), черновики (propose/offer), черновик 1С ДО "
+                    "(draft_1c), поиск 1С (search_1c) и запись файла плана работ (plan)."
+                ),
+                title="Дело внешнего заказа",
+                side_effect="create_draft",
+                timeout_seconds=180,
+            ),
         ],
     ),
     PassportGroup(
@@ -658,6 +686,26 @@ GROUPS: list[PassportGroup] = [
                 title="E-mail по ФИО",
                 requires=["ONEC_CORPORATE_EMAIL_DOMAIN"],
             ),
+            Passport(
+                "meetings.memo_requests",
+                summary="Возвращает актуальные служебные записки 1С на организацию совещаний.",
+                title="Заявки на совещания (СЗ)",
+                timeout_seconds=180,
+            ),
+            Passport(
+                "outlook.ews_availability",
+                summary="Проверяет занятость руководителя, места и участников в Exchange.",
+                title="Занятость в Exchange",
+                timeout_seconds=180,
+            ),
+            Passport(
+                "outlook.ews_create_meeting",
+                summary="Создаёт совещание в общем календаре «Совещания» и рассылает приглашения.",
+                title="Создать совещание (EWS)",
+                side_effect="write",
+                requires_approval=True,
+                timeout_seconds=180,
+            ),
         ],
     ),
     PassportGroup(
@@ -937,6 +985,19 @@ GROUPS: list[PassportGroup] = [
                 side_effect="write",
                 requires_approval=True,
                 replaces=["create_protocol"],
+            ),
+            Passport(
+                "onec.position_holders",
+                summary="Возвращает сотрудников, занимающих должность в подразделении по истории 1С erp_pm.",
+                title="Сотрудники на должности",
+                timeout_seconds=180,
+            ),
+            Passport(
+                "kpi.publish_position_result",
+                summary="Записывает итог расчёта KPI должности в кэш Constructor (без записи в 1С).",
+                title="Публикация расчёта KPI",
+                side_effect="create_draft",
+                timeout_seconds=120,
             ),
         ],
     ),

@@ -12,6 +12,7 @@ import {
   forgetDocflowOrdersSession,
   formatCorrespondenceDate,
   loadDocflowCorrespondenceSession,
+  peekDocflowCorrespondenceSession,
   openIncomingLetter,
   type CorrespondenceKind,
   type CorrespondenceRow
@@ -320,9 +321,15 @@ export function DocflowGridTab({ user }: { user: UserProfile }): React.JSX.Eleme
       return
     }
     let alive = true
-    setLoading(true)
-    setError('')
-    setCachedRows([])
+    const peeked = peekDocflowCorrespondenceSession(user, kind)
+    if (peeked) {
+      setCachedRows(peeked.rows)
+      setError(peeked.error)
+      setLoading(false)
+    } else {
+      setLoading(true)
+      setError('')
+    }
     void loadDocflowCorrespondenceSession(user, kind)
       .then((result) => {
         if (!alive) return

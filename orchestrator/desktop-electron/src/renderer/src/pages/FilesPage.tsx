@@ -13,6 +13,8 @@ import {
   uniqueAgentOptions
 } from './filesGrouping'
 
+const platformFilesCache: { items: WorkflowFileItem[] | null } = { items: null }
+
 const PAGE_SIZE = 20
 const FAVORITES_KEY = 'constructor.files.favorites'
 
@@ -129,8 +131,8 @@ export function FilesPage({
   initialAgentTitle?: string
   onOpenRun?: (workflowId: string, runId: string) => void
 }): React.JSX.Element {
-  const [items, setItems] = useState<WorkflowFileItem[]>([])
-  const [loading, setLoading] = useState(true)
+  const [items, setItems] = useState<WorkflowFileItem[]>(platformFilesCache.items ?? [])
+  const [loading, setLoading] = useState(platformFilesCache.items === null)
   const [error, setError] = useState('')
   const [tab, setTab] = useState<TabKey>('all')
   const [query, setQuery] = useState('')
@@ -151,6 +153,7 @@ export function FilesPage({
 
   async function reload(): Promise<void> {
     const list = await api.listPlatformFiles()
+    platformFilesCache.items = list
     setItems(list)
     setSelectedId((current) => current || list[0]?.id || '')
   }
@@ -161,6 +164,7 @@ export function FilesPage({
       try {
         const list = await api.listPlatformFiles()
         if (!alive) return
+        platformFilesCache.items = list
         setItems(list)
         setSelectedId(list[0]?.id || '')
       } catch (err) {

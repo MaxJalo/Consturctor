@@ -102,6 +102,36 @@ _HOT_PATH_INDEXES = (
     ("ix_agent_runs_user_status", "agent_runs", "(user_id, status)"),
     ("ix_workflows_user_phase_updated", "workflows", "(user_id, phase, updated_at DESC)"),
     ("ix_agent_triggers_owner_wf", "agent_triggers", "(owner_user_id, workflow_id)"),
+    ("ix_agent_runs_user_wf_conv_started", "agent_runs", "(user_id, workflow_id, conversation_key, started_at DESC)"),
+    ("ix_external_orders_created", "external_orders", "(created_at DESC)"),
+    ("ix_external_orders_code", "external_orders", "(code)"),
+    ("ix_external_orders_onec_order_number", "external_orders", "(onec_order_number)"),
+    ("ix_external_orders_onec_tkp_number", "external_orders", "(onec_tkp_number)"),
+    (
+        "ix_external_order_checks_open",
+        "external_order_checks",
+        "(order_id, gate, status) WHERE status NOT IN ('done', 'not_applicable')",
+    ),
+    (
+        "ix_external_order_diffs_open",
+        "external_order_diffs",
+        "(order_id) WHERE status <> 'closed'",
+    ),
+    (
+        "ix_external_order_findings_draft",
+        "external_order_findings",
+        "(order_id) WHERE status = 'draft'",
+    ),
+    (
+        "ix_external_order_gaps_open",
+        "external_order_gaps",
+        "(order_id) WHERE status = 'open'",
+    ),
+    (
+        "ix_external_order_notices_attention",
+        "external_order_notices",
+        "(order_id) WHERE kind IN ('overdue', 'change')",
+    ),
 )
 
 

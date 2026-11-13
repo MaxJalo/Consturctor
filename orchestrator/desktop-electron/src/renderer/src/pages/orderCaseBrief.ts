@@ -403,22 +403,67 @@ export function orderTextsRepeat(left: string, right: string): boolean {
   return a.slice(0, size) === b.slice(0, size)
 }
 
+const MODEL_SILENT = 'Модель Cursor не ответила. Разбор заказа можно повторить.'
+
+const CONNECTION_LOST =
+  /не удалось связаться с cursor|сеть оборвалась|network request failed|cursor sdk run failed/i
+
 const LOST_ORDER_ANSWER =
-  /cursor sdk не отвечает|не удалось связаться с cursor|сеть оборвалась|network request failed|без итога|модель cursor сейчас недоступна|ответ не получен/i
+  /cursor sdk не отвечает|без итога|модель cursor сейчас недоступна|модель cursor не ответила|ответ не получен/i
 
 const CARD_STUB =
   /^реквизиты уже на карточке\.\s*ниже пункты, которые служба ещ[её] не закрыла\.?$/i
 
-/** Обрыв модели не оставляем пустой строкой: в чат встаёт сводка уже открытой карточки. */
+const cardBriefs = new Map<string, OrderCaseBrief>()
+
+/** Сводка карточки на этот разговор: повторное открытие диалога не начинает с пустого поля. */
+export function rememberCardBrief(conversationKey: string, brief: OrderCaseBrief | null | undefined): void {
+  const key = (conversationKey || '').trim()
+  if (!key || !(brief?.summary || '').trim()) return
+  cardBriefs.set(key, brief)
+}
+
+export function cardBriefFor(conversationKey: string): OrderCaseBrief | null {
+  return cardBriefs.get((conversationKey || '').trim()) ?? null
+}
+
+/** Короткая сводка из реквизитов заказа, если полная карточка в этот заход не приложена. */
+export function briefFromChatOrder(order: {
+  code: string
+  customer: string
+  product: string
+  stageLabel: string
+  blockers: string[]
+}): OrderCaseBrief {
+  return briefFromLoadedOrder({
+    code: order.code,
+    customer: order.customer,
+    product: order.product,
+    stageLabel: order.stageLabel,
+    checksDone: 0,
+    checksTotal: 0,
+    blocker: order.blockers.find((item) => item.trim()) || '',
+    draftCount: 0,
+    pathLabel: '',
+    paymentNote: '',
+    openChecks: order.blockers.map((item) => item.trim()).filter(Boolean).slice(0, 3)
+  })
+}
+
+/** Обрыв связи оставляем как есть. Пустой ход без текста модели — сводка карточки и строка про модель. */
 export function recoverLostOrderAnswer(text: string, brief: OrderCaseBrief | null): string {
   const value = (text || '').trim()
   const spoken = employeeDialogText(value, brief?.code || '')
+  const summary = (brief?.summary || '').trim()
+  if (CONNECTION_LOST.test(value) || CONNECTION_LOST.test(spoken)) {
+    if (!summary || spoken.includes(summary)) return spoken
+    return `${spoken}\n\n${summary}`
+  }
   const lost = LOST_ORDER_ANSWER.test(value) || LOST_ORDER_ANSWER.test(spoken) || CARD_STUB.test(spoken)
   if (!lost) return spoken
-  const summary = (brief?.summary || '').trim()
-  if (!summary) return 'Ответ не получен. Черновики на карточке остаются.'
-  const questions = (brief?.questions || []).filter((item) => item && !summary.includes(item)).slice(0, 3)
-  return questions.length ? `${summary}\n\n${questions.join('\n')}` : summary
+  if (!summary) return MODEL_SILENT
+  if (spoken.includes(MODEL_SILENT) && spoken.includes(summary)) return spoken
+  return `${MODEL_SILENT}\n\n${summary}`
 }
 
 /** Что показать в чате вместо сырого отказа SDK и текста инструкции. */

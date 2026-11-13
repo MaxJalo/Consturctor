@@ -1108,6 +1108,41 @@ export function parseScheduleDraft(raw: Record<string, unknown>): ScheduleDraft 
   }
 }
 
+function parseRunnerEvents(rawEvents: Record<string, unknown>[]): AgentRunnerEvent[] {
+  return rawEvents
+    .filter((item) => item && typeof item === 'object')
+    .map((item) => ({
+      type: String(item.type ?? ''),
+      text:
+        item.text != null
+          ? String(item.text)
+          : item.answer != null
+            ? String(item.answer)
+            : undefined,
+      message: item.message != null ? String(item.message) : undefined,
+      answer: item.answer != null ? String(item.answer) : undefined,
+      tool: item.tool != null ? String(item.tool) : undefined,
+      title: item.title != null ? String(item.title) : undefined,
+      requestId:
+        item.requestId != null
+          ? String(item.requestId)
+          : item.request_id != null
+            ? String(item.request_id)
+            : undefined,
+      arguments: (item.arguments as Record<string, unknown>) || undefined,
+      result: item.result,
+      ok: item.ok == null ? undefined : Boolean(item.ok),
+      skipped: item.skipped == null ? undefined : Boolean(item.skipped),
+      confirmOnly:
+        item.confirm_only == null && item.confirmOnly == null
+          ? undefined
+          : Boolean(item.confirm_only ?? item.confirmOnly),
+      error: item.error != null ? String(item.error) : undefined,
+      status: item.status != null ? String(item.status) : undefined,
+      question: item.question != null ? String(item.question) : undefined
+    }))
+}
+
 function parseAgentRunItem(item: Record<string, unknown>, workflowId: string): AgentRunHistoryItem {
   return {
     runId: String(item.run_id ?? item.runId ?? item.id ?? ''),
@@ -1126,7 +1161,8 @@ function parseAgentRunItem(item: Record<string, unknown>, workflowId: string): A
     openSegment: String(item.open_segment ?? item.openSegment ?? ''),
     openSegmentAt: String(item.open_segment_at ?? item.openSegmentAt ?? ''),
     calendarMeetings: parseCalendarMeetings(item.calendar_meetings ?? item.calendarMeetings),
-    conversationKey: String(item.conversation_key ?? item.conversationKey ?? '')
+    conversationKey: String(item.conversation_key ?? item.conversationKey ?? ''),
+    events: Array.isArray(item.events) ? parseRunnerEvents(item.events as Record<string, unknown>[]) : undefined
   }
 }
 
@@ -1696,11 +1732,13 @@ export class ApiClient {
 
   async listAgentRuns(
     workflowId: string,
-    conversation: { key?: string; prefix?: string } = {}
+    conversation: { key?: string; prefix?: string; limit?: number; includeEvents?: boolean } = {}
   ): Promise<AgentRunHistoryItem[]> {
     const params = new URLSearchParams()
     if (conversation.key) params.set('conversation_key', conversation.key)
     if (conversation.prefix) params.set('conversation_prefix', conversation.prefix)
+    if (conversation.limit) params.set('limit', String(conversation.limit))
+    if (conversation.includeEvents) params.set('include_events', 'true')
     const query = params.toString()
     const data = await this.request<Record<string, unknown>[] | { items?: Record<string, unknown>[] }>(
       'GET',
@@ -2056,38 +2094,7 @@ export class ApiClient {
       { timeoutMs: 60_000 }
     )
     const rawEvents = Array.isArray(data.events) ? (data.events as Record<string, unknown>[]) : []
-    const events: AgentRunnerEvent[] = rawEvents
-      .filter((item) => item && typeof item === 'object')
-      .map((item) => ({
-        type: String(item.type ?? ''),
-        text:
-          item.text != null
-            ? String(item.text)
-            : item.answer != null
-              ? String(item.answer)
-              : undefined,
-        message: item.message != null ? String(item.message) : undefined,
-        answer: item.answer != null ? String(item.answer) : undefined,
-        tool: item.tool != null ? String(item.tool) : undefined,
-        title: item.title != null ? String(item.title) : undefined,
-        requestId:
-          item.requestId != null
-            ? String(item.requestId)
-            : item.request_id != null
-              ? String(item.request_id)
-              : undefined,
-        arguments: (item.arguments as Record<string, unknown>) || undefined,
-        result: item.result,
-        ok: item.ok == null ? undefined : Boolean(item.ok),
-        skipped: item.skipped == null ? undefined : Boolean(item.skipped),
-        confirmOnly:
-          item.confirm_only == null && item.confirmOnly == null
-            ? undefined
-            : Boolean(item.confirm_only ?? item.confirmOnly),
-        error: item.error != null ? String(item.error) : undefined,
-        status: item.status != null ? String(item.status) : undefined,
-        question: item.question != null ? String(item.question) : undefined
-      }))
+    const events = parseRunnerEvents(rawEvents)
     return {
       item: parseAgentRunItem({ ...data, id: data.run_id ?? data.runId ?? data.id ?? runId }, workflowId),
       events
@@ -2547,6 +2554,16 @@ export class ApiClient {
       }
     }
     throw last
+  }
+
+  async externalOrderAuditFeed(ids: string[]): Promise<ExternalOrder[]> {
+    const unique = [...new Set(ids.map((item) => item.trim()).filter(Boolean))].slice(0, 40)
+    if (!unique.length) return []
+    const data = await this.request<{ orders?: ExternalOrder[] }>('GET', '/api/v1/external-orders/audit-feed', {
+      params: { ids: unique.join(',') },
+      timeoutMs: 20_000
+    })
+    return data.orders || []
   }
 
   async externalOrder(id: string, asRole = ''): Promise<ExternalOrder> {
@@ -3055,24 +3072,43 @@ export class ApiClient {
   }
 
   async externalServiceAgents(): Promise<{ role: string; workflow_id: string; title: string; active: boolean; procedure: string }[]> {
+    const catalog = await this.externalServiceCatalog()
+    return catalog.agents
+  }
+
+  async externalServiceCatalog(): Promise<{
+    agents: { role: string; workflow_id: string; title: string; active: boolean; procedure: string }[]
+    purchase: { workflow_id: string; title: string }
+  }> {
     try {
       const data = await this.request<Record<string, unknown>>('GET', '/api/v1/external-orders/service-agents', {
         timeoutMs: 30_000
       })
-      return parseServiceAgents(data)
+      const purchase = (data.purchase_agent || {}) as Record<string, unknown>
+      return {
+        agents: parseServiceAgents(data),
+        purchase: { workflow_id: String(purchase.workflow_id || ''), title: String(purchase.title || '') }
+      }
     } catch (err) {
       if (!helperRouteLooksLikeMissingOrder(err)) throw err
       const rows = await this.listWorkflows()
-      return Object.entries(EXTERNAL_SERVICE_AGENT_TITLES).map(([role, title]) => {
-        const row = rows.find((item) => item.title === title)
-        return {
-          role,
-          workflow_id: row?.id || '',
-          title: row?.title || title,
-          active: Boolean(row && !row.paused),
-          procedure: ''
+      const purchaseRow = rows.find((item) => item.title === EXTERNAL_PURCHASE_AGENT_TITLE)
+      return {
+        agents: Object.entries(EXTERNAL_SERVICE_AGENT_TITLES).map(([role, title]) => {
+          const row = rows.find((item) => item.title === title)
+          return {
+            role,
+            workflow_id: row?.id || '',
+            title: row?.title || title,
+            active: Boolean(row && !row.paused),
+            procedure: ''
+          }
+        }),
+        purchase: {
+          workflow_id: purchaseRow?.id || '',
+          title: purchaseRow?.title || EXTERNAL_PURCHASE_AGENT_TITLE
         }
-      })
+      }
     }
   }
 

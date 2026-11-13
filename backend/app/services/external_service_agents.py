@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import copy
+import logging
 import re
+import threading
 from uuid import uuid4
 
 from sqlalchemy.orm import Session
@@ -12,6 +15,8 @@ from app.models.user import AppUser
 from app.models.workflow import Workflow
 from app.services.external_orders import ROLES, is_zhalybin
 from app.services.triggers.service import workflow_is_deleted
+
+logger = logging.getLogger(__name__)
 
 # Запись (1С, письмо, чат) всё равно идёт через подтверждение сотрудника.
 TOOLS = [
@@ -307,6 +312,10 @@ def _apply(row: Workflow, role: str) -> None:
     flag_modified(row, "plan_json")
 
 
+def _agent_snapshot(row: Workflow) -> tuple:
+    return (row.title, row.phase, row.notes, copy.deepcopy(row.local_run), copy.deepcopy(row.plan_json))
+
+
 def ensure_agent(db: Session, role: str) -> Workflow | None:
     if role not in SERVICE_FOCUS:
         return None
@@ -318,9 +327,13 @@ def ensure_agent(db: Session, role: str) -> Workflow | None:
             return None
         row = Workflow(id=str(uuid4()), user_id=owner.id, title=title, phase="done", notes=playbook(role)["goal"])
         db.add(row)
+    before = None if row in db.new else _agent_snapshot(row)
     _apply(row, role)
-    db.commit()
-    db.refresh(row)
+    if before != _agent_snapshot(row):
+        db.commit()
+        db.refresh(row)
+    else:
+        db.expire(row)
     return row
 
 
@@ -336,6 +349,82 @@ def ensure_agents(db: Session) -> list[Workflow]:
         if row is not None:
             rows.append(row)
     return rows
+
+
+def canonical_order_agents(db: Session) -> list[Workflow]:
+    """Общий агент заказа, агент закупок и агент каждой службы. Копии из библиотеки не входят."""
+    from app.services.external_order_agent import ensure_agent as ensure_order
+    from app.services.external_purchase_agent import ensure_agent as ensure_purchase
+
+    found: dict[str, Workflow] = {}
+    for row in (ensure_order(db), ensure_purchase(db), *ensure_agents(db)):
+        if row is not None and row.id not in found:
+            found[row.id] = row
+    return list(found.values())
+
+
+def grant_order_agents(db: Session, user_id: str) -> list[str]:
+    """Кладёт сотруднику в «Мои агенты» тех агентов внешнего заказа, которых у него ещё нет.
+
+    Повторный заход не создаёт вторую копию: библиотека узнаёт агента по источнику.
+    """
+    # Импорт внутри: agent_library тянет workflows, а те снова читают агентов заказа.
+    from app.services.agent_library import adopt_library_agent
+
+    user_id = (user_id or "").strip()
+    if not user_id:
+        return []
+    before = {
+        row_id
+        for (row_id,) in db.query(Workflow.id).filter(Workflow.user_id == user_id).all()
+    }
+    added: list[str] = []
+    for source in canonical_order_agents(db):
+        if source.user_id == user_id:
+            continue
+        adopt_library_agent(db, user_id=user_id, source_workflow_id=source.id)
+    after = db.query(Workflow.id, Workflow.title).filter(Workflow.user_id == user_id).all()
+    for row_id, title in after:
+        if row_id not in before:
+            added.append(str(title or ""))
+    if added:
+        logger.info("external order agents granted user=%s added=%s", user_id, len(added))
+    return added
+
+
+_grant_lock = threading.Lock()
+_grant_done: set[str] = set()
+_grant_running: set[str] = set()
+
+
+def schedule_grant_order_agents(user_id: str) -> None:
+    """Заход на внешний заказ добирает агентов в фоне и не держит открытие списка."""
+    user_id = (user_id or "").strip()
+    if not user_id:
+        return
+    with _grant_lock:
+        if user_id in _grant_done or user_id in _grant_running:
+            return
+        _grant_running.add(user_id)
+
+    def run() -> None:
+        from app.db.session import SessionLocal
+
+        ok = False
+        db = SessionLocal()
+        try:
+            grant_order_agents(db, user_id)
+            ok = True
+        except Exception:
+            logger.exception("external order agents were not granted user=%s", user_id)
+        finally:
+            db.close()
+        with _grant_lock:
+            _grant_running.discard(user_id)
+            if ok:
+                _grant_done.add(user_id)
+
+    threading.Thread(target=run, name="eo-grant-agents", daemon=True).start()
 
 
 def is_active(row: Workflow) -> bool:

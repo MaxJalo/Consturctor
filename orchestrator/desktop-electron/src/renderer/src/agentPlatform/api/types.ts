@@ -304,6 +304,62 @@ export interface PlatformConfigs {
 }
 
 export type SessionStatus = 'running' | 'finished' | 'error' | 'cancelled'
+export type AgentMode = 'agent' | 'chat'
+export type ChatKind = 'agent' | 'order' | 'personal'
+
+export interface ModelParam {
+  id: string
+  value: string
+}
+
+export interface ModelParamOption {
+  value: string
+  displayName?: string
+}
+
+export interface ModelParamDefinition {
+  id: string
+  displayName?: string
+  values: ModelParamOption[]
+}
+
+export interface ModelVariant {
+  params: ModelParam[]
+  displayName: string
+  description?: string
+  isDefault?: boolean
+}
+
+export interface ModelSpec {
+  id: string
+  displayName: string
+  description?: string
+  parameters?: ModelParamDefinition[]
+  variants?: ModelVariant[]
+}
+
+export interface SkillSpec {
+  id: string
+  title: string
+  description: string
+  source: 'builtin' | 'user' | 'project'
+  path?: string
+  keywords?: string[]
+  roles?: string[]
+}
+
+export interface QueuedMessage {
+  id: string
+  prompt: string
+  shown?: string | null
+  attachments?: SessionAttachment[]
+  mode: AgentMode
+  model: string
+  model_params?: ModelParam[]
+  skill_ids?: string[]
+  steer: boolean
+  created_at: string
+}
 
 export interface PlatformSession {
   id: string
@@ -320,6 +376,14 @@ export interface PlatformSession {
   plan_turn: number
   plan: string
   rev: number
+  model?: string
+  model_params?: ModelParam[]
+  mode?: AgentMode
+  workflow_id?: string
+  conversation_key?: string
+  chat_kind?: ChatKind
+  skill_ids?: string[]
+  queued_messages?: QueuedMessage[]
   created_at: string
   updated_at: string
   /** Кто и на каком компьютере запускал; local — запуск с этого устройства. */

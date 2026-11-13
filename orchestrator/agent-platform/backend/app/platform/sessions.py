@@ -183,6 +183,21 @@ class SessionEvent(BaseModel):
     parent: str = ""
 
 
+class QueuedMessage(BaseModel):
+    """Сообщение, поставленное в очередь или перехват (steer) во время активного хода."""
+
+    id: str
+    prompt: str
+    shown: str | None = None
+    attachments: list[Attachment] = Field(default_factory=list)
+    mode: Literal["agent", "chat", "plan"] = "agent"
+    model: str = ""
+    model_params: list[dict[str, str]] = Field(default_factory=list)
+    skill_ids: list[str] = Field(default_factory=list)
+    steer: bool = False
+    created_at: str
+
+
 class PlatformSession(BaseModel):
     id: str
     config_id: str
@@ -201,6 +216,14 @@ class PlatformSession(BaseModel):
     rev: int = 0
     # Снимок запуска: модель и команда конфигурации на момент старта, не текущий config.json.
     model: str = ""
+    model_params: list[dict[str, str]] = Field(default_factory=list)
+    mode: Literal["agent", "chat", "plan"] = "agent"
+    workflow_id: str = ""
+    conversation_key: str = ""
+    chat_kind: Literal["agent", "order", "personal"] = "agent"
+    skill_ids: list[str] = Field(default_factory=list)
+    queued_messages: list[QueuedMessage] = Field(default_factory=list)
+    active_constructor_run_id: str = ""
     entry: list[str] = Field(default_factory=list)
     config_manifest: dict[str, Any] = Field(default_factory=dict)
     # Тестовый запуск инструмента: живёт только в памяти — без файла сессии, общей истории и списков.
@@ -211,7 +234,14 @@ class PlatformSession(BaseModel):
     events: list[SessionEvent] = Field(default_factory=list)
 
     def summary(self) -> dict[str, Any]:
-        return self.model_dump(exclude={"events", "config_manifest"})
+        payload = self.model_dump(exclude={"events", "config_manifest"})
+        payload["mode"] = "chat" if payload.get("mode") == "plan" else payload.get("mode", "agent")
+        queue = payload.get("queued_messages")
+        if isinstance(queue, list):
+            for item in queue:
+                if isinstance(item, dict) and item.get("mode") == "plan":
+                    item["mode"] = "chat"
+        return payload
 
 
 class TraceEntry(BaseModel):
@@ -297,6 +327,7 @@ class SessionInsights(BaseModel):
 class SessionStore:
     def __init__(self) -> None:
         self._lock = threading.RLock()
+        self._changed = threading.Condition(self._lock)
         self._sessions: dict[str, PlatformSession] = {}
         self._agents: dict[str, PlatformAgent] = {}
         self._insights: dict[str, SessionInsights] = {}
@@ -595,6 +626,14 @@ class SessionStore:
         prompt: str,
         ephemeral: bool = False,
         test_tool: str = "",
+        mode: Literal["agent", "chat", "plan"] = "agent",
+        model: str = "",
+        model_params: list[dict[str, str]] | None = None,
+        workflow_id: str = "",
+        conversation_key: str = "",
+        chat_kind: Literal["agent", "order", "personal"] = "agent",
+        skill_ids: list[str] | None = None,
+        status: SessionStatus = "running",
     ) -> PlatformSession:
         self.load()
         with self._lock:
@@ -607,6 +646,14 @@ class SessionStore:
                 agent_id=agent_id,
                 agent_title=agent_title,
                 prompt=prompt,
+                status=status,
+                mode=mode,
+                model=model,
+                model_params=list(model_params or []),
+                workflow_id=workflow_id,
+                conversation_key=conversation_key,
+                chat_kind=chat_kind,
+                skill_ids=list(skill_ids or []),
                 ephemeral=ephemeral,
                 test_tool=test_tool,
                 created_at=stamp,
@@ -614,7 +661,253 @@ class SessionStore:
             )
             self._sessions[session.id] = session
             self._save_session(session, force=True)
+            self._changed.notify_all()
             return session
+
+    def find_by_conversation(self, conversation_key: str) -> PlatformSession | None:
+        key = (conversation_key or "").strip()
+        if not key:
+            return None
+        self.load()
+        with self._lock:
+            matches = [s for s in self._sessions.values() if not s.ephemeral and s.conversation_key == key]
+            if not matches:
+                return None
+            matches.sort(key=lambda s: s.updated_at, reverse=True)
+            return matches[0]
+
+    def list_by_conversation_prefix(
+        self, prefix: str = "", *, workflow_id: str = "", chat_kind: str = "", limit: int = 50
+    ) -> list[PlatformSession]:
+        self.load()
+        with self._lock:
+            items = [
+                s
+                for s in self._sessions.values()
+                if not s.ephemeral
+                and (not prefix or s.conversation_key.startswith(prefix))
+                and (not workflow_id or s.workflow_id == workflow_id)
+                and (not chat_kind or s.chat_kind == chat_kind)
+            ]
+        items.sort(key=lambda s: s.updated_at, reverse=True)
+        return items[:limit]
+
+    def hydrate_conversation(
+        self,
+        *,
+        config_id: str,
+        config_title: str,
+        source: AgentSource,
+        agent_id: str,
+        agent_title: str,
+        workflow_id: str,
+        conversation_key: str,
+        chat_kind: Literal["agent", "order", "personal"],
+        sdk_agent_id: str,
+        runs: list[dict[str, Any]],
+    ) -> PlatformSession:
+        """Восстановить сессию из записей agent_runs, если локальной сессии ещё нет."""
+        self.load()
+        with self._lock:
+            existing = self.find_by_conversation(conversation_key)
+            if existing is not None:
+                return existing
+            stamp = _now()
+            ordered = list(reversed(runs))
+            first_msg = str(ordered[0].get("message") or "") if ordered else ""
+            session = PlatformSession(
+                id=str(uuid4()),
+                config_id=config_id,
+                config_title=config_title,
+                source=source,
+                agent_id=agent_id,
+                agent_title=agent_title,
+                prompt=first_msg,
+                status="finished",
+                sdk_agent_id=sdk_agent_id,
+                workflow_id=workflow_id,
+                conversation_key=conversation_key,
+                chat_kind=chat_kind,
+                created_at=stamp,
+                updated_at=stamp,
+            )
+            for idx, run in enumerate(ordered, 1):
+                session.turns = idx
+                raw_events = run.get("events")
+                events = raw_events if isinstance(raw_events, list) else []
+                has_user = any(isinstance(e, dict) and e.get("type") == "user_message" for e in events)
+                if not has_user and str(run.get("message") or "").strip():
+                    self._append(session, {"type": "user", "text": str(run["message"])})
+                for ev in events:
+                    if not isinstance(ev, dict):
+                        continue
+                    etype = str(ev.get("type") or "")
+                    if etype == "user_message":
+                        self._append(session, {"type": "user", "text": str(ev.get("text") or "")})
+                    elif etype == "thinking":
+                        self._append(session, {"type": "thinking", "text": str(ev.get("text") or "")})
+                    elif etype in {"assistant", "agent_message"}:
+                        self._append(session, {"type": "assistant", "text": str(ev.get("text") or "")})
+                    elif etype == "tool_call":
+                        args_val = ev.get("arguments")
+                        res_val = ev.get("result")
+                        self._append(
+                            session,
+                            {
+                                "type": "tool",
+                                "name": str(ev.get("tool") or ""),
+                                "status": str(ev.get("status") or "completed"),
+                                "call_id": str(ev.get("requestId") or ""),
+                                "args": json.dumps(args_val, ensure_ascii=False, default=str) if args_val is not None else "",
+                                "result": json.dumps(res_val, ensure_ascii=False, default=str) if res_val is not None else "",
+                            },
+                        )
+                    elif etype == "error":
+                        self._append(session, {"type": "error", "text": str(ev.get("message") or ev.get("text") or "")})
+                ans = str(run.get("answer") or "").strip()
+                has_assistant = any(e.turn == idx and e.type == "assistant" and e.text.strip() for e in session.events)
+                if ans and not has_assistant:
+                    self._append(session, {"type": "assistant", "text": ans})
+            self._sessions[session.id] = session
+            self._save_session(session, force=True)
+            self._changed.notify_all()
+            return session
+
+    def set_turn_options(
+        self,
+        session_id: str,
+        *,
+        mode: Literal["agent", "chat", "plan"] | None = None,
+        model: str | None = None,
+        model_params: list[dict[str, str]] | None = None,
+        skill_ids: list[str] | None = None,
+    ) -> None:
+        with self._lock:
+            session = self._sessions.get(session_id)
+            if session is None:
+                return
+            if mode is not None:
+                session.mode = mode
+            if model is not None:
+                session.model = model
+            if model_params is not None:
+                session.model_params = list(model_params)
+            if skill_ids is not None:
+                session.skill_ids = list(skill_ids)
+            self._touch(session)
+            self._save_session(session, force=True)
+
+    def enqueue_message(
+        self,
+        session_id: str,
+        *,
+        prompt: str,
+        shown: str | None = None,
+        attachments: list[Attachment] | None = None,
+        mode: Literal["agent", "chat", "plan"] = "agent",
+        model: str = "",
+        model_params: list[dict[str, str]] | None = None,
+        skill_ids: list[str] | None = None,
+        steer: bool = False,
+    ) -> QueuedMessage | None:
+        with self._lock:
+            session = self._sessions.get(session_id)
+            if session is None:
+                return None
+            item = QueuedMessage(
+                id=str(uuid4()),
+                prompt=prompt,
+                shown=shown,
+                attachments=list(attachments or []),
+                mode=mode,
+                model=model,
+                model_params=list(model_params or []),
+                skill_ids=list(skill_ids or []),
+                steer=steer,
+                created_at=_now(),
+            )
+            if steer:
+                session.queued_messages.insert(0, item)
+            else:
+                session.queued_messages.append(item)
+            session.rev += 1
+            self._touch(session)
+            self._save_session(session, force=True)
+            return item
+
+    def pop_queued_message(self, session_id: str) -> QueuedMessage | None:
+        with self._lock:
+            session = self._sessions.get(session_id)
+            if session is None or not session.queued_messages:
+                return None
+            item = session.queued_messages.pop(0)
+            session.rev += 1
+            self._touch(session)
+            self._save_session(session, force=True)
+            return item
+
+    def remove_queued_message(self, session_id: str, message_id: str) -> bool:
+        with self._lock:
+            session = self._sessions.get(session_id)
+            if session is None:
+                return False
+            before = len(session.queued_messages)
+            session.queued_messages = [m for m in session.queued_messages if m.id != message_id]
+            if len(session.queued_messages) == before:
+                return False
+            session.rev += 1
+            self._touch(session)
+            self._save_session(session, force=True)
+            return True
+
+    def promote_queued_message(self, session_id: str, message_id: str) -> QueuedMessage | None:
+        with self._lock:
+            session = self._sessions.get(session_id)
+            if session is None:
+                return None
+            idx = next((i for i, m in enumerate(session.queued_messages) if m.id == message_id), -1)
+            if idx < 0:
+                return None
+            item = session.queued_messages.pop(idx)
+            item.steer = True
+            session.queued_messages.insert(0, item)
+            session.rev += 1
+            self._touch(session)
+            self._save_session(session, force=True)
+            return item
+
+    def clear_queue(self, session_id: str) -> None:
+        with self._lock:
+            session = self._sessions.get(session_id)
+            if session is None or not session.queued_messages:
+                return
+            session.queued_messages.clear()
+            session.rev += 1
+            self._touch(session)
+            self._save_session(session, force=True)
+
+    def set_active_constructor_run(self, session_id: str, run_id: str) -> None:
+        with self._lock:
+            session = self._sessions.get(session_id)
+            if session is None:
+                return
+            session.active_constructor_run_id = run_id
+
+    def notify_changed(self) -> None:
+        with self._lock:
+            self._changed.notify_all()
+
+    def wait_for_change(self, session_id: str, since_rev: int, timeout: float = 25.0) -> bool:
+        deadline = time.monotonic() + max(0.1, timeout)
+        with self._lock:
+            while True:
+                session = self._sessions.get(session_id)
+                if session is None or session.rev > since_rev:
+                    return True
+                left = deadline - time.monotonic()
+                if left <= 0:
+                    return False
+                self._changed.wait(left)
 
     def get(self, session_id: str) -> PlatformSession | None:
         self.load()
@@ -1075,9 +1368,9 @@ class SessionStore:
             insights = self._insights_for(session.id).model_copy(deep=True)
         history.submit(session.model_copy(deep=True), workspace, insights=insights)
 
-    @staticmethod
-    def _touch(session: PlatformSession) -> None:
+    def _touch(self, session: PlatformSession) -> None:
         session.updated_at = _now()
+        self._changed.notify_all()
 
 
 # -- представления статистики: и для своих запусков, и для запусков из общей базы --

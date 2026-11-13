@@ -27,7 +27,7 @@ function toUint8Array(buffer: ArrayBuffer | Uint8Array | Buffer): Uint8Array {
 
 function toArrayBuffer(buffer: ArrayBuffer | Uint8Array | Buffer): ArrayBuffer {
   const bytes = toUint8Array(buffer)
-  return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength)
+  return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer
 }
 
 export function spreadsheetPreviewFromBuffer(

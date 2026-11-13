@@ -41,6 +41,8 @@ export function positionTilesToEmployeeMetrics(snap: PositionKpiDaily): Workplac
   })
 }
 
+const positionSnapCache = new Map<string, PositionKpiDaily>()
+
 export function usePositionKpi(position = ''): {
   snap: PositionKpiDaily | null
   metrics: WorkplaceKpiEmployeeMetric[]
@@ -53,15 +55,15 @@ export function usePositionKpi(position = ''): {
   methodologyStatus: PositionKpiMethodology['status']
   reload: () => void
 } {
-  const [snap, setSnap] = useState<PositionKpiDaily | null>(null)
-  const [loading, setLoading] = useState(true)
+  const [snap, setSnap] = useState<PositionKpiDaily | null>(positionSnapCache.get(position) ?? null)
+  const [loading, setLoading] = useState(!positionSnapCache.has(position))
   const [error, setError] = useState('')
   const [missing, setMissing] = useState(false)
   const [methodology, setMethodology] = useState<PositionKpiMethodology | null>(null)
 
   const reload = useCallback(() => {
     let alive = true
-    setLoading(true)
+    if (!positionSnapCache.has(position)) setLoading(true)
     void api
       .getPositionKpiMethodology()
       .then((value) => {
@@ -79,6 +81,7 @@ export function usePositionKpi(position = ''): {
       .getPositionKpi(position)
       .then((value) => {
         if (!alive) return
+        positionSnapCache.set(position, value)
         setSnap(value)
         setError('')
       })

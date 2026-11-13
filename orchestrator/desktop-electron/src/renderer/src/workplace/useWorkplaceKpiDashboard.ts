@@ -12,6 +12,8 @@ const WEEK = currentWeekRange()
 const DEFAULT_FROM = WEEK.from
 const DEFAULT_TO = WEEK.to
 
+const kpiDashboardCache = new Map<string, WorkplaceKpiDashboard>()
+
 const OFFLINE_NOTICE =
   'Показаны эталонные KPI (offline): маршрут /api/v1/workplace/kpi недоступен на gateway — обновите LAN или используйте локальный backend.'
 
@@ -22,18 +24,22 @@ export function useWorkplaceKpiDashboard(periodFrom = DEFAULT_FROM, periodTo = D
   notice: string
   reload: () => void
 } {
-  const [data, setData] = useState<WorkplaceKpiDashboard | null>(null)
-  const [loading, setLoading] = useState(true)
+  const cacheKey = `${periodFrom}:${periodTo}`
+  const [data, setData] = useState<WorkplaceKpiDashboard | null>(kpiDashboardCache.get(cacheKey) ?? null)
+  const [loading, setLoading] = useState(!kpiDashboardCache.has(cacheKey))
   const [error, setError] = useState('')
   const [notice, setNotice] = useState('')
 
   const reload = useCallback(() => {
-    setLoading(true)
+    if (!kpiDashboardCache.has(cacheKey)) setLoading(true)
     setError('')
     setNotice('')
     void api
       .getWorkplaceKpi({ from: periodFrom, to: periodTo })
-      .then((next) => setData(next))
+      .then((next) => {
+        kpiDashboardCache.set(cacheKey, next)
+        setData(next)
+      })
       .catch((err: unknown) => {
         if (shouldUseWorkplaceKpiReferenceFallback(err)) {
           setData(buildReferenceWorkplaceKpiDashboard(periodFrom, periodTo))
@@ -45,7 +51,7 @@ export function useWorkplaceKpiDashboard(periodFrom = DEFAULT_FROM, periodTo = D
         setError(formatWorkplaceKpiLoadError(err))
       })
       .finally(() => setLoading(false))
-  }, [periodFrom, periodTo])
+  }, [cacheKey, periodFrom, periodTo])
 
   useEffect(() => {
     reload()

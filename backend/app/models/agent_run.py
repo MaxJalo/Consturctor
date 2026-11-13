@@ -36,3 +36,5 @@ class AgentRun(Base):
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    conversation_key: Mapped[str] = mapped_column(String(200), nullable=False, default="")
+    sdk_agent_id: Mapped[str] = mapped_column(String(128), nullable=False, default="")

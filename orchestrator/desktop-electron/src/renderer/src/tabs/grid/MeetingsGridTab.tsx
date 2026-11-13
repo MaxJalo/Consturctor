@@ -28,7 +28,6 @@ import {
 import { PlatformRunDialog } from './PlatformRunDialog'
 import {
   ensureOutlookMeetings,
-  useOutlookSyncTick,
   findNextMeetingOccurrence,
   formatMeetingStamp,
   isCanceledMeeting,
@@ -1479,14 +1478,8 @@ export function MeetingsGridTab({ user }: { user: UserProfile }): React.JSX.Elem
   }, [sharedMeetings])
 
   useEffect(() => {
-    load(false)
-  }, [load])
-
-  const outlookSync = useOutlookSyncTick()
-  useEffect(() => {
-    if (!outlookSync) return
-    load(true, true)
-  }, [outlookSync, load])
+    load(false, sharedMeetings.length > 0)
+  }, [load, sharedMeetings.length])
 
   // Приглашение из календаря «Совещания» доходит до участников через Exchange не мгновенно.
   const refreshAfterPlanning = useCallback(() => {

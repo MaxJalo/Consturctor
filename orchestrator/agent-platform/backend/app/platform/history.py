@@ -110,6 +110,10 @@ _DDL = (
     "ALTER TABLE turbotest.run_events ADD COLUMN IF NOT EXISTS label text NOT NULL DEFAULT ''",
     "ALTER TABLE turbotest.run_events ADD COLUMN IF NOT EXISTS attachments jsonb NOT NULL DEFAULT '[]'",
     "ALTER TABLE turbotest.run_events ADD COLUMN IF NOT EXISTS parent text NOT NULL DEFAULT ''",
+    "ALTER TABLE turbotest.runs ADD COLUMN IF NOT EXISTS conversation_key text NOT NULL DEFAULT ''",
+    "ALTER TABLE turbotest.runs ADD COLUMN IF NOT EXISTS workflow_id text NOT NULL DEFAULT ''",
+    "ALTER TABLE turbotest.runs ADD COLUMN IF NOT EXISTS chat_kind text NOT NULL DEFAULT 'agent'",
+    "CREATE INDEX IF NOT EXISTS runs_conversation_idx ON turbotest.runs (conversation_key, updated_at DESC)",
     """
     CREATE TABLE IF NOT EXISTS turbotest.run_insights (
         run_id      uuid PRIMARY KEY REFERENCES turbotest.runs (id) ON DELETE CASCADE,
@@ -128,11 +132,13 @@ _UPSERT_RUN = text(
         id, config_id, config_title, source, agent_id, agent_title, prompt,
         status, error, sdk_agent_id, turns, model, entry, config_manifest,
         author, author_host, plan_turn, plan, machine,
+        conversation_key, workflow_id, chat_kind,
         created_at, updated_at, finished_at
     ) VALUES (
         CAST(:id AS uuid), :config_id, :config_title, :source, :agent_id, :agent_title, :prompt,
         :status, :error, :sdk_agent_id, :turns, :model, :entry, :config_manifest,
         :author, :author_host, :plan_turn, :plan, :machine,
+        :conversation_key, :workflow_id, :chat_kind,
         :created_at, :updated_at, :finished_at
     )
     ON CONFLICT (id) DO UPDATE SET
@@ -151,6 +157,9 @@ _UPSERT_RUN = text(
         plan_turn = EXCLUDED.plan_turn,
         plan = EXCLUDED.plan,
         machine = EXCLUDED.machine,
+        conversation_key = EXCLUDED.conversation_key,
+        workflow_id = EXCLUDED.workflow_id,
+        chat_kind = EXCLUDED.chat_kind,
         updated_at = EXCLUDED.updated_at,
         finished_at = EXCLUDED.finished_at
     """
@@ -200,7 +209,8 @@ _UPSERT_INSIGHTS = text(
 
 _RUN_COLUMNS = (
     "id::text AS id, config_id, config_title, source, agent_id, agent_title, prompt, status, error, "
-    "sdk_agent_id, turns, plan_turn, model, author, author_host, created_at, updated_at"
+    "sdk_agent_id, turns, plan_turn, model, author, author_host, conversation_key, workflow_id, "
+    "chat_kind, created_at, updated_at"
 )
 _LIST_RUNS = text(f"SELECT {_RUN_COLUMNS} FROM turbotest.runs ORDER BY updated_at DESC LIMIT :limit")
 _ONE_RUN = text(
@@ -348,6 +358,9 @@ def run_params(session: PlatformSession) -> dict[str, Any]:
         "plan_turn": session.plan_turn,
         "plan": session.plan,
         "machine": machine(),
+        "conversation_key": session.conversation_key,
+        "workflow_id": session.workflow_id,
+        "chat_kind": session.chat_kind,
         "created_at": _stamp(session.created_at),
         "updated_at": updated,
         "finished_at": updated if session.status in _TERMINAL else None,
@@ -575,6 +588,9 @@ def run_summary(row: dict[str, Any]) -> dict[str, Any]:
         "plan": "",
         "rev": 0,
         "model": row["model"] or "",
+        "conversation_key": row.get("conversation_key") or "",
+        "workflow_id": row.get("workflow_id") or "",
+        "chat_kind": row.get("chat_kind") or "agent",
         "created_at": _iso(row["created_at"]),
         "updated_at": _iso(row["updated_at"]),
         "author": row["author"] or "",

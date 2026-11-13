@@ -1,4 +1,4 @@
-import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react'
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useSyncExternalStore } from 'react'
 import { agentClient } from '../api/agent'
 import { api } from '../api/client'
 import type { AgentEvent, AgentRunHistoryItem, CalendarEvent } from '../api/types'
@@ -70,6 +70,78 @@ interface StartRunOptions {
 
 function backgroundEntryKey(workflowId: string): string {
   return `__bg_explain__${workflowId}`
+}
+
+const shellSubs = new Set<() => void>()
+const entrySubs = new Map<string, Set<() => void>>()
+let shellSnapshot: Record<string, RunEntry> = {}
+const entrySnapshot: Record<string, RunEntry | undefined> = {}
+let entryFrame = 0
+const dirtyEntryKeys = new Set<string>()
+
+function shellStamp(entry: RunEntry | undefined): string {
+  if (!entry) return ''
+  const state = entry.state
+  const shape = state.items.map((item) => item.kind).join(',')
+  return [
+    entry.title,
+    entry.backendRunId,
+    entry.hidden ? 1 : 0,
+    entry.background ? 1 : 0,
+    state.running ? 1 : 0,
+    state.status,
+    state.error || '',
+    state.activeRunId || '',
+    state.pendingQuestion?.requestId || '',
+    state.pendingHitl?.requestId || '',
+    shape
+  ].join('|')
+}
+
+function publishEntries(prev: Record<string, RunEntry>, next: Record<string, RunEntry>): void {
+  const keys = new Set([...Object.keys(prev), ...Object.keys(next)])
+  let shellChanged = Object.keys(prev).length !== Object.keys(next).length
+  for (const key of keys) {
+    if (prev[key] === next[key]) continue
+    entrySnapshot[key] = next[key]
+    dirtyEntryKeys.add(key)
+    if (!shellChanged && shellStamp(prev[key]) !== shellStamp(next[key])) shellChanged = true
+  }
+  if (shellChanged) {
+    shellSnapshot = next
+    shellSubs.forEach((notify) => notify())
+  }
+  if (entryFrame || dirtyEntryKeys.size === 0) return
+  entryFrame = requestAnimationFrame(() => {
+    entryFrame = 0
+    const batch = [...dirtyEntryKeys]
+    dirtyEntryKeys.clear()
+    for (const key of batch) entrySubs.get(key)?.forEach((notify) => notify())
+  })
+}
+
+function subscribeShell(notify: () => void): () => void {
+  shellSubs.add(notify)
+  return () => shellSubs.delete(notify)
+}
+
+function getShellSnapshot(): Record<string, RunEntry> {
+  return shellSnapshot
+}
+
+export function useRunEntry(key: string): RunEntry | undefined {
+  return useSyncExternalStore(
+    (notify) => {
+      let bucket = entrySubs.get(key)
+      if (!bucket) {
+        bucket = new Set()
+        entrySubs.set(key, bucket)
+      }
+      bucket.add(notify)
+      return () => bucket.delete(notify)
+    },
+    () => entrySnapshot[key]
+  )
 }
 
 const CONVERSATION_PREFIX = '__conv__'
@@ -171,9 +243,17 @@ function emptyLiveEntry(
 }
 
 export function RunProvider({ children }: { children: React.ReactNode }): React.JSX.Element {
-  const [entries, setEntries] = useState<Record<string, RunEntry>>({})
-  const entriesRef = useRef(entries)
-  entriesRef.current = entries
+  const entriesRef = useRef<Record<string, RunEntry>>({})
+  const setEntries = useCallback(
+    (updater: Record<string, RunEntry> | ((prev: Record<string, RunEntry>) => Record<string, RunEntry>)) => {
+      const prev = entriesRef.current
+      const next = typeof updater === 'function' ? updater(prev) : updater
+      if (next === prev) return
+      entriesRef.current = next
+      publishEntries(prev, next)
+    },
+    []
+  )
   const indexRef = useRef<Record<string, string>>({})
   const cancelledRunIdsRef = useRef<Record<string, boolean>>({})
   const forceRestartRef = useRef<Record<string, boolean>>({})
@@ -715,15 +795,16 @@ export function RunProvider({ children }: { children: React.ReactNode }): React.
       const entryKey = conversationEntryKey(wid, key)
       const current = entriesRef.current[entryKey]
       if (current && (current.state.running || (current.state.items?.length ?? 0) > 0)) return 1
-      const list = (await api.listAgentRuns(wid, { key })).filter(
+      const list = (await api.listAgentRuns(wid, { key, limit: CONVERSATION_HISTORY_RUNS, includeEvents: true })).filter(
         (item) => (item.conversationKey || key) === key && !isEmptyTriggerCheckRun(item)
       )
       if (!list.length) return 0
       const turns = list.slice(0, CONVERSATION_HISTORY_RUNS).reverse()
-      const details = []
-      for (const item of turns) {
-        details.push(await api.getAgentRunDetail(wid, item.runId).catch(() => ({ item, events: [] })))
-      }
+      const details = turns.some((item) => (item.events?.length || 0) > 0)
+        ? turns.map((item) => ({ item, events: item.events || [] }))
+        : await Promise.all(
+            turns.map((item) => api.getAgentRunDetail(wid, item.runId).catch(() => ({ item, events: [] })))
+          )
       let items: RunState['items'] = []
       for (const detail of details) {
         const turn = omitTriggerCheckNoise(buildFeedItems(detail.events, { live: false }))
@@ -898,7 +979,7 @@ export function RunProvider({ children }: { children: React.ReactNode }): React.
 
   const value = useMemo<RunStore>(
     () => ({
-      entries,
+      entries: shellSnapshot,
       getRun,
       activeAgents,
       startRun,
@@ -915,7 +996,6 @@ export function RunProvider({ children }: { children: React.ReactNode }): React.
       hydrateLive
     }),
     [
-      entries,
       getRun,
       activeAgents,
       startRun,
@@ -938,8 +1018,10 @@ export function RunProvider({ children }: { children: React.ReactNode }): React.
 
 export function useRuns(): RunStore {
   const ctx = useContext(RunContext)
-  if (!ctx) throw new Error('useRuns must be used within a RunProvider')
-  return ctx
+  const entries = useSyncExternalStore(subscribeShell, getShellSnapshot)
+  const store = useMemo(() => (ctx ? { ...ctx, entries } : null), [ctx, entries])
+  if (!store) throw new Error('useRuns must be used within a RunProvider')
+  return store
 }
 
 export { deriveLatestOutput }

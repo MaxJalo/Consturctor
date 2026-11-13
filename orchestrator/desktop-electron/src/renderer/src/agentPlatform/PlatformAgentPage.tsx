@@ -1,4 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
+import { createPortal } from 'react-dom'
+import type { PageKey } from '../components/Sidebar'
+import type { AgentChatContext } from '../pages/agentChat'
+import { isPersonalAgentWorkflowId } from '../workplace/personalAgent'
 import { apiGet, apiPost } from './api/client'
 import type {
   ConstructorBrief,
@@ -112,17 +116,39 @@ function ConstructorPassport({ brief }: { brief: ConstructorBrief }): React.JSX.
   )
 }
 
+function shownOrderOpening(message: string, chat: AgentChatContext): string {
+  const scenario = /Сценарий дела:\s*([^\n(]+)/i.exec(message)?.[1]?.trim()
+  if (scenario) return scenario
+  return chat.order.code ? `Разбор заказа ${chat.order.code}` : 'Разбор заказа'
+}
+
 interface PlatformAgentPageProps {
   workflowId: string
   source: PlatformAgentSource
   title: string
   /** Кнопка «Запустить» на доске: сразу новый запуск. */
   autoStart?: boolean
+  initialMessage?: string
+  appContext?: string
+  chat?: AgentChatContext
   onBack: () => void
+  onNavigate?: (key: PageKey) => void
 }
 
-/** Запуск ИИ-агента конфигурацией 2: раннер Cursor SDK, инструменты платформы и страница хода работы. */
-export function PlatformAgentPage({ workflowId, source, title, autoStart = false, onBack }: PlatformAgentPageProps): React.JSX.Element {
+/** Единая страница агента и чата на платформе (заказы, личный помощник, агенты Конструктора и TurboTester). */
+export function PlatformAgentPage({
+  workflowId,
+  source,
+  title,
+  autoStart = false,
+  initialMessage = '',
+  appContext = '',
+  chat,
+  onBack,
+  onNavigate
+}: PlatformAgentPageProps): React.JSX.Element {
+  const personal = isPersonalAgentWorkflowId(workflowId)
+  const directChat = Boolean(chat || personal || initialMessage.trim())
   const platformAgentId = source.kind === 'platform' ? source.agentId : ''
   const runId = platformAgentId || workflowId
   const fromConstructor = source.kind === 'constructor'
@@ -159,6 +185,12 @@ export function PlatformAgentPage({ workflowId, source, title, autoStart = false
     [workflowId]
   )
 
+  useEffect(() => {
+    void apiGet<{ items: PlatformConfig[] }>('/api/v1/platform/configs')
+      .then((data) => setConfigs(data.items ?? []))
+      .catch(() => undefined)
+  }, [])
+
   const start = useCallback(async (): Promise<void> => {
     setStarting(true)
     setNotice('')
@@ -178,6 +210,7 @@ export function PlatformAgentPage({ workflowId, source, title, autoStart = false
   }, [files, fromConstructor, openSession, runId, task])
 
   const load = useCallback(async () => {
+    if (directChat) return
     setLoadError('')
     try {
       const configData = await apiGet<{ items: PlatformConfig[] }>('/api/v1/platform/configs')
@@ -214,13 +247,13 @@ export function PlatformAgentPage({ workflowId, source, title, autoStart = false
     } catch (reason) {
       setLoadError(reason instanceof Error ? reason.message : 'Платформа агентов недоступна')
     }
-    // start читает задачу и файлы на момент вызова; автозапуск идёт без них.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [autoStart, fromConstructor, openSession, platformAgentId, runId, workflowId])
+  }, [autoStart, directChat, fromConstructor, openSession, platformAgentId, runId, workflowId])
 
   const replacedDeadRun = useRef(false)
 
   useEffect(() => {
+    if (directChat) return
     if (!sessionId) {
       void load()
       return
@@ -240,7 +273,7 @@ export function PlatformAgentPage({ workflowId, source, title, autoStart = false
     return () => {
       alive = false
     }
-  }, [load, sessionId, workflowId])
+  }, [directChat, load, sessionId, workflowId])
 
   function addFiles(list: File[]): void {
     if (!list.length) return
@@ -249,6 +282,68 @@ export function PlatformAgentPage({ workflowId, source, title, autoStart = false
     if (list.length > room) rejected.push(`Не больше ${MAX_FILES} вложений за запуск`)
     setNotice(rejected.join(' · '))
     if (added.length) setFiles((current) => [...current, ...added])
+  }
+
+  useEffect(() => {
+    if (!chat) return
+    const onKey = (event: KeyboardEvent): void => {
+      if (event.key === 'Escape') onBack()
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [chat, onBack])
+
+  if (directChat) {
+    const convKey = chat?.conversationKey || (personal ? `${workflowId}:default` : `${workflowId}:chat`)
+    const convPrefix = chat?.conversationPrefix || (personal ? `${workflowId}:` : `${workflowId}:`)
+    const chatKind = chat ? 'order' : personal ? 'personal' : 'agent'
+    const initial = initialMessage.trim()
+    const shown = chat && initial ? shownOrderOpening(initial, chat) : initial || undefined
+    const body = (
+      <div className="tt-root" data-theme="light">
+        <AgentSession
+          target={{
+            kind: 'chat',
+            chat: {
+              workflowId,
+              conversationKey: convKey,
+              conversationPrefix: convPrefix,
+              chatKind,
+              title: chat?.order.roleLabel || title || (personal ? 'Оркестратор' : 'Чат с помощником'),
+              initialPrompt: initial || undefined,
+              shown,
+              appContext: appContext.trim() || undefined,
+              orderChat: chat
+            }
+          }}
+          configs={configs}
+          backLabel={chat ? 'Закрыть' : 'Назад'}
+          variant={chat ? 'dialog' : 'full'}
+          showProgress={showProgress}
+          onShowProgress={setShowProgress}
+          onBack={onBack}
+          onOpened={() => undefined}
+          onNavigate={onNavigate}
+        />
+      </div>
+    )
+    if (chat) {
+      return createPortal(
+        <div className="modal-overlay" onClick={onBack} role="presentation">
+          <div
+            className="modal-card platform-run-dialog"
+            role="dialog"
+            aria-modal="true"
+            aria-label={chat.order.roleLabel || title || 'Помощник заказа'}
+            onClick={(event) => event.stopPropagation()}
+          >
+            {body}
+          </div>
+        </div>,
+        document.body
+      )
+    }
+    return body
   }
 
   if (sessionId) {
@@ -262,6 +357,7 @@ export function PlatformAgentPage({ workflowId, source, title, autoStart = false
           onShowProgress={setShowProgress}
           onBack={() => openSession(null)}
           onOpened={(id) => openSession(id)}
+          onNavigate={onNavigate}
         />
       </div>
     )
@@ -384,7 +480,7 @@ export function PlatformAgentPage({ workflowId, source, title, autoStart = false
               <h4>План запуска</h4>
               {brief?.plan ? (
                 <div className="pagent-plan">
-                  <MarkdownView text={brief.plan} />
+                  <MarkdownView text={brief.plan} onNavigate={onNavigate} />
                 </div>
               ) : (
                 <p className="agent-muted">План не собран.</p>
@@ -400,7 +496,7 @@ export function PlatformAgentPage({ workflowId, source, title, autoStart = false
                 <h4>План</h4>
                 {agent?.instruction ? (
                   <div className="pagent-plan">
-                    <MarkdownView text={agent.instruction} />
+                    <MarkdownView text={agent.instruction} onNavigate={onNavigate} />
                   </div>
                 ) : (
                   <p className="agent-muted">План ещё составляется.</p>

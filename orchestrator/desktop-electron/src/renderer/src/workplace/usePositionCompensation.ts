@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useState } from 'react'
 import { api } from '../api/client'
 import type { PositionKpiCompensation } from '../api/types'
+import { loadSession } from '../store/session'
+import { readGridCache, writeGridCache } from './gridDataCache'
 
 const EMPTY: PositionKpiCompensation = {
   available: false,
@@ -22,18 +24,24 @@ export function usePositionCompensation(): {
   unlock: (pin: string) => Promise<string>
   hide: () => void
 } {
-  const [compensation, setCompensation] = useState<PositionKpiCompensation>(EMPTY)
-  const [loading, setLoading] = useState(true)
+  const cacheKey = `fio:${loadSession()?.fio || ''}:position-compensation`
+  const cached = readGridCache<PositionKpiCompensation>(cacheKey)
+  const [compensation, setCompensation] = useState<PositionKpiCompensation>(cached ?? EMPTY)
+  const [loading, setLoading] = useState(!cached)
   const [unlocking, setUnlocking] = useState(false)
 
   useEffect(() => {
     let alive = true
-    setLoading(true)
-    setCompensation(EMPTY)
+    if (!readGridCache<PositionKpiCompensation>(cacheKey)) {
+      setLoading(true)
+      setCompensation(EMPTY)
+    }
     void api
       .getPositionKpiCompensation()
       .then((next) => {
-        if (alive) setCompensation(next)
+        if (!alive) return
+        writeGridCache(cacheKey, next)
+        setCompensation(next)
       })
       .catch(() => {
         if (alive) setCompensation(EMPTY)
@@ -44,7 +52,7 @@ export function usePositionCompensation(): {
     return () => {
       alive = false
     }
-  }, [])
+  }, [cacheKey])
 
   const unlock = useCallback(async (pin: string): Promise<string> => {
     setUnlocking(true)
